@@ -1,8 +1,9 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Lemon Studio · Michael Lane edition</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Lemon Studio · Michael Lane Edition</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#131613;color:#f3f5ec}*{box-sizing:border-box}body{margin:0}main{max-width:1080px;margin:0 auto;padding:80px 24px}small,.eyebrow{color:#d9ed7c}.eyebrow{letter-spacing:.16em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(42px,8vw,76px);letter-spacing:-.055em;margin:18px 0 8px}h2{font-size:24px;margin:0 0 12px}p{color:#b9c1b5;line-height:1.6}.intro{max-width:650px;font-size:18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:40px 0 20px}.card{border:1px solid #394133;background:#1c211a;border-radius:16px;padding:26px;display:flex;flex-direction:column;gap:10px}.card p{font-size:14px;margin:0 0 8px}.links{margin-top:auto;display:grid;gap:10px}a{color:#e0edab}a.button{background:#d6ed78;color:#1a220b;text-decoration:none;padding:13px 18px;border-radius:8px;font-weight:650;display:block;text-align:center}a.secondary{background:#2e3725;color:#e0edab}.source{margin-top:24px;padding:26px;border:1px solid #394133;border-radius:16px}.source .button{display:inline-block}.muted{font-size:13px;color:#9ba791}footer{margin-top:46px;font-size:13px;line-height:1.7;color:#9ba791}code{word-break:break-all;font-size:11px}a:focus-visible{outline:3px solid white;outline-offset:4px}</style></head>
-<body><main><div class="eyebrow">Michael Lane edition</div><h1>Lemon Studio</h1><p class="intro">Your studio, your workflow. Choose your computer below—or download the source and make it your own.</p>
+<body><main><div class="eyebrow">Michael Lane Edition</div><h1>Lemon Studio</h1><p class="intro">Your studio, your workflow. Analog mixing, original Waves channel-strip hosting and integrated mastering. Choose your computer below—or download the source and make it your own.</p>
+<p><a href="https://github.com/Dorfhaus/Lemon-Studio-Michael-Lane-Edition/tree/michael-lane">Michael Lane Edition on GitHub</a> · Based on Lemon Studio by ItsAlphaNeon and contributors.</p>
 <p><a href="#change-log">Read the Change Log ↓</a></p>
 <section class="grid" aria-label="Downloads">
 <article class="card"><h2>Windows</h2><p>64-bit installer. Includes automatic updates for future Windows releases.</p><div id="windows" class="links">Loading download…</div></article>
@@ -12,10 +13,22 @@
 <p class="muted">Windows, Mac and Linux now support signed automatic updates. Older Mac/Linux versions need one manual installation of this release; future updates install when you close or restart. Keep the Mac app or Linux folder in a location your user can write to.</p>
 <!-- CHANGELOG START -->
 <section class="source" id="change-log" aria-labelledby="change-log-title"><h2 id="change-log-title">Change Log</h2>
-<p>The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
+<p>The recorded history of the Michael Lane Edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
 <p id="change-empty" hidden>No changes match your search.</p>
-<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Lemon Chop, pitch and workflow · public build 2026110203</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Master Assistant and Michael Lane Edition · public build 2026110204</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Published the integrated Lemon Master Assistant: mastering EQ, dynamic EQ, multiband compression, stereo imaging and maximizer, with dedicated master controls and settings saved in projects. The native engine is included in installations and automatic updates.</li>
+<li style="margin:10px 0">Added the channel-strip mixer view, hosting original Waves plugin interfaces above analog-style faders, with improved fitting, section-aligned paging and Abbey Road TG12345 paging. Waves is the currently tested focus; third-party plugins are not included.</li>
+<li style="margin:10px 0">Added routing by dragging channels onto hosted plugin panels and polished mixer spacing, metal separators, illuminated polarity/swap controls, pan and stereo separation controls.</li>
+<li style="margin:10px 0">Added tempo undo, selected-pattern following, sampler file-dialog previews and editable shortcuts for common commands.</li>
+<li style="margin:10px 0">Added manual audio warp markers with project persistence, undo and rendering while preserving the source and pitch.</li>
+<li style="margin:10px 0">Improved Parametric EQ 2 HQ mode and parameter smoothing; preserved rejected imported plugin state for recovery without claiming universal FLP plugin-setting compatibility.</li>
+<li style="margin:10px 0">Added the Lemon Wave wavetable instrument foundation and factory presets.</li>
+<li style="margin:10px 0">Identified this edition consistently as Michael Lane Edition and linked its public source fork while preserving original Lemon Studio and dependency credits.</li>
+<li style="margin:10px 0">Added the shared website and in-app Change Log and improved narrow community-tab labels.</li>
+<li style="margin:10px 0">Known issues remain: Auto-Tune ARA compatibility and Melodyne transport behavior. Linux packages are compiled; Linux audio/runtime testing has not been performed.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Lemon Chop, pitch and workflow · public build 2026110203</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
 <li style="margin:10px 0">Added Lemon Chop, a separate slicing instrument with cue pads, automatic slicing, editable cue regions, pad names/favorites, reverse, pitch/stretch controls and undo/redo.</li>
 <li style="margin:10px 0">Integrated optional local stem separation into Chop, with selectable stem mixes and source-region export; saved Chop state reopens with the project.</li>
 <li style="margin:10px 0">Added Chop to Instruments / Sampler for existing and new profiles without duplicate entries after rescans.</li>
@@ -71,7 +84,7 @@
 <li style="margin:10px 0">Added vocal SnapTune pitch correction with an explicit bypass switch, manual key/scale and voice range, plus Learn key suggestions.</li>
 <li style="margin:10px 0">Added Follow audio level / Duck linking for supported native and hosted parameters, with source, depth and release controls.</li>
 <li style="margin:10px 0">Added independent Stereo / Mid / Side / Left / Right processing per EQ band, saved with project and A/B state.</li>
-<li style="margin:10px 0">Added signed automatic Windows updates, an Updates control and a compact Donate link; added the Michael Lane edition startup label.</li>
+<li style="margin:10px 0">Added signed automatic Windows updates, an Updates control and a compact Donate link; added the Michael Lane Edition startup label.</li>
 <li style="margin:10px 0">Opened the common download page with Windows, Linux and Mac downloads and matching source archives.</li>
 <li style="margin:10px 0">Added the shared source/build workflow and native Apple-silicon Mac packaging; published cross-platform build 2026103103.</li>
 <li style="margin:10px 0">Added compact dedicated mixer EQ with a spectrum display, Pre/Post routing and independent tone controls.</li>
@@ -116,7 +129,7 @@
 <li style="margin:10px 0">Smoothed recording transitions and added independent take solo.</li>
 <li style="margin:10px 0">Improved mixer dragging, established native public defaults and prepared the Windows installer and Mac source handoff.</li>
 </ul></details>
-<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-28 · Michael Lane edition begins</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-28 · Michael Lane Edition begins</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
 <li style="margin:10px 0">Established this customized edition from the existing Lemon Studio project; the original project predates this changelog.</li>
 <li style="margin:10px 0">Added a native starter-template workflow, template names for new sessions and mixer-first startup; repaired Windows settings-folder handling and installed factory-template support.</li>
 <li style="margin:10px 0">Simplified the toolbar and Playlist editing controls; moved the mixer plugin inspector to the left and improved plugin categories and scrolling.</li>

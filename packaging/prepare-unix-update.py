@@ -32,7 +32,7 @@ for name,source in sources:
     dest=release/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest)
     files.append(dict(name=name,sha256=hashlib.sha256(dest.read_bytes()).hexdigest(),size=dest.stat().st_size))
 label=f'{str(v)[:4]}.{str(v)[4:6]}.{str(v)[6:8]}.{int(str(v)[8:])}'
-m=dict(product='lemon-studio-michael-lane-'+a.platform,version=v,label=label,notes='Lemon Chop slicing instrument with existing stem-separation integration and automatic Instruments / Sampler placement; Explorer sample-drop routing fix; visual plugin picker and Windows preview generation; compact rack pitch controls, global pitch and varispeed; channel bounce to audio; scale-only piano roll; continuous clip-trim playback and edge-click fixes. Auto-Tune Pro 11 ARA and Melodyne spacebar/transport issues remain unresolved.',files=files)
+m=dict(product='lemon-studio-michael-lane-'+a.platform,version=v,label=label,notes='Michael Lane Edition: bundled Master Assistant, Waves channel-strip mixer, analog controls, warp markers, editable shortcuts and Lemon Wave. Includes prior Lemon Chop updates. Auto-Tune ARA and Melodyne transport issues remain unresolved.',files=files)
 payload=json.dumps(m,separators=(',',':'),ensure_ascii=True)
 signed=json.dumps(dict(payload=payload,signature=key.sign(payload.encode()).hex()),indent=2)
 (release/'signed.json').write_text(signed)

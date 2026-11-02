@@ -1,6 +1,6 @@
 """Export corresponding source, including uncommitted customizations and embedded assets."""
 from pathlib import Path
-import subprocess, sys, zipfile
+import subprocess, sys, zipfile, os
 
 from private_build import private_source
 public = "--public" in sys.argv[2:]
@@ -23,4 +23,13 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         if any(part.startswith('target') or part == '.git' for part in Path(name).parts): continue
         if '.before-' in name or p.suffix in {'.pem', '.key', '.enc'} or p.name == '.env': continue
         z.write(p, 'Source/' + name)
+    # Corresponding source includes the exact JUCE tree used for the bundled engine.
+    if public:
+        juce = Path(os.environ.get('LEMON_JUCE_SOURCE', root/'plugins/lemon-master-assistant/JUCE'))
+        if not (juce/'modules/juce_core/juce_core.h').is_file():
+            raise SystemExit('Set LEMON_JUCE_SOURCE to the JUCE 8.0.9 source used to build Master Assistant.')
+        for p in sorted(juce.rglob('*')):
+            rel = p.relative_to(juce)
+            if p.is_file() and '.git' not in rel.parts:
+                z.write(p, 'Source/plugins/lemon-master-assistant/JUCE/' + rel.as_posix())
 print(out)

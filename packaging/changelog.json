@@ -4,6 +4,22 @@
   "sections": [
     {
       "date": "2026-11-02",
+      "title": "Master Assistant and Michael Lane Edition · public build 2026110204",
+      "changes": [
+        "Published the integrated Lemon Master Assistant: mastering EQ, dynamic EQ, multiband compression, stereo imaging and maximizer, with dedicated master controls and settings saved in projects. The native engine is included in installations and automatic updates.",
+        "Added the channel-strip mixer view, hosting original Waves plugin interfaces above analog-style faders, with improved fitting, section-aligned paging and Abbey Road TG12345 paging. Waves is the currently tested focus; third-party plugins are not included.",
+        "Added routing by dragging channels onto hosted plugin panels and polished mixer spacing, metal separators, illuminated polarity/swap controls, pan and stereo separation controls.",
+        "Added tempo undo, selected-pattern following, sampler file-dialog previews and editable shortcuts for common commands.",
+        "Added manual audio warp markers with project persistence, undo and rendering while preserving the source and pitch.",
+        "Improved Parametric EQ 2 HQ mode and parameter smoothing; preserved rejected imported plugin state for recovery without claiming universal FLP plugin-setting compatibility.",
+        "Added the Lemon Wave wavetable instrument foundation and factory presets.",
+        "Identified this edition consistently as Michael Lane Edition and linked its public source fork while preserving original Lemon Studio and dependency credits.",
+        "Added the shared website and in-app Change Log and improved narrow community-tab labels.",
+        "Known issues remain: Auto-Tune ARA compatibility and Melodyne transport behavior. Linux packages are compiled; Linux audio/runtime testing has not been performed."
+      ]
+    },
+    {
+      "date": "2026-11-02",
       "title": "Lemon Chop, pitch and workflow · public build 2026110203",
       "changes": [
         "Added Lemon Chop, a separate slicing instrument with cue pads, automatic slicing, editable cue regions, pad names/favorites, reverse, pitch/stretch controls and undo/redo.",

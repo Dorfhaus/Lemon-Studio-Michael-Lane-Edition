@@ -80,7 +80,7 @@ fn info_plist() -> String {
 	<key>CFBundleName</key>
 	<string>{NAME}</string>
 	<key>CFBundleDisplayName</key>
-	<string>{NAME}</string>
+	<string>Lemon Studio — Michael Lane Edition</string>
 	<key>CFBundleExecutable</key>
 	<string>{EXE}</string>
 	<key>CFBundleIdentifier</key>

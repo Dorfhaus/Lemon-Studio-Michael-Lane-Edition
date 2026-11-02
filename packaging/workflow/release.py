@@ -136,6 +136,7 @@ def configure():
 def permitted(rel,scope):
     p=PurePosixPath(rel)
     if p.is_absolute() or '..' in p.parts or '\\' in rel: return False
+    if scope=='website': return rel=='index.html'
     if scope=='windows-linux':
         return bool(re.fullmatch(r'(?:downloads|linux|updates)/\d+/[^/]+',rel) or re.fullmatch(r'updates/linux-x64/\d+/[^/]+',rel) or rel in ('platforms/windows.json','platforms/linux.json','updates/stable.json','updates/linux-x64/stable.json'))
     if scope in ('mac-arm64','mac-x86_64'):
@@ -218,13 +219,13 @@ def publish(plan_path):
     ftp.mkd(lock)
     try:
         for e in sorted(entries,key=lambda x: x['path'].startswith('platforms/') or x['path'].endswith('/stable.json')):
-            rel=e['path'];p=plan_path.parent/e['local'];mutable=rel.startswith('platforms/') or rel.endswith('/stable.json')
+            rel=e['path'];p=plan_path.parent/e['local'];mutable=rel.startswith('platforms/') or rel.endswith('/stable.json') or rel=='index.html'
             if mutable:
                 old=bytearray()
                 try: ftp.retrbinary('RETR '+rel,old.extend)
                 except ftplib.error_perm as ex:
                     if not str(ex).startswith('550'): raise
-                if old:
+                if old and rel != 'index.html':
                     previous=json.loads(old)
                     if 'payload' in previous:previous=json.loads(previous['payload'])
                     if previous.get('version',0)>plan['version']:raise RuntimeError('Refusing to replace a newer platform release')
@@ -271,7 +272,11 @@ def write_plan(site,out,scope):
     return plan
 
 def build_windows(out,cfg):
-    env=dict(os.environ,OPENSTUDIO_NO_PLUGIN_BUILD='1',LIBCLANG_PATH=cfg['llvm'])
+    env=dict(os.environ,OPENSTUDIO_NO_PLUGIN_BUILD='1',LIBCLANG_PATH=cfg['llvm'],LEMON_RELEASE='1')
+    windows_bundle=os.environ.get('LEMON_MASTER_WINDOWS_BUNDLE')
+    linux_bundle=os.environ.get('LEMON_MASTER_LINUX_BUNDLE')
+    if not windows_bundle or not linux_bundle: raise RuntimeError('Set LEMON_MASTER_WINDOWS_BUNDLE and LEMON_MASTER_LINUX_BUNDLE to the built native engine archives.')
+    env['LEMON_MASTER_BUNDLE']=windows_bundle
     run('cargo','build','--locked','--release','-p','os-app',env=env)
     run(sys.executable,ROOT/'packaging/windows/prepare-update.py','--output',out)
     site=out/'lemon-studio';v=str(version());payload=out/'payload';payload.mkdir()
@@ -288,7 +293,7 @@ def build_windows(out,cfg):
     run('subst',drive,ROOT.parent)
     try:
         tools=Path('Q:/linux-tools')
-        cross=dict(env,CARGO_ZIGBUILD_ZIG_PATH=str(tools/'python/ziglang/zig.exe'),CARGO_ZIGBUILD_CACHE_DIR=str(tools/'zig-cache'),PKG_CONFIG=str(tools/'pkg-config.cmd'),PKG_CONFIG_ALLOW_CROSS='1',PKG_CONFIG_LIBDIR=str(tools/'sysroot/usr/lib/x86_64-linux-gnu/pkgconfig'))
+        cross=dict(env,LEMON_MASTER_BUNDLE=linux_bundle,CARGO_ZIGBUILD_ZIG_PATH=str(tools/'python/ziglang/zig.exe'),CARGO_ZIGBUILD_CACHE_DIR=str(tools/'zig-cache'),PKG_CONFIG=str(tools/'pkg-config.cmd'),PKG_CONFIG_ALLOW_CROSS='1',PKG_CONFIG_LIBDIR=str(tools/'sysroot/usr/lib/x86_64-linux-gnu/pkgconfig'))
         run(tools/'python/bin/cargo-zigbuild.exe','zigbuild','--locked','--release','-p','os-app','--target','x86_64-unknown-linux-gnu.2.36',env=cross)
     finally:run('subst',drive,'/D')
     linux=site/'linux'/v/f'Lemon-Studio-Linux-x86_64-{v}.tar.gz';linux.parent.mkdir(parents=True)

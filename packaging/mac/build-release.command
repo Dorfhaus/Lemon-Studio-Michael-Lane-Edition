@@ -14,6 +14,8 @@ mkdir -p "$HOME/.cache/lemon-studio-build-sources"
 BUILD_SOURCE="$(mktemp -d "$HOME/.cache/lemon-studio-build-sources/release.XXXXXX")"
 git archive HEAD | tar -x -C "$BUILD_SOURCE"
 cd "$BUILD_SOURCE"
+export LEMON_RELEASE=1
+: "${LEMON_MASTER_BUNDLE:?Set LEMON_MASTER_BUNDLE to the native Mac engine archive}"
 cargo build --locked --release -p os-app
 cargo run --locked --release -p bundle-app
 APP="$CARGO_TARGET_DIR/bundled/Lemon Studio.app"
