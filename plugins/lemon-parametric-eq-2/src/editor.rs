@@ -131,6 +131,7 @@ pub enum Cmd {
     None,
     ResetBand(usize),
     SetType(usize, i32),
+    Route(usize,u8),
     SetOrder(usize, i32),
     SetHz(usize, f64),
     Reset(String),
@@ -304,7 +305,7 @@ impl Logic {
             params::hz_text(b.hz()),
             b.width * 100.0,
             k + 1,
-            TYPE_NAMES[b.kind.clamp(0, 7) as usize].to_lowercase()
+            format!("{} / {}",TYPE_NAMES[b.kind.clamp(0, 7) as usize].to_lowercase(),eq::routed::NAMES[eq::routed::routes(&self.params.extra_copy(),false)[k] as usize])
         )
     }
 
@@ -381,15 +382,16 @@ impl Logic {
     pub fn compare(&mut self, flip: bool) {
         let cur = self.shown();
         let fields = params::fields_of(&cur);
+        let image=self.params.extra_copy();let current_routes=eq::routed::routes(&image,false);let spare_routes=eq::routed::routes(&image,true);
         if !flip {
             if LOCK_SPARE.load(Ordering::Relaxed) {
                 return;
             }
-            self.params.edit_extra(|b| fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v)));
+            self.params.edit_extra(|b| {fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v));eq::routed::save_routes(b,current_routes,true);if flip{eq::routed::save_routes(b,spare_routes,false);}});
             return;
         }
         let spare = params::settings_at(&self.params.extra_copy(), 37);
-        self.params.edit_extra(|b| fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v)));
+        self.params.edit_extra(|b| {fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v));eq::routed::save_routes(b,current_routes,true);if flip{eq::routed::save_routes(b,spare_routes,false);}});
         for k in 0..BANDS {
             self.set_band(k, spare.bands[k]);
         }
@@ -609,6 +611,10 @@ impl Logic {
                     radio(&mut ty, n, s.bands[k].kind == i as i32, Cmd::SetType(k, i as i32));
                 }
                 m.submenu("Type", ty, Cmd::None);
+                let mut placement=MenuDef::new(MenuStyle::Context);
+                let routes=eq::routed::routes(&extra,false);
+                for(i,name)in eq::routed::NAMES.iter().enumerate(){radio(&mut placement,name,routes[k]==i as u8,Cmd::Route(k,i as u8));}
+                m.submenu("Process",placement,Cmd::None);
                 let mut or = MenuDef::new(MenuStyle::Context);
                 for (i, n) in ORDER_NAMES.iter().enumerate() {
                     radio(&mut or, n, s.bands[k].order == i as i32 - 3, Cmd::SetOrder(k, i as i32 - 3));
@@ -693,6 +699,7 @@ impl Logic {
         match cmd {
             Cmd::None => {}
             Cmd::ResetBand(k) => self.reset_band(k),
+            Cmd::Route(k,v)=>self.params.edit_extra(|b|{let mut r=eq::routed::routes(b,false);r[k]=v.min(4);eq::routed::save_routes(b,r,false);}),
             Cmd::SetType(k, t) => self.vals.edit_plain(&type_id(k), t as f32),
             Cmd::SetOrder(k, o) => self.vals.edit_plain(&order_id(k), o as f32),
             Cmd::SetHz(k, hz) => self.vals.edit_plain(&freq_id(k), eq::freq_pos(hz) as f32),
@@ -1082,7 +1089,7 @@ mod win32 {
                     }
                     1
                 }
-                Cmd::Changed | Cmd::Note | Cmd::Automate | Cmd::Audio | Cmd::Resizable | Cmd::SetSize => 0,
+                Cmd::BrowseSample | Cmd::Changed | Cmd::Note | Cmd::Automate | Cmd::Audio | Cmd::Resizable | Cmd::SetSize => 0,
             }
         }
 
@@ -1413,6 +1420,18 @@ mod tests {
         let w0 = l.vals.norm(&width_id(3));
         l.wheel(x, y, 1.0, Mods::default());
         assert!((l.vals.norm(&width_id(3)) - w0 - 0.05).abs() < 1e-5);
+    }
+
+    #[test]
+    fn peak_eq_placement_menu_and_compare(){
+        let mut l=logic();let req=MenuReq::Token(0);let menu=l.menu(&req);
+        assert_eq!(menu.find("Mid"),Some(Cmd::Route(0,1)));assert_eq!(menu.find("Right"),Some(Cmd::Route(0,4)));
+        l.pick(&req,Cmd::Route(0,1),0.,0.);l.compare(false);l.pick(&req,Cmd::Route(0,2),0.,0.);l.compare(true);
+        assert_eq!(eq::routed::routes(&l.params.extra_copy(),false)[0],1);l.compare(true);assert_eq!(eq::routed::routes(&l.params.extra_copy(),false)[0],2);
+        if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){
+            let mut c=os_ui::Canvas::new(view::W*3/2,view::H*3/2,1.5).unwrap();let extra=l.params.extra_copy();
+            view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:None,rate:48000.},&l.view);c.pixmap.save_png(std::path::PathBuf::from(dir).join("eq-routing.png")).unwrap();
+        }
     }
 
     #[test]

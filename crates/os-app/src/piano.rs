@@ -62,6 +62,7 @@ pub enum Overlay {
 
 #[derive(Debug, Clone)]
 pub struct PianoState {
+    pub harmony: crate::harmony::Harmony,
     /// Time scroll in ticks (left edge of the grid).
     pub scroll_x: f32,
     /// Key scroll in pixels from the top of the highest key's row.
@@ -91,6 +92,9 @@ pub struct PianoState {
     pub overlay: Option<Overlay>,
     /// Ctrl+C copies (positions as copied).
     pub clipboard: Vec<Note>,
+    /// Channel event-panel focus; note-grid clicks restore note shortcuts.
+    pub event_focus: bool,
+    pub event_clipboard: Vec<ControlPoint>,
     /// Zoom tool: the view before "zoom out" (px per beat, scroll x, scroll y), for right-click.
     pub zoom_back: Option<(f32, f32, f32)>,
     /// Play-start marker in the ruler (ticks; pattern playback starts here, §10).
@@ -122,6 +126,7 @@ pub struct PianoState {
 impl Default for PianoState {
     fn default() -> Self {
         PianoState {
+            harmony: crate::harmony::Harmony::default(),
             scroll_x: 0.0,
             scroll_y: ((TOP_KEY - 72) as f32) * ROW,
             px_per_beat: 96.0,
@@ -136,6 +141,8 @@ impl Default for PianoState {
             pitch_center: 0,
             overlay: None,
             clipboard: Vec::new(),
+            event_focus: false,
+            event_clipboard: Vec::new(),
             zoom_back: None,
             marker: 0,
             marker_placed: false,
@@ -182,6 +189,7 @@ impl PianoState {
 /// Mapping between grid pixels and ticks / keys for one frame.
 pub struct Geom {
     pub grid: Rect,
+    pub keys: Vec<i32>,
     pub ppt: f32,
     pub scroll_x: f32,
     pub scroll_y: f32,
@@ -204,6 +212,7 @@ impl Geom {
             s.project.pattern_bars(s.pattern).into_iter().map(|(start, bar, (num, _))| (start, bar, (bar / u32::from(num.max(1))).max(1))).collect();
         Geom {
             grid,
+            keys: visible_key_list(s),
             ppt: s.piano.px_per_beat / ppq as f32,
             scroll_x: s.piano.scroll_x,
             scroll_y: s.piano.scroll_y,
@@ -246,11 +255,11 @@ impl Geom {
 
     /// Top of `key`'s row (`row - 1` px of fill, then the separator).
     pub fn y_of(&self, key: i32) -> f32 {
-        self.grid.y + (TOP_KEY - key) as f32 * self.row - self.scroll_y
+        self.grid.y + self.keys.iter().position(|k| *k == key).map_or(-10000.0, |i| i as f32) * self.row - self.scroll_y
     }
 
     pub fn key_at(&self, y: f32) -> i32 {
-        TOP_KEY - ((y - self.grid.y + self.scroll_y) / self.row).floor() as i32
+        { let i = ((y - self.grid.y + self.scroll_y) / self.row).floor() as i32; self.keys[i.clamp(0, self.keys.len() as i32 - 1) as usize] }
     }
 
     /// Keys with at least one visible pixel, lowest first.
@@ -263,7 +272,7 @@ impl Geom {
     /// A note covers its row plus the separators above and below (§5).
     pub fn note_rect(&self, n: &Note) -> Option<Rect> {
         let key = i32::from(n.key);
-        if key > TOP_KEY {
+        if !self.keys.contains(&key) {
             return None;
         }
         let len = if n.length == 0 { self.step } else { n.length };
@@ -585,6 +594,7 @@ pub fn rescale(s: &mut State, from: u16, to: u16) {
     p.marker = rescale_tick(p.marker, from, to);
     p.range = p.range.map(|(a, b)| (rescale_tick(a, from, to), rescale_tick(b, from, to)));
     p.clipboard.iter_mut().for_each(|n| n.rescale(from, to));
+    p.event_clipboard.iter_mut().for_each(|c| c.rescale(from, to));
     if let Some((_, x, _)) = &mut p.zoom_back {
         *x *= k;
     }
@@ -594,6 +604,7 @@ pub fn rescale(s: &mut State, from: u16, to: u16) {
 pub fn add_note(s: &mut State, channel: u16, tick: u32, key: i32) -> usize {
     let ppq = u32::from(s.project.ppq.max(4));
     let length = if s.piano.last_len > 0 { s.piano.last_len } else { ppq / 2 };
+    let key = if s.piano.harmony.edit_snap {i32::from(s.piano.harmony.snap(key,TOP_KEY))}else{key};
     let mut note = Note { length, key: key.clamp(0, TOP_KEY) as u16, ..Note::step(channel, tick) };
     if let Some(t) = s.piano.last_controls {
         copy_controls(&t, &mut note);
@@ -726,11 +737,12 @@ pub fn shift(s: &mut State, idx: &[usize], dt: i64, dk: i32) -> bool {
         return false;
     }
     snapshot(s);
+    let harmony=s.piano.harmony.clone();
     let p = pattern_mut(s);
     for &i in idx {
         if let Some(n) = p.notes.get_mut(i) {
             n.position = (i64::from(n.position) + dt) as u32;
-            n.key = (i32::from(n.key) + dk) as u16;
+            n.key = if harmony.edit_snap {harmony.snap(i32::from(n.key)+dk,TOP_KEY)}else{(i32::from(n.key) + dk) as u16};
         }
     }
     finish_edit(s);
@@ -795,6 +807,7 @@ pub fn rotate(s: &mut State, idx: &[usize], dt: i64) -> bool {
     }
     let end = i64::from(pattern_end(s));
     snapshot(s);
+    let harmony=s.piano.harmony.clone();
     let p = pattern_mut(s);
     for &i in idx {
         if let Some(n) = p.notes.get_mut(i) {
@@ -829,8 +842,10 @@ pub fn center_keys(s: &mut State, view_h: f32) {
         _ => 60.0,
     };
     let row = s.piano.row_h;
-    let max = (TOP_KEY + 1) as f32 * row - view_h;
-    s.piano.scroll_y = ((TOP_KEY as f32 - center) * row - view_h / 2.0 + row / 2.0).clamp(0.0, max.max(0.0)).round();
+    let keys = visible_key_list(s);
+    let index = keys.iter().enumerate().min_by_key(|(_, k)| ((**k as f32 - center).abs() * 100.0) as i32).map_or(0, |(i,_)| i);
+    let max = keys.len() as f32 * row - view_h;
+    s.piano.scroll_y = (index as f32 * row - view_h / 2.0 + row / 2.0).clamp(0.0, max.max(0.0)).round();
     s.piano.scroll_x = 0.0;
 }
 
@@ -871,7 +886,7 @@ pub fn auto_zoom(s: &mut State, grid: Rect) {
 }
 
 pub fn clamp_scroll(s: &mut State, view_h: f32) {
-    let max = ((TOP_KEY + 1) as f32 * s.piano.row_h - view_h).max(0.0);
+    let max = (visible_key_list(s).len() as f32 * s.piano.row_h - view_h).max(0.0);
     s.piano.scroll_y = s.piano.scroll_y.clamp(0.0, max).round();
     s.piano.scroll_x = s.piano.scroll_x.max(0.0);
 }
@@ -1230,7 +1245,8 @@ mod tests {
     fn typing_keyboard_keys() {
         use winit::keyboard::KeyCode;
         let mut a = app();
-        assert!(a.typing_on(), "on by default");
+        // Test the enabled typing keyboard without assuming the user's startup preference.
+        if !a.typing_on() { a.toggle_typing(); }
         assert!(a.typing_key(KeyCode::KeyZ, true, false, false));
         assert!(a.typing_key(KeyCode::KeyQ, true, false, false));
         assert!(a.typing_key(KeyCode::KeyQ, true, false, false), "repeat is taken, not replayed");
@@ -1325,4 +1341,8 @@ mod tests {
         }
         set_check(&AUTO_ZOOM_PIANO, false);
     }
+}
+
+pub fn visible_key_list(s: &State) -> Vec<i32> {
+    (0..=TOP_KEY).rev().filter(|k| !s.piano.harmony.scale_only || !s.piano.harmony.shade || s.piano.harmony.allows(*k)).collect()
 }

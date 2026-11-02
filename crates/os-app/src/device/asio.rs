@@ -98,6 +98,7 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     if now < 1.0 {
         return Err("the driver has no sample rate".into());
     }
+    mix.headphones.set_rate(now.round() as u32);
     let counts = driver.channels().map_err(|e| e.to_string())?;
     let outs = counts.outs;
     if outs < 1 {
@@ -138,8 +139,22 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     // Each channel's two halves (the driver plays one while the callback fills the other).
     let halves = Halves(stream.buffer_infos.iter().map(|b| b.buffers.map(|p| p as usize)).collect());
     let callback = driver.add_callback(move |info| {
-        let sum = mix.block(frames);
         let half = (info.buffer_index & 1) as usize;
+        // Publish input before the output wakes its feeder, for live monitoring and disk recording.
+        let cap = crate::capture::capture();
+        if (cap.on() || crate::input_monitor::monitor().on()) && !in_halves.0.is_empty() {
+            let last = in_halves.0.len() - 1;
+            let n = in_format.bytes();
+            let at = |ch: usize, f: usize| {
+                let p = in_halves.0[ch.min(last)][half] as *const u8;
+                // Safety: the driver's input buffer holds `frames` samples of `in_format` while this callback runs.
+                let b = unsafe { std::slice::from_raw_parts(p.add(f * n), n) };
+                decode(b, in_format, in_big)
+            };
+            crate::capture::push_inputs(true, frames, at);
+            crate::input_monitor::push_all(true, now.round() as u32, frames, at);
+        }
+        let sum = mix.block(frames);
         // One output: both sides (`Side::Both`).
         let mono = halves.0.len() == 1;
         for (ch, b) in halves.0.iter().enumerate() {
@@ -148,18 +163,7 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
             // only happens after this callback is removed (`AsioOut::drop`).
             unsafe { write(b[half] as *mut u8, sum, side, frames, format, big) };
         }
-        // The inputs of the same block, while One-click audio recording records.
-        let cap = crate::capture::capture();
-        if cap.on() && !in_halves.0.is_empty() {
-            let last = in_halves.0.len() - 1;
-            let n = in_format.bytes();
-            cap.push(frames, |ch, f| {
-                let p = in_halves.0[ch.min(last)][half] as *const u8;
-                // Safety: the driver's input buffer holds `frames` samples of `in_format` while this callback runs.
-                let b = unsafe { std::slice::from_raw_parts(p.add(f * n), n) };
-                decode(b, in_format, in_big)
-            });
-        }
+
     });
     // Drivers may ask to be reset while they start; that is not a reason to open them anew.
     let started = Arc::new(AtomicBool::new(false));
@@ -170,8 +174,8 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
             let on = started.load(Ordering::Acquire);
             match e {
                 // The messages this host takes besides the ones asio-sys answers for itself.
-                sys::AsioDriverEvent::Message { selector: kAsioSelectorSupported, value } => value == kAsioOverload as i32,
-                sys::AsioDriverEvent::Message { selector: kAsioResetRequest, .. } if on => {
+                sys::AsioDriverEvent::Message { selector: kAsioSelectorSupported, value } => value == kAsioOverload as i32 || value == kAsioBufferSizeChange as i32,
+                sys::AsioDriverEvent::Message { selector: kAsioResetRequest | kAsioBufferSizeChange, .. } if on => {
                     errors.fail("the driver asked to be reset".into());
                     true
                 }

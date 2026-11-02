@@ -513,7 +513,7 @@ impl Engine {
             wait: false,
             looped: None,
             file_frames: 0.0,
-            quality: Quality::Table,
+            quality: Quality::Live16,
             rate,
             voices: Vec::with_capacity(MAX_VOICES),
             global_phase: [0.0; 5],
@@ -850,6 +850,17 @@ impl Engine {
         let lp = self.loop_frames(b, n);
         let mut i = 0;
         while i < self.voices.len() {
+            // A playlist fit can enable realtime stretch after the note has started.
+            // Rejoin its elapsed musical time instead of continuing at the old source rate.
+            if b.realtime && self.disk.is_none() && self.voices[i].rt.is_none() {
+                let stream=self.take_stream();
+                let v=&mut self.voices[i];
+                v.rt=stream;
+                if stream.is_some() {
+                    v.pos=(b.start_offset.clamp(0.0,1.0)*n as f64).floor()+v.age as f64*speed;
+                    v.close=None;
+                }
+            }
             let v = &mut self.voices[i];
             let rt = match s {
                 Src::Ram(_) => v.rt.and_then(|k| self.streams.get_mut(usize::from(k))),
@@ -1405,6 +1416,22 @@ mod tests {
         let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
         e.render(&mut l, &mut r, &b);
         assert_eq!(l[63], 63.0 / 100.0);
+    }
+
+    #[test]
+    fn fitting_an_already_playing_loop_joins_project_timing() {
+        let rate=48000usize;let n=(16.0*60.0/126.0*rate as f64).round() as usize;
+        let mut x=vec![0.0;n];for beat in 0..16 {let at=(beat as f64*60.0/126.0*rate as f64).round() as usize;for j in 0..440{x[at+j]=(j as f32*0.8).sin()*(-(j as f32)/60.0).exp()*0.8;}}
+        let mut e=Engine::new(rate as f32);e.sample=Some(Arc::new(Sample{rate:rate as u32,left:x.clone(),right:x}));
+        let b=Block::default();e.note_on(60,1.0,&b);
+        let (mut l,mut r)=(vec![0.0;rate],vec![0.0;rate]);e.render(&mut l,&mut r,&b);
+        let b=Block{realtime:true,ts_time:Some(8.0),..b};
+        let (mut l,mut r)=(vec![0.0;rate*7],vec![0.0;rate*7]);e.render(&mut l,&mut r,&b);
+        for beat in 3..16 {let target=(beat*rate/2)-rate;let radius=rate/5;
+            let peak=(target-radius..target+radius).max_by(|a,b|l[*a].abs().total_cmp(&l[*b].abs())).unwrap();
+            let delta=(peak as f64-target as f64)*1000.0/rate as f64;
+            assert!(l[peak].abs()>0.01 && delta.abs()<20.0,"beat {beat} drift {delta} ms");
+        }
     }
 
     fn sine(hz: f64, n: usize) -> Sample {

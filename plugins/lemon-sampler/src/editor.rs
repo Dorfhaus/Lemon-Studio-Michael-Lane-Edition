@@ -1901,7 +1901,7 @@ mod win32 {
                         }
                     }
                     Act::OpenDialog => {
-                        if let Some(path) = file_dialog(self.hwnd, false) {
+                        if os_hostlink::to_host(self.hwnd as isize,os_hostlink::Cmd::BrowseSample,0)!=1 && let Some(path) = file_dialog(self.hwnd, false) {
                             self.load(&path);
                         }
                         repaint = true;
@@ -2015,7 +2015,7 @@ mod win32 {
                     }
                     1
                 }
-                Cmd::Changed | Cmd::Note | Cmd::Automate | Cmd::Audio | Cmd::Resizable | Cmd::SetSize => 0,
+                Cmd::BrowseSample | Cmd::Changed | Cmd::Note | Cmd::Automate | Cmd::Audio | Cmd::Resizable | Cmd::SetSize => 0,
             }
         }
 
@@ -2730,7 +2730,7 @@ mod gui {
                         }
                     }
                     Act::OpenDialog => {
-                        if let Some(path) = file_dialog(&self.win, false) {
+                        if self.link.to_host(Cmd::BrowseSample,0)!=1 && let Some(path) = file_dialog(&self.win, false) {
                             self.load(&path);
                         }
                         self.dirty = true;

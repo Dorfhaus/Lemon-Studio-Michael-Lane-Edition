@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Lemon Studio · Michael Lane edition</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#131613;color:#f3f5ec}*{box-sizing:border-box}body{margin:0}main{max-width:1080px;margin:0 auto;padding:80px 24px}small,.eyebrow{color:#d9ed7c}.eyebrow{letter-spacing:.16em;text-transform:uppercase;font-size:12px}h1{font-size:clamp(42px,8vw,76px);letter-spacing:-.055em;margin:18px 0 8px}h2{font-size:24px;margin:0 0 12px}p{color:#b9c1b5;line-height:1.6}.intro{max-width:650px;font-size:18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:40px 0 20px}.card{border:1px solid #394133;background:#1c211a;border-radius:16px;padding:26px;display:flex;flex-direction:column;gap:10px}.card p{font-size:14px;margin:0 0 8px}.links{margin-top:auto;display:grid;gap:10px}a{color:#e0edab}a.button{background:#d6ed78;color:#1a220b;text-decoration:none;padding:13px 18px;border-radius:8px;font-weight:650;display:block;text-align:center}a.secondary{background:#2e3725;color:#e0edab}.source{margin-top:24px;padding:26px;border:1px solid #394133;border-radius:16px}.source .button{display:inline-block}.muted{font-size:13px;color:#9ba791}footer{margin-top:46px;font-size:13px;line-height:1.7;color:#9ba791}code{word-break:break-all;font-size:11px}a:focus-visible{outline:3px solid white;outline-offset:4px}</style></head>
+<body><main><div class="eyebrow">Michael Lane edition</div><h1>Lemon Studio</h1><p class="intro">Your studio, your workflow. Choose your computer below—or download the source and make it your own.</p>
+<p><a href="#change-log">Read the Change Log ↓</a></p>
+<section class="grid" aria-label="Downloads">
+<article class="card"><h2>Windows</h2><p>64-bit installer. Includes automatic updates for future Windows releases.</p><div id="windows" class="links">Loading download…</div></article>
+<article class="card"><h2>Linux</h2><p>64-bit x86 package for glibc 2.36 or newer. Compiled on Windows; not run or audio-tested on Linux.</p><div id="linux" class="links">Loading download…</div></article>
+<article class="card"><h2>Mac</h2><p>Separate downloads for Apple silicon and Intel when available. Community builds are not Apple-notarized.</p><div id="mac" class="links">The Mac build is being prepared on the MacBook.</div></article>
+</section><section class="source"><h2>Make it yours</h2><p>Download the editable source, build instructions, and licence notices. Each platform download also links to its matching source.</p><div id="source">Loading source download…</div></section>
+<p class="muted">Windows, Mac and Linux now support signed automatic updates. Older Mac/Linux versions need one manual installation of this release; future updates install when you close or restart. Keep the Mac app or Linux folder in a location your user can write to.</p>
+<!-- CHANGELOG START -->
+<section class="source" id="change-log" aria-labelledby="change-log-title"><h2 id="change-log-title">Change Log</h2>
+<p>The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
+<label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
+<p id="change-empty" hidden>No changes match your search.</p>
+<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Lemon Chop, pitch and workflow · public build 2026110203</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added Lemon Chop, a separate slicing instrument with cue pads, automatic slicing, editable cue regions, pad names/favorites, reverse, pitch/stretch controls and undo/redo.</li>
+<li style="margin:10px 0">Integrated optional local stem separation into Chop, with selectable stem mixes and source-region export; saved Chop state reopens with the project.</li>
+<li style="margin:10px 0">Added Chop to Instruments / Sampler for existing and new profiles without duplicate entries after rescans.</li>
+<li style="margin:10px 0">Fixed loading audio into Chop from the sample browser, plugin frame and Explorer drops; reloading the same source refreshes analysis.</li>
+<li style="margin:10px 0">Added a searchable visual plugin picker with favorites, real editor previews and instrument/effect filtering appropriate to the destination.</li>
+<li style="margin:10px 0">Added cancellable automatic plugin preview capture on Windows, with isolated helpers, progress, timeouts and cached results.</li>
+<li style="margin:10px 0">Simplified channel rack context menus and added direct access to the instrument picker.</li>
+<li style="margin:10px 0">Moved Global Pitch to compact channel rack controls; added per-channel pitch ranges and a global-follow switch that preserves pitch when toggled.</li>
+<li style="margin:10px 0">Added master tape-style Varispeed, changing pitch and duration together for the complete mix and exports.</li>
+<li style="margin:10px 0">Added reversible channel Consolidate / Bounce to Audio, including an effects-rendered option and a keep-mixer-live option; preserves the muted original and provides undo.</li>
+<li style="margin:10px 0">Added actual waveform previews for bounced audio in the channel rack.</li>
+<li style="margin:10px 0">Added Scale Notes Only to the piano roll for all 22 scales and 12 roots; out-of-scale MIDI is preserved and returns when filtering is disabled.</li>
+<li style="margin:10px 0">Fixed playback continuity while trimming audio clips and made resize edges take priority over clip-body actions.</li>
+<li style="margin:10px 0">Fixed non-Windows compilation of the preview helper. Windows, Linux x64 and Apple-silicon Mac packages were published as 2026110203; preparation build 2026110202 was not published.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · ARA, community and browser · public build 2026110201</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added source-based ARA 2 editor integration, playback and project archives for compatible audio editors.</li>
+<li style="margin:10px 0">Added host-frame resizing for resizable VST3 editors and isolated ARA diagnostics.</li>
+<li style="margin:10px 0">Known issues: Auto-Tune Pro 11 ARA compatibility and Melodyne transport behavior remain unresolved; ARA support does not imply every editor works correctly.</li>
+<li style="margin:10px 0">Added Community forum beside Voting, with threads, replies, likes/dislikes, optional display names and profile pictures.</li>
+<li style="margin:10px 0">Grouped feature suggestions into Active voting, Planned, In progress, Completed, Rejected and Voting closed; closed suggestions retain their history.</li>
+<li style="margin:10px 0">Added forum moderation and administrator profiles, posting and replies through the owner dashboard.</li>
+<li style="margin:10px 0">Improved browser refresh and sample preview gestures; restored mixer Alt-click EQ reset.</li>
+<li style="margin:10px 0">Placed multiple imported samples on available Playlist tracks instead of stacking them on the same occupied row.</li>
+<li style="margin:10px 0">Added 18 verified direct-download plugin entries, bringing the curated catalog to 93 entries.</li>
+<li style="margin:10px 0">Published Windows, Linux x64 and Apple-silicon Mac build 2026110201.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-01 · Community, instruments and editing</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added the Plugin Downloads browser with a curated catalog, preview images, hover cards and supported portable installation; expanded the catalog with 25 directly downloadable freeware plugins.</li>
+<li style="margin:10px 0">Added shared feature voting with anonymous identities, one vote per idea, changing votes, search and offline cached reading.</li>
+<li style="margin:10px 0">Added public suggestion statuses, owner comments and announcements, plus a protected owner moderation dashboard.</li>
+<li style="margin:10px 0">Added an independent STRIP bypass switch and compact temporary EQ/low-cut/gate value readouts.</li>
+<li style="margin:10px 0">Added reversible Playlist instrument Freeze / Unfreeze and independent track Bounce; fixed assigned-track bounce rendering.</li>
+<li style="margin:10px 0">Added Quick Sidechain and expandable, scrolling mixer effect slots.</li>
+<li style="margin:10px 0">Added monitor-only headphone correction with searchable AutoEq profiles; correction stays out of exports.</li>
+<li style="margin:10px 0">Added a miniature mixer routing picker to sample controls and clip menus; fixed macOS picker focus.</li>
+<li style="margin:10px 0">Added opt-in local AI control with an authenticated control interface.</li>
+<li style="margin:10px 0">Separated development and production profiles and their sample libraries; fresh public profiles no longer inherit personal library paths.</li>
+<li style="margin:10px 0">Added optional Lemon Studio Starter Pack installation and an empty sample-library starting point.</li>
+<li style="margin:10px 0">Made fresh launches show the mixer above the Playlist.</li>
+<li style="margin:10px 0">Adopted .lmn as the native project extension while preserving supported existing project opening.</li>
+<li style="margin:10px 0">Fixed common editing shortcuts and routed keys to the focused editor.</li>
+<li style="margin:10px 0">Enabled piano-roll Ctrl-click and marquee selection with any note tool; repaired MIDI drops, controller import and event editing.</li>
+<li style="margin:10px 0">Kept audio comp edits independent from automation cuts.</li>
+<li style="margin:10px 0">Fixed ASIO monitoring continuity using driver-owned buffers and preserved input across very small callback batches.</li>
+<li style="margin:10px 0">Separated and right-aligned application window controls; improved toolbar hints and repainting of mixer values.</li>
+<li style="margin:10px 0">Added traditional mixer layouts, clearer section separators and recovery of plugin title bars.</li>
+<li style="margin:10px 0">Simplified mixer view choices, added a browser audition panel and Playlist waveform-detail controls.</li>
+<li style="margin:10px 0">Restored Playlist tool buttons and organized working Piano Roll options.</li>
+<li style="margin:10px 0">Public builds 2026110101–2026110106 followed these updates during the day; later mixer/browser changes were included in the 2 November release.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-31 · Mixing, stems and cross-platform downloads</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added vocal SnapTune pitch correction with an explicit bypass switch, manual key/scale and voice range, plus Learn key suggestions.</li>
+<li style="margin:10px 0">Added Follow audio level / Duck linking for supported native and hosted parameters, with source, depth and release controls.</li>
+<li style="margin:10px 0">Added independent Stereo / Mid / Side / Left / Right processing per EQ band, saved with project and A/B state.</li>
+<li style="margin:10px 0">Added signed automatic Windows updates, an Updates control and a compact Donate link; added the Michael Lane edition startup label.</li>
+<li style="margin:10px 0">Opened the common download page with Windows, Linux and Mac downloads and matching source archives.</li>
+<li style="margin:10px 0">Added the shared source/build workflow and native Apple-silicon Mac packaging; published cross-platform build 2026103103.</li>
+<li style="margin:10px 0">Added compact dedicated mixer EQ with a spectrum display, Pre/Post routing and independent tone controls.</li>
+<li style="margin:10px 0">Kept dedicated EQ active when plugin Effects slots are bypassed; EQ retains its own enable control.</li>
+<li style="margin:10px 0">Added mouse-wheel EQ band-width editing and improved Master navigation-button spacing.</li>
+<li style="margin:10px 0">Defaulted imported samples to Master without moving mixer selection when sample settings open.</li>
+<li style="margin:10px 0">Restored optional browser tabs through the browser menu; added configurable auto-hide, off by default.</li>
+<li style="margin:10px 0">Strengthened Tame resonance reduction while retaining stereo linkage and transient handling.</li>
+<li style="margin:10px 0">Made every fader in fresh template sessions start at unity without changing saved-song mixes or marking a fresh session modified.</li>
+<li style="margin:10px 0">Set fresh mixer Effects defaults off, retained enabled FX returns, and allowed Playlist track families to move together.</li>
+<li style="margin:10px 0">Improved EQ unit labels, continuous knob scaling, vocal-strip alignment and spacing around faders and controls.</li>
+<li style="margin:10px 0">Added separate editable instrument/effect folder databases and cascading nested plugin menus; fixed application close behavior over open menus.</li>
+<li style="margin:10px 0">Added optional local stem separation with on-demand runtime setup and a choice of individual stems or combinations to save/add.</li>
+<li style="margin:10px 0">Fixed pattern click selection, VST3 note releases and channel-rack submenu anchoring.</li>
+<li style="margin:10px 0">Added compact mixer view and kept recording in the selected pattern.</li>
+<li style="margin:10px 0">Added Make Unique with undo for chopped audio clips.</li>
+<li style="margin:10px 0">Added signed automatic updates for Mac and Linux; older versions need one manual updater-enabled installation.</li>
+<li style="margin:10px 0">Published builds 2026103104 and 2026103105 as the day’s later updates were packaged. Linux was compiled and packaged; Linux runtime/audio testing was not performed.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-30 · Vocal controls and workspace</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added vocal-only DeBess processing.</li>
+<li style="margin:10px 0">Fixed personal sample-library browsing.</li>
+<li style="margin:10px 0">Added independent plugin editor windows for multi-monitor workflows.</li>
+<li style="margin:10px 0">Added explicit mixer channel layouts and improved compact-control alignment.</li>
+<li style="margin:10px 0">Simplified mixer channel context menus and improved mixer navigation spacing.</li>
+<li style="margin:10px 0">Changed sound-shaping defaults to neutral settings.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-29 · Recording, comping and audio workflow</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Added recursive browser search and nested plugin folders; expanded the starter templates with FX-send layouts.</li>
+<li style="margin:10px 0">Added joined window dividers, browser reflow and resize-edge snapping.</li>
+<li style="margin:10px 0">Improved Windows startup visibility and added a completion chime.</li>
+<li style="margin:10px 0">Added Tap tempo through the BPM context menu.</li>
+<li style="margin:10px 0">Added mixer section jump buttons, restored centered FX bypass and refined recording-arm/FX placement.</li>
+<li style="margin:10px 0">Improved mixer visual spacing and made native strip controls respond consistently to drags.</li>
+<li style="margin:10px 0">Moved Low Cut and Gate before Drive; added Tube, Tape, Soft and Clip drive styles with saved state and undo.</li>
+<li style="margin:10px 0">Simplified fixed Master controls and repositioned All Effects.</li>
+<li style="margin:10px 0">Implemented 16-point sinc live sample interpolation and a 512-point offline-export default; replaced misleading audio-settings placeholders with descriptions of implemented behavior.</li>
+<li style="margin:10px 0">Added non-destructive audio take lanes and comping, retaining original takes with saved comp selections and undo/redo.</li>
+<li style="margin:10px 0">Added a direct Comp tool and overlap-triggered take lanes; improved the compact Playlist header and live audio-clip editing.</li>
+<li style="margin:10px 0">Turned typing-keyboard note input off at startup and kept subsequent recordings on the same track.</li>
+<li style="margin:10px 0">Fixed Playlist startup origin, improved vertical zoom-handle behavior and bounded monitoring backlog during playback transitions.</li>
+<li style="margin:10px 0">Smoothed recording transitions and added independent take solo.</li>
+<li style="margin:10px 0">Improved mixer dragging, established native public defaults and prepared the Windows installer and Mac source handoff.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-28 · Michael Lane edition begins</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Established this customized edition from the existing Lemon Studio project; the original project predates this changelog.</li>
+<li style="margin:10px 0">Added a native starter-template workflow, template names for new sessions and mixer-first startup; repaired Windows settings-folder handling and installed factory-template support.</li>
+<li style="margin:10px 0">Simplified the toolbar and Playlist editing controls; moved the mixer plugin inspector to the left and improved plugin categories and scrolling.</li>
+<li style="margin:10px 0">Added Samples and Favorites browsing with persistent favorites and sample preview/drag support.</li>
+<li style="margin:10px 0">Set B to the normal editing pointer, C to Slice and E to Select; Ctrl temporarily selects, and Escape closes the front window while retaining the Playlist.</li>
+<li style="margin:10px 0">Added Make it fit length choices, source tempo analysis, pitch-preserving stretching and transparent audio clips.</li>
+<li style="margin:10px 0">Fixed fitting drift for active sampler voices and made explicit fitting use live Stretch Pro timing.</li>
+<li style="margin:10px 0">Added mixer-input recording and live monitoring through the actual mixer, effects, buses and Master; later expanded to simultaneous input recording.</li>
+<li style="margin:10px 0">Added automatic MIDI/automation capture when Record is enabled and no mixer audio input is armed.</li>
+<li style="margin:10px 0">Added independent mixer-chain multi-core processing.</li>
+<li style="margin:10px 0">Fixed Waves editor loading with Unicode paths.</li>
+<li style="margin:10px 0">Added slim stereo meters, analog VU options, clearer strip borders, color accents and per-channel/global Effects bypass.</li>
+<li style="margin:10px 0">Added native mixer strip processing, meter switching, Alt-click resets and window edge snapping; removed redundant mixer controls.</li>
+<li style="margin:10px 0">Added linked transparent automation overlays with curve selection and a separate visibility switch.</li>
+<li style="margin:10px 0">Added automation targets for native strip controls, sends and slot mix, with saved baselines and Return to original value.</li>
+<li style="margin:10px 0">Added sampler-to-mixer routing drag with Playlist name/color adoption and undo.</li>
+<li style="margin:10px 0">Combined the toolbar into a single row and added global pitch automation.</li>
+<li style="margin:10px 0">Added one-shot automation capture for the next moved supported control.</li>
+<li style="margin:10px 0">Added mixer boundary insertion and channel copy/paste including processing and outgoing routes; retargeted automation when channels move.</li>
+<li style="margin:10px 0">Added grouped mixer faders and improved instrument MIDI recording, arm-only recording and later MIDI continuation.</li>
+<li style="margin:10px 0">Improved piano-roll slice priority and added a native harmony/chord workspace with Simple/Complex views and hosted instrument preview.</li>
+<li style="margin:10px 0">Expanded the native mixer strip and refined Tame resonance control.</li>
+</ul></details>
+</section>
+<script>
+document.getElementById("change-search").addEventListener("input",function(){const q=this.value.trim().toLowerCase();let any=false;document.querySelectorAll(".change-entry").forEach(entry=>{const title=entry.querySelector("summary").textContent.toLowerCase();let matched=false;entry.querySelectorAll("li").forEach(li=>{li.hidden=!!q&&!title.includes(q)&&!li.textContent.toLowerCase().includes(q);if(!li.hidden)matched=true;});entry.hidden=!matched;if(q&&matched)entry.open=true;if(matched)any=true;});document.getElementById("change-empty").hidden=any;});
+</script>
+<!-- CHANGELOG END -->
+<footer>Customized by Michael Lane. Original project by <a href="https://github.com/ItsAlphaNeon/Lemon-Studio">ItsAlphaNeon and the Lemon Studio contributors</a>.<br>Free software. See the included GPL/AGPL and third-party licence notices. <a href="https://paypal.me/michaellanemusic">Support development</a>.</footer></main>
+<script>
+function safe(path){return typeof path==='string'&&/^(updates|downloads|linux|mac)\/[A-Za-z0-9 /_.-]+$/.test(path)&&!path.includes('..');}
+function link(label,path,secondary=false){const a=document.createElement('a');a.textContent=label;a.href=path;a.className='button'+(secondary?' secondary':'');return a;}
+async function load(id){const r=await fetch('platforms/'+id+'.json',{cache:'no-store'});if(!r.ok)return null;const d=await r.json();return safe(d.url)&&safe(d.source)?d:null;}
+async function show(id){const box=document.getElementById(id);try{const d=await load(id);if(!d)throw Error();box.replaceChildren(link('Download '+d.label,d.url),link('Matching source code',d.source,true));if(id==='windows')document.getElementById('source').replaceChildren(link('Download source code',d.source));}catch{box.textContent='Download temporarily unavailable. Please try again later.';}}
+show('windows');show('linux');
+Promise.all(['mac-arm64','mac-x86_64'].map(id=>load(id).catch(()=>null))).then(items=>{const entries=items.filter(Boolean);if(!entries.length)return;const box=document.getElementById('mac');box.replaceChildren();for(const d of entries)box.append(link('Download '+d.label,d.url),link('Matching '+d.label+' source',d.source,true));});
+</script></body></html>

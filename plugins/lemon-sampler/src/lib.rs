@@ -750,7 +750,7 @@ impl Plugin for LemonSampler {
         self.shared.set_rate(config.sample_rate.round() as u32);
         // An offline render (an export) gets the resampler's exact weights; live playback the tables.
         self.offline = config.process_mode == ProcessMode::Offline;
-        self.engine.quality = if self.offline { os_dsp::resample::Quality::Exact } else { os_dsp::resample::Quality::Table };
+        self.engine.quality = if self.offline { os_dsp::resample::Quality::Export512 } else { os_dsp::resample::Quality::Live16 };
         // A restored state names a sample: load it now (initialize may block); while the host opens a project, the
         // played sample is built on a build thread and taken when it is ready (`pick_up_sample`).
         let path = self.params.sample_path.read().map(|p| p.clone()).unwrap_or_default();
@@ -1177,7 +1177,7 @@ mod tests {
         let mut ram = Rig::new(&p, false, setup);
         let mut disk = Rig::new(&p, true, setup);
         for r in [&mut ram, &mut disk] {
-            r.engine.quality = os_dsp::resample::Quality::Exact;
+            r.engine.quality = os_dsp::resample::Quality::Export512;
             r.engine.wait = true;
         }
         assert!(disk.engine.disk().is_some());

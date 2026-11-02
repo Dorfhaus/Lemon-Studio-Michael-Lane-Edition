@@ -100,7 +100,7 @@ unsafe fn frame_of(mut w: HWND) -> Option<HWND> {
         while !w.is_null() {
             let mut name = [0u16; 64];
             let n = GetClassNameW(w, name.as_mut_ptr(), 64) as usize;
-            if String::from_utf16_lossy(&name[..n]) == FRAME_CLASS {
+            if String::from_utf16_lossy(&name[..n]) == FRAME_CLASS || String::from_utf16_lossy(&name[..n])=="LemonMixerRackViewport" {
                 return Some(w);
             }
             w = GetAncestor(w, GA_PARENT);
@@ -162,6 +162,29 @@ pub struct FrameWindow {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+
+/// Arrow plus a small waveform tile carried below/right of its hotspot. The OS moves this
+/// drag image even outside our window; it does not capture input or cover a drop target.
+unsafe fn route_clip_cursor() -> HCURSOR {
+    static CURSOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CURSOR.get_or_init(|| unsafe {
+        use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
+        let mut px=[0u32;64*64];
+        for y in 21..49 {for x in 17..59 {
+            px[y*64+x]=if x==17||x==58||y==21||y==48 {0xff9ac8dc} else if y<27 {0xff497787} else {0xf02b414c};
+        }}
+        for x in 22usize..54 {let h=[3,7,4,9,5,2,6,3][(x-22)%8];for y in 37-h..=37+h {px[y*64+x]=0xffdcecf2;}}
+        for y in 2usize..20 {for x in 2..=2+(y-2)/2 {
+            px[y*64+x]=if x==2||x==2+(y-2)/2||y==19 {0xff17212a}else{0xfff5f7fa};
+        }}
+        let color=CreateBitmap(64,64,1,32,px.as_ptr().cast());
+        let mask=CreateBitmap(64,64,1,1,[0u8;512].as_ptr().cast());
+        let info=ICONINFO{fIcon:0,xHotspot:2,yHotspot:2,hbmMask:mask,hbmColor:color};
+        let cursor=CreateIconIndirect(&info);
+        DeleteObject(color);DeleteObject(mask);
+        if cursor.is_null(){LoadCursorW(std::ptr::null_mut(),IDC_ARROW) as usize}else{cursor as usize}
+    }) as HCURSOR
 }
 
 const FRAME_CLASS: &str = "OpenStudioPluginFrame";
@@ -298,18 +321,33 @@ impl FrameWindow {
         // The workspace may have shrunk: the window keeps its part in it (`crate::win_clamp::keep_px`).
         if work[2] > work[0] && work[3] > work[1] {
             let k = self.scale();
-            self.place(|me| crate::win_clamp::keep_px((me[0], me[1]), me[2] - me[0], work, k));
+            self.place(|me| crate::win_clamp::keep_plugin_px((me[0], me[1]), me[2] - me[0], work, k));
         }
         unsafe { apply_clip(self.hwnd, &self.state) };
     }
 
     /// VIEW > Into workspace: a docked window partly outside the workspace it was clipped to moves fully back in,
-    /// keeping its size (the plugin's editor sets it). Detached windows stay where they are.
+    /// keeping its size (the plugin's editor sets it). Detached titles return to an available monitor.
     pub fn move_into_workspace(&self) {
+        if self.detached() {self.recover_title();return;}
         let work = self.state.borrow().clip.as_ref().map(|c| c.0);
         let Some(work) = work.filter(|_| !self.detached()) else { return };
         self.place(|me| crate::win_clamp::inside_px(me, work));
         unsafe { apply_clip(self.hwnd, &self.state) };
+    }
+
+    /// Explicit recovery also works with "Don't limit windows to screen" enabled.
+    fn recover_title(&self) {
+        unsafe {
+            let mut r:RECT=std::mem::zeroed();
+            if GetWindowRect(self.hwnd,&mut r)==0 {return;}
+            let bar=[r.left,r.top,r.right,r.top+(TITLE_H*self.scale()).ceil() as i32];
+            let p=crate::win_clamp::bar_on_screens(bar,&screens());
+            if p!=(r.left,r.top) {
+                SetWindowPos(self.hwnd,std::ptr::null_mut(),p.0,p.1,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+                expose();
+            }
+        }
     }
 
     /// Moves the docked window to where `to` puts it, given its rect in the parent's client area (physical px).
@@ -343,6 +381,7 @@ impl FrameWindow {
     pub fn raise(&self) {
         unsafe {
             ShowWindow(self.hwnd, SW_SHOWNORMAL);
+            if self.detached() {self.recover_title();}
             SetWindowPos(self.hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             if self.detached() {
                 SetForegroundWindow(self.hwnd);
@@ -378,6 +417,9 @@ impl FrameWindow {
             if min.is_none() {
                 st.sizing = None;
             }
+            // The maximize button and title hit regions change with this capability.
+            drop(st);
+            unsafe { InvalidateRect(self.hwnd, std::ptr::null(), 0) };
         }
     }
 
@@ -612,6 +654,7 @@ unsafe extern "system" fn area_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 }
                 Some(os_hostlink::Cmd::Automate) => LinkMsg::Automate(lp.max(0) as usize),
                 Some(os_hostlink::Cmd::Audio) => LinkMsg::Audio(lp != 0),
+                Some(os_hostlink::Cmd::BrowseSample) => LinkMsg::BrowseSample,
                 _ => return 0,
             };
             if let Ok(mut q) = LINK.lock() {
@@ -719,6 +762,10 @@ unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 0
             }
             WM_MOUSEMOVE => {
+                if w.state.borrow().track_drag.is_some() {
+                    SetCursor(route_clip_cursor());
+                    return 0;
+                }
                 if let Some((anchor, virt)) = w.held {
                     // A held drag: the motion away from the anchor moves the virtual point; the cursor goes back.
                     let mut c: POINT = std::mem::zeroed();
@@ -972,7 +1019,7 @@ fn kept(hwnd: HWND, w: &Win, docked: bool, p: (i32, i32)) -> (i32, i32) {
     if docked {
         let work = w.state.borrow().clip.as_ref().map(|c| c.0);
         return match work {
-            Some(work) if work[2] > work[0] && work[3] > work[1] => crate::win_clamp::keep_px(p, width, work, w.scale),
+            Some(work) if work[2] > work[0] && work[3] > work[1] => crate::win_clamp::keep_plugin_px(p, width, work, w.scale),
             _ => p,
         };
     }
@@ -1083,6 +1130,9 @@ unsafe extern "system" fn lift_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 }
                 EndPaint(hwnd, &ps);
                 0
+            }
+            WM_MOUSEWHEEL => {
+                let main=l.main;drop(g);PostMessageW(main,msg,wp,lp);0
             }
             WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => {
                 let x = (lp & 0xffff) as u16 as i16 as i32 + l.origin.0;
@@ -1235,7 +1285,7 @@ mod tests {
         unsafe { DestroyWindow(owner) };
     }
 
-    /// Spec ui/settings-choices.md "Advanced: Don't limit windows to screen (2026-10-16)": a docked window keeps 31 px
+    /// Spec ui/settings-choices.md "Advanced: Don't limit windows to screen (2026-10-16)": a docked window keeps 240 px
     /// of its width and its title bar in the workspace it is clipped to, also when the workspace shrinks, and Into
     /// workspace brings it fully back in, keeping its size. Opens real windows:
     /// `cargo test -p os-app --bin lemonstudio docked_windows_keep_their_part -- --ignored`.
@@ -1263,14 +1313,14 @@ mod tests {
         // Past the left, the right and the bottom.
         at(-3000, 200);
         f.clip_to(work, &[]);
-        assert_eq!(&me()[..2], &[100 + 31 - w, 200]);
+        assert_eq!(&me()[..2], &[100 + 240 - w, 200]);
         at(3000, 3000);
         f.clip_to(work, &[]);
-        assert_eq!(&me()[..2], &[800 - 31, 600 - 15]);
+        assert_eq!(&me()[..2], &[800 - 240, 600 - 27]);
         // The workspace shrinks.
         let small = [100, 50, 600, 400];
         f.clip_to(small, &[]);
-        assert_eq!(&me()[..2], &[600 - 31, 400 - 15]);
+        assert_eq!(&me()[..2], &[600 - 240, 400 - 27]);
         // Into workspace: fully in, the same size.
         f.move_into_workspace();
         let r = me();
@@ -1382,3 +1432,6 @@ mod tests {
     }
 }
 
+
+pub fn prepare_embedded(){install_key_hook();}
+pub fn embedded_exposed(){expose();}

@@ -55,6 +55,8 @@ pub enum Tweak {
 /// What the app knows about plugin parameters.
 #[derive(Debug, Default)]
 pub struct ParamUi {
+    pub capture_armed: bool,
+    capture_pending: std::collections::BTreeSet<usize>,
     /// By hosted key (`plugins::Plugins::hosted`).
     pub lists: BTreeMap<usize, List>,
     /// Newest first: "Last tweaked", "Next to last tweaked".
@@ -229,6 +231,7 @@ fn parameter_items(s: &State, param: Option<(usize, usize)>, create: Option<(u32
         Some(ch) => PItem::new("Edit automation clip...", Cmd::Param(PCmd::EditClip(ch))),
         None => PItem::new("Edit automation clip...", Cmd::Nothing).off(),
     };
+    let peak=create.as_ref().map(|(t,_,v)|crate::peak_link::menu(s,*t,*v));
     let create = match create {
         Some((tgt, name, v)) => PItem::new("Create automation clip", Cmd::CreateAutomation(tgt, name, v)),
         None => PItem::new("Create automation clip", Cmd::Nothing).off(),
@@ -261,6 +264,7 @@ fn parameter_items(s: &State, param: Option<(usize, usize)>, create: Option<(u32
     if let Some(link) = remote.iter_mut().find(|i| i.label == "Link to controller...") {
         link.mark = Mark::Check(linked);
     }
+    if let Some(peak)=peak {v.insert(0,peak);}
     v.extend(remote);
     v.extend([
         PItem::head("Value"),
@@ -282,7 +286,7 @@ fn parameter_items(s: &State, param: Option<(usize, usize)>, create: Option<(u32
 /// The menu of a parameter row (browser right-click, spec §6).
 pub fn param_menu(s: &State, key: usize, index: usize, x: f32, y: f32) -> Option<Popup> {
     let create = automation(s, key, index)?;
-    Some(Popup { x, y, items: parameter_items(s, Some((key, index)), Some(create)), sub: None, scroll: [0; 2] })
+    Some(Popup { x, y, items: parameter_items(s, Some((key, index)), Some(create)), sub: None, scroll: [0; 2], cascade: Vec::new() })
 }
 
 /// The browser node key of instance `key` (spec §6): Generators ▸ channel, Effects ▸ "<track> - <slot>".
@@ -309,13 +313,44 @@ pub fn menu_handles(label: &str) -> bool {
 
 impl App {
     /// Every plugin tick: keeps the parameter lists of hosted instances and records the parameters their editors moved.
+    pub(crate) fn toggle_automation_capture(&mut self) {
+        if self.state.params.capture_armed {
+            self.state.params.capture_armed=false;
+            self.state.message=Some("Automation capture cancelled".into());
+        } else {
+            self.params_tick();
+            self.state.params.capture_pending.clear();
+            // Discard queued edits from before the click. Busy instances drain next tick.
+            for (&key,h) in &self.plugins.hosted {
+                if let Ok(mut p)=h.plugin.try_lock() {p.take_param_events();}
+                else {self.state.params.capture_pending.insert(key);}
+            }
+            self.state.params.capture_armed=true;
+            self.state.message=Some("Move a control to create automation; click capture again to cancel".into());
+        }
+        self.invalidate();
+    }
+
+    pub(crate) fn capture_control(&mut self,target:u32,name:&str,value:f64)->bool {
+        if !self.state.params.capture_armed || !value.is_finite() {return false;}
+        self.state.params.capture_armed=false;
+        self.state.message=Some(if crate::playlist::capture_automation(&mut self.state,target,name,value).is_some() {
+            self.state.raise(crate::app::Win::Playlist);
+            format!("Created automation clip \"{name}\"")
+        } else {"No empty playlist track available".into()});
+        self.invalidate();
+        true
+    }
+
     pub(crate) fn params_tick(&mut self) {
         let ui = &mut self.state.params;
         ui.lists.retain(|k, _| self.plugins.hosted.contains_key(k));
         let mut moved = None;
         let mut edited = Vec::new();
+        let mut ara_changes=Vec::new();
         let mut automate = Vec::new();
         let mut stretch = Vec::new();
+        let mut recorded=Vec::new();
         for (&key, h) in &self.plugins.hosted {
             // Only an instance with something new is locked, and never waited for: one the audio thread is rendering
             // is read again next tick (its events stay queued).
@@ -337,6 +372,8 @@ impl App {
                 l.seen = look;
             }
             let sampler = key < crate::plugins::FX_KEY && p.desc().name == crate::plugins::LEMON_SAMPLER;
+            if p.take_state_changed(){ara_changes.push((key,p.save_state()));}
+            let pending=ui.capture_pending.remove(&key);
             for e in p.take_param_events() {
                 if let (true, os_host::ParamEvent::Value(id, v)) = (sampler, &e) {
                     if let Some(x) = ui.lists.get(&key).and_then(|l| l.params.iter().find(|x| x.id == *id)) {
@@ -347,6 +384,7 @@ impl App {
                 edited.push(key);
                 if let Some(index) = ui.lists.get(&key).and_then(|l| l.params.iter().position(|x| x.id == id)) {
                     moved = Some(Tweak::Plugin { key, index });
+                    if let os_host::ParamEvent::Value(_,v)=e {recorded.push((key,index,v,!pending && p.param_info(index).is_some_and(|i|i.automatable && !i.read_only && !i.hidden)));}
                 }
             }
             // "Create automation clip" picked in the plugin's own menu (CLAP context menu).
@@ -356,6 +394,7 @@ impl App {
                 }
             }
         }
+        for (key,blob) in ara_changes {crate::ara::edited(self,key,blob);}
         // A knob moved in a plugin's own window is the user's edit (`Plugins::mark_edited`).
         for key in edited {
             self.plugins.mark_edited(key);
@@ -383,10 +422,18 @@ impl App {
             self.state.message = self.params_automate(key, index);
             self.invalidate();
         }
+        for (key,index,v,fresh) in recorded {
+            if let Some(target)=target_of(&self.state,key,index) {
+                let name=clip_name(&self.state,key,index);
+                if fresh && self.capture_control(target,&name,v) {continue;}
+                self.smart_record_value(target,name,v);
+            }
+        }
     }
 
     /// A press on a host control: it becomes the last tweaked parameter when it has an automation target.
     pub(crate) fn note_host_tweak(&mut self, a: &Action) {
+        self.smart_begin_host(a);
         if self.automation_target(a).is_some() {
             self.state.params.note(Tweak::Host(a.clone()));
         }
@@ -433,7 +480,7 @@ impl App {
         let mut items = vec![PItem { head: true, ..PItem::new(head, Cmd::Nothing) }, PItem::head("Automation")];
         items.extend(parameter_items(&self.state, param, create));
         items.extend([PItem::sep(), PItem::not_yet("Override volatile link...")]);
-        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
         None
     }
@@ -844,6 +891,94 @@ mod tests {
         println!("{:?}", a.state.message);
     }
 
+
+    #[test]
+    fn automation_capture_next_edit_free_row() {
+        use os_host::ParamEvent::{Begin,Value};
+        use crate::playlist as pl;
+        let (mut app,key)=eq_app();
+        let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        let events=Arc::new(Mutex::new(vec![Value(7,0.2)]));
+        let plugin:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{desc,events:events.clone()}));
+        app.plugins.hosted.insert(key,crate::plugins::Hosted::new(plugin));
+        pl::arr_mut(&mut app.state).clips.clear();
+        for track in [0,2] {pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(0,768,track,os_model::ClipSource::Pattern(0)));}
+        app.state.playlist.range=Some((96,480));
+        let before=app.state.project.clone();
+        app.toggle_automation_capture();
+        assert!(app.state.params.capture_armed);
+        assert_eq!(app.state.project.automations.len(),before.automations.len());
+        events.lock().unwrap().push(Begin(7));app.params_tick();
+        assert!(app.state.params.capture_armed);
+        events.lock().unwrap().extend([Value(7,0.7),Value(7,0.8)]);app.params_tick();
+        assert!(!app.state.params.capture_armed);
+        assert_eq!(app.state.project.automations.len(),before.automations.len()+1);
+        let auto=app.state.project.automations.last().unwrap();
+        assert_eq!(auto.target(),Some(target::slot_param(2,1,0)));
+        assert_eq!(auto.points[0].value,0.7);
+        let clip=pl::clips(&app.state).last().unwrap();
+        assert_eq!((clip.track,clip.position,clip.length),(1,96,384));
+        assert!(app.state.playlist.automation_owners.is_empty());
+        assert!(app.state.project.channels.last().unwrap().name.as_ref().unwrap().contains("Peak Reduction"));
+        let file=os_flp::project::create(&app.state.project).unwrap();
+        let back=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+        assert_eq!(back.automations.last().unwrap().target(),auto.target());
+        assert_eq!(back.arrangement().unwrap().clips.last().unwrap().track,1);
+        events.lock().unwrap().push(Value(7,0.9));app.params_tick();
+        assert_eq!(app.state.project.automations.len(),before.automations.len()+1);
+        crate::history::undo(&mut app.state);assert_eq!(app.state.project,before);
+        app.toggle_automation_capture();app.toggle_automation_capture();
+        events.lock().unwrap().push(Value(7,0.3));app.params_tick();
+        assert_eq!(app.state.project,before);
+        app.toggle_automation_capture();
+        app.smart_record_host(&Action::Fader(2));
+        assert!(!app.state.params.capture_armed);
+        assert_eq!(pl::clips(&app.state).last().unwrap().track,1);
+    }
+    /// A stand-in instance for typing `Weak` (never upgraded).
+    struct CapturePlugin { desc: os_host::Descriptor, events: Arc<Mutex<Vec<os_host::ParamEvent>>> }
+    impl os_engine::Instrument for CapturePlugin {
+        fn note_on(&mut self, _: u32, _: u8, _: f32) {}
+        fn note_off(&mut self, _: u32, _: u8) {}
+        fn process(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
+    }
+    impl os_engine::HostedEffect for CapturePlugin {
+        fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
+    }
+    impl os_host::Plugin for CapturePlugin {
+        fn desc(&self) -> &os_host::Descriptor {
+            &self.desc
+        }
+        fn param_count(&self)->usize {1}
+        fn param_info(&self,_:usize)->Option<os_host::ParamInfo> {
+            Some(os_host::ParamInfo {id:7,name:"Peak Reduction".into(),unit:String::new(),group:String::new(),min:0.,max:1.,default:0.5,steps:0,automatable:true,read_only:false,hidden:false,bypass:false,enumerated:false})
+        }
+        fn param_value(&self,_:u32)->Option<f64> {Some(0.7)}
+        fn take_param_events(&mut self)->Vec<os_host::ParamEvent> {std::mem::take(&mut *self.events.lock().unwrap())}
+        fn activate(&mut self, _: u32) -> bool {
+            true
+        }
+        fn idle(&mut self) {}
+        fn has_editor(&self) -> bool {
+            false
+        }
+        fn editor_open(&self) -> bool {
+            false
+        }
+        fn open_editor(&mut self, _: *mut std::ffi::c_void, _: f32) -> Result<(u32, u32), String> {
+            Err(String::new())
+        }
+        fn editor_size(&self) -> Option<(u32, u32)> {
+            None
+        }
+        fn close_editor(&mut self) {}
+        fn save_state(&self) -> Option<Vec<u8>> {
+            None
+        }
+        fn load_state(&mut self, _: &[u8]) -> bool {
+            false
+        }
+    }
     /// A stand-in instance for typing `Weak` (never upgraded).
     struct Dummy;
     impl os_engine::Instrument for Dummy {

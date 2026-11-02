@@ -28,7 +28,7 @@ fn main() {
     let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| root.join("target"));
     let target = if target.is_relative() { root.join(target) } else { target };
     let ok = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(["build", "--release", "--bin", EXE, "-p", "os-app"])
+        .args(["build", "--locked", "--release", "--bin", EXE, "-p", "os-app"])
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", &target)
         .status()
@@ -101,19 +101,22 @@ fn info_plist() -> String {
 	<string>public.app-category.music</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lemon Studio uses your audio input to record vocals and instruments into your projects.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>FL Studio project</string>
+			<string>Lemon Studio project</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>CFBundleTypeExtensions</key>
 			<array>
+				<string>lmn</string>
 				<string>flp</string>
 			</array>
 		</dict>

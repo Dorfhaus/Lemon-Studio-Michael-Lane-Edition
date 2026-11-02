@@ -21,6 +21,7 @@
 
 pub mod articulator;
 pub mod channel_filter;
+pub mod debess;
 pub mod curve;
 pub mod glide;
 pub mod level;
@@ -29,3 +30,9 @@ pub mod num;
 pub mod resample;
 pub mod stretch;
 pub mod tone;
+
+pub mod channel_strip;
+
+mod tame;
+
+pub mod snaptune;

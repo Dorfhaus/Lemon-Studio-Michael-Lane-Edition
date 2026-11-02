@@ -21,6 +21,8 @@ pub const RECORDED: &str = "Recorded items";
 /// The right-click menu's checks: key in `settings.txt` and default (spec §2 Right-click menu).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opt {
+    Audio,
+    Smart,
     Notes,
     Automation,
     StartsPlayback,
@@ -57,8 +59,10 @@ pub enum RecCmd {
 impl Opt {
     fn key(self) -> (&'static str, bool) {
         match self {
+            Opt::Audio=>("rec_audio",false),
+            Opt::Smart=>("rec_smart",false),
             Opt::Notes => ("rec_notes", true),
-            Opt::Automation => ("rec_automation", true),
+            Opt::Automation => ("rec_automation", false),
             Opt::StartsPlayback => ("rec_starts_play", false),
             Opt::DisarmOnStop => ("rec_disarm_stop", false),
             Opt::QuantizeStart => ("rec_q_start", true),
@@ -87,6 +91,8 @@ impl Opt {
 
 /// The button's hint: what the filter records (spec §2 The button).
 pub fn hint() -> String {
+    if Opt::Audio.on(){return "Record audio (R) - choose a mixer input, then press Play".into();}
+    if Opt::Smart.on(){return "Record automatically: MIDI notes or automation clips (R)".into();}
     let what = match (Opt::Notes.on(), Opt::Automation.on()) {
         (true, true) => "notes, automation",
         (true, false) => "notes",
@@ -188,6 +194,8 @@ struct Take {
 /// Record's state (spec §2).
 #[derive(Debug, Default)]
 pub struct Rec {
+    pub close_after_audio: bool,
+    pub smart: crate::smart_recording::Smart,
     pub armed: bool,
     /// One-click audio recording is taking in (its button is lit; `crate::one_click`).
     pub audio: bool,
@@ -246,20 +254,30 @@ impl App {
         if self.state.rec.armed {
             self.end_take();
             self.state.rec.armed = false;
-        } else if Opt::Ask.on() {
-            self.record_question();
+        } else if !self.state.mixer.recording.armed.is_empty() {
+            crate::mixer_recording::audio_filter();self.arm();
         } else {
+            if !crate::settings_file::flag("rec_filter_explicit",false) {
+                crate::mixer_recording::flag(Opt::Notes,true);
+                crate::mixer_recording::flag(Opt::Automation,false);
+                crate::mixer_recording::flag(Opt::Audio,false);
+            }
+            crate::mixer_recording::flag(Opt::Smart,true);
+            if let Some((lane,pattern))=crate::smart_recording::instrument_lane(&self.state) {
+                if crate::playlist::track_info(&self.state,lane).is_some_and(|t|t.frozen.is_some()) {
+                    self.state.message=Some("Unfreeze this track before recording into it".into());self.invalidate();return;
+                }
+                self.state.pattern=pattern;self.state.project.current_pattern=Some(pattern);
+                self.state.playlist.track=lane;self.state.song_mode=true;
+            }
             self.arm();
         }
         self.invalidate();
     }
 
-    /// Arms; while stopped this starts playback when "Recording starts playback" is on.
+    /// Arms only; the user starts playback separately.
     fn arm(&mut self) {
         self.state.rec.armed = true;
-        if !self.transport.playing() && !self.state.rec.waiting && Opt::StartsPlayback.on() {
-            self.play_from_stop();
-        }
         self.invalidate();
     }
 
@@ -280,7 +298,7 @@ impl App {
             PItem::new("Don't ask again", Cmd::Rec(RecCmd::AskOff)),
         ];
         let (x, y) = self.hits.iter().find(|h| h.action == crate::app::Action::Record).map_or((486.0, 35.0), |h| (h.rect.x, h.rect.bottom() + 2.0));
-        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
     }
 
     /// A record popup's command (`Cmd::Rec`); returns the message to show.
@@ -343,7 +361,7 @@ impl App {
                     PItem::new("Replace", Cmd::Rec(RecCmd::DumpAs(minutes, true))),
                     PItem::new("Cancel", Cmd::Nothing),
                 ];
-                self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2] });
+                self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
                 return None;
             }
             None => false,
@@ -441,7 +459,7 @@ impl App {
             }
             _ => return,
         };
-        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
     }
 
     /// An option switch (the buttons, OPTIONS menu, Ctrl+I / Ctrl+P / Ctrl+B); turning Start on input off ends a wait.
@@ -462,24 +480,21 @@ impl App {
 
     /// The right-click menu (spec §2 Right-click menu).
     pub(crate) fn record_menu(&mut self, x: f32, y: f32) {
+        if !crate::settings_file::flag("rec_filter_explicit",false) && self.state.mixer.recording.armed.is_empty() {crate::mixer_recording::auto_filter();}
         use crate::playlist::{Cmd, Mark, PItem, Popup};
         let it = |label: &'static str, o: Opt| PItem::new(label, Cmd::Record(o)).mark(Mark::Check(o.on()));
         let items = vec![
             PItem::head("Recording filter"),
             it("Notes", Opt::Notes),
             it("Automation", Opt::Automation),
-            // Audio (FL: recording into mixer tracks, then the playlist): mixer tracks don't record yet; audio comes with
-            // One-click audio recording, into the playlist or the audio editor.
-            PItem::new("Audio", Cmd::Nothing).off(),
+            it("Audio", Opt::Audio),
             PItem::head("Options"),
-            it("Ask what to record", Opt::Ask),
-            it("Recording starts playback", Opt::StartsPlayback),
             it("Disarm on stop", Opt::DisarmOnStop),
             PItem::head("Quantize"),
             it("Note start time", Opt::QuantizeStart),
             it("Note end time", Opt::QuantizeEnd),
         ];
-        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
     }
 
     /// Whether something played now is recorded: armed, `what` on in the filter, playing and not paused.
@@ -492,6 +507,7 @@ impl App {
     /// A channel's volume or pan knob moved: its value goes into the current pattern as a control point at the playback
     /// position while recording automation (spec §2 Taking automation).
     pub(crate) fn record_knob(&mut self, id: KnobId) {
+        if Opt::Smart.on(){self.smart_record_host(&crate::app::Action::Knob(id));return;}
         use os_model::ControlPoint;
         if matches!(id, KnobId::ChanVol(_) | KnobId::ChanPan(_)) {
             self.start_on_input(Opt::Automation);
@@ -612,9 +628,26 @@ impl App {
             }
             return Some(p);
         }
+        // A later take on an instrument lane continues the same timeline, not a
+        // second instance writing from pattern tick zero over the earlier take.
+        let lane = crate::smart_recording::instrument_lane(s)
+            .filter(|(_, p)| *p == pattern).map(|(lane, _)| lane)
+            .unwrap_or(s.playlist.track);
+        let earlier = crate::playlist::clips(s).iter()
+            .filter(|c| whole(c) && c.track == lane && c.position <= ti)
+            .max_by_key(|c| c.position).map(|c| (c.track, c.position));
+        if let Some((track, at)) = earlier {
+            let c = crate::playlist::arr_mut(s).clips.iter_mut()
+                .find(|c| whole(c) && c.track == track && c.position == at)?;
+            c.length = c.length.max((ti / bar + 1) * bar - at);
+            if let Some(k) = s.rec.take.as_mut() { k.clip = Some((track, at)); }
+            s.piano.dirty = true;
+            return Some(t - f64::from(at));
+        }
         let at = ti / bar * bar;
         let len = crate::piano::pattern_length(s, pattern).max(bar);
-        let track = crate::playlist::free_track(s, 0, at, at + len);
+        let track = crate::smart_recording::instrument_lane(s).filter(|(_,p)|*p==pattern).map(|(t,_)|t)
+            .unwrap_or_else(||crate::playlist::free_track(s,0,at,at+len));
         let clip = os_model::Clip::new(at, len, track, ClipSource::Pattern(pattern));
         crate::playlist::arr_mut(s).clips.push(clip);
         if let Some(k) = s.rec.take.as_mut() {
@@ -659,6 +692,17 @@ impl App {
         } else {
             s.project.patterns.push(os_model::Pattern { number: pattern, notes, ..os_model::Pattern::default() });
         }
+        // A held note may end beyond the last note-on's bar. Keep its tail inside
+        // the same playlist clip, including across a later recording take.
+        if let Some((track, at)) = s.rec.take.as_ref().and_then(|take| take.clip) {
+            let bar = s.project.bar_ticks().max(1);
+            let end = at.saturating_add(b);
+            let length = end.div_ceil(bar).saturating_mul(bar).saturating_sub(at);
+            if let Some(c) = crate::playlist::arr_mut(s).clips.iter_mut()
+                .find(|c| c.source == ClipSource::Pattern(pattern) && c.track == track && c.position == at && c.window.is_none()) {
+                c.length = c.length.max(length);
+            }
+        }
         // The time selection stays (it may be looping, spec §5).
         let range = s.piano.range;
         s.piano.select(pattern, h.channel, Vec::new());
@@ -680,7 +724,16 @@ impl App {
     /// Each tick: notes the playback position; when playback stops or pauses, or the pattern changes, the take ends;
     /// a stop disarms when "Disarm on stop" is on.
     pub(crate) fn record_tick(&mut self) {
+        if let Err(e) = self.sync_input_monitor() { if self.state.message.as_ref() != Some(&e) { self.state.message = Some(e); self.invalidate(); } }
         self.one_click_tick();
+        if self.audio_rec.is_none()&&std::mem::take(&mut self.state.rec.close_after_audio){self.close_requested();}
+        self.smart_record_tick();
+        let mut recording_changed = false;
+        for live in &mut self.state.mixer.recording.live {
+            let len=(self.transport.tick().max(0.) as u32).saturating_sub(live.start).max(1);
+            if live.length!=len {live.length=len;recording_changed = true;}
+        }
+        if recording_changed { self.damage_win(crate::app::Win::Playlist); }
         // A count-in ends after its beats (or with the playback); the clock shows each beat left. A wait ends when
         // something else starts playback.
         if let Some(c) = self.state.rec.count {
@@ -872,6 +925,7 @@ mod tests {
                 "Notes",
                 "Automation",
                 "Audio",
+                "Automatic MIDI / automation clips",
                 "Options",
                 "Ask what to record",
                 "Recording starts playback",

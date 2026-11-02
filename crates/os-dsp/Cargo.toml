@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 # Time stretching and pitch shifting (MIT).
 signalsmith-stretch = "0.1.3"
+
+[build-dependencies]
+cc = "1"

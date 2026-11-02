@@ -1,0 +1,47 @@
+OSPRESET 1
+plugin=Lemon Wave	id=clap:org.lemonstudio.lemon-wave	format=clap	body=params
+# Original Lemon Wave factory patch.
+A Bank = 1
+A Position = 650
+A Level = 700
+A Tune = 24
+A Unison = 1
+A Detune = 9
+A Pan = 100
+A Bend = 90
+B Bank = 0
+B Position = 400
+B Level = 0
+B Tune = 24
+B Unison = 0
+B Detune = 12
+B Pan = 100
+B Bend = 90
+Cutoff = 640
+Resonance = 280
+Filter = 1
+Drive = 0
+Sub = 200
+Noise = 0
+Output = 650
+Spread = 800
+Attack = 80
+Decay = 460
+Sustain = 800
+Release = 240
+Mod attack = 80
+Mod decay = 450
+Mod sustain = 0
+Mod release = 350
+Env > cutoff = 1000
+LFO rate = 450
+LFO amount = 280
+LFO shape = 0
+LFO target = 0
+LFO sync = 5
+Chorus rate = 350
+Chorus depth = 400
+Chorus mix = 0
+Delay time = 400
+Feedback = 350
+Delay mix = 0

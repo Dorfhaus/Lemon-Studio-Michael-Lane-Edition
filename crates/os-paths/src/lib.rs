@@ -26,16 +26,24 @@ pub fn user_dir() -> Option<PathBuf> {
     if let Some(d) = var("OPENSTUDIO_USER_DIR") {
         return Some(d);
     }
-    platform_dir().map(|d| d.join(APP))
+    platform_dir().map(|d| d.join(profile_name(std::env::current_exe().ok().as_deref())))
 }
 
 /// The per-user folder from before the rename to Lemon Studio (`OpenStudio` in the same place), which the app moves to
 /// [`user_dir`] once. `None` when `OPENSTUDIO_USER_DIR` chooses the folder.
 pub fn legacy_dir() -> Option<PathBuf> {
-    if var("OPENSTUDIO_USER_DIR").is_some() {
+    if var("OPENSTUDIO_USER_DIR").is_some() || profile_name(std::env::current_exe().ok().as_deref()) != APP {
         return None;
     }
     platform_dir().map(|d| d.join(LEGACY))
+}
+
+/// Keep the dedicated local preview isolated even when opened directly or pinned to the taskbar.
+/// Public releases keep their normal executable name and profile. Explicit user-dir overrides still win.
+fn profile_name(exe: Option<&std::path::Path>) -> &'static str {
+    if exe.and_then(|p|p.file_stem()).and_then(|n|n.to_str()).is_some_and(|n|n.eq_ignore_ascii_case("lemonstudio-development")) {
+        "Lemon Studio Public Preview"
+    } else { APP }
 }
 
 /// A file or folder inside [`user_dir`].
@@ -50,7 +58,24 @@ fn var(name: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn platform_dir() -> Option<PathBuf> {
-    var("APPDATA")
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::{SHGetKnownFolderPath, FOLDERID_RoamingAppData}};
+    // Ask Windows for this user's actual folder, independently of the launcher's environment.
+    let mut path = std::ptr::null_mut();
+    // SAFETY: Windows allocates the terminated UTF-16 result; it is copied before being freed.
+    let resolved = unsafe {
+        let result = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, std::ptr::null_mut(), &mut path);
+        if result < 0 || path.is_null() {
+            None
+        } else {
+            let mut len = 0;
+            while *path.add(len) != 0 { len += 1; }
+            let folder = PathBuf::from(std::ffi::OsString::from_wide(std::slice::from_raw_parts(path, len)));
+            CoTaskMemFree(path.cast());
+            Some(folder)
+        }
+    };
+    resolved.or_else(|| var("APPDATA"))
 }
 
 #[cfg(target_os = "macos")]
@@ -71,6 +96,14 @@ fn platform_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_profile_is_isolated_for_direct_launch() {
+        assert_eq!(profile_name(Some(std::path::Path::new("lemonstudio-development.exe"))), "Lemon Studio Public Preview");
+        assert_eq!(profile_name(Some(std::path::Path::new("LEMONSTUDIO-DEVELOPMENT.exe"))), "Lemon Studio Public Preview");
+        assert_eq!(profile_name(Some(std::path::Path::new("lemonstudio.exe"))), APP);
+        assert_eq!(profile_name(None),APP);
+    }
 
     #[test]
     fn the_folder_is_named_after_the_app() {

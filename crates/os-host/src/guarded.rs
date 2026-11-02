@@ -122,6 +122,12 @@ impl<P: Plugin> Instrument for Guarded<P> {
             }
         }
     }
+    fn extra_outputs(&self)->usize { self.look(0,|p|p.extra_outputs()) }
+    fn extra_output(&mut self,port:usize,left:&mut[f32],right:&mut[f32])->bool {
+        let ok=self.run(false,|p|p.extra_output(port,left,right));
+        if !ok {left.fill(0.);right.fill(0.);}
+        ok
+    }
     fn active(&self) -> bool {
         self.look(false, |p| p.active())
     }
@@ -212,6 +218,12 @@ impl<P: Plugin> Plugin for Guarded<P> {
     fn editor_size(&self) -> Option<(u32, u32)> {
         self.look(None, |p| p.editor_size())
     }
+    fn editor_resizable(&self) -> bool {
+        self.look(false, |p| p.editor_resizable())
+    }
+    fn resize_editor(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        self.run(None, |p| p.resize_editor(width, height))
+    }
     fn close_editor(&mut self) {
         self.run((), |p| p.close_editor())
     }
@@ -261,6 +273,7 @@ impl<P: Plugin> Plugin for Guarded<P> {
     fn set_param(&mut self, id: u32, value: f64) -> bool {
         self.run(false, |p| p.set_param(id, value))
     }
+    fn take_state_changed(&mut self) -> bool { self.run(false, |p|p.take_state_changed()) }
     fn take_param_events(&mut self) -> Vec<ParamEvent> {
         self.run(Vec::new(), |p| p.take_param_events())
     }

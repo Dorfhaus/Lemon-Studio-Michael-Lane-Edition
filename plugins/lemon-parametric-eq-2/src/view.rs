@@ -242,6 +242,7 @@ pub fn paint(c: &mut Canvas, look: &Look, vs: &ViewState) -> Vec<Hit> {
         let band = s.bands[k].coefs(design);
         let pts = curve_of(&|hz| eq::sections_db(&band, hz, design.rate()));
         let col = band_color(k);
+
         // Filled to the 0 dB line.
         let mut fill = pts.clone();
         fill.push((PLOT.right(), ZERO_Y));
@@ -287,6 +288,8 @@ pub fn paint(c: &mut Canvas, look: &Look, vs: &ViewState) -> Vec<Hit> {
             let alpha = if !s.audible(k) { 0.35 } else if lit { 1.0 } else { 0.62 };
             let big = vs.active == Some(k);
             keq::token(c, x, y, k, band_color(k), alpha, big);
+            let route=eq::routed::routes(look.extra,false)[k];
+            if route!=0 {let badge=Rect::new((x+9.).min(PLOT.right()-13.),(y-17.).max(PLOT.y),13.,12.);c.fill_rrect(badge,3.,Color::rgb(0x202020));c.text_center(Font::new(9),badge,band_color(k),eq::routed::SHORT[route as usize]);}
             hits.push(Hit { r: Rect::new(x - 10.0, y - 10.0, 20.0, 20.0), t: Target::Token(k) });
             if big {
                 let f = Font::new(11);
@@ -294,6 +297,7 @@ pub fn paint(c: &mut Canvas, look: &Look, vs: &ViewState) -> Vec<Hit> {
                 // The readout on a dark chip.
                 c.fill_rrect(Rect::new(x - 26.0, ry + 1.0, 52.0, 25.0), 5.0, Color::rgb(0x141414).with_alpha(210));
                 let col = band_color(k);
+
                 c.text_center(f.bold(), Rect::new(x - 30.0, ry, 60.0, 13.0), col, &params::hz_text(b.hz()));
                 c.text_center(f, Rect::new(x - 30.0, ry + 12.0, 60.0, 13.0), col, &format!("{:.0}%", b.width * 100.0));
             }
@@ -312,6 +316,7 @@ pub fn paint(c: &mut Canvas, look: &Look, vs: &ViewState) -> Vec<Hit> {
         let b = &s.bands[k];
         let x = band_x(k);
         let col = band_color(k);
+
         let track = Rect::new(x, 18.0, 13.0, TRACK_BOTTOM - 18.0 + 1.0);
         let fst = st(vs, track, Target::Fader(k));
         // The slot starts under the type tab.

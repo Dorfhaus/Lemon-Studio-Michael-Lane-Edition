@@ -78,6 +78,10 @@ const PREFILL_FRAMES: usize = 1024;
 /// State the UI reads every frame.
 #[derive(Default)]
 pub struct Shared {
+    preview_active: AtomicBool,
+    preview_ms: AtomicU64,
+    eq_scope_track: AtomicU32,
+    eq_scope: Mutex<crate::mini_eq::Scope>,
     state: AtomicU8,
     /// Counts play and stop requests (see the module docs).
     generation: AtomicU64,
@@ -106,6 +110,7 @@ pub struct Shared {
     error: Mutex<Option<String>>,
     /// Notes playing now, as (channel index, key); written by the audio callback.
     sounding: Mutex<Vec<(u16, u16)>>,
+    live_sounding: Mutex<Vec<(u16,u16)>>,
     /// The last samples that left the playback / live stream, for the toolbar monitor and meter.
     tap: Mutex<Tap>,
     /// The playback's last block: how the position moves through it while the device plays it (`Transport::tick`).
@@ -114,6 +119,7 @@ pub struct Shared {
     tracks: Mutex<TrackPeaks>,
     /// Device blocks the queue could not fill since the program started.
     underruns: AtomicU64,
+    underrun_baseline: AtomicU64,
     /// How far the playback and live streams render ahead of the device.
     ahead: AheadStats,
     /// Time spent rendering per second of audio (f32 bits), over the last quarter second of playback.
@@ -244,7 +250,12 @@ impl Tap {
 /// sound is heard rather than a block at a time (issue #160). Other streams' peaks (live notes) are read at once.
 #[derive(Default)]
 struct TrackPeaks {
+    tune_learning: Vec<(u16,u32,Option<(u8,u8)>)>,
     now: Vec<[f32; 2]>,
+    vu: Vec<[f32; 2]>,
+    vu_fresh: bool,
+    vu_ticks: std::collections::VecDeque<Vec<[f32; 2]>>,
+    vu_spare: Vec<Vec<[f32; 2]>>,
     ticks: std::collections::VecDeque<(u64, Vec<[f32; 2]>)>,
     /// Emptied vectors to use again, so rendering does not allocate once it runs.
     spare: Vec<Vec<[f32; 2]>>,
@@ -256,9 +267,13 @@ const PEAK_TICKS: usize = 4096;
 impl TrackPeaks {
     /// The peaks the playback's tick at output frame `frame` left in `e`.
     fn tick(&mut self, frame: u64, e: &mut Engine) {
+        e.tune_learning(&mut self.tune_learning);
         let mut v = self.spare.pop().unwrap_or_default();
         v.clear();
         e.take_track_peaks(&mut v);
+        let mut vu = self.vu_spare.pop().unwrap_or_default();
+        e.track_vu(&mut vu);
+        self.vu_ticks.push_back(vu);
         self.ticks.push_back((frame, v));
         while self.ticks.len() > PEAK_TICKS {
             self.release();
@@ -269,6 +284,11 @@ impl TrackPeaks {
     fn release(&mut self) {
         let Some((_, v)) = self.ticks.pop_front() else { return };
         merge(&mut self.now, &v);
+        if let Some(vu) = self.vu_ticks.pop_front() {
+            self.vu.clone_from(&vu);
+            self.vu_fresh = true;
+            self.vu_spare.push(vu);
+        }
         self.spare.push(v);
     }
 
@@ -383,6 +403,8 @@ enum Cmd {
     /// The newest edited project is in `Transport::latest` (older ones are skipped).
     Update,
     Preview(Box<Project>),
+    StopPreview,
+    Audition(Box<Project>),
     /// Play a project's playlist once on the preview stream (clip preview).
     PreviewSong(Box<Project>),
     /// Like `Preview`, faded out after the given time if still sounding (browser sample preview).
@@ -466,6 +488,8 @@ static HEADLESS: AtomicBool = AtomicBool::new(false);
 
 /// No output device opens unless playback asks for one: for renders without a window (`crate::render`). Call before
 /// the first `Transport::new`.
+pub fn is_headless() -> bool { cfg!(test) || HEADLESS.load(Ordering::Acquire) }
+
 pub fn headless() {
     HEADLESS.store(true, Ordering::Release);
 }
@@ -520,6 +544,16 @@ impl Transport {
     pub fn take_track_peaks(&self) -> Vec<[f32; 2]> {
         let heard = self.paced().map(|p| p.played(Instant::now()));
         self.shared.tracks.lock().map(|mut t| t.take(heard)).unwrap_or_default()
+    }
+
+    /// Latest heard VU envelope, after take_track_peaks releases the paced ticks.
+    pub fn tune_learning(&self)->Vec<(u16,u32,Option<(u8,u8)>)> {
+        self.shared.tracks.try_lock().map(|t|t.tune_learning.clone()).unwrap_or_default()
+    }
+    pub fn take_track_vu(&self) -> Option<Vec<[f32; 2]>> {
+        let mut t = self.shared.tracks.lock().ok()?;
+        if !std::mem::take(&mut t.vu_fresh) { return None; }
+        Some(t.vu.clone())
     }
 
     /// The sample rate streams open at (the audio settings' device and rate; what hosted plugins are activated at):
@@ -619,13 +653,21 @@ impl Transport {
     }
 
     /// Play pattern 1 of `project` once (a one-note preview project), on its own stream.
+    pub fn audition(&self,project:Project){let _=self.tx.send(Cmd::Audition(Box::new(project)));}
+    pub fn stop_preview(&self) {let _=self.tx.send(Cmd::StopPreview);}
+
     pub fn preview(&self, project: Project) {
         let _ = self.tx.send(Cmd::Preview(Box::new(project)));
     }
 
-    /// Play pattern 1 of `project` once on the preview stream and cut it off after `limit` (spec: ui/browser.md §7,
+    /// Play the browser audition arrangement once on the preview stream and cut it off after `limit` (spec: ui/browser.md §7,
     /// sample preview). A new preview replaces the one sounding.
+    pub fn preview_status(&self)->(bool,f64) {
+        (self.shared.preview_active.load(Ordering::Acquire),self.shared.preview_ms.load(Ordering::Relaxed) as f64/1000.)
+    }
     pub fn preview_for(&self, project: Project, limit: Option<Duration>) {
+        self.shared.preview_active.store(false,Ordering::Release);
+        self.shared.preview_ms.store(0,Ordering::Relaxed);
         let _ = self.tx.send(Cmd::PreviewFor(Box::new(project), limit));
     }
 
@@ -770,6 +812,15 @@ impl Transport {
     }
 
     /// The output stream's sample rate (0 until the first stream opened).
+    pub fn select_eq_scope(&self, track: Option<u16>) {
+        self.shared.eq_scope_track.store(track.map_or(0, |t| u32::from(t)+1), Ordering::Relaxed);
+    }
+    pub fn eq_scope(&self, track: u16) -> Option<(Vec<f32>, u32)> {
+        let scope = self.shared.eq_scope.try_lock().ok()?;
+        if scope.track != u32::from(track) { return None; }
+        Some((scope.latest(), scope.rate))
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.shared.sample_rate.load(Ordering::Relaxed)
     }
@@ -803,7 +854,8 @@ impl Transport {
 
     /// Notes playing now (pattern or song playback, not previews), as (channel index, key).
     pub fn sounding(&self) -> Vec<(u16, u16)> {
-        self.shared.sounding.lock().map(|v| v.clone()).unwrap_or_default()
+        let source=if self.playing() && !self.paused(){&self.shared.sounding}else{&self.shared.live_sounding};
+        source.lock().map(|v|v.clone()).unwrap_or_default()
     }
 
     pub fn take_error(&self) -> Option<String> {
@@ -820,6 +872,15 @@ impl Transport {
     /// Device blocks that could not be filled in time (heard as a gap) since the program started.
     pub fn underruns(&self) -> u64 {
         self.shared.underruns.load(Ordering::Relaxed)
+    }
+
+    pub fn visible_underruns(&self) -> u64 {
+        self.underruns().saturating_sub(self.shared.underrun_baseline.load(Ordering::Relaxed))
+    }
+
+    pub fn reset_underruns(&self) {
+        crate::input_monitor::reset_dropouts();
+        self.shared.underrun_baseline.store(self.underruns(), Ordering::Relaxed);
     }
 
     /// Time the engine spends rendering per second of audio, 0..1 (more than 1: it cannot keep up), over the last
@@ -866,6 +927,12 @@ impl Transport {
         self.shared.state.store(PLAYING, Ordering::Release);
         self.shared.song.store(song, Ordering::Relaxed);
         self.shared.tick.store(tick.to_bits(), Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pretend_seconds(&self, seconds: f64) {
+        self.shared.sample_rate.store(48000, Ordering::Relaxed);
+        self.shared.position.store((seconds*48000.) as u64, Ordering::Relaxed);
     }
 
     /// Streams open now, fading ones included (each holds its voice counter in `Shared::engine_voices`).
@@ -979,6 +1046,7 @@ struct Feeder {
     ctl: Arc<Ctl>,
     /// Publish the mixer meters and the load (playback and live streams, not previews).
     meters: bool,
+    live: bool,
     rate: u32,
     /// Time spent rendering and frames rendered since the load was last published.
     busy: Duration,
@@ -1023,6 +1091,14 @@ impl Feeder {
                     frames += s.len() as u64 / 2;
                     let at = self.queue.written.load(Ordering::Relaxed) / 2;
                     self.queue.push(s, tick, frame, held, tick_frames);
+                    if self.meters {
+                        let selected = self.shared.eq_scope_track.load(Ordering::Relaxed);
+                        if selected > 0 {
+                            if let Ok(mut scope) = self.shared.eq_scope.try_lock() {
+                                scope.push(selected - 1, self.rate, e.track_output((selected - 1) as usize));
+                            }
+                        }
+                    }
                     // The playback's meters wait for the device to play this tick.
                     if self.meters && self.ctl.report.load(Ordering::Relaxed) {
                         if let Ok(mut t) = self.shared.tracks.lock() {
@@ -1060,11 +1136,24 @@ impl Feeder {
             }
             if let Ok(mut t) = self.shared.tracks.lock() {
                 e.take_track_peaks(&mut t.now);
+                if !self.ctl.report.load(Ordering::Relaxed) {
+                    e.track_vu(&mut t.vu);
+                    t.vu_fresh = true;
+                }
             }
         }
         // So does the tempo shown.
         if frames > 0 && self.ctl.report.load(Ordering::Relaxed) {
             self.shared.tempo.store(e.tempo().to_bits(), Ordering::Relaxed);
+        }
+        if frames>0 && self.live && !self.ctl.report.load(Ordering::Relaxed) {
+            if let Ok(mut v)=self.shared.live_sounding.lock(){
+                v.clear();
+                if !self.ctl.paused.load(Ordering::Relaxed) && !e.paused(){
+                    v.extend(e.sounding().map(|(c,k)|(c as u16,k)));
+                    v.extend(e.active_channels().map(|c|(c as u16,u16::MAX)));
+                }
+            }
         }
         // Lit keys run ahead of what is heard by the queue's length (a few milliseconds).
         if frames > 0 && self.ctl.report.load(Ordering::Relaxed) {
@@ -1072,6 +1161,7 @@ impl Feeder {
                 v.clear();
                 if !self.ctl.paused.load(Ordering::Relaxed) && !e.paused() {
                     v.extend(e.sounding().map(|(c, k)| (c as u16, k)));
+                    v.extend(e.active_channels().map(|c|(c as u16,u16::MAX)));
                 }
             }
         }
@@ -1129,14 +1219,17 @@ impl FeedThread {
     }
 }
 
-impl Drop for FeedThread {
-    fn drop(&mut self) {
+impl FeedThread {
+    fn halt(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(h) = self.handle.take() {
             h.thread().unpark();
             let _ = h.join();
         }
     }
+}
+impl Drop for FeedThread {
+    fn drop(&mut self) { self.halt(); }
 }
 
 /// The feeder renders for the device: it runs above the UI.
@@ -1176,12 +1269,18 @@ pub fn host_library(factory: Option<PathBuf>) -> SampleLibrary {
 /// An engine for `project` with the hosted plugins attached (`plugins`; a preview plays its channels itself), all from
 /// one look at the list. The instruments come with the engine (`Engine::with_instruments`), so it keeps no decoded copy
 /// of the samples they play from their files.
+// Pattern selection follows immediately at the current musical position; Song mode stays Song.
+fn follow_pattern(mode:PlayMode,project:&Project)->PlayMode {
+    match mode {PlayMode::Pattern(old)=>PlayMode::Pattern(project.current_pattern.unwrap_or(old).max(1)),_=>mode}
+}
+
 fn engine(project: &Project, library: &mut SampleLibrary, rate: u32, mode: PlayMode, inst: &Instruments, plugins: bool) -> Engine {
     let (list, fx) = inst.lock().ok().filter(|_| plugins).map(|l| (l.inst.clone(), l.fx.clone())).unwrap_or_default();
     if plugins && std::env::var_os("OS_DEBUG").is_some() {
         eprintln!("[transport] attach {} instrument(s), {} effect(s)", list.len(), fx.len());
     }
     let mut e = Engine::with_instruments(project, library, rate, mode, &list);
+    e.set_interpolation(16);
     crate::project_plugins::attach_effects(&mut e, project, fx);
     e
 }
@@ -1191,7 +1290,13 @@ fn engine(project: &Project, library: &mut SampleLibrary, rate: u32, mode: PlayM
 // spec: audio/export.md
 fn export(project: &Project, mode: PlayMode, rate: u32, job: &crate::export::Job, library: &mut SampleLibrary, inst: &Instruments, shared: &Shared) -> Result<(f64, Vec<PathBuf>), String> {
     let o = &job.options;
-    let mut e = engine(project, library, rate, mode, inst, true);
+    let mut e = if let Some(rows) = &job.instrument_rows {
+        let (mut list, fx) = inst.lock().map(|l|(l.inst.clone(),l.fx.clone())).unwrap_or_default();
+        list.retain(|(row,_)|rows.contains(row));
+        let mut e = Engine::with_instruments(project,library,rate,mode,&list);
+        crate::project_plugins::attach_effects(&mut e,project,fx);
+        e
+    } else { engine(project, library, rate, mode, inst, true) };
     e.set_interpolation(o.points);
     e.set_effects(o.insert_fx, o.master_fx);
     match job.span {
@@ -1200,8 +1305,9 @@ fn export(project: &Project, mode: PlayMode, rate: u32, job: &crate::export::Job
         None if mode == PlayMode::Song => e.follow_markers(),
         None => {}
     }
+    e.set_capture_tracks(job.capture_tracks.clone());
     e.set_track_capture(o.split);
-    let len = e.frames_left().max(1);
+    let len = ((e.frames_left() as f64 / e.speed_ratio()).round() as u64).max(1);
     // Cut needs nothing past the song's end.
     let cap = if o.tail == crate::export::Tail::Cut { len } else { len + u64::from(rate) * EXPORT_TAIL_MAX_SECS };
     let mut audio: Vec<f32> = Vec::with_capacity(2 * (len as usize + rate as usize));
@@ -1251,6 +1357,15 @@ fn reset_hosts(inst: &Instruments, effects: bool) {
     }
 }
 
+fn audition_events(project:&Project,rate:u32)->Vec<(usize,u16,u8,u64,u64)>{
+ let tempo=project.tick_tempo(project.tempo.unwrap_or(120.));
+ project.patterns.first().into_iter().flat_map(|p|&p.notes).filter_map(|n|{
+  let row=project.channels.iter().position(|c|c.index==n.channel)?;
+  let frame=|tick|os_engine::laws::tick_to_frame(f64::from(tick),project.ppq.max(1),tempo,rate);
+  Some((row,n.key,n.velocity,frame(n.position),frame(n.length.max(1))))
+ }).collect()
+}
+
 fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option<Project>>>, inst: Instruments, mut library: SampleLibrary) {
     // Every stream below plays through it.
     let mut device = OutputDevice::default();
@@ -1284,14 +1399,14 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
     // OS_DEBUG: how far playback renders ahead of the device, every 2 s.
     let debug = std::env::var_os("OS_DEBUG").is_some();
     let mut logged = Instant::now();
-    let swap = |s: &mut Session, library: &mut SampleLibrary| {
+    let swap = |s: &mut Session, library: &mut SampleLibrary, switched:bool| {
         // Build outside the lock, then swap at the playing position.
         let mut e = engine(&s.project, library, s.rate, s.mode, &inst, true);
         if s.kind == Kind::Live {
             e.clear_schedule();
         }
         let old = s.engine.lock().map(|mut slot| {
-            e.continue_from(&mut slot);
+            if switched {e.continue_pattern_from(&mut slot);}else{e.continue_from(&mut slot);}
             std::mem::replace(&mut *slot, e)
         });
         drop(old); // freed after the audio callback has the new engine
@@ -1320,9 +1435,12 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             s.ctl.paused.store(true, Ordering::Relaxed);
         }
     };
-    let retire = |s: Session, closing: &mut Vec<(Session, Instant)>| {
+    let retire = |mut s: Session, closing: &mut Vec<(Session, Instant)>| {
         s.ctl.report.store(false, Ordering::Relaxed);
         s.ctl.paused.store(true, Ordering::Relaxed);
+        // The callback fades queued audio; a retiring feeder must not process shared
+        // plugin instances again while the next session is starting.
+        s.feed.halt();
         closing.push((s, Instant::now()));
     };
     loop {
@@ -1330,14 +1448,17 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         match rx.recv_timeout(Duration::from_millis(10)) {
             // The output is closed by Auto close: previews and live notes find no stream and open none.
             // So is a device that failed, until it opens again.
-            Ok(Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(_) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
+            Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(_) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
             Ok(Cmd::Update) => {
                 if let Some(project) = latest.lock().ok().and_then(|mut l| l.take()) {
                     for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
+                        let next=if s.kind==Kind::Song{follow_pattern(s.mode,&project)}else{s.mode};
+                        let switched=next!=s.mode;s.mode=next;
                         s.project = project.clone();
-                        swap(s, &mut library);
+                        swap(s, &mut library,switched);
                     }
                     if let Some(h) = held.as_mut() {
+                        h.1=follow_pattern(h.1,&project);
                         h.0 = project.clone();
                     }
                     live_project = Some(project);
@@ -1345,7 +1466,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             }
             Ok(Cmd::Instruments) => {
                 for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
-                    swap(s, &mut library);
+                    swap(s, &mut library,false);
                 }
             }
             Ok(Cmd::Listen(on)) => {
@@ -1380,7 +1501,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 if let Some(s) = target {
                     if let Ok(mut e) = s.engine.lock() {
                         match cmd {
-                            Cmd::NoteOn(ch, key, vel) => e.note_on(ch, key, vel),
+                            Cmd::NoteOn(ch, key, vel) => {e.stop_audition();e.note_on(ch, key, vel);},
                             Cmd::Midi(ch, bytes, bend) => e.midi(ch, bytes, bend),
                             Cmd::TapClick(accent, db) => e.tap_click(accent, db),
                             _ => {}
@@ -1397,10 +1518,18 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     s.feed.wake();
                 }
             }
+            Ok(Cmd::StopPreview) => {preview = None;preview_until=None;for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.stop_audition();}s.feed.wake();}},
+            Ok(Cmd::Audition(project)) => {
+                let running=session.as_ref().is_some_and(|s|!s.paused());
+                if !running&&live.is_none(){let p=live_project.as_ref().unwrap_or(&project);match open_live(p,listen,&mut library,&mut device){Ok(s)=>live=Some(s),Err(e)=>report(&shared,e)}}
+                if !running{release_paused(&session);}
+                let target=if running{session.as_ref()}else{live.as_ref()};
+                if let Some(s)=target{let notes=audition_events(&project,s.rate);if let Ok(mut e)=s.engine.lock(){e.audition_notes(&notes);}s.feed.wake();}
+            },
             Ok(Cmd::PreviewFor(project, limit)) => {
                 preview = None;
                 preview_until = limit.map(|d| Instant::now() + d);
-                match Session::start(&project, PlayMode::Pattern(1), Kind::Preview, 0, &mut library, shared.clone(), &inst, At::default(), &mut device) {
+                match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut library, shared.clone(), &inst, At::default(), &mut device) {
                     Ok(s) => preview = Some(s),
                     Err(e) => report(&shared, e),
                 }
@@ -1466,9 +1595,10 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 // go on, with "Reset plugins on transport" off (`reset_hosts`). A live stream left open would process
                 // the same plugin instances a second time (each stream would only hear every other chunk of a ringing
                 // sample): typed notes go into the playing engine instead.
-                session = None;
-                live = None;
                 closing.clear();
+                for s in [session.take(),live.take()].into_iter().flatten() {
+                    retire(s,&mut closing);
+                }
                 // A jump while playing arrives as a Stop and this Play: the Stop's pending reset gives way to this one.
                 reset_hosts(&inst, starts.reset);
                 reset_pending = false;
@@ -1560,7 +1690,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             Ok(Cmd::Factory(dir)) => {
                 library.set_factory_dir(dir);
                 for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
-                    swap(s, &mut library);
+                    swap(s, &mut library,false);
                 }
             }
             Ok(Cmd::AsioPanel) if closed => report(&shared, "the output is let go of (Auto close)".into()),
@@ -1643,6 +1773,10 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 retire(s, &mut closing);
             }
         }
+        if let Some(p)=&preview {
+            shared.preview_ms.store(p.ctl.consumed.load(Ordering::Relaxed)*1000/u64::from(p.rate.max(1)),Ordering::Relaxed);
+        }
+        shared.preview_active.store(preview.is_some(),Ordering::Release);
         // Stopped streams are dropped once their fade is over; then the instruments are silenced for good.
         closing.retain(|(_, since)| since.elapsed() < CLOSE_AFTER);
         shared.underruns.fetch_add(device.take_xruns(), Ordering::Relaxed);
@@ -1860,12 +1994,26 @@ enum Kind {
 
 /// Controls shared with a stream's callback.
 struct Ctl {
+    consumed: AtomicU64,
     /// Fade out and hold the stream (stop; a pause once another stream processes the same plugins).
     paused: AtomicBool,
     /// Paused in the engine (`Engine::pause`): the stream runs on, ringing out the effects.
     held: AtomicBool,
     /// Publish position, meters and sounding notes (the playback stream until it is stopped).
     report: AtomicBool,
+}
+
+// Only the current playback or the stopped/paused live engine consumes device input.
+static INPUT_OWNER: AtomicU64 = AtomicU64::new(1);
+struct DeviceInput { shared: Arc<Shared>, ctl: Arc<Ctl>, kind: Kind, owner: u64 }
+impl os_engine::engine::MixerInput for DeviceInput {
+    fn render(&mut self, rate: u32, tracks: &mut [Vec<f32>]) {
+        if self.ctl.paused.load(Ordering::Relaxed) { return; }
+        let playing = self.shared.state.load(Ordering::Acquire) == PLAYING;
+        if (self.kind == Kind::Song && playing && !self.ctl.held.load(Ordering::Relaxed)) || (self.kind == Kind::Live && !playing) {
+            crate::input_monitor::render_all(rate, tracks, self.owner);
+        }
+    }
 }
 
 /// Takes a stream off the device when its session goes: the device's callback stops playing it at its next block.
@@ -1933,9 +2081,12 @@ impl Session {
             e.set_run_on(crate::record::run_on_flag());
             e.set_nudge(crate::tapper::nudge_flag());
         }
-        let engine = Arc::new(Mutex::new(e));
         let done = Arc::new(AtomicBool::new(false));
-        let ctl = Arc::new(Ctl { paused: AtomicBool::new(at.paused), held: AtomicBool::new(false), report: AtomicBool::new(song) });
+        let ctl = Arc::new(Ctl { consumed: AtomicU64::new(0), paused: AtomicBool::new(at.paused), held: AtomicBool::new(false), report: AtomicBool::new(song) });
+        if kind != Kind::Preview {
+            e.set_mixer_input(Box::new(DeviceInput { shared: shared.clone(), ctl: ctl.clone(), kind, owner: INPUT_OWNER.fetch_add(1,Ordering::Relaxed) }));
+        }
+        let engine = Arc::new(Mutex::new(e));
         if kind != Kind::Preview {
             publish(&shared, &info);
         }
@@ -1943,10 +2094,12 @@ impl Session {
         let queue = Arc::new(Queue::new());
         let mut feeder = Feeder::new(engine.clone(), queue.clone(), shared.clone(), ctl.clone(), rate);
         feeder.meters = kind != Kind::Preview;
+        feeder.live=kind==Kind::Live;
         feeder.fill(PREFILL_FRAMES.max(fixed.unwrap_or(0) as usize));
         let feed = FeedThread::spawn(feeder);
         let mut r = Renderer::new(queue, ctl.clone(), done.clone(), shared.clone(), rate);
         r.tap = kind != Kind::Preview;
+        if kind!=Kind::Preview && crate::input_monitor::monitor().on() {r.gain=0.;}
         r.wake = feed.thread();
         let detach = Detach(r.detach.clone());
         device.add(Box::new(r))?;
@@ -1961,7 +2114,7 @@ impl Feeder {
             v.retain(|w| w.strong_count() > 0);
             v.push(Arc::downgrade(&voices));
         }
-        Feeder { engine, queue, shared, ctl, meters: true, rate, busy: Duration::ZERO, rendered: 0, voices }
+        Feeder { engine, queue, shared, ctl, meters: true, live:false, rate, busy: Duration::ZERO, rendered: 0, voices }
     }
 }
 
@@ -1977,6 +2130,7 @@ struct Renderer {
     shared: Arc<Shared>,
     /// Output gain, ramped toward 1 (playing) or 0 (paused) by `step` per frame.
     gain: f32,
+    last: [f32;2],
     step: f32,
     /// Feed the monitor tap with what this stream outputs.
     tap: bool,
@@ -1991,7 +2145,7 @@ impl Renderer {
         let step = (1.0 / (f64::from(rate.max(1)) * FADE_SECONDS)) as f32;
         // A stream that starts paused (moved to new audio settings while paused) starts silent.
         let gain = if ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
-        Renderer { queue, wake: None, inline: None, ctl, done, shared, gain, step, tap: false, detach: Arc::new(AtomicBool::new(false)), asked: None }
+        Renderer { queue, wake: None, inline: None, ctl, done, shared, gain, last:[0.;2], step, tap: false, detach: Arc::new(AtomicBool::new(false)), asked: None }
     }
 
     /// Renders one block (see `render_block`) and copies it to the monitor tap, unless the stream is held.
@@ -2029,10 +2183,15 @@ impl Renderer {
         let from = self.queue.heard();
         let read = self.queue.read.load(Ordering::Relaxed) / 2;
         let got = self.queue.pop(stereo);
+        self.ctl.consumed.fetch_add((got/2) as u64,Ordering::Relaxed);
         let ended = self.queue.ended.load(Ordering::Acquire);
+        if got>=2 {self.last=[stereo[got-2],stereo[got-1]];}
         if got < stereo.len() {
-            stereo[got..].fill(0.0);
-            if !ended {
+            // Retiring streams can have less audio queued than their fade needs.
+            // Finish the fade from the final sample instead of cutting straight to zero.
+            if target==0. {for f in stereo[got..].chunks_exact_mut(2) {f.copy_from_slice(&self.last);}}
+            else {stereo[got..].fill(0.0);}
+            if !ended && target!=0. {
                 self.shared.underruns.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -2041,7 +2200,7 @@ impl Renderer {
         }
         if ended && self.queue.queued() == 0 {
             self.done.store(true, Ordering::Relaxed);
-            if got == 0 {
+            if got == 0 && target!=0. {
                 return;
             }
         }
@@ -2078,7 +2237,7 @@ impl Source for Renderer {
             pr = pr.max(s[1].abs());
         }
         // Meter peaks: the largest since the monitor last read them (non-negative f32 bits order like u32s).
-        if self.ctl.report.load(Ordering::Relaxed) {
+        if self.ctl.report.load(Ordering::Relaxed) || (self.tap && !self.ctl.paused.load(Ordering::Relaxed)) {
             self.shared.peak_l.store(pl.to_bits(), Ordering::Relaxed);
             self.shared.peak_r.store(pr.to_bits(), Ordering::Relaxed);
         }
@@ -2110,7 +2269,7 @@ mod tests {
 
     /// A stream's callback with its queue filled in the callback (no feeder thread).
     fn renderer(e: Engine) -> (Renderer, Arc<Ctl>, Arc<Shared>) {
-        let ctl = Arc::new(Ctl { paused: AtomicBool::new(false), held: AtomicBool::new(false), report: AtomicBool::new(true) });
+        let ctl = Arc::new(Ctl { consumed: AtomicU64::new(0), paused: AtomicBool::new(false), held: AtomicBool::new(false), report: AtomicBool::new(true) });
         let shared = Arc::new(Shared::default());
         let queue = Arc::new(Queue::new());
         let mut r = Renderer::new(queue.clone(), ctl.clone(), Arc::new(AtomicBool::new(false)), shared.clone(), 48000);
@@ -2126,6 +2285,77 @@ mod tests {
         while !ready() && start.elapsed() < Duration::from_secs(3) {
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn harmony_audition_uses_hosted_instrument_instead_of_sample_preview() {
+        let mut plugins=crate::plugins::Plugins::default();plugins.available=crate::plugins::builtin();plugins.set_rate(48000);
+        let idx=plugins.index_of(crate::citrus::CITRUS).unwrap();plugins.create_with(0,idx,None).unwrap();
+        let mut p=crate::app::test_project();p.channels[0].kind=os_model::ChannelKind::Plugin;p.channels[0].plugin=Some("Sytrus".into());p.tempo=Some(120.);
+        p.patterns=vec![os_model::Pattern{number:1,notes:vec![60,64,67].into_iter().map(|key|os_model::Note{key,length:96,..os_model::Note::step(p.channels[0].index,0)}).collect(),..Default::default()}];
+        let inst=Arc::new(Mutex::new(Hosts{inst:plugins.instruments(),..Default::default()}));
+        let mut lib=SampleLibrary::default();let mut old=engine(&p,&mut lib,48000,PlayMode::Pattern(1),&inst,false);
+        let mut out=vec![0.;48000];old.process(&mut out);assert!(out.iter().all(|x|x.abs()<0.00001),"old sample preview cannot render Citrus");drop(old);
+        let mut live=engine(&p,&mut lib,48000,PlayMode::Pattern(1),&inst,true);live.clear_schedule();
+        let notes=audition_events(&p,48000);assert_eq!(notes.len(),3);live.audition_notes(&notes);live.process(&mut out);
+        assert!(out.iter().any(|x|x.abs()>0.001),"audition through hosted Citrus must produce audio");
+        live.stop_audition();
+    }
+
+    #[test]
+    fn live_instrument_activity_without_song_playback() {
+        struct Tone;
+        impl os_engine::Instrument for Tone {
+            fn note_on(&mut self,_:u32,_:u8,_:f32){} fn note_off(&mut self,_:u32,_:u8){}
+            fn process(&mut self,_:u32,l:&mut[f32],r:&mut[f32]) {l.fill(0.1);r.fill(0.1);}
+        }
+        let p=crate::app::test_project();
+        let mut e=Engine::new(&p,&mut SampleLibrary::default(),48000,PlayMode::Pattern(1));
+        e.clear_schedule();e.set_instrument(0,Arc::new(Mutex::new(Tone)));e.set_awake(true);
+        let (mut renderer,ctl,shared)=renderer(e);ctl.report.store(false,Ordering::Relaxed);
+        renderer.inline.as_mut().unwrap().live=true;
+        let mut out=[0.;512];renderer.play(&mut out);
+        assert!(shared.live_sounding.lock().unwrap().contains(&(0,u16::MAX)));
+        assert!(shared.sounding.lock().unwrap().is_empty());
+        assert_eq!(shared.state.load(Ordering::Relaxed),STOPPED);
+        assert!(out.iter().any(|v|v.abs()>0.001));
+    }
+
+    #[test]
+    fn armed_input_is_audible_and_metered_without_moving_stopped_transport() {
+        let _lock = crate::capture::TEST_RECORDING.lock().unwrap_or_else(|e| e.into_inner());
+        let m = crate::input_monitor::monitor();
+        m.start(1, &crate::capture::Input { device: "Synthetic".into(), asio: true, first: 0, stereo: true });
+        let mut p = Project::default();
+        p.ppq = 96;
+        p.mixer = (0..4).map(os_model::MixerTrack::new).collect();
+        p.mixer[1].routes = vec![2]; p.mixer[2].routes = vec![3]; p.mixer[3].routes = vec![0];
+        let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+        e.clear_schedule(); e.set_awake(true);
+        let (mut r, ctl, shared) = renderer(e);
+        ctl.report.store(false, Ordering::Relaxed); r.tap = true;
+        r.inline.as_ref().unwrap().engine.lock().unwrap().set_mixer_input(Box::new(DeviceInput { shared: shared.clone(), ctl: ctl.clone(), kind: Kind::Live, owner: 1 }));
+        m.push(true, 48000, 2400, |c, _| if c == 0 { 0.3 } else { 0.15 });
+        let mut output = vec![0.; 512]; r.play(&mut output);
+        assert!(output.chunks_exact(2).all(|v| (v[0] - 0.3).abs() < 1e-6 && (v[1] - 0.15).abs() < 1e-6));
+        let peaks = shared.tracks.lock().unwrap().take(None);
+        for t in 0..4 { assert!((peaks[t][0] - 0.3).abs() < 1e-6, "track {t}: {peaks:?}"); }
+        assert!((f32::from_bits(shared.peak_l.load(Ordering::Relaxed)) - 0.3).abs() < 1e-6);
+        assert_eq!(shared.position.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.state.load(Ordering::Relaxed), STOPPED);
+        // The live engine yields the input to playback, and a retiring engine never steals it.
+        m.push(true, 48000, 64, |_, _| 0.3);
+        let mut input = DeviceInput { shared: shared.clone(), ctl: ctl.clone(), kind: Kind::Live, owner: 1 };
+        let mut buses = vec![vec![0.; 32]; 4];
+        shared.state.store(PLAYING, Ordering::Relaxed);
+        os_engine::engine::MixerInput::render(&mut input, 48000, &mut buses);
+        assert!(buses[1].iter().all(|v| *v == 0.));
+        shared.state.store(STOPPED, Ordering::Relaxed); ctl.paused.store(true, Ordering::Relaxed);
+        os_engine::engine::MixerInput::render(&mut input, 48000, &mut buses);
+        assert!(buses[1].iter().all(|v| *v == 0.));
+        ctl.paused.store(false, Ordering::Relaxed);
+        os_engine::engine::MixerInput::render(&mut input, 48000, &mut buses);
+        assert!(buses[1][0] > 0.29); m.stop();
     }
 
     /// The queue hands out exactly what the engine renders, tick after tick, whatever the device's block size; the
@@ -2222,7 +2452,90 @@ mod tests {
         assert_eq!(shared.underruns.load(Ordering::Relaxed), 0);
     }
 
-    /// A feeder that cannot keep up shows as underruns, never as a stall of the callback.
+    /// Device-sized input bursts must survive whole-tick render-ahead without
+    /// periodic silence, duplicated samples or dropped samples after startup.
+    #[test]
+    fn monitoring_small_callbacks_remains_continuous() {
+        let _lock = crate::capture::TEST_RECORDING.lock().unwrap_or_else(|e| e.into_inner());
+        let m = crate::input_monitor::monitor();
+        for rate in [44100, 48000, 96000] {
+            for (ppq, tempo) in [(96, 140.), (24, 90.)] {
+                for block in [64, 128, 192, 256, 384, 512, 1024, 2048] {
+                    m.start(1, &crate::capture::Input { device: "Synthetic".into(), asio: true, first: 0, stereo: true });
+                    let mut p = Project::default();
+                    p.ppq = ppq; p.tempo = Some(tempo);
+                    p.mixer = (0..2).map(os_model::MixerTrack::new).collect();
+                    let mut e = Engine::new(&p, &mut SampleLibrary::default(), rate, PlayMode::Song);
+                    e.clear_schedule(); e.set_awake(true);
+                    let (mut r, ctl, shared) = renderer(e);
+                    ctl.report.store(false, Ordering::Relaxed);
+                    r.inline.as_mut().unwrap().rate = rate;
+                    r.inline.as_ref().unwrap().engine.lock().unwrap().set_mixer_input(Box::new(DeviceInput { shared, ctl, kind: Kind::Live, owner: 1 }));
+                    let mut output = vec![0.; block * 2];
+                    let mut last: Option<f32> = None;
+                    let mut error = 0f32;
+                    for n in 0..600 {
+                        m.push(true, rate, block, |ch, f| {
+                            let v = 0.1 + (n * block + f) as f32 * 0.0000001;
+                            if ch == 0 { v } else { -v }
+                        });
+                        r.play(&mut output);
+                        if n > 100 {
+                            for f in output.chunks_exact(2) {
+                                if let Some(old) = last { error = error.max((f[0] - old - 0.0000001f32).abs()); }
+                                error = error.max((f[0] + f[1]).abs());
+                                if f[0] < 0.099 { error = 1.; }
+                                last = Some(f[0]);
+                            }
+                        }
+                    }
+                    m.stop();
+                    assert!(error < 0.00000003, "{rate} Hz, {ppq} PPQ, {block} frames: continuity error {error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn monitoring_tiny_callbacks_survives_worker_batches() {
+        let _lock=crate::capture::TEST_RECORDING.lock().unwrap_or_else(|e|e.into_inner());
+        let m=crate::input_monitor::monitor();
+        for rate in [44100,48000,96000] { for (ppq,tempo) in [(96,140.),(24,90.)] {for block in [16,32] { for batch in [0,1,2,4] {
+            m.start(1,&crate::capture::Input{device:"Synthetic".into(),asio:true,first:0,stereo:true});
+            let mut p=Project::default();p.ppq=ppq;p.tempo=Some(tempo);p.mixer=(0..2).map(os_model::MixerTrack::new).collect();
+            let mut e=Engine::new(&p,&mut SampleLibrary::default(),rate,PlayMode::Song);e.clear_schedule();e.set_awake(true);
+            let (mut r,ctl,shared)=renderer(e);ctl.report.store(false,Ordering::Relaxed);r.inline.as_mut().unwrap().rate=rate;
+            r.inline.as_ref().unwrap().engine.lock().unwrap().set_mixer_input(Box::new(DeviceInput{shared:shared.clone(),ctl,kind:Kind::Live,owner:1}));
+            let mut feeder=if batch>0 {r.inline.take()} else {None};
+            if let Some(f)=&mut feeder {f.fill(PREFILL_FRAMES);}
+            let mut out=vec![0.;block*2];let mut last=None::<f32>;let mut error=0f32;let mut silent=0;let mut frames=0;
+            let count=4*rate as usize/block;
+            for n in 0..count {
+                m.push(true,rate,block,|ch,f| {let x=0.2+((n*block+f) as f32)*0.0000001;if ch==0{x}else{-x}});
+                r.play(&mut out);
+                if let Some(f)=&mut feeder {if (n+1)%batch==0 {f.fill(0);}}
+                if n>rate as usize/block {for f in out.chunks_exact(2){if let Some(v)=last{error=error.max((f[0]-v-0.0000001).abs());}if f[0].abs()<0.01{silent+=1;}last=Some(f[0]);frames+=1;}}
+            }
+            m.stop();
+            assert_eq!(silent, 0, "{rate}Hz {ppq}PPQ {block}frames batch{batch}: {silent}/{frames} gaps");
+            assert!(error < 0.00000003, "{rate}Hz {ppq}PPQ {block}frames batch{batch}: error {error}");
+            assert_eq!(shared.underruns.load(Ordering::Relaxed), 0);
+        }}}}
+    }
+
+    #[test]
+    fn reset_underruns_preserves_lifetime_diagnostics() {
+        let (tx, _) = mpsc::channel();
+        let tp = Transport { tx, latest: Arc::new(Mutex::new(None)), instruments: Arc::new(Mutex::new(Hosts::default())), shared: Arc::new(Shared::default()), thread: None };
+        tp.shared.underruns.store(7, Ordering::Relaxed);
+        assert_eq!(tp.visible_underruns(), 7);
+        tp.reset_underruns();
+        assert_eq!(tp.visible_underruns(), 0);
+        assert_eq!(tp.underruns(), 7);
+        tp.shared.underruns.fetch_add(2, Ordering::Relaxed);
+        assert_eq!(tp.visible_underruns(), 2);
+    }
+
     #[test]
     fn an_empty_queue_counts_an_underrun() {
         let (e, _) = looping_engine();
@@ -2247,7 +2560,9 @@ mod tests {
                 }
             }
         }
-        let (_, project) = looping_engine();
+        let (_, mut project) = looping_engine();
+        // New templates bypass effect groups until explicitly enabled.
+        project.mixer[0].slots_enabled = true;
         let entered = Arc::new(AtomicBool::new(false));
         let fx: SharedEffect = Arc::new(Mutex::new(Slow(entered.clone())));
         let t = Transport::new(None);
@@ -2294,6 +2609,24 @@ mod tests {
     }
 
     /// Pause fades out and then holds the engine exactly; resume continues from that frame (no restart, no jump).
+    #[test]
+    fn stop_finishes_its_fade_when_the_short_queue_runs_out() {
+        let (e,_)=looping_engine();let (mut r,ctl,shared)=renderer(e);r.inline=None;
+        r.queue.push(&vec![0.75;128],0.,0,false,64);
+        let mut first=vec![0.;128];r.render(&mut first);assert_eq!(first[126],0.75);
+        ctl.paused.store(true,Ordering::Relaxed);
+        let before=shared.underruns.load(Ordering::Relaxed);
+        let mut out=vec![0.;640];r.render(&mut out);
+        assert!((out[0]-0.75).abs()<0.01,"no abrupt cutoff on an empty queue");
+        assert_eq!(out[638],0.);
+        assert!(out.chunks_exact(2).map(|f|f[0]).collect::<Vec<_>>().windows(2).all(|w|w[1]<=w[0]&&(w[1]-w[0]).abs()<0.01));
+        assert_eq!(shared.underruns.load(Ordering::Relaxed),before);
+        ctl.paused.store(false,Ordering::Relaxed);
+        r.queue.push(&vec![-0.75;640],64.,64,false,320);
+        r.render(&mut out);
+        assert!(out[0].abs()<0.01,"a new monitored stream fades in");
+        assert!((out[638]+0.75).abs()<1e-5);
+    }
     #[test]
     fn pause_holds_and_resume_continues() {
         let (e, _) = looping_engine();
@@ -2523,6 +2856,24 @@ mod tests {
         assert_eq!(t.spare.len(), 3, "their vectors are used again");
     }
 
+    #[test]
+    fn vu_envelopes_wait_for_playback_and_use_latest_level() {
+        let mut t = TrackPeaks::default();
+        t.ticks.push_back((0, vec![[0.5, 0.5]]));
+        t.vu_ticks.push_back(vec![[0.2, 0.1]]);
+        t.ticks.push_back((1000, vec![[0.1, 0.1]]));
+        t.vu_ticks.push_back(vec![[0.05, 0.025]]);
+        t.take(Some(500));
+        assert_eq!(t.vu, vec![[0.2, 0.1]]);
+        t.vu_fresh = false;
+        t.take(Some(900));
+        assert!(!t.vu_fresh);
+        t.take(Some(1000));
+        assert!(t.vu_fresh);
+        assert_eq!(t.vu, vec![[0.05, 0.025]], "VU falls; it does not retain the interval peak");
+        assert_eq!(t.vu_spare.len(), 2);
+    }
+
     /// Linux shared mode on a sound server that takes long blocks (a tenth of a second and more at a 4096-frame
     /// buffer): the position and the meter move every UI frame, not once a block (issue #160). Needs a sound server.
     #[cfg(target_os = "linux")]
@@ -2640,7 +2991,7 @@ mod tests {
         assert!(crate::device::opens() > opens, "opened anew");
         assert!(t.playing() && t.seconds() > before + 0.2, "goes on from {before}: {}", t.seconds());
         assert_eq!(t.take_error(), None, "the same driver: nothing to say");
-        // Another buffer length it takes, chosen on the Audio page: it opens at that length, and then at its own again.
+        // Legacy requests for another length must not override the driver panel.
         let o = t.opened().expect("opened");
         eprintln!("{name}: {} Hz, {:?} frames; takes {:?} Hz and {:?} frames", o.rate, o.fixed, o.rates, o.sizes);
         assert!(o.rates.contains(&o.rate) || !crate::audio_cfg::RATES.contains(&o.rate), "its rate is among those it takes: {o:?}");
@@ -2650,7 +3001,7 @@ mod tests {
             }
             AudioCfg::current().with(Set::Buffer(b)).apply();
             t.reopen();
-            let (want, start) = (b.or(o.fixed), Instant::now());
+            let (want, start) = (o.fixed, Instant::now());
             while t.opened().and_then(|o| o.fixed) != want && start.elapsed() < Duration::from_secs(3) {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -2956,5 +3307,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
             assert_eq!(fx.load(Ordering::Relaxed), resets(3) + 1, "Stop, setting {on}");
         }
+    }
+}
+
+#[cfg(test)] mod pattern_follow_tests {
+    use super::*;
+    #[test] fn community_pattern_follow_leaves_song_mode_alone(){
+        let mut p=crate::app::test_project();p.current_pattern=Some(2);
+        assert_eq!(follow_pattern(PlayMode::Pattern(1),&p),PlayMode::Pattern(2));
+        assert_eq!(follow_pattern(PlayMode::Song,&p),PlayMode::Song);
+        let mut app=crate::app::App::new(None);app.state.piano.dirty=false;
+        crate::patterns::select(&mut app.state,3);assert!(app.state.piano.dirty);
+        assert_eq!(crate::rack::play_project(&app.state).current_pattern,Some(3));
     }
 }

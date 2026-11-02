@@ -16,6 +16,11 @@ use crate::playlist::{Cmd, Mark, PItem, Popup};
 /// A piano-roll command (keyboard shortcut or Tools menu entry). Note values are `1/n` notes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NCmd {
+    MenuKey(&'static str,bool,bool,bool),
+    Tool(piano::Tool),
+    View(&'static str),
+    Zoom(f32),
+    Lane(usize),
     /// Move starts (and lengths unless `starts_only`) `strength` percent of the way to the snap grid.
     Quantize { strength: u8, starts_only: bool },
     Legato,
@@ -49,7 +54,7 @@ fn item(label: &'static str, c: NCmd) -> PItem {
 }
 
 /// The toolbar's Tools menu (§11).
-pub fn tools_menu(s: &State, x: f32, y: f32) -> Popup {
+fn all_menu(s: &State, x: f32, y: f32) -> Popup {
     use crate::piano_dlg::Tool;
     use NCmd::*;
     let items = vec![
@@ -61,9 +66,12 @@ pub fn tools_menu(s: &State, x: f32, y: f32) -> Popup {
         item("Glue", Glue).key("Ctrl+G"),
         item("Discard lengths", DiscardLengths).key("Shift+D"),
         PItem::head("Tools"),
+        PItem::new("Chord workspace...",Cmd::Harmony(crate::harmony::HCmd::Open)).key("Alt+P"),
+        PItem::new("Key and scale...",Cmd::Harmony(crate::harmony::HCmd::Menu(10))),
         item("Quick quantize", Quantize { strength: 100, starts_only: false }).key("Ctrl+Q"),
         item("Quick quantize start times", Quantize { strength: 100, starts_only: true }).key("Shift+Q"),
         item("Quantize...", Dialog(Tool::Quantize)).key("Alt+Q"),
+        item("Glue", Glue).key("Ctrl+G"),
         item("Quick legato", Legato).key("Ctrl+L"),
         item("Quick chop", QuickChop).key("Ctrl+U"),
         item("Chop...", Dialog(Tool::Chop)).key("Alt+U"),
@@ -80,7 +88,40 @@ pub fn tools_menu(s: &State, x: f32, y: f32) -> Popup {
         item("Ghost channels", Ghosts).key("Alt+V").mark(Mark::Check(s.piano.ghosts)),
         item("Add time marker", AddMarker).key("Alt+T"),
     ];
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
+}
+
+/// Organized options use the same commands as keyboard editing and the tool dialogs.
+pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
+    let all=all_menu(s,x,y).items;
+    let group=|name:&str| {let a=all.iter().position(|i|i.label==name).unwrap()+1;let b=all[a..].iter().position(|i|i.head).map_or(all.len(),|i|a+i);all[a..b].to_vec()};
+    let k=|label,key,ctrl,shift,alt,shortcut|item(label,NCmd::MenuKey(key,ctrl,shift,alt)).key(shortcut);
+    let mut edit=vec![k("Undo","z",true,false,false,"Ctrl+Z"),k("Redo","z",true,true,false,"Ctrl+Shift+Z"),PItem::sep(),k("Cut","x",true,false,false,"Ctrl+X"),k("Copy","c",true,false,false,"Ctrl+C"),k("Paste","v",true,false,false,"Ctrl+V"),k("Delete","Delete",false,false,false,"Del")];
+    edit.extend(group("Edit"));
+    edit.extend([PItem::sep(),k("Shift left","Left",false,true,false,"Shift+Left"),k("Shift right","Right",false,true,false,"Shift+Right"),k("Transpose up","Up",false,true,false,"Shift+Up"),k("Transpose down","Down",false,true,false,"Shift+Down"),k("Octave up","Up",true,false,false,"Ctrl+Up"),k("Octave down","Down",true,false,false,"Ctrl+Down"),item("Mute",NCmd::Mute(true)).key("Alt+M"),item("Unmute",NCmd::Mute(false)).key("Alt+Shift+M")]);
+    let check=|label,key,default|item(label,NCmd::View(key)).mark(Mark::Check(view_on(key,default)));
+    let mut helpers=group("View");helpers.retain(|i|!matches!(i.cmd,Cmd::Piano(NCmd::AddMarker)));
+    helpers.extend([PItem::new("Key, scale and highlighting...",Cmd::Harmony(crate::harmony::HCmd::Menu(10))),check("Note grid highlights","piano_grid_highlights",true)]);
+    let items=vec![
+        PItem::sub("File",group("File")),PItem::sub("Edit",edit),
+        PItem::sub("Tools",group("Tools")),
+        PItem::sub("Stamp",crate::harmony::menu(s,2,x,y).items),
+        PItem::sub("Select",vec![k("Select all","a",true,false,false,"Ctrl+A"),k("Deselect","d",true,false,false,"Ctrl+D"),k("Invert selection","i",false,true,false,"Shift+I"),k("Select by color","c",false,true,false,"Shift+C"),k("Select random","r",false,true,false,"Shift+R")]),
+        PItem::sub("Snap",crate::piano_snap::snap_menu(s,x,y).items),
+        PItem::sub("Note length",crate::piano_snap::lengths_menu(x,y).items),
+        PItem::sub("Draw mode",[(piano::Tool::Draw,"Pencil","P"),(piano::Tool::Paint,"Brush","B"),(piano::Tool::Slice,"Slice","C"),(piano::Tool::Select,"Select","E"),(piano::Tool::Delete,"Delete","D"),(piano::Tool::Mute,"Mute","T"),(piano::Tool::Zoom,"Zoom","Z"),(piano::Tool::Playback,"Playback","Y")].into_iter().map(|(tool,label,key)|item(label,NCmd::Tool(tool)).key(key).mark(Mark::Radio(s.piano.tool==tool))).collect()),
+        PItem::sub("View",vec![item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
+        PItem::sub("Helpers",helpers),
+        PItem::sub("Time markers",vec![item("Add time marker",NCmd::AddMarker).key("Alt+T")]),
+        PItem::sub("Target channel",target_menu(s,x,y).items),
+    ];
+    Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
+}
+pub fn view_on(key:&str,default:bool)->bool {crate::prefs::text(key).map_or(default,|v|v=="1")}
+pub fn tools_menu(s:&State,x:f32,y:f32)->Popup {
+    let mut p=options_menu(s,x,y);
+    p.items=p.items.into_iter().find(|i|i.label=="Tools").unwrap().children;
+    p
 }
 
 /// The keys a held key repeats in the piano roll (spec: ui/piano-keys.md §4 rule 1): Shift / Ctrl / Alt + arrows (not
@@ -100,8 +141,10 @@ pub fn repeats(key: &winit::keyboard::Key, ctrl: bool, alt: bool, shift: bool) -
 /// when the key was taken. Called while the piano roll is shown and the playlist is not in front of it.
 pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> bool {
     use winit::keyboard::{Key, NamedKey};
+    if event_key(app, key, ctrl, alt) { return true; }
     let shift = app.shift;
     let is = |c: &str, l: &str| c.eq_ignore_ascii_case(l);
+    if alt&&!ctrl&&matches!(key,Key::Character(c) if is(c,"p")){crate::harmony::run(app,crate::harmony::HCmd::Open);return true;}
     let cmd = match key {
         Key::Character(c) if ctrl && is(c, "q") => NCmd::Quantize { strength: 100, starts_only: false },
         Key::Character(c) if shift && !ctrl && !alt && is(c, "q") => NCmd::Quantize { strength: 100, starts_only: true },
@@ -174,6 +217,60 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
     };
     if let Some(m) = run(app, cmd) {
         app.state.message = Some(m);
+    }
+    app.invalidate();
+    true
+}
+
+/// Clipboard/delete keys in channel event lanes must never silently edit notes.
+fn event_key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+    let s=&mut app.state;
+    if !s.piano.event_focus || !s.piano.lane.is_channel() || alt { return false; }
+    let command=match key {
+        Key::Character(c) if ctrl => c.to_ascii_lowercase(),
+        Key::Named(NamedKey::Delete) if !ctrl => "delete".into(),
+        _ => return false,
+    };
+    if !matches!(command.as_str(), "a"|"c"|"x"|"v"|"delete") { return false; }
+    let (Some(ch),Some(param))=(piano::channel(s),s.piano.lane.param()) else { return true; };
+    let range=s.piano.range.map(|(a,b)|(a.min(b),a.max(b)));
+    let points:Vec<_>=piano::controls(s).iter().filter(|c|c.channel()==ch && c.param()==param
+        && (command=="a" || range.is_none_or(|(a,b)|a<=c.position && c.position<b))).copied().collect();
+    match command.as_str() {
+        "a" => {
+            s.piano.clear_selection();
+            if let (Some(a),Some(b))=(points.iter().map(|c|c.position).min(),points.iter().map(|c|c.position).max()) {
+                s.piano.range=Some((a,b.saturating_add(1)));
+            }
+        }
+        "c"|"x" => {
+            if !points.is_empty() { s.piano.event_clipboard=points.clone(); }
+            s.message=Some(format!("Copied {} {} events",points.len(),s.piano.lane.name()));
+            if command=="x" && !points.is_empty() {
+                piano::snapshot_as(s,"Cut piano roll events");
+                piano::pattern_mut(s).controls.retain(|c|!points.contains(c));
+            }
+        }
+        "delete" => {
+            if !points.is_empty() {
+                piano::snapshot_as(s,"Delete piano roll events");
+                piano::pattern_mut(s).controls.retain(|c|!points.contains(c));
+            }
+        }
+        "v" => {
+            let clip=s.piano.event_clipboard.clone();
+            if clip.first().is_some_and(|c|c.param()!=param) {
+                s.message=Some("Choose the same channel control lane to paste its events".into());
+            } else if let Some(first)=clip.iter().map(|c|c.position).min() {
+                let at=if s.piano.marker_placed {s.piano.marker} else {range.map_or(first-piano::bar_start(s,first),|(a,_)|a)};
+                piano::snapshot_as(s,"Paste piano roll events");
+                for c in &clip {piano::set_control(s,ch,param,at.saturating_add(c.position-first),c.value);}
+                let end=clip.iter().map(|c|at.saturating_add(c.position-first).saturating_add(1)).max().unwrap_or(at);
+                s.piano.range=Some((at,end));
+            }
+        }
+        _=>{}
     }
     app.invalidate();
     true
@@ -290,18 +387,31 @@ pub fn target_menu(s: &State, x: f32, y: f32) -> Popup {
     }
     items.push(PItem::sep());
     items.push(PItem::not_yet("Auto locate"));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Run a command; returns a status message.
 pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
     app.state.playlist.popup = None;
+    if let NCmd::MenuKey(key,ctrl,shift,alt)=cmd {
+        use winit::keyboard::{Key,NamedKey};
+        let key=match key {"Delete"=>Key::Named(NamedKey::Delete),"Left"=>Key::Named(NamedKey::ArrowLeft),"Right"=>Key::Named(NamedKey::ArrowRight),"Up"=>Key::Named(NamedKey::ArrowUp),"Down"=>Key::Named(NamedKey::ArrowDown),v=>Key::Character(v.into())};
+        let previous=(app.ctrl,app.shift,app.alt);app.shift=shift;
+        app.key(&key,ctrl,alt);
+        (app.ctrl,app.shift,app.alt)=previous;
+        return None;
+    }
     let s = &mut app.state;
     // Quick quantize, Discard lengths and Quick chop use the piano roll's snap (spec: ui/piano-snap.md §6,
     // ui/global-snap.md §3).
     let unit = crate::piano_snap::unit(s);
     let done = |changed: bool, what: &str| if changed { format!("Piano roll: {what}") } else { format!("Piano roll: {what}: nothing to change") };
     let msg = match cmd {
+        NCmd::MenuKey(..)=>unreachable!(),
+        NCmd::Tool(tool)=>{s.piano.tool=tool;s.piano.overlay=None;return None;},
+        NCmd::View(key)=>{crate::prefs::set_text(key,if view_on(key,true){"0"}else{"1"});return None;},
+        NCmd::Zoom(n)=>{zoom_key(app,n);return None;},
+        NCmd::Lane(i)=>{s.piano.lane=piano::Lane::ALL[i.min(piano::Lane::ALL.len()-1)];s.piano.event_focus=true;return None;},
         NCmd::Quantize { strength, starts_only } => {
             let k = f32::from(strength.min(100)) / 100.0;
             // Without a unit ((none), Events, Markers) nothing changes.
@@ -556,4 +666,42 @@ mod tests {
         let l = legato(vec![note(0, 96, 60), slide, note(384, 48, 72), note(800, 48, 60)], 1152);
         assert_eq!(spans(&l), vec![(0, 384, 60), (96, 24, 64), (384, 416, 72), (800, 352, 60)]);
     }
+    #[test]
+    fn piano_channel_event_clipboard_isolated_undo_and_ppq() {
+        use winit::keyboard::{Key,NamedKey};
+        use os_model::ControlPoint as C;
+        let mut a=App::new(None);a.state.project=crate::app::test_project();
+        a.state.z=vec![crate::app::Win::PianoRoll];
+        a.state.piano.event_focus=true;a.state.piano.lane=piano::Lane::ChanVolume;
+        let notes=vec![Note::step(0,0),Note::step(1,0)];
+        piano::pattern_mut(&mut a.state).notes=notes.clone();
+        let original=vec![C::new(12,0,C::VOLUME,1000),C::new(36,0,C::VOLUME,8000),C::new(36,0,C::PAN,7000),C::new(12,1,C::VOLUME,9000)];
+        piano::pattern_mut(&mut a.state).controls=original.clone();
+        a.state.piano.range=Some((0,24));
+        a.key(&Key::Character("c".into()),true,false);
+        assert_eq!(a.state.piano.event_clipboard,vec![original[0]]);
+        a.state.piano.marker=96;a.state.piano.marker_placed=true;
+        a.key(&Key::Character("v".into()),true,false);
+        assert!(piano::controls(&a.state).contains(&C::new(96,0,C::VOLUME,1000)));
+        assert_eq!(piano::notes(&a.state),notes);
+        crate::history::undo(&mut a.state);assert_eq!(piano::controls(&a.state),original);
+        a.state.piano.range=Some((0,24));
+        a.key(&Key::Character("x".into()),true,false);
+        assert_eq!(piano::controls(&a.state).len(),3);
+        crate::history::undo(&mut a.state);assert_eq!(piano::controls(&a.state),original);
+        a.key(&Key::Character("a".into()),true,false);
+        a.key(&Key::Named(NamedKey::Delete),false,false);
+        assert_eq!(piano::controls(&a.state),&original[2..]);
+        assert_eq!(piano::notes(&a.state),notes);
+        crate::history::undo(&mut a.state);
+        piano::rescale(&mut a.state,96,192);
+        assert_eq!(a.state.piano.event_clipboard[0].position,24);
+        // A note-grid focus still copies all note properties unchanged.
+        a.state.piano.event_focus=false;
+        let p=piano::pattern_mut(&mut a.state);p.notes[0].velocity=23;p.notes[0].pan=99;p.notes[0].fine_pitch=88;p.notes[0].mod_x=17;
+        a.state.piano.select(1,0,vec![0]);
+        a.key(&Key::Character("c".into()),true,false);
+        assert_eq!(a.state.piano.clipboard,vec![piano::notes(&a.state)[0]]);
+    }
+
 }

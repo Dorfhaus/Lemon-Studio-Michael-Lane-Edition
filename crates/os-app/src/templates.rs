@@ -26,6 +26,27 @@ pub const EMPTY: &str = "Empty";
 const TEMPLATE_KEY: &str = "default_template";
 const LAST_KEY: &str = "last_project";
 
+/// Install this custom build's factory template into the native user library once.
+/// Existing templates and explicit user choices, including Empty, are preserved.
+pub(crate) fn install_factory_template() -> std::io::Result<()> {
+    let Some(root) = root() else { return Ok(()) };
+    let path=file_in(&root,"Lemon Studio","Lemon Starter");
+    if !path.exists() {
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        use std::io::Write;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut f)=>f.write_all(include_bytes!("../assets/templates/Lemon Starter.flp"))?,
+            Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
+            Err(e)=>return Err(e),
+        }
+    }
+    if prefs::text(TEMPLATE_KEY).is_none() {
+        prefs::set_text(TEMPLATE_KEY, "Lemon Studio/Lemon Starter");
+        crate::settings_file::write("startup_show_mixer", "1");
+    }
+    Ok(())
+}
+
 /// The Templates folder: in Lemon Studio's user folder; in tests, the one set in `TEST_DIR` (else none).
 pub fn root() -> Option<PathBuf> {
     #[cfg(test)]
@@ -48,7 +69,9 @@ pub struct Category {
 
 /// Template `name`'s file in category `cat`.
 pub(crate) fn file_in(root: &Path, cat: &str, name: &str) -> PathBuf {
-    root.join(cat).join(name).join(format!("{name}.flp"))
+    let native=root.join(cat).join(name).join(format!("{name}.lmn"));
+    let legacy=native.with_extension("flp");
+    if native.exists() || !legacy.exists() {native} else {legacy}
 }
 
 /// The folders in `dir`, by name, sorted without regard to case.
@@ -132,7 +155,7 @@ impl App {
                 .collect();
             items.push(PItem { children, ..PItem::new(c.name, Cmd::Nothing) });
         }
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -165,7 +188,11 @@ impl App {
         }
         let s = &mut self.state;
         s.path = None;
+        for m in &mut s.project.mixer { m.slots_enabled = m.is_fx_return(); }
         crate::project_info::created(s);
+        if s.project.info.title.as_deref().is_none_or(str::is_empty) {
+            s.project.info.title = Some(name.to_string());
+        }
         s.message = Some(format!("New project from the template {name}"));
         self.mark_saved();
         true
@@ -187,7 +214,19 @@ impl App {
                 }
             }
         }
-        self.new_from_template();
+        if self.new_from_template() {
+            // A fresh startup mix starts at unity, including templates from older builds.
+            // Opening an existing project above returns before this default is applied.
+            for m in &mut self.state.project.mixer { m.volume = Some(0.8); }
+            for c in &mut self.state.project.init_controls {
+                if matches!(os_model::target::decode(c.target), os_model::target::Target::MixerVolume(_)) { c.value = 12800; }
+            }
+            self.mark_saved();
+            if crate::settings_file::get("startup_show_mixer").as_deref() == Some("1") {
+                self.state.hide(crate::app::Win::ChannelRack);
+                self.state.raise(crate::app::Win::Mixer);
+            }
+        }
     }
 }
 
@@ -197,6 +236,67 @@ mod tests {
     use crate::app::Action;
     use crate::playlist::{Cmd, Mark};
     use crate::views::settings::{self, SAct};
+
+    #[test]
+    fn startup_mix_buses_are_unity() {
+        let dir=std::env::temp_dir().join(format!("lemon-unity-{}",std::process::id()));
+        let path=file_in(&dir,"Michael Lane","TECHNO MAIN");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source=std::env::var_os("LEMON_UNITY_TEMPLATE").map(PathBuf::from);
+        let bytes=source.map(|p|std::fs::read(p).unwrap()).unwrap_or_else(||include_bytes!("../assets/templates/Lemon Starter.flp").to_vec());
+        let mut file=os_flp::FlpFile::parse(&bytes).unwrap();
+        let mut project=os_flp::project::load(&file).unwrap();
+        for m in &mut project.mixer { m.volume=Some(0.5); m.slots_enabled=true; }
+        for c in &mut project.init_controls {
+            if matches!(os_model::target::decode(c.target),os_model::target::Target::MixerVolume(_)) { c.value=8000; }
+        }
+        os_flp::project::apply(&project,&mut file).unwrap();
+        std::fs::write(&path,file.to_bytes().unwrap()).unwrap();
+        TEST_DIR.with(|d| *d.borrow_mut()=Some(dir));
+        prefs::set_text(TEMPLATE_KEY,"Michael Lane/TECHNO MAIN");
+        crate::settings_file::write("startup_project","Default template");
+        let mut app=App::new(None);
+        app.startup_project();
+        crate::init::apply(&mut app.state);
+        assert!(!app.unsaved(),"fresh startup defaults are not unsaved edits");
+        for m in &app.state.project.mixer {
+            assert_eq!(m.volume,Some(0.8),"{:?} after startup",m.name);
+            assert_eq!(m.slots_enabled,m.is_fx_return(),"only FX returns enabled by default");
+            assert!(m.slot_on[10],"dedicated EQ stays independently enabled");
+        }
+        crate::mixer::hit(&mut app,crate::mixer::MHit::Effects(3));
+        assert!(app.state.project.mixer.iter().all(|m|m.slots_enabled==(m.index==3 || m.is_fx_return())));
+        crate::mixer::hit(&mut app,crate::mixer::MHit::Effects(3));
+        crate::mixer::hit(&mut app,crate::mixer::MHit::AllEffects);
+        assert!(app.state.mixer.all_fx_bypassed);
+        crate::history::undo(&mut app.state);
+        assert!(!app.state.mixer.all_fx_bypassed);
+        assert!(app.state.project.mixer.iter().all(|m|m.slots_enabled==m.is_fx_return()));
+        app.open(path);
+        assert!(app.state.project.mixer.iter().all(|m|m.slots_enabled),"saved effect choices preserved");
+        assert!(app.state.project.mixer.iter().all(|m|m.volume==Some(0.5)),"saved projects retain their mix");
+    }
+
+    #[test]
+    fn factory_template_installs_in_empty_native_library() {
+        let dir = std::env::temp_dir().join(format!("lemon_factory_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        install_factory_template().unwrap();
+        let mut app = App::new(None);
+        app.startup_project();
+        assert_eq!(app.title(), "[Lemon Starter]");
+        assert_eq!(app.state.tempo, 120.0);
+        assert_eq!(app.state.project.mixer.len(), 127);
+        assert!(app.state.shown(crate::app::Win::Mixer));
+        let path = file().unwrap();
+        std::fs::write(&path, b"user edited template").unwrap();
+        prefs::set_text(TEMPLATE_KEY, EMPTY);
+        install_factory_template().unwrap();
+        assert_eq!(picked(), EMPTY);
+        assert_eq!(std::fs::read(&path).unwrap(), b"user edited template");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A fresh Templates folder for this test (this thread's `root`), with "Minimal/Basic with limiter" (a 140 BPM
     /// project with six channels: the test project's five and a copy), "Utility/Scoring", and folders that are no
@@ -289,7 +389,7 @@ mod tests {
         assert_eq!(app.state.path, None, "untitled: Save asks where");
         assert!(app.state.file.is_some(), "the template's events are kept for the save");
         assert!(!app.unsaved());
-        assert_eq!(app.title(), "[untitled]");
+        assert_eq!(app.title(), "[Basic with limiter]");
         assert_eq!(app.state.message.as_deref(), Some("New project from the template Basic with limiter"));
         assert_eq!(last_project(), None);
         let w = app.state.project.work_time.expect("started");
@@ -321,8 +421,13 @@ mod tests {
         app.set_template("Utility/Scoring");
         // Default template.
         let mut a = App::new(None);
+        crate::settings_file::write("startup_show_mixer", "1");
         a.startup_project();
         assert_eq!((a.state.tempo, a.state.path.clone()), (140.0, None));
+        assert_eq!(a.title(), "[Scoring]");
+        assert!(a.state.shown(crate::app::Win::Playlist));
+        assert!(a.state.shown(crate::app::Win::Mixer));
+        assert!(!a.state.shown(crate::app::Win::ChannelRack));
         // Empty project.
         prefs::set_choice(&prefs::STARTUP_PROJECT, 0);
         let mut a = App::new(None);
@@ -354,5 +459,254 @@ mod tests {
         a.startup_project();
         assert_eq!((a.state.tempo, a.state.path.clone()), (140.0, None));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod send_setup_tests {
+    fn set(p: &mut dyn os_host::Plugin, name: &str, value: f64) -> String {
+        let id = (0..p.param_count()).filter_map(|i| p.param_info(i)).find(|i| i.name == name).expect(name).id;
+        assert!(p.set_param(id,value));
+        p.process_fx(48000, &mut [0.0;256], &mut [0.0;256]); p.idle();
+        p.param_text(id,value).unwrap()
+    }
+    fn number(p: &mut dyn os_host::Plugin, name: &str, wanted: f64) {
+        if (name=="Mix" || name=="mix") && wanted==100.0 {set(p,name,1.0);return;}
+        let (mut lo,mut hi)=(0.0,1.0);
+        for _ in 0..24 {
+            let mid=(lo+hi)/2.0;
+            let text=set(p,name,mid);
+            let mut actual: f64=text.trim().trim_start_matches('+').split(|c:char| !c.is_ascii_digit() && c!='.' && c!='-').next().unwrap().parse().expect(&text);
+            if name=="Space" && text.contains("ms") {actual/=1000.0;}
+            if (actual-wanted).abs() <= (wanted.abs()*0.002).max(0.001) { println!("  {name} = {text}"); return; }
+            if actual<wanted {lo=mid;} else {hi=mid;}
+        }
+        panic!("unable to set {name} to {wanted}");
+    }
+    fn choice(p:&mut dyn os_host::Plugin,name:&str,wanted:&str) {
+        let mut seen=std::collections::BTreeSet::new();
+        for i in 0..=200 {let text=set(p,name,i as f64/200.0);seen.insert(text.clone());if text.trim().eq_ignore_ascii_case(wanted) {println!("  {name} = {text}");return;}}
+        panic!("missing choice {name}={wanted}: {seen:?}");
+    }
+    #[test]
+    #[ignore]
+    fn saved_send_templates_render_audio() {
+        let cache:crate::plugin_db::Cache=serde_json::from_slice(&std::fs::read(std::env::var("LEMON_SETUP_CACHE").unwrap()).unwrap()).unwrap();
+        for name in ["TECHNO MAIN","TRANSFER MAIN"] {
+            let bytes=std::fs::read(std::path::PathBuf::from(std::env::var("LEMON_SETUP_OUT").unwrap()).join(format!("{name}.flp"))).unwrap();
+            let project=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+            let mut plugins=crate::plugins::Plugins::builtins();plugins.merge(&cache);
+            for m in project.mixer.iter().filter(|m| ["VERB LONG","VERB SHORT","VOCAL VERB","ANALOG VERB","SLAP","1/8","1/4","1/2","DELAY VERB"].contains(&m.name.as_deref().unwrap_or(""))) {
+                let reference=os_flp::wrapper::decode(&m.slots[0].as_ref().unwrap().state).unwrap();
+                let index=plugins.effects.iter().position(|a|a.desc.name==reference.name).unwrap();
+                plugins.create_effect(m.index,0,index,Some(&reference.state)).unwrap();
+                let mut p=plugins.hosted[&crate::plugins::fx_key(m.index,0)].plugin.lock().unwrap();
+                let param=|p:&dyn os_host::Plugin,name:&str| {let id=(0..p.param_count()).filter_map(|i|p.param_info(i)).find(|i|i.name==name).unwrap().id;p.param_text(id,p.param_value(id).unwrap()).unwrap()};
+                let label=m.name.as_deref().unwrap();
+                if ["1/8","1/4","1/2"].contains(&label) {
+                    assert_eq!(param(&*p,"DelayStyle").trim(),"PingPong");assert_eq!(param(&*p,"DelayLNote").trim(),label);assert_eq!(param(&*p,"DelayLSync").trim(),"Note");
+                }
+                if label=="VOCAL VERB" {assert_eq!(param(&*p,"Dynamics Mode").trim(),"Duck");assert_eq!(param(&*p,"Dynamics On/Off").trim(),"On");}
+                let mut energy=0.0f64;
+                for block in 0..750 {
+                    let mut l=[0.0f32;256];let mut r=[0.0f32;256];
+                    if block<48 {for i in 0..256 {l[i]=0.2*(std::f32::consts::TAU*440.0*(block as usize*256+i) as f32/48000.0).sin();r[i]=l[i];}}
+                    p.transport_fx(&os_engine::TransportInfo{playing:true,tempo:120.0,frame:block*256,beats:block as f64*256.0/24000.0,bar_start:0.0,bar:0,numerator:4,denominator:4,looping:None});
+                    p.process_fx(48000,&mut l,&mut r);
+                    assert!(l.iter().chain(&r).all(|v|v.is_finite()));
+                    if block>48 {energy+=l.iter().chain(&r).map(|v|(*v as f64).powi(2)).sum::<f64>();}
+                }
+                assert!(energy>1e-9,"silent send {name} {label}");println!("{name} {label}: saved state rendered energy={energy}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn prepare_send_templates() {
+        let cache:crate::plugin_db::Cache=serde_json::from_slice(&std::fs::read(std::env::var("LEMON_SETUP_CACHE").unwrap()).unwrap()).unwrap();
+        let out=std::path::PathBuf::from(std::env::var("LEMON_SETUP_OUT").unwrap());
+        std::fs::create_dir_all(&out).unwrap();
+        for template in ["TECHNO MAIN","TRANSFER MAIN"] {
+            let bytes=if template=="TECHNO MAIN" {std::fs::read(std::env::var("LEMON_PRIVATE_TEMPLATE").unwrap()).unwrap()} else {std::fs::read(format!(r"E:\FL STUDIO STUDIO\FL Studio\FL Studio\Projects\Templates\{template}\{template}.flp")).unwrap()};
+            let mut project=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+            let original=project.clone();
+            let mut plugins=crate::plugins::Plugins::builtins();plugins.merge(&cache);
+            for label in ["VERB LONG","VERB SHORT","VOCAL VERB","ANALOG VERB","SLAP","1/8","1/4","1/2","DELAY VERB"] {
+                let track=project.mixer.iter_mut().find(|m|m.name.as_deref()==Some(label)).unwrap();
+                let name=match label {"VOCAL VERB"=>"H-Reverb Stereo","SLAP"|"1/8"|"1/4"|"1/2"=>"ValhallaDelay","VERB SHORT"=>"ValhallaRoom",_=>"ValhallaVintageVerb"};
+                println!("SETUP {template} {label}: {name}");
+                let index=plugins.effects.iter().position(|a|a.desc.name==name).unwrap();
+                plugins.create_effect(track.index,0,index,None).unwrap();
+                let key=crate::plugins::fx_key(track.index,0);
+                {
+                    let mut locked=plugins.hosted[&key].plugin.lock().unwrap();let p=&mut *locked;
+                    if name=="ValhallaDelay" {
+                        number(p,"Mix",100.0);number(p,"Feedback",if label=="SLAP" {12.0} else {30.0});
+                        number(p,"HighCut",6500.0);number(p,"LowCut",180.0);number(p,"Width",100.0);
+                        if label=="SLAP" {choice(p,"DelayStyle","Single");choice(p,"DelayLSync","Msec");number(p,"DelayL_Ms",110.0);}
+                        else {choice(p,"DelayStyle","PingPong");choice(p,"DelayLSync","Note");choice(p,"DelayRSync","Note");choice(p,"DelayLNote",label);choice(p,"DelayRNote",label);}
+                    } else if name=="H-Reverb Stereo" {
+                        set(p,"Dry/Wet",1.0);number(p,"ReverbTime",1.8);number(p,"Predelay Free",30.0);
+                        choice(p,"PreDelay Mode","Free");choice(p,"Dynamics On/Off","On");choice(p,"Dynamics Mode","Duck");
+                        number(p,"Dynamics Threshold",-24.0);number(p,"Dynamics Range",-9.0);number(p,"Dynamics Recovery",300.0);
+                        number(p,"EQ HiShelf Gain",-6.0);number(p,"EQ HiShelf Freq",6500.0);
+
+                    } else if name=="ValhallaRoom" {
+                        number(p,"mix",100.0);number(p,"decay",0.7);number(p,"predelay",8.0);number(p,"HiCut",7000.0);number(p,"LoCut",180.0);
+                    } else {
+                        number(p,"Mix",if label=="DELAY VERB" {20.0} else {100.0});
+                        number(p,"Decay",match label {"VERB LONG"=>3.2,"ANALOG VERB"=>1.6,_=>1.2});
+                        number(p,"PreDelay",if label=="VERB LONG" {25.0} else {10.0});
+                        number(p,"LowCut",180.0);number(p,"HighCut",if label=="ANALOG VERB" {5500.0} else {7500.0});
+                        choice(p,"ReverbMode",if label=="ANALOG VERB" {"Plate"} else {"Concert Hall"});
+                    }
+                    let state=p.save_state().unwrap();assert!(!state.is_empty());
+                    let expected:Vec<_>=(0..p.param_count()).filter_map(|i|p.param_info(i)).filter(|i| name!="H-Reverb Stereo" || ["Dry/Wet","ReverbTime","Predelay Free","PreDelay Mode","Dynamics On/Off","Dynamics Mode","Dynamics Threshold","Dynamics Range","Dynamics Recovery","EQ HiShelf Gain","EQ HiShelf Freq"].contains(&i.name.as_str())).map(|i|(i.id,p.param_text(i.id,p.param_value(i.id).unwrap()).unwrap())).collect();
+                    assert!(p.load_state(&state));
+                    for (id,value) in expected {assert_eq!(p.param_text(id,p.param_value(id).unwrap()).unwrap(),value,"state recall {name} {id}");}
+                    let reference=crate::project_plugins::plugin_ref(p.desc(),state);
+                    track.slots[0]=Some(os_model::SlotPlugin{name:os_flp::wrapper::WRAPPER.into(),state:os_flp::wrapper::encode(None,&reference)});
+                    track.slots_enabled=true;track.slot_on[0]=true;track.slot_mix[0]=1.0;
+                }
+            }
+            let mut file=os_flp::FlpFile::parse(&bytes).unwrap();os_flp::project::apply(&project,&mut file).unwrap();let bytes=file.to_bytes().unwrap();
+            let back=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+            for m in &back.mixer {let old=original.mixer.iter().find(|x|x.index==m.index).unwrap();assert_eq!(m.routes,old.routes);assert_eq!(m.color,old.color);assert_eq!(m.name,old.name);}
+            for m in &back.mixer {let old=original.mixer.iter().find(|x|x.index==m.index).unwrap();if !["VERB LONG","VERB SHORT","VOCAL VERB","ANALOG VERB","SLAP","1/8","1/4","1/2","DELAY VERB"].contains(&m.name.as_deref().unwrap_or("")) {assert_eq!(m.slots,old.slots);}}
+            std::fs::write(out.join(format!("{template}.flp")),bytes).unwrap();
+        }
+    }
+    #[test]
+    #[ignore]
+    fn inspect_send_plugins() {
+        let cache: crate::plugin_db::Cache = serde_json::from_slice(&std::fs::read(std::env::var("LEMON_SETUP_CACHE").unwrap()).unwrap()).unwrap();
+        let mut plugins = crate::plugins::Plugins::builtins();
+        plugins.merge(&cache);
+        for name in ["H-Reverb Stereo"] {
+            let index = plugins.effects.iter().position(|a| a.desc.name == name).unwrap();
+            plugins.create_effect(42, 0, index, None).unwrap();
+            let key = crate::plugins::fx_key(42,0);
+            let p = plugins.hosted[&key].plugin.lock().unwrap();
+            println!("PLUGIN {name}");
+            for i in 0..p.param_count() {
+                let info = p.param_info(i).unwrap();
+                let value=p.param_value(info.id).unwrap_or(0.0);
+                println!("{} {} [{},{}] default={} value={} text={:?} mid={:?} max={:?}",info.id,info.name,info.min,info.max,info.default,value,p.param_text(info.id,value),p.param_text(info.id,0.5),p.param_text(info.id,1.0));
+            }
+        }
+        for name in ["TECHNO MAIN", "TRANSFER MAIN"] {
+            let path = format!(r"E:\FL STUDIO STUDIO\FL Studio\FL Studio\Projects\Templates\{name}\{name}.flp");
+            let file=os_flp::FlpFile::parse(&std::fs::read(path).unwrap()).unwrap();
+            let project=os_flp::project::load(&file).unwrap();
+            for m in &project.mixer { if m.name.is_some() { println!("TRACK {name} {} {:?} routes={:?} slots={:?}",m.index,m.name,m.routes,m.slots.iter().map(|s|s.as_ref().map(|s|&s.name)).collect::<Vec<_>>()); } }
+        }
+    }
+}
+
+#[cfg(test)]
+mod public_tests {
+    use os_engine::effects::{delay as d,reverb as r,dynamics as c};
+    fn slot(name:&str,state:Vec<u8>)->os_model::SlotPlugin {
+        let reference=os_model::PluginRef{format:"clap".into(),name:name.into(),vendor:"Lemon Studio".into(),path:format!("{name}.clap"),state,..Default::default()};
+        os_model::SlotPlugin{name:os_flp::wrapper::WRAPPER.into(),state:os_flp::wrapper::encode(None,&reference)}
+    }
+    #[test]
+    #[ignore]
+    fn generate_public_template() {
+        let bytes=std::fs::read(std::env::var("LEMON_PRIVATE_TEMPLATE").unwrap()).unwrap();
+        let personal=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+        let mut p=crate::app::default_project();p.tempo=personal.tempo;p.ppq=personal.ppq;
+        p.arrangements=vec![os_model::Arrangement{number:0,name:Some("Arrangement".into()),tracks:(1..=500).map(os_model::PlaylistTrack::new).collect(),..Default::default()}];
+        p.mixer=personal.mixer.clone();
+        for m in &mut p.mixer {m.slots=std::array::from_fn(|_|None);m.slot_on=[true;64];m.slot_mix=[1.0;64];m.slots_enabled=true;m.origin=None;m.latency_in=0.0;m.latency_out=0.0;}
+        let vocal=p.mixer.iter().find(|m|m.name.as_deref().is_some_and(|n|n.eq_ignore_ascii_case("vocal mix")||n.eq_ignore_ascii_case("vox mix")||n.eq_ignore_ascii_case("vocals"))).map(|m|m.index).unwrap_or(6);
+        println!("Ducking source: {} {:?}",vocal,p.mixer[vocal as usize].name);
+        let vr=p.mixer.iter().find(|m|m.name.as_deref()==Some("VOCAL VERB")).unwrap().index;
+        if !p.mixer[vocal as usize].routes.contains(&vr){p.mixer[vocal as usize].routes.push(vr);}
+        p.mixer[vocal as usize].send_levels.retain(|(t,_)|*t!=vr);p.mixer[vocal as usize].send_levels.push((vr,0.0));
+        let port=p.mixer.iter().filter(|m|m.index!=vr&&m.routes.contains(&vr)).position(|m|m.index==vocal).unwrap()+1;
+        for m in &mut p.mixer {
+            let label=m.name.as_deref().unwrap_or("");
+            if ["VERB LONG","VERB SHORT","VOCAL VERB","ANALOG VERB","DELAY VERB"].contains(&label) {
+                let mut settings=r::Settings::default();
+                settings.knobs[r::DRY]=if label=="DELAY VERB" {128}else{0};
+                settings.knobs[r::WET]=if label=="DELAY VERB" {32}else{128};
+                settings.knobs[r::EARLY]=if label=="DELAY VERB" {12}else{32};
+                settings.knobs[r::LOW_CUT]=180;
+                settings.knobs[r::HIGH_CUT]=if label=="ANALOG VERB" {55}else{75};
+                settings.knobs[r::DAMPING]=if label=="ANALOG VERB" {40}else{60};
+                settings.knobs[r::DECAY]=match label {"VERB LONG"=>32,"VERB SHORT"=>7,"VOCAL VERB"=>18,"ANALOG VERB"=>16,_=>12};
+                settings.knobs[r::PREDELAY]=match label {"VERB LONG"=>10,"VOCAL VERB"=>12,_=>3};
+                settings.knobs[r::ROOM]=if label=="VERB SHORT" {30}else{70};
+                m.slots[0]=Some(slot("Lemon Reverb",lemon_reverb::params::plugin_state_from_fl(&settings.to_state())));
+                if label=="VOCAL VERB" {
+                    let mut raw=lemon_limiter::params::default_state();
+                    let mut values=c::DEFAULTS;values[c::LIM_ATT]=0;values[c::CEILING]=2000;
+                    values[c::COMP_THRES]=450;values[c::COMP_RATIO]=700;values[c::COMP_KNEE]=300;
+                    values[c::COMP_ATT]=2000;values[c::COMP_REL]=8000;
+                    for (k,v) in values.into_iter().enumerate(){raw[(k+1)*4..(k+2)*4].copy_from_slice(&v.to_le_bytes());}
+                    raw[164..168].copy_from_slice(&1i32.to_le_bytes());
+                    let mut fx=slot("Lemon Limiter",lemon_limiter::params::plugin_state_from_fl(&raw));
+                    fx.state=os_flp::wrapper::set_input_port(&fx.state,1,port as i32).unwrap();m.slots[1]=Some(fx);
+                }
+            } else if ["SLAP","1/8","1/4","1/2"].contains(&label) {
+                let mut settings=d::Settings::default();settings.v[d::DRY]=0;settings.v[d::WET]=6000;
+                settings.v[d::TYPE]=if label=="SLAP" {d::TRUE_STEREO}else{d::PING_PONG};
+                settings.v[d::SYNC]=if label=="SLAP" {0}else{1};
+                settings.v[d::TIME]=match label {"1/8"=>96,"1/4"=>192,"1/2"=>384,_=>339};
+                settings.v[d::FEEDBACK]=if label=="SLAP" {576}else{1440};settings.v[d::CUTOFF]=4500;settings.v[d::RESONANCE]=0;
+                m.slots[0]=Some(slot("Lemon Delay",lemon_delay::params::plugin_state_from_fl(&settings.to_state())));
+            }
+        }
+        let bytes=os_flp::project::create(&p).unwrap().to_bytes().unwrap();
+        let back=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();assert_eq!(back.mixer.len(),p.mixer.len());assert_eq!(back.mixer.iter().flat_map(|m|m.slots.iter().flatten()).count(),10);
+        std::fs::write(std::env::var("LEMON_PUBLIC_OUT").unwrap(),bytes).unwrap();
+    }
+    #[test]
+    fn public_template_native_sends() {
+        let bytes=include_bytes!("../assets/templates/Lemon Starter.flp");
+        let p=os_flp::project::load(&os_flp::FlpFile::parse(bytes).unwrap()).unwrap();
+        assert!(p.channels.iter().all(|c|c.sample_path.is_none()&&c.plugin.is_none()));
+        assert!(p.arrangements.iter().all(|a|a.clips.is_empty()));
+        let mut plugins=crate::plugins::Plugins::builtins();let mut count=0;
+        for m in &p.mixer {for (k,fx) in m.slots.iter().enumerate().filter_map(|(k,s)|s.as_ref().map(|s|(k,s))) {
+            let reference=os_flp::wrapper::decode(&fx.state).unwrap();assert!(!reference.path.contains(':'));
+            assert!(["Lemon Reverb","Lemon Delay","Lemon Limiter"].contains(&reference.name.as_str()));
+            let index=plugins.effects.iter().position(|a|a.desc.name==reference.name).unwrap();
+            plugins.create_effect(m.index,k as u8,index,Some(&reference.state)).unwrap();
+            let label=m.name.as_deref().unwrap();
+            if reference.name=="Lemon Delay" {
+                let raw=lemon_delay::params::fl_from_plugin_state(&reference.state).unwrap();let settings=d::Settings::from_state(&raw).unwrap();
+                if label!="SLAP" {assert_eq!(settings.v[d::TYPE],d::PING_PONG);assert_eq!(settings.v[d::SYNC],1);
+                    let beats=match label {"1/8"=>0.5,"1/4"=>1.0,"1/2"=>2.0,_=>panic!()};
+                    for bpm in [90.0,120.0,150.0] {assert!((d::delay_seconds(d::norm(d::TIME,settings.v[d::TIME]),true,bpm)-beats*60.0/bpm).abs()<1e-7);}
+                }
+            }
+            if reference.name=="Lemon Limiter" {
+                let ports=os_flp::wrapper::input_ports(&fx.state);assert!(ports[1]>0);
+                let incoming:Vec<_>=p.mixer.iter().filter(|t|t.index!=m.index&&t.routes.contains(&m.index)).collect();
+                assert_eq!(incoming[ports[1] as usize-1].name.as_deref(),Some("Vocal Mix"));
+                let mut fx=plugins.hosted[&crate::plugins::fx_key(m.index,k as u8)].plugin.lock().unwrap();
+                let mut dry_energy=0.0;let mut duck_energy=0.0;
+                for keyed in [false,true] {
+                    fx.load_state(&reference.state);fx.reset_fx();
+                    for block in 0..200 {
+                        let mut l=[0.2;256];let mut r=[0.2;256];let key=[if keyed{0.5}else{0.0};256];
+                        fx.process_fx_keyed(48000,&mut l,&mut r,(&key,&key));
+                        if block>100 {let energy=l.iter().map(|v|(*v as f64).powi(2)).sum::<f64>();if keyed{duck_energy+=energy;}else{dry_energy+=energy;}}
+                    }
+                }
+                assert!(duck_energy<dry_energy*0.5,"duck {duck_energy} vs unkeyed {dry_energy}");
+            }
+            if k==0 {
+                let mut fx=plugins.hosted[&crate::plugins::fx_key(m.index,k as u8)].plugin.lock().unwrap();let mut energy=0.0;
+                for block in 0..600 {let mut l=[0.0;256];let mut r=[0.0;256];if block==0 {l[0]=0.5;r[0]=0.5;}fx.process_fx(48000,&mut l,&mut r);
+                    assert!(l.iter().chain(&r).all(|v|v.is_finite()));if block>0{energy+=l.iter().chain(&r).map(|x|(*x as f64).powi(2)).sum::<f64>();}}
+                assert!(energy>1e-9,"silent send {label}");println!("{label}: native state loads and tail renders");
+            }
+            count+=1;
+        }}
+        assert_eq!(count,10);
     }
 }

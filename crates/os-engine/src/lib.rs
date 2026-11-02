@@ -23,9 +23,12 @@ pub mod laws;
 pub mod metronome;
 pub mod sample;
 pub mod voices;
+pub mod vu;
 pub mod wav;
 
 pub use clock::Clock;
 pub use engine::{Engine, EngineReport, PlayMode};
 pub use instrument::{ChannelLevels, ChannelVoicing, HostedEffect, Instrument, NoteLevels, SharedEffect, SharedInstrument, TransportInfo, TuningBend};
 pub use sample::{Sample, SampleLibrary};
+
+mod varispeed;

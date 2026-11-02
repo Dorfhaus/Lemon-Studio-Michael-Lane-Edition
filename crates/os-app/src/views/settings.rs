@@ -288,6 +288,7 @@ pub const LIVE: &[&str] = &[
     "Reset",
     ASSOCIATE_CHECK,
     SHOW_ASIO_PANEL,
+    RESET_UNDERRUNS,
 ];
 
 /// MIDI: lists the devices again (`App::midi_refresh`); Update MIDI scripts stays greyed with its reason.
@@ -321,6 +322,8 @@ pub const MODE_EXCLUSIVE: &str = "Exclusive (Lemon Studio alone, smaller buffers
 #[cfg(target_os = "linux")]
 pub const MODE_EXCLUSIVE: &str = "Exclusive (ALSA directly, past the sound server)";
 const MODE_ASIO: &str = "Mode: for Windows devices (an ASIO driver plays on its own terms)";
+/// Reset the visible counter without erasing lifetime diagnostic totals.
+pub const RESET_UNDERRUNS: &str = "Reset underruns";
 /// With an ASIO driver: its own settings window, where its buffer length is set.
 pub const SHOW_ASIO_PANEL: &str = "Show ASIO panel";
 /// Show ASIO panel's hint while no ASIO driver is open.
@@ -634,11 +637,13 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     },
                     vec![
                         combo(&rate_text, 120.0, SAMPLE_RATE),
-                        combo(&buffer, 190.0, BUFFER_LENGTH),
+                        if asio {
+                            Text(st.driver.as_ref().and_then(|d| d.fixed.map(|b| format!("Buffer: {} - set in ASIO panel", buffer_text(b, d.rate)))).unwrap_or_else(|| "Buffer: controlled by ASIO panel".into()), true)
+                        } else { combo(&buffer, 190.0, BUFFER_LENGTH) },
                         Check("Auto close", false),
                     ],
                     st.instead.iter().map(|i| Text(i.clone(), true)).collect(),
-                    vec![Text(st.status[0].clone(), true), Text(st.status[1].clone(), true)],
+                    vec![Text(st.status[0].clone(), true), Text(st.status[1].clone(), true), Buttons(vec![(RESET_UNDERRUNS, 136.0)])],
                     // Below Status, as FL has it; there are ASIO drivers on Windows only. The ASIO logo goes with them
                     // (the SDK's usage guidelines: in every dialog that switches ASIO on). With none installed, a line
                     // says to install one.
@@ -650,21 +655,19 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     },
                     vec![
                         List(vec![("Output devices", 0.0)], listed.map(|d| vec![d]).collect(), 4),
-                        Check2("Mix in buffer switch", false, "Triple buffer", false),
-                        combo("Highest", 96.0, "Priority"),
-                        Check("Safe overloads", true),
-                        combo("Mixer", 96.0, "Playback tracking"),
+                        txt("Audio processing priority: high (automatic)"),
+                        txt("Driver callbacks feed the output buffers automatically."),
                     ],
                 ]
                 .into_iter()
                 .flatten()
                 .collect()),
                 g("CPU", vec![
-                    Check2("Multithreaded generator processing", true, "Smart disable", true),
-                    Check2("Multithreaded mixer processing", true, "Align tick lengths", false),
+                    txt("Independent mixer effects use multiple cores automatically."),
+                    txt("Generators run in order. Smart disable is off."),
                 ]),
                 g("Mixer", vec![
-                    combo("24-point sinc", 122.0, "Resampling quality"),
+                    txt("Playback: 16-point sinc. Export default: 512-point sinc."),
                     Value(crate::prefs::number_text(&crate::prefs::BROWSER_PREVIEW_TRACK), "Browser preview track"),
                     Value(crate::prefs::number_text(&crate::prefs::METRONOME_TRACK), "Metronome track"),
                     Check("Play truncated notes on transport", true),
@@ -918,7 +921,9 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             g("", [
                 vec![
                     Gap(20.0),
-                    Big(format!("Lemon Studio {}", env!("CARGO_PKG_VERSION"))),
+                    Big("Lemon Studio — Michael Lane Edition".into()),
+                    txt(&format!("Version {} · build {}", env!("CARGO_PKG_VERSION"), crate::updates::VERSION)),
+                    txt("Customized and maintained by Michael Lane."),
                     txt("A digital audio workstation written in Rust."),
                     txt("Copyright (C) 2026 ItsAlphaNeon and the Lemon Studio contributors."),
                     Gap(10.0),

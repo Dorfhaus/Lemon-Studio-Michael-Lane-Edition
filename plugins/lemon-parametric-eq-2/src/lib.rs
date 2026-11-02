@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::*;
-use os_engine::effects::eq::{Equalizer, Options, PARAMS};
+use os_engine::effects::eq::{Options, PARAMS, routed::{self,RoutedEq as Equalizer}};
 
 use params::EqParams;
 
@@ -104,13 +104,14 @@ impl LemonEq {
         }
         if let Ok(b) = self.params.extra.try_read() {
             self.opts = Options::from_image(&b);
+            self.eq.set_routes(routed::routes(&b,false));
             self.monitor = (params::byte(&b, params::MONITOR_BYTE), params::opt(&b, params::Opt::MonitorInput));
             self.extra_seen = v;
         }
     }
 
     /// The parameters and options as they stand, handed to the processing: a changed value counts as an automation
-    /// value (coefficients anew from this block on, no smoothing, spec: "State and timing").
+    /// value (HQ Enhanced ramps continuous band coefficients; other modes retain their original timing).
     fn apply(&mut self) {
         self.read_extra();
         self.eq.set_options(self.opts);
@@ -176,6 +177,7 @@ impl Plugin for LemonEq {
         self.read_extra();
         self.applied = self.params.settings(self.opts.mask).params();
         self.eq = Equalizer::new(self.sr, &self.applied, self.opts);
+        self.eq.set_routes(routed::routes(&self.params.extra_copy(),false));
         self.latency = self.eq.latency() as u32;
         ctx.set_latency_samples(self.latency);
         self.feed = Vec::with_capacity(config.max_buffer_size as usize);

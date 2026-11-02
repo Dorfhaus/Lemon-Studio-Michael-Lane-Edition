@@ -9,6 +9,7 @@
 // spec: plugins/fruity-parametric-eq-2.md, plugins/parametric-eq-2.md (the state's option table)
 
 pub mod design;
+pub mod routed;
 mod equalizer;
 mod fft;
 pub(crate) mod hq;
@@ -191,19 +192,19 @@ impl Settings {
 /// The engine's own slot effect: the original's processing for a project's saved state, with the buffers of silence FL
 /// runs before a render already run (so LIN starts at full level, as in FL's exports).
 pub struct ParametricEq {
-    eq: Equalizer,
+    eq: routed::RoutedEq,
     l: Vec<f32>,
     r: Vec<f32>,
 }
 
 impl ParametricEq {
     pub fn from_state(state: &[u8], sample_rate: u32) -> Option<Self> {
-        let mut eq = Equalizer::from_state(state, f64::from(sample_rate))?;
+        let mut eq = routed::RoutedEq::from_state(state, f64::from(sample_rate))?;
         eq.preroll();
         Some(ParametricEq { eq, l: Vec::new(), r: Vec::new() })
     }
 
-    pub fn equalizer(&self) -> &Equalizer {
+    pub fn equalizer(&self) -> &routed::RoutedEq {
         &self.eq
     }
 

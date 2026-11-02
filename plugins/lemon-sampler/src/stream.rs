@@ -716,7 +716,7 @@ impl Played {
     /// (an offline render) the frames are read now instead.
     pub fn read(&self, feed: &mut Feed, pos: f64, ratio: f64, quality: Quality, wait: bool) -> Option<(f32, f32)> {
         let n = self.frames();
-        let (lo, hi) = resample::reach(n, pos, ratio);
+        let (lo, hi) = resample::reach_quality(n, pos, ratio, quality);
         loop {
             // The voice's ring, once the frames are in.
             if let Some(i) = feed.slot {

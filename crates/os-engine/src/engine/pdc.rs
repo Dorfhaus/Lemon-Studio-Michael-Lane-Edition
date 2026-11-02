@@ -158,13 +158,14 @@ pub(super) struct Pdc {
     /// Per channel: the delay its instrument last reported, and the pad between it and its mixer track.
     pub chan_delay: Vec<u32>,
     pub chan_pad: Vec<Pad>,
+    pub aux_pad: Vec<Vec<Pad>>,
     /// What the pads were last worked out with, for the automation waits: per track `leaving`, per slot `arriving`
     /// plus the delays of the slots above it that ran; and per track whether a slot was on (the master always counts).
     leaving: Vec<i64>,
-    slot_late: Vec<[i64; 10]>,
+    slot_late: Vec<[i64; 64]>,
     any_on: Vec<bool>,
     /// Slots that were off when the project was loaded: values for them never wait.
-    off_at_load: Vec<[bool; 10]>,
+    off_at_load: Vec<[bool; 64]>,
     /// The longest a sound takes through the pads, and the frames a live engine still plays after its last sound.
     reach: u64,
     pub drain: u64,
@@ -198,10 +199,11 @@ pub(super) struct Pdc {
 
 impl Pdc {
     /// For an engine with `channels` channels whose tracks have `slot_on` switches as loaded.
-    pub fn new(channels: usize, slot_on: impl Iterator<Item = [bool; 10]>) -> Pdc {
+    pub fn new(channels: usize, slot_on: impl Iterator<Item = [bool; 64]>) -> Pdc {
         Pdc {
             chan_delay: vec![0; channels],
             chan_pad: vec![Pad::default(); channels],
+            aux_pad: vec![Vec::new();channels],
             off_at_load: slot_on.map(|s| s.map(|on| !on)).collect(),
             first: true,
             fresh: true,
@@ -214,7 +216,7 @@ impl Pdc {
     /// never waits, nor does anything for a negative lateness.
     pub fn wait(&self, target: Target, tick: i64) -> u64 {
         let late = match target {
-            Target::MixerVolume(t) | Target::MixerPan(t) | Target::MixerSeparation(t) | Target::MixerEq(t, ..) | Target::MixerSend(t, _) => {
+            Target::MixerVolume(t) | Target::MixerPan(t) | Target::MixerSeparation(t) | Target::MixerEq(t, ..) | Target::MixerStrip(t, _) | Target::MixerSend(t, _) => {
                 self.leaving.get(usize::from(t)).copied().unwrap_or(0)
             }
             Target::SlotOn(t, s) | Target::SlotMix(t, s) | Target::SlotParam(t, s, _) => {
@@ -235,6 +237,7 @@ impl Pdc {
         for p in &mut self.chan_pad {
             p.clear();
         }
+        for p in self.aux_pad.iter_mut().flatten() {p.clear();}
         self.waiting.clear();
         self.marks.clear();
         (self.first, self.fresh, self.due) = (true, true, false);
@@ -248,6 +251,7 @@ impl Pdc {
         for (new, o) in self.chan_pad.iter_mut().zip(&mut old.chan_pad) {
             *new = std::mem::take(o);
         }
+        for (new,old) in self.aux_pad.iter_mut().zip(&mut old.aux_pad) {*new=std::mem::take(old);}
         for (new, &o) in self.chan_delay.iter_mut().zip(&old.chan_delay) {
             *new = o;
         }
@@ -310,6 +314,7 @@ impl Engine {
             let Some(inst) = ch.instrument.0.as_ref().filter(|i| !i.is_poisoned()) else { continue };
             if let (Some(i), Some(d)) = (lock_busy(inst, until, wait, export), self.pdc.chan_delay.get_mut(c)) {
                 *d = i.reported_delay();
+                self.pdc.aux_pad[c].resize_with(i.extra_outputs().min(15),Pad::default);
             }
         }
         for fx in self.tracks.iter_mut().flat_map(|t| t.effects.iter_mut()) {
@@ -330,8 +335,8 @@ impl Engine {
         let mut ins: Vec<TrackIn> = (0..n)
             .map(|t| {
                 let m = &self.tracks[t];
-                let slots = if self.slots_run(t) { m.effects.iter().filter(|f| f.on).map(|f| u64::from(f.delay)).sum() } else { 0 };
-                TrackIn { out: m.latency.0, inp: m.latency.1, sends: m.routes.iter().map(|r| r.dest).collect(), chan: 0, slots }
+                let slots = m.effects.iter().filter(|f| f.on && (f.slot == 10 || Some(f.slot)==m.strip_slot || self.slots_run(t))).map(|f| u64::from(f.delay)).sum::<u64>();
+                TrackIn { out: m.latency.0, inp: m.latency.1, sends: m.routes.iter().map(|r| r.dest).collect(), chan: 0, slots: slots + if m.custom_strip && !m.strip_bypassed {m.tune.as_ref().map_or(0,|t|u64::from(t.latency()))}else{0} }
             })
             .collect();
         // Engine voices report none; a plugin channel counts also while it is switched off.
@@ -339,12 +344,13 @@ impl Engine {
             if ch.instrument.0.is_some() {
                 let d = self.pdc.chan_delay.get(c).copied().unwrap_or(0);
                 ins[ch.insert].chan = ins[ch.insert].chan.max(d);
+                for port in 0..self.pdc.aux_pad[c].len() {let t=(ch.insert+port+1).min(n-1);ins[t].chan=ins[t].chan.max(d);}
             }
         }
         let l = lateness(&ins, &self.order, self.rate);
         let runs: Vec<bool> = (0..n).map(|t| self.slots_run(t)).collect();
         let on: Vec<bool> = (0..n).map(|t| self.slots_on(t)).collect();
-        self.pdc.slot_late = vec![[0; 10]; n];
+        self.pdc.slot_late = vec![[0; 64]; n];
         for (t, m) in self.tracks.iter_mut().enumerate() {
             // What the engine plays into the track itself (sampler voices, the metronome) reports no delay.
             m.pad.set_len(l.channel_pad(t, 0));
@@ -355,10 +361,12 @@ impl Engine {
             for fx in &mut m.effects {
                 fx.dry_pad.set_len(fx.delay as usize);
             }
-            let mut late = l.arriving[t];
-            for k in 0..10 {
+            let mut late = l.arriving[t] + if m.custom_strip && !m.strip_bypassed {m.tune.as_ref().map_or(0,|t|i64::from(t.latency()))}else{0};
+            let mut order:Vec<usize>=(0..64).collect();
+            order.sort_by_key(|&k| if m.strip_slot==Some(k){0}else if k==10 {if m.parametric_pre {1}else{66}} else {k+2});
+            for k in order {
                 self.pdc.slot_late[t][k] = late;
-                if runs[t] {
+                if k == 10 || Some(k)==m.strip_slot || runs[t] {
                     late += m.effects.iter().filter(|f| f.slot == k && f.on).map(|f| i64::from(f.delay)).sum::<i64>();
                 }
             }
@@ -401,6 +409,7 @@ impl Engine {
             if let Some(p) = self.pdc.chan_pad.get_mut(c) {
                 p.set_len(len);
             }
+            for (port,p) in self.pdc.aux_pad[c].iter_mut().enumerate() {p.set_len(l.channel_pad((ch.insert+port+1).min(n-1),self.pdc.chan_delay[c]));}
         }
         self.pdc.reach = (0..n).map(|t| l.leaving[t].max(l.arriving[t]) + l.extra[t]).max().unwrap_or(0).max(0) as u64;
         if self.pdc.fresh {
@@ -442,6 +451,7 @@ impl Engine {
         self.out_pos = 0;
         if self.pdc.lag == 0 {
             (self.out_tick, self.out_frame, self.out_held, self.out_len) = (tick as f64, frame, held, n);
+            self.apply_varispeed();
             return;
         }
         let marks = &mut self.pdc.marks;
@@ -455,7 +465,14 @@ impl Engine {
         self.out_len = m.len.max(1);
         (self.out_tick, self.out_frame, self.out_held) =
             if m.held { (m.tick as f64, m.frame, true) } else { (m.tick as f64 + into as f64 / self.out_len as f64, m.frame + into, false) };
+        self.apply_varispeed();
     }
+    fn apply_varispeed(&mut self) {
+        let before=self.out.len();
+        self.varispeed.process(&mut self.out, self.speed_ratio);
+        if before>0 {self.out_len=((self.out_len as f64*self.out.len() as f64/before as f64).round() as u64).max(1);}
+    }
+
 }
 
 #[cfg(test)]

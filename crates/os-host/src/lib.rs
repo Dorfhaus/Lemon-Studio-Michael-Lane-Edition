@@ -208,6 +208,11 @@ pub trait Plugin: Instrument + HostedEffect + Send {
     fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String>;
     /// The editor's current size in pixels (when open). The host polls it: a plugin that resizes itself is followed.
     fn editor_size(&self) -> Option<(u32, u32)>;
+    /// Whether the open editor accepts host-driven resizing (UI thread).
+    fn editor_resizable(&self) -> bool { false }
+    /// Requests an editor size in device pixels; returns the size accepted by the plugin.
+    fn resize_editor(&mut self, _width: u32, _height: u32) -> Option<(u32, u32)> { None }
+
     fn close_editor(&mut self);
 
     /// The plugin's whole state as bytes, in the format's own layout (UI thread). Round-trips through `load_state`
@@ -274,6 +279,8 @@ pub trait Plugin: Instrument + HostedEffect + Send {
         let _ = (id, value);
         false
     }
+    /// Non-parameter document edits (for example ARA); consumed on the UI thread.
+    fn take_state_changed(&mut self) -> bool { false }
     /// Parameter changes the plugin made by itself since the last call (its editor), oldest first.
     fn take_param_events(&mut self) -> Vec<ParamEvent> {
         Vec::new()

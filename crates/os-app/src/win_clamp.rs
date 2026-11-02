@@ -45,6 +45,14 @@ pub fn keep_px(p: (i32, i32), w: i32, work: [i32; 4], k: f32) -> (i32, i32) {
     (p.0.min(work[2] - kw).max(work[0] + kw - w), p.1.min(work[3] - kt).max(work[1]))
 }
 
+/// Docked plugin frames retain a usable caption, not just their right-side buttons.
+/// Preserve fixed-size editor dimensions even when larger than the workspace.
+pub fn keep_plugin_px(p:(i32,i32),width:i32,work:[i32;4],scale:f32)->(i32,i32) {
+    let grab=((240.0*scale).round() as i32).min(width).min((work[2]-work[0]).max(1));
+    let title=((crate::plugin_window::TITLE_H*scale).ceil() as i32).min((work[3]-work[1]).max(1));
+    (p.0.min(work[2]-grab).max(work[0]+grab-width),p.1.min(work[3]-title).max(work[1]))
+}
+
 /// `r` moved fully into `work`, as little as it takes; too wide or too tall, it shrinks to the workspace, though not
 /// below `min`, and then starts at the workspace's left or top edge.
 pub fn inside(r: Rect, work: Rect, min: (f32, f32)) -> Rect {
@@ -137,11 +145,183 @@ fn set_pos(s: &mut State, w: Win, pos: (f32, f32)) {
     }
 }
 
-/// Window `w` dragged by its title bar to top-left `want`: as far as `keep` lets it.
-pub fn drag_to(s: &mut State, w: Win, want: (f32, f32)) {
-    if let Some(r) = rect_of(s, w) {
-        set_pos(s, w, keep(want.0, want.1, r.w, s.work_rect()));
+/// Magnetic edges in logical pixels, independent of display scaling.
+const SNAP_DISTANCE: f32 = 10.0;
+
+fn snap_position(r: Rect, work: Rect, others: impl Iterator<Item = Rect>) -> (f32, f32) {
+    let mut dx = SNAP_DISTANCE + 1.0;
+    let mut dy = SNAP_DISTANCE + 1.0;
+    let nearest = |best: &mut f32, delta: f32| {
+        if delta.abs() <= SNAP_DISTANCE && delta.abs() < best.abs() { *best = delta; }
+    };
+    for d in [work.x - r.x, work.right() - r.right()] { nearest(&mut dx, d); }
+    for d in [work.y - r.y, work.bottom() - r.bottom()] { nearest(&mut dy, d); }
+    for other in others {
+        // Only nearby windows attract: distant edges sharing a coordinate must not snap.
+        if r.y <= other.bottom() + SNAP_DISTANCE && r.bottom() >= other.y - SNAP_DISTANCE {
+            for d in [other.x - r.right(), other.right() - r.x, other.x - r.x, other.right() - r.right()] {
+                nearest(&mut dx, d);
+            }
+        }
+        if r.x <= other.right() + SNAP_DISTANCE && r.right() >= other.x - SNAP_DISTANCE {
+            for d in [other.y - r.bottom(), other.bottom() - r.y, other.y - r.y, other.bottom() - r.bottom()] {
+                nearest(&mut dy, d);
+            }
+        }
     }
+    (r.x + if dx.abs() <= SNAP_DISTANCE { dx } else { 0.0 },
+     r.y + if dy.abs() <= SNAP_DISTANCE { dy } else { 0.0 })
+}
+
+/// Snap the dragged window to visible neighboring edges, then keep its title reachable.
+pub fn drag_to(s: &mut State, w: Win, want: (f32, f32)) {
+    if let Some(mut r) = rect_of(s, w) {
+        if w.slot().is_some() { r = s.win_rect(w); }
+        r.x = want.0; r.y = want.1;
+        let others = s.z.iter().copied().filter(|&other| other != w).filter_map(|other| {
+            if let Some(i) = other.slot() {
+                if s.wins[i].maxed { return None; }
+                Some(s.win_rect(other))
+            } else { rect_of(s, other) }
+        });
+        let pos = snap_position(r, s.work_rect(), others);
+        set_pos(s, w, keep(pos.0, pos.1, r.w, s.work_rect()));
+    }
+}
+
+/// Geometry is the attachment: separating, hiding or maximizing a window releases its edges.
+/// Keep the original rectangles throughout a drag so minimum-size clamps never cause drift.
+pub type Layout = Vec<(Win, Rect)>;
+const JOIN_EPS: f32 = 1.0;
+fn near(a: f32, b: f32) -> bool { (a-b).abs() <= JOIN_EPS }
+fn overlap(a: f32, b: f32, c: f32, d: f32) -> bool { b.min(d)-a.max(c) > JOIN_EPS }
+fn minimum(s: &State, w: Win) -> (f32,f32) {
+    if w==Win::Mixer&&s.mixer.layout==crate::rack_mixer::VIEW {let (width,height)=w.min_size();(width,height.max(crate::rack_mixer::minimum_height(s).min(s.work_rect().h)))}
+    else if w == Win::ChannelRack { (views::rack::min_w(s), views::rack::MIN_H) } else { w.min_size() }
+}
+pub fn layout(s: &State) -> Layout {
+    s.z.iter().filter_map(|&w| {
+        if let Some(i)=w.slot() {
+            (!s.wins[i].maxed && !s.wins[i].mini).then_some((w,s.wins[i].rect))
+        } else if w==Win::ChannelRack {Some((w,views::rack::rect(s)))} else {None}
+    }).collect()
+}
+pub fn resize_layout(s:&State) -> Layout {
+    layout(s).into_iter().map(|(w,r)|(w,if w.slot().is_some(){s.win_rect(w)}else{r})).collect()
+}
+fn put(s:&mut State,w:Win,r:Rect) {
+    if let Some(i)=w.slot() {s.wins[i].rect=r;}
+    else if w==Win::ChannelRack {s.rack_pos=(r.x,r.y);s.rack_size=(r.w,r.h);}
+}
+fn touching(a:Rect,b:Rect) -> bool {
+    ((near(a.right(),b.x)||near(b.right(),a.x)) && overlap(a.y,a.bottom(),b.y,b.bottom())) ||
+    ((near(a.bottom(),b.y)||near(b.bottom(),a.y)) && overlap(a.x,a.right(),b.x,b.right()))
+}
+/// Find the full connected shared divider, including T junctions. Unrelated collinear edges stay put.
+fn divider(start:&Layout,win:Win,edge:u8) -> Vec<(usize,bool)> {
+    use crate::app::{EDGE_L,EDGE_R,EDGE_T};
+    let Some(seed)=start.iter().position(|(w,_)|*w==win) else {return Vec::new()};
+    let horizontal=edge==EDGE_L||edge==EDGE_R;
+    let leading=edge==EDGE_L||edge==EDGE_T;
+    let axis=|r:Rect| if horizontal {(r.x,r.right(),r.y,r.bottom())} else {(r.y,r.bottom(),r.x,r.right())};
+    let (lo,hi,_,_)=axis(start[seed].1);let at=if leading {lo}else{hi};
+    let mut out=vec![(seed,leading)];
+    let mut n=0;
+    while n<out.len() {
+        let (i,side)=out[n];let (_,_,a,b)=axis(start[i].1);
+        for (j,(_,r)) in start.iter().enumerate() {
+            if out.iter().any(|(k,_)|*k==j) {continue;}
+            let (l,h,c,d)=axis(*r);
+            let opposite=if side {near(h,at)}else{near(l,at)};
+            if opposite && overlap(a,b,c,d) {out.push((j,!side));}
+        }
+        n+=1;
+    }
+    out
+}
+/// Magnetize the edge being resized, not the opposite edge. This includes the browser splitter
+/// (workspace left), the outer workspace and nearby window edges. Reject undersized snaps.
+pub fn snap_resize(s:&State,win:Win,edges:u8,mut r:Rect) -> Rect {
+    use crate::app::{EDGE_L,EDGE_R,EDGE_T,EDGE_B};
+    let work=s.work_rect();let min=minimum(s,win);
+    let others:Vec<_>=resize_layout(s).into_iter().filter(|(w,_)|*w!=win).map(|(_,r)|r).collect();
+    for edge in [EDGE_L,EDGE_R,EDGE_T,EDGE_B] {
+        if edges & edge==0 {continue;}
+        let horizontal=edge==EDGE_L||edge==EDGE_R;
+        let at=match edge {EDGE_L=>r.x,EDGE_R=>r.right(),EDGE_T=>r.y,_=>r.bottom()};
+        let mut candidates=if horizontal {vec![work.x,work.right()]}else{vec![work.y,work.bottom()]};
+        for other in &others {
+            if horizontal && overlap(r.y,r.bottom(),other.y,other.bottom()) {candidates.extend([other.x,other.right()]);}
+            if !horizontal && overlap(r.x,r.right(),other.x,other.right()) {candidates.extend([other.y,other.bottom()]);}
+        }
+        let target=candidates.into_iter().filter(|v|(v-at).abs()<=SNAP_DISTANCE).filter(|v|match edge {
+            EDGE_L=>r.right()-v>=min.0,EDGE_R=>v-r.x>=min.0,EDGE_T=>r.bottom()-v>=min.1,_=>v-r.y>=min.1,
+        }).min_by(|a,b|(a-at).abs().total_cmp(&(b-at).abs()));
+        if let Some(to)=target {match edge {
+            EDGE_L=>{r.w=r.right()-to;r.x=to;},EDGE_R=>r.w=to-r.x,
+            EDGE_T=>{r.h=r.bottom()-to;r.y=to;},_=>r.h=to-r.y,
+        }}
+    }
+    r
+}
+
+/// Resize all windows sharing any dragged edge. Opposite outside edges remain fixed.
+pub fn resize_joined(s:&mut State,start:&Layout,win:Win,edges:u8,wanted:Rect) -> bool {
+    use crate::app::{EDGE_L,EDGE_R,EDGE_T,EDGE_B};
+    let Some((_,original))=start.iter().find(|(w,_)|*w==win) else {return false};
+    let mut result=start.clone();let mut joined=false;
+    for edge in [EDGE_L,EDGE_R,EDGE_T,EDGE_B] {
+        if edges & edge==0 {continue;}
+        let members=divider(start,win,edge);
+        if members.len()<2 {continue;}
+        joined=true;
+        let horizontal=edge==EDGE_L||edge==EDGE_R;
+        let coordinate=|r:Rect|match edge {EDGE_L=>r.x,EDGE_R=>r.right(),EDGE_T=>r.y,_=>r.bottom()};
+        let mut delta=coordinate(wanted)-coordinate(*original);
+        let (mut low,mut high)=(f32::NEG_INFINITY,f32::INFINITY);
+        for &(i,leading) in &members {
+            let (w,r)=start[i];let min=minimum(s,w);let room=if horizontal {r.w-min.0}else{r.h-min.1};
+            if leading {high=high.min(room.max(0.0));} else {low=low.max(-room.max(0.0));}
+        }
+        delta=delta.clamp(low,high);
+        for (i,leading) in members {
+            let r=&mut result[i].1;
+            if horizontal {if leading {r.x+=delta;r.w-=delta;}else{r.w+=delta;}}
+            else if leading {r.y+=delta;r.h-=delta;}else{r.h+=delta;}
+        }
+    }
+    if !joined {return false;}
+    // A corner can have one attached edge and one free edge.
+    let target=result.iter_mut().find(|(w,_)|*w==win).unwrap();
+    for edge in [EDGE_L,EDGE_R,EDGE_T,EDGE_B] {
+        if edges & edge!=0 && divider(start,win,edge).len()<2 {
+            match edge {EDGE_L=>{target.1.x=wanted.x;target.1.w=wanted.w;},EDGE_R=>target.1.w=wanted.w,EDGE_T=>{target.1.y=wanted.y;target.1.h=wanted.h;},_=>target.1.h=wanted.h}
+        }
+    }
+    for (w,r) in result {put(s,w,r);}
+    true
+}
+/// Reflow joined layouts when the browser changes the workspace width. The shared coordinates
+/// transform together; minimum sizes can stop contraction on an unusually small screen.
+pub fn reflow_workspace(s:&mut State) -> bool {
+    let new=s.work_rect();let old=s.dock_work.replace(new);
+    let Some(old)=old else {return false};
+    if old.w<=0.0 || new.w<=0.0 || (old.x==new.x && old.w==new.w) {return false;}
+    let start=layout(s);let mut visited=vec![false;start.len()];let mut changed=false;
+    for seed in 0..start.len() {
+        if visited[seed] {continue;}
+        let mut group=vec![seed];visited[seed]=true;let mut n=0;
+        while n<group.len() {
+            for j in 0..start.len() {if !visited[j]&&touching(start[group[n]].1,start[j].1) {visited[j]=true;group.push(j);}}
+            n+=1;
+        }
+        if group.len()<2 || !group.iter().any(|&i|near(start[i].1.x,old.x)) {continue;}
+        let min_ratio=group.iter().map(|&i|minimum(s,start[i].0).0/start[i].1.w).fold(0.0f32,f32::max);
+        let ratio=(new.w/old.w).max(min_ratio);
+        for i in group {let (w,r)=start[i];put(s,w,Rect::new(new.x+(r.x-old.x)*ratio,r.y,r.w*ratio,r.h));}
+        changed=true;
+    }
+    changed
 }
 
 /// The windows placed by position (Channel rack, channel settings, Plugin performance monitor, Tempo tapper) keep their
@@ -205,10 +385,150 @@ mod tests {
     use crate::app::Action;
     use os_ui::Canvas;
 
+    #[test]
+    fn resize_edges_snap_to_browser_screen_and_windows() {
+        use crate::app::{EDGE_L,EDGE_R,EDGE_B};
+        let mut app=App::new(None);let mut c=Canvas::new(1920,1200,1.0).unwrap();
+        app.state.z=vec![Win::Playlist,Win::Mixer];
+        for ws in &mut app.state.wins {ws.maxed=false;ws.mini=false;}
+        app.paint(&mut c,None);let work=app.state.work_rect();
+        put(&mut app.state,Win::Playlist,Rect::new(work.x+70.0,work.y+20.0,800.0,300.0));
+        put(&mut app.state,Win::Mixer,Rect::new(work.x,work.y+500.0,work.w,650.0));
+        app.paint(&mut c,None);
+        // Real left-edge drag: stop six pixels short of the browser; the edge lands flush.
+        let a=app.state.win_rect(Win::Playlist);let (x,y)=(a.x,a.y+100.0);
+        app.mouse_move(x,y);app.mouse_down();app.mouse_move(work.x+6.0,y);app.mouse_up();
+        let b=app.state.win_rect(Win::Playlist);assert_eq!(b.x,work.x);assert_eq!(b.right(),a.right());
+        app.paint(&mut c,None);
+        app.mouse_move(b.right(),y);app.mouse_down();app.mouse_move(work.right()-7.0,y);app.mouse_up();
+        assert_eq!(app.state.win_rect(Win::Playlist).right(),work.right());
+        let r=Rect::new(work.x,work.y+20.0,work.w,474.0);
+        assert_eq!(snap_resize(&app.state,Win::Playlist,EDGE_B,r).bottom(),work.y+500.0);
+        let away=Rect::new(work.x+20.0,work.y+20.0,800.0,300.0);
+        assert_eq!(snap_resize(&app.state,Win::Playlist,EDGE_L,away),away);
+        let small=Rect::new(work.right()-515.0,work.y,520.0,300.0);
+        assert_eq!(snap_resize(&app.state,Win::Playlist,EDGE_R,small),small,"do not snap below minimum width");
+        app.state.show_browser=false;
+        let r=Rect::new(6.0,work.y,800.0,300.0);
+        assert_eq!(snap_resize(&app.state,Win::Playlist,EDGE_L,r).x,0.0);
+    }
+
+    #[test]
+    fn joined_dividers_resize_neighbors_and_reflow_browser() {
+        use crate::app::{Cursor,EDGE_R};
+        let mut canvas=Canvas::new(1920,1200,1.0).unwrap();
+        let mut app=App::new(None);app.state.z=vec![Win::Playlist,Win::Mixer];
+        for ws in &mut app.state.wins {ws.maxed=false;ws.mini=false;}
+        app.paint(&mut canvas,None);
+        let work=app.state.work_rect();
+        app.state.wins[0].rect=Rect::new(work.x,work.y,800.0,work.h);
+        app.state.wins[1].rect=Rect::new(work.x+800.0,work.y,work.w-800.0,work.h);
+        app.paint(&mut canvas,None);
+        let (x,y)=(work.x+800.0,work.y+400.0);
+        app.mouse_move(x,y);assert_eq!(app.cursor(),Cursor::EwResize);
+        app.mouse_down();app.mouse_move(x+100.0,y);app.mouse_up();
+        let a=app.state.win_rect(Win::Playlist);let b=app.state.win_rect(Win::Mixer);
+        assert_eq!(a.w,900.0);assert_eq!(a.right(),b.x);assert_eq!(b.right(),work.right());
+        app.paint(&mut canvas,None);
+        app.act(Action::ToggleWin(Win::Browser));app.paint(&mut canvas,None);
+        let a=app.state.win_rect(Win::Playlist);let b=app.state.win_rect(Win::Mixer);
+        assert_eq!(a.x,0.0);assert!((a.right()-b.x).abs()<0.01);assert!((b.right()-1920.0).abs()<0.01);
+        assert!(a.w>900.0);
+        app.act(Action::ToggleWin(Win::Browser));app.paint(&mut canvas,None);
+        assert!((app.state.win_rect(Win::Playlist).w-900.0).abs()<0.01);
+        let width=app.state.browser_w;
+        app.state.browser_w=width+1.0;app.paint(&mut canvas,None);
+        assert!((app.state.win_rect(Win::Playlist).x-(work.x+1.0)).abs()<0.01);
+        app.state.browser_w=width;app.paint(&mut canvas,None);
+        let start=resize_layout(&app.state);let a=app.state.win_rect(Win::Playlist);
+        assert!(resize_joined(&mut app.state,&start,Win::Playlist,EDGE_R,Rect{w:5000.0,..a}));
+        assert!((app.state.win_rect(Win::Mixer).w-Win::Mixer.min_size().0).abs()<0.01);
+        assert!((app.state.win_rect(Win::Playlist).right()-app.state.win_rect(Win::Mixer).x).abs()<0.01);
+        // Release and snap back to the neighbor's side, then separate it by its title.
+        let b=app.state.win_rect(Win::Mixer);let a=app.state.win_rect(Win::Playlist);
+        drag_to(&mut app.state,Win::Mixer,(a.right()+6.0,b.y));
+        assert_eq!(app.state.win_rect(Win::Mixer).x,a.right());
+        drag_to(&mut app.state,Win::Mixer,(a.right()+40.0,b.y+40.0));
+        assert_eq!(divider(&resize_layout(&app.state),Win::Playlist,EDGE_R).len(),1);
+        if let Some(dir)=std::env::var_os("OS_SHOT_DIR") {
+            put(&mut app.state,Win::Mixer,b);app.paint(&mut canvas,None);
+            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("joined-window-layout.png")).unwrap();
+        }
+    }
+
+    #[test]
+    fn joined_t_junction_and_vertical_boundaries_keep_minimums() {
+        use crate::app::{Cursor,EDGE_R,EDGE_B};
+        let mut canvas=Canvas::new(1920,1400,1.0).unwrap();let mut app=App::new(None);
+        app.state.z=vec![Win::Playlist,Win::PianoRoll,Win::Mixer];
+        for ws in &mut app.state.wins {ws.maxed=false;ws.mini=false;}
+        app.paint(&mut canvas,None);let work=app.state.work_rect();
+        put(&mut app.state,Win::Playlist,Rect::new(work.x,work.y,700.0,1100.0));
+        put(&mut app.state,Win::PianoRoll,Rect::new(work.x+700.0,work.y,900.0,400.0));
+        put(&mut app.state,Win::Mixer,Rect::new(work.x+700.0,work.y+400.0,900.0,700.0));
+        let start=resize_layout(&app.state);let a=app.state.win_rect(Win::Playlist);
+        assert!(resize_joined(&mut app.state,&start,Win::Playlist,EDGE_R,Rect{w:800.0,..a}));
+        for w in [Win::PianoRoll,Win::Mixer] {let r=app.state.win_rect(w);assert_eq!(r.x,work.x+800.0);assert_eq!(r.w,800.0);}
+        app.paint(&mut canvas,None);
+        let (x,y)=(work.x+1200.0,work.y+400.0);app.mouse_move(x,y);assert_eq!(app.cursor(),Cursor::NsResize);
+        app.mouse_down();app.mouse_move(x,y+400.0);app.mouse_up();
+        let p=app.state.win_rect(Win::PianoRoll);let m=app.state.win_rect(Win::Mixer);
+        assert_eq!(p.h,665.0);assert_eq!(m.h,435.0);assert_eq!(p.bottom(),m.y);assert_eq!(m.bottom(),work.y+1100.0);
+        assert_eq!(app.state.win_rect(Win::Playlist).h,1100.0);
+        app.state.hide(Win::Mixer);
+        assert_eq!(divider(&resize_layout(&app.state),Win::PianoRoll,EDGE_B).len(),1);
+        app.state.raise(Win::Mixer);app.state.wins[1].maxed=true;
+        assert_eq!(divider(&resize_layout(&app.state),Win::PianoRoll,EDGE_B).len(),1);
+        // Rack remains usable as a member of the layout, without quantization leaving gaps.
+        app.state.z=vec![Win::Playlist,Win::ChannelRack];
+        put(&mut app.state,Win::Playlist,Rect::new(work.x,work.y,700.0,1100.0));
+        put(&mut app.state,Win::ChannelRack,Rect::new(work.x+700.0,work.y,900.0,400.0));
+        let start=resize_layout(&app.state);let a=app.state.win_rect(Win::Playlist);
+        assert!(resize_joined(&mut app.state,&start,Win::Playlist,EDGE_R,Rect{w:800.0,..a}));
+        assert_eq!(views::rack::rect(&app.state).x,app.state.win_rect(Win::Playlist).right());
+        assert_eq!(app.state.rack_size.0,800.0);
+    }
+
+    #[test]
+    fn magnetic_edges_snap_and_release() {
+        let work = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let neighbor = Rect::new(400.0, 200.0, 200.0, 200.0);
+        let snap = |r| snap_position(r, work, std::iter::once(neighbor));
+        assert_eq!(snap(Rect::new(207.0, 203.0, 200.0, 100.0)), (200.0, 200.0));
+        assert_eq!(snap(Rect::new(594.0, 203.0, 200.0, 100.0)), (600.0, 200.0));
+        assert_eq!(snap(Rect::new(405.0, 106.0, 200.0, 100.0)), (400.0, 100.0));
+        assert_eq!(snap(Rect::new(405.0, 394.0, 200.0, 100.0)), (400.0, 400.0));
+        assert_eq!(snap(Rect::new(220.0, 230.0, 200.0, 100.0)), (220.0, 230.0));
+        assert_eq!(snap(Rect::new(207.0, 600.0, 200.0, 100.0)), (207.0, 600.0));
+        assert_eq!(snap(Rect::new(7.0, 5.0, 200.0, 100.0)), (0.0, 0.0));
+        assert_eq!(snap(Rect::new(794.0, 695.0, 200.0, 100.0)), (800.0, 700.0));
+    }
+
     const WORK: Rect = Rect { x: 209.0, y: 83.0, w: 1711.0, h: 997.0 };
 
     /// Spec "Lemon Studio": at least 31 px of the width stays inside the workspace at the left and at the right, the
     /// top at least 15 px above the workspace's bottom, the title bar never above the workspace's top.
+    #[test]
+    fn plugin_title_recovery_keeps_a_drag_target() {
+        for scale in [1.,1.5,2.] {
+            let work=[100,60,1600,1000];
+            let width=(900.*scale) as i32;
+            let left=keep_plugin_px((-9000,-9000),width,work,scale);
+            let right=keep_plugin_px((9000,9000),width,work,scale);
+            assert_eq!(left.1,60);
+            assert!(left.0+width>=100+(240.*scale) as i32);
+            assert!(right.0<=1600-(240.*scale) as i32);
+            assert!(right.1+(crate::plugin_window::TITLE_H*scale).ceil() as i32<=1000);
+        }
+        // A removed monitor or a saved negative/off-screen position is recoverable;
+        // existing monitors left/above the primary remain valid destinations.
+        let screens=[[-1920,0,0,1080],[0,0,1920,1040],[0,-1080,1920,0]];
+        assert_eq!(bar_on_screens([-1800,100,-900,127],&screens),(-1800,100));
+        assert_eq!(bar_on_screens([50,-900,950,-873],&screens),(50,-900));
+        assert_eq!(bar_on_screens([50,-900,950,-873],&[[0,0,1920,1040]]),(50,0));
+        assert_eq!(bar_on_screens([0,-500,3000,-473],&[[0,0,1920,1040]]),(0,0));
+    }
+
     #[test]
     fn keep_holds_each_edge() {
         let w = 500.0;

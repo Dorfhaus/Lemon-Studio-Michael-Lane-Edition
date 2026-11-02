@@ -837,6 +837,7 @@ pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
         });
     }
     // Initial values: a place below 0x2000 is a channel's index (spec: flp/layouts.md "Mixer places").
+    p.peak_links.retain_mut(|l|{let hi=(l.target>>16)as u16;hi>=0x2000 || idx.get(&hi).map(|&n|l.target=u32::from(n)<<16|(l.target&0xFFFF)).is_some()});
     p.init_controls.retain_mut(|c| {
         let hi = (c.target >> 16) as u16;
         hi >= 0x2000 || idx.get(&hi).map(|&n| c.target = u32::from(n) << 16 | (c.target & 0xFFFF)).is_some()
@@ -881,7 +882,9 @@ pub fn push_channel(s: &mut State, mut ch: os_model::Channel) {
 /// `reorder` in the project and the app state: `map` gives each row's new row (`None`: the channel goes).
 fn remap_state(s: &mut State, map: &[Option<usize>]) {
     let m = |r: usize| map.get(r).copied().flatten();
+    let references = s.project.channels.iter().enumerate().filter_map(|(r, c)| Some((m(r)? as u16, crate::playlist_controls::original(s, c.index)?))).collect();
     remap_project(&mut s.project, map);
+    s.playlist.original_values = references;
     let len = s.project.channels.len().max(1);
     s.rack.remap(&m);
     let keep = |r: usize| m(r).unwrap_or(r.min(len - 1));
@@ -924,6 +927,7 @@ pub fn clone_rows(app: &mut App, rows: &[usize]) {
             c.name = Some(name);
             // An automation clip's copy has its curve and targets (spec: ui/playlist.md §10a).
             if let Some(mut a) = app.state.project.automation(from).cloned() {
+                if let Some(value) = crate::playlist_controls::original(&app.state, from) { app.state.playlist.original_values.insert(c.index, value); }
                 a.channel = c.index;
                 app.state.project.automations.push(a);
             }
@@ -1116,6 +1120,9 @@ pub fn open_box(s: &mut State, b: RBox, at: (f32, f32)) {
 /// Commands of the rack's popup menus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RCmd {
+    PitchFollow(usize),
+    Consolidate(usize),
+    BounceWet(usize),
     // Channel menu (§18), on a row.
     PianoRoll(usize),
     Graph(usize),
@@ -1207,6 +1214,7 @@ pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
     width.push(it("Size to fit", RCmd::SizeToFit));
     let items = vec![
         PItem::sub("Add one", add_one_items(s)),
+        PItem::sub("Consolidate selected channel / Bounce to Audio", vec![it("Bounce including mixer effects", RCmd::BounceWet(s.selected_channel)),it("Consolidate (keep mixer live)", RCmd::Consolidate(s.selected_channel))]),
         PItem::not_yet("Loop starter").mark(Mark::Check(false)),
         it("Purge unused audio clips", RCmd::Purge),
         PItem::head("Channels"),
@@ -1275,7 +1283,7 @@ pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
         PItem::sub(crate::views::menus::CLIPS_SEL_LABEL, stretch_items(false)),
         PItem::sub(crate::views::menus::EDITORS_LABEL, editor_items()),
     ];
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Add one ▸: the generator menu, a pick goes to the bottom of the rack (spec: ui/plugin-menu.md §1).
@@ -1363,34 +1371,45 @@ fn set_declick(app: &mut App, rows: &[usize], mode: u8) {
 /// Lemon Sampler's declick mode parameter (its index is the mode).
 const SAMPLER_DECLICK: &str = "Declicking mode";
 
-/// Right click on a name button (§18): two columns.
+/// Right-click empty rack space: add an instrument without targeting an existing channel.
+pub fn empty_menu(s: &State, x: f32, y: f32) -> Popup {
+    use crate::plugin_menu::{PlugCmd, Target};
+    Popup { x, y, items: vec![
+        PItem::new("Plugin picker - insert instrument...", Cmd::Plugin(PlugCmd::Picker(Target::Gen(None)))),
+        PItem::sub("Insert instrument", crate::plugin_menu::items(s, Target::Gen(None), true)),
+    ], sub: None, scroll: [0; 2], cascade: Vec::new() }
+}
+
+/// Channel actions first, with pattern editing grouped in the second column.
 pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
+    use crate::plugin_menu::{PlugCmd, Target};
     let sampler = s.project.channels.get(r).is_some_and(|c| c.kind.is_sampler());
     let piano_on = s.shown(Win::PianoRoll) && s.selected_channel == r;
     let mut items = vec![
+        PItem::new("Plugin picker - replace instrument...", Cmd::Plugin(PlugCmd::Picker(Target::Replace(r)))),
+        PItem::sub("Insert", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
+        PItem::sub("Replace", crate::plugin_menu::items(s, Target::Replace(r), true)),
+    ];
+    if sampler { items.push(it("Load sample...", RCmd::LoadSample(r))); }
+    items.extend([
+        PItem::sep(),
         it("Piano roll", RCmd::PianoRoll(r)).key("F7").mark(Mark::Check(piano_on)),
         it("Graph editor", RCmd::Graph(r)),
         PItem::sep(),
         it("Rename, color and icon...", RCmd::Rename(r)),
-        it("Change color...", RCmd::ChangeColor(r)),
-        it("Random color", RCmd::RandomColor(r)),
-        PItem::not_yet("Change icon..."),
+        PItem::sub("Color", vec![
+            it("Change color...", RCmd::ChangeColor(r)),
+            it("Random color", RCmd::RandomColor(r)),
+        ]),
         PItem::sep(),
-        if sampler { it("Load sample...", RCmd::LoadSample(r)) } else { PItem::new("Load sample...", Cmd::Nothing).off() },
-        PItem::not_yet("Cut itself").mark(Mark::Check(false)),
-        PItem::new("Show waveform preview", Cmd::Nothing).off(),
-        PItem::sep(),
-        PItem::sub("Insert", crate::plugin_menu::items(s, crate::plugin_menu::Target::Gen(Some(r)), true)),
-        PItem::sub("Replace", crate::plugin_menu::items(s, crate::plugin_menu::Target::Replace(r), true)),
-        PItem::new("Patcherize", Cmd::Nothing).off(),
+        PItem::sub("Consolidate / Bounce to Audio", vec![it("Bounce including mixer effects", RCmd::BounceWet(r)),it("Consolidate (keep mixer live)", RCmd::Consolidate(r))]),
         it("Clone", RCmd::Clone(r)),
         it("Delete...", RCmd::Delete(r)),
-        PItem::sep(),
-        PItem::not_yet("Assign to new instrument track"),
         PItem::col(),
+        PItem::head("Pattern editing"),
         it("Cut", RCmd::Cut(r)),
         it("Copy", RCmd::Copy(r)),
-    ];
+    ]);
     let paste = it("Paste", RCmd::Paste(r));
     items.push(if s.rack.clipboard.is_some() { paste } else { paste.off() });
     items.extend([
@@ -1399,17 +1418,11 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         it("Fill each 4 steps", RCmd::Fill(r, 4)),
         it("Fill each 8 steps", RCmd::Fill(r, 8)),
         it("Advanced fill...", RCmd::AdvancedFill(r)),
-        PItem::new("Auto fill", Cmd::Nothing).off(),
         PItem::sep(),
         it("Rotate left", RCmd::Rotate(r, -1)).key("Shift+Ctrl+Left"),
         it("Rotate right", RCmd::Rotate(r, 1)).key("Shift+Ctrl+Right"),
-        PItem::sep(),
-        PItem::not_yet("MIDI channel through").mark(Mark::Check(false)),
-        PItem::sub("Receive notes from", vec![PItem::new("Unlock", Cmd::Nothing).off(), PItem::not_yet("Typing keyboard").mark(Mark::Check(true))]),
-        PItem::not_yet("Create instrument..."),
-        PItem::sub("Burn MIDI to", vec![PItem::not_yet("Current pattern"), PItem::not_yet("New pattern")]),
     ]);
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// The Automation / Remote control / Value groups shared by knob and LED menus (§19).
@@ -1425,6 +1438,7 @@ fn value_groups(s: &State, knob: Option<KnobId>, auto: Option<(u32, String, f64)
         delete,
         PItem::sep(),
     ];
+    if let Some((t,_,value))=&auto {v.push(crate::peak_link::menu(s,*t,*value));}
     v.push(match auto {
         Some((tgt, name, val)) => PItem::new("Create automation clip", Cmd::CreateAutomation(tgt, name, val)),
         None => PItem::new("Create automation clip", Cmd::Nothing).off(),
@@ -1455,7 +1469,7 @@ fn value_groups(s: &State, knob: Option<KnobId>, auto: Option<(u32, String, f64)
 pub fn knob_menu(s: &State, k: KnobId, auto: Option<(u32, String, f64)>, x: f32, y: f32) -> Popup {
     let mut items = vec![it("Reset", RCmd::Reset(k))];
     items.extend(value_groups(s, Some(k), auto));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Right click on the mixer box (§12).
@@ -1464,7 +1478,7 @@ pub fn mixer_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
     items.extend(value_groups(s, None, None));
     items.push(PItem::sep());
     items.push(it("Assign to free mixer track", RCmd::AssignFree(r)));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Right click on a LED (§10).
@@ -1475,7 +1489,7 @@ pub fn led_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         it("Lock active/mute state", RCmd::Lock(r)).mark(Mark::Check(s.rack.locked.contains(&r))),
     ];
     items.extend(value_groups(s, None, None));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Group combo (§7): left click lists the filters.
@@ -1484,7 +1498,7 @@ pub fn filter_menu(s: &State, x: f32, y: f32) -> Popup {
     let mut items = vec![it("All", RCmd::SetFilter(Filter::All)).mark(Mark::Radio(f == Filter::All))];
     items.extend(s.rack.groups.iter().enumerate().map(|(i, g)| it(g.name.clone(), RCmd::SetFilter(Filter::Group(i))).mark(Mark::Radio(f == Filter::Group(i)))));
     items.push(it("Unsorted", RCmd::SetFilter(Filter::Unsorted)).mark(Mark::Radio(f == Filter::Unsorted)));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Group combo right click (§7).
@@ -1492,7 +1506,7 @@ pub fn filter_edit_menu(s: &State, x: f32, y: f32) -> Popup {
     let group = matches!(s.rack.filter, Filter::Group(_));
     let del = it("Delete filter group", RCmd::DeleteGroup);
     let ren = it("Rename filter group", RCmd::RenameGroup);
-    Popup { x, y, items: vec![it("Add filter group", RCmd::AddGroup), if group { del } else { del.off() }, if group { ren } else { ren.off() }], sub: None, scroll: [0; 2] }
+    Popup { x, y, items: vec![it("Add filter group", RCmd::AddGroup), if group { del } else { del.off() }, if group { ren } else { ren.off() }], sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Pattern length box right click (§7).
@@ -1503,7 +1517,7 @@ pub fn length_menu(s: &State, x: f32, y: f32) -> Popup {
         let label = if bars == 1 { "1 bar".to_string() } else { format!("{bars} bars") };
         items.push(it(label, RCmd::SetLen(Some(bars * bar))).mark(Mark::Radio(cur == Some(bars * bar))));
     }
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Loop button right click (§7).
@@ -1522,7 +1536,7 @@ pub fn loop_menu(s: &State, x: f32, y: f32) -> Popup {
         PItem::head("Options"),
         opt(s, "Always show advanced controls"),
     ];
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1593,6 +1607,8 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     let mouse = app.mouse;
     let sel: Vec<usize> = app.state.rack.sel.iter().copied().collect();
     match c {
+        RCmd::BounceWet(r) => { app.bounce_channel(r,true); return None; }
+        RCmd::Consolidate(r) => { app.consolidate_channel(r); return None; }
         RCmd::Clone(r) => clone_rows(app, &[r]),
         RCmd::CloneSel => clone_rows(app, &sel),
         RCmd::MoveSel(d) => move_selected(app, d),
@@ -1601,7 +1617,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
             // Starts in the folder of the channel's sample, when it has one.
             let dir = app.state.project.channels.get(r).and_then(|c| c.sample_path.as_deref()).map(crate::plugins::resolve_sample).map(std::path::PathBuf::from);
             let dlg = crate::filedlg::FileDlg::new(crate::filedlg::Mode::Open, "Load sample", "audio", crate::dialog::Then::RackSample(r))
-                .filter("Audio", &["wav", "mp3", "flac", "ogg", "aif", "aiff"])
+                .filter("Audio", &["wav", "mp3", "flac", "ogg", "aif", "aiff", "wv"])
                 .start(dir.as_deref().and_then(std::path::Path::parent));
             app.file_dialog(dlg);
         }
@@ -1618,6 +1634,18 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     }
     let s = &mut app.state;
     let msg = match c {
+        RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
+        RCmd::PitchFollow(r) => {
+            let before = crate::history::Snap::Channel { row:r, ch:s.project.channels.get(r).cloned().map(Box::new) };
+            crate::history::record(s, "Global Pitch Follow", before);
+            let global = i32::from(s.project.main_pitch.unwrap_or(0));
+            if let Some(c) = s.project.channels.get_mut(r) {
+                c.misc.pitch_follow_offset += if c.misc.main_pitch { global } else { -global };
+                c.misc.main_pitch = !c.misc.main_pitch;
+            }
+            s.piano.dirty = true;
+            None
+        }
         RCmd::Graph(r) => {
             s.selected_channel = r;
             s.rack.select_only(r);
@@ -1882,7 +1910,22 @@ pub fn open_fill(s: &mut State, r: usize) {
 /// steps across the pattern (polyrhythms).
 pub fn play_project(s: &State) -> Project {
     let mut p = s.project.clone();
+    // An ARA source has its own timing/pitch edits. Sampler transforms must not change the
+    // engine's source window calculations behind the ARA renderer's back.
+    for ch in p.channels.iter_mut().filter(|c|crate::ara::is(c)) {
+        ch.pitch_cents=0;ch.misc.fine=0;ch.misc.root=60;ch.misc.main_pitch=false;ch.sound.stretch=[0;4];
+    }
+    // Take source clips stay muted in the saved project. Solo is a temporary audition.
+    if let Some((row,_))=s.playlist.solo.as_ref().filter(|(row,_)|crate::comping::parent(s,*row).is_some()) {
+        if let Some(a)=p.arrangement_mut() {
+            for c in &mut a.clips {if c.track==*row {c.muted=false;}}
+        }
+    }
+    if s.mixer.all_fx_bypassed {
+        for track in &mut p.mixer { track.slots_enabled = false; }
+    }
     p.tempo = Some(s.tempo);
+    p.current_pattern = Some(s.pattern);
     if s.rack.loop_mode && !s.rack.loop_len.is_empty() {
         let rows: Vec<usize> = s.rack.loop_len.keys().copied().collect();
         expand_loops(&mut p, s, &rows);

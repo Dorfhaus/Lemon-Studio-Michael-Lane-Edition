@@ -36,8 +36,8 @@ use os_ui::{Canvas, Color, Rect};
 
 use params::FxParams;
 
-/// The most settings an effect here has.
-pub const MAX: usize = 12;
+/// Capacity of shared parameter/editor snapshots, including Lemon Wave.
+pub const MAX: usize = 64;
 
 /// One setting: the original's saved state holds it as int `k` (its place in [`Spec::settings`], unless
 /// [`Spec::fields`] maps it).

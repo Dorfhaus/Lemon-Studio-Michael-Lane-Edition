@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! Playlist window: tools, picker, track headers, ruler, markers, clips, overlays and popup menus.
+//! Playlist window: compact controls, track headers, ruler, markers, clips, overlays and popup menus.
 // spec: ui/main-window.md §5–6; ui/playlist.md
 
 use os_model::{AutoMode, Clip, ClipSource, TimeMarker};
@@ -11,9 +11,9 @@ use os_theme::waves::Waves;
 use os_ui::{Color, Font, Rect};
 
 use super::{resize_zones, rgb, window_body, FrameInfo};
-use crate::app::{Action, Seg, State, Ui, Win};
+use crate::app::{Action, State, Ui, Win};
 use crate::icons::{self, Icon};
-use crate::playlist::{self as pl, Mark, Overlay, PGeom, PickKind, PlTool, MARKER_H, TITLE_H, TRACKS};
+use crate::playlist::{self as pl, Mark, Overlay, PGeom, PickKind, MARKER_H, TITLE_H, TRACKS};
 
 /// Default pixels per bar (the zoom is `State::playlist_bar_w`).
 pub const BAR_W: f32 = 60.0;
@@ -56,96 +56,96 @@ fn cc(t: &os_theme::Palette, v: u32) -> Color {
         _ => t.s(v),
     }
 }
-/// Tool button centres in the title bar, relative to the window's left edge (§1: 275..442 at x 209).
-const TOOL_X: [f32; 9] = [66.0, 86.0, 108.0, 129.0, 150.0, 171.0, 192.0, 213.0, 233.0];
-const TOOL_ICONS: [Icon; 9] =
-    [Icon::Pencil, Icon::Brush, Icon::Delete, Icon::Mute, Icon::Slip, Icon::Slice, Icon::Select, Icon::Zoom, Icon::Speaker];
-/// Picker item pitch (§1): the measured 30 px rows; taller items show a title strip of this height over their
-/// preview.
-const PICK_ROW: f32 = pl::PICK_ROW;
-const PICK_TITLE: f32 = 26.0;
+fn clip_controls(ui: &mut Ui, s: &State, strip: Rect) {
+    use crate::playlist_controls::Control as C;
+    let Some(kind) = s.playlist.controls.shown else {
+        ui.c.text_center(Font::new(11), strip, ui.t.text_faint, "TRACKS");
+        return;
+    };
+    for (i, (k, icon, hint)) in [(PickKind::Audio, Icon::Wave, "Audio clip controls"), (PickKind::Automation, Icon::Slide, "Automation editing controls"), (PickKind::Pattern, Icon::PianoRoll, "Pattern note colors")].into_iter().enumerate() {
+        let b = Rect::new(strip.x + 8.0 + i as f32 * 32.0, strip.y + 1.0, 26.0, 18.0);
+        let hov = ui.hit(b, Action::PlControl(C::Show(k)), hint);
+        let ink = tool_face(ui, b, kind == k, hov);
+        icons::draw(ui.c, icon, b.inset(3.0), ink);
+    }
+    let c = &s.playlist.controls;
+    let buttons = match kind {
+        PickKind::Pattern => vec![("NOTE", C::NoteColor(0), c.note_color==0, "Color notes by note group"), ("CHAN", C::NoteColor(1), c.note_color==1, "Color notes by parent channel"), ("PAT", C::NoteColor(2), c.note_color==2, "Color notes by parent pattern")],
+        PickKind::Automation => vec![("STEP", C::Step, c.step, "Step editing: new points make held steps"), ("SLIDE", C::Slide, c.slide, "Slide editing: moving a point also moves later points")],
+        PickKind::Audio => vec![("FADE", C::Fades, c.fades, "Show fade editing controls"), ("ZERO", C::ZeroCrossing, c.zero_crossing, "Check for zero crossing when trimming")],
+    };
+    for (i, (label, cmd, on, hint)) in buttons.into_iter().enumerate() {
+        let b = Rect::new(strip.x + 3.0 + i as f32 * 34.0, strip.y + 21.0, 33.0, 16.0);
+        let hov = ui.hit(b, Action::PlControl(cmd), hint);
+        let ink = tool_face(ui, b, on, hov);
+        ui.c.text_center(Font::condensed(9,4), b, ink, label);
+    }
+    if kind == PickKind::Audio {
+        let b = Rect::new(strip.x+71.0,strip.y+21.0,33.0,16.0);
+        let hov=ui.hit(b,Action::PlStretch,"Stretch audio when resizing");
+        let ink=tool_face(ui,b,s.playlist.stretch,hov);
+        ui.c.text_center(Font::condensed(9,4),b,ink,"STR");
+    }
+}
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let t = ui.t;
     window_body(ui, r);
     let outer = r;
     let arr = pl::arrangement_name(s);
-    let title = format!("Playlist - {arr}  \u{203a}  {}  \u{203a}", pl::source_name(s, pl::source(s)));
+    let title = "";
     // The grid covers most of the window and is painted all over (rows and gaps): the frame skips it.
     let (fr, fc) = super::frame_rects(s, Win::Playlist, r);
     let cover = grid_rect(s, fr, fc);
     ui.c.set_cover((fr.h >= 2.0 * crate::app::TITLE_H).then_some(cover));
-    let (r, client) = super::framed(ui, s, Win::Playlist, r, &title, 281.0, true);
+    let (r, client) = super::framed(ui, s, Win::Playlist, r, &title, 208.0, true);
     ui.c.set_cover(None);
-    // The arrangement name opens the arrangement menu; hovered it turns orange with a down arrow (§12, as FL).
-    {
-        let f = Font::new(17);
-        let x0 = r.x + 281.0 + ui.c.text_width(f, "Playlist - ");
-        let w = ui.c.text_width(f, &arr);
-        let arrow_w = ui.c.text_width(f, "  \u{203a}  ");
-        let hit = Rect::new(x0 - 2.0, r.y, w + arrow_w * 0.7, 22.0);
-        if ui.hit(hit, Action::PlArrangement, "Arrangements (switch, add, clone, rename, delete)") {
-            let bg = ui.t.window_title;
-            ui.c.fill_rect(Rect::new(x0 - 1.0, r.y + 1.0, w + arrow_w * 0.7, 20.0), bg);
-            let hot = ui.t.h(0xf7a94c);
-            ui.c.text(f, x0, r.y + 1.0, hot, &arr);
-            let ax = x0 + w + arrow_w * 0.35;
-            ui.c.fill_polygon(&[(ax - 4.0, r.y + 9.0), (ax + 4.0, r.y + 9.0), (ax, r.y + 14.0)], hot);
-        }
+    // Editing tools, then mode and content selectors. Keep window buttons clear.
+    let ty=r.y+2.;
+    for (x,icon,action,hint) in [(4.,Icon::ArrowRight,Action::PlOptions,"Playlist options".to_string()),(25.,Icon::Magnet,Action::PlSnap,format!("Snap: {}",s.playlist.snap.label()))] {
+        let b=Rect::new(r.x+x,ty,18.,18.);let hot=ui.hit(b,action,hint);
+        icons::draw(ui.c,icon,b,if hot {t.glyph}else{t.text});
     }
-
-    // Title-bar tools: ▸ options, snap magnet, then the nine tools (§1, §3).
-    let ty = r.y + 2.0;
-    let b = Rect::new(r.x + 13.0 - 9.0, ty, 18.0, 18.0);
-    let hov = ui.hit(b, Action::PlOptions, "Playlist options");
-    icons::draw(ui.c, Icon::ArrowRight, b, if hov { t.glyph } else { t.text });
-    let b = Rect::new(r.x + 33.0 - 9.0, ty, 18.0, 18.0);
-    let hov = ui.hit(b, Action::PlSnap, format!("Snap: {}", s.playlist.snap.label()));
-    icons::draw(ui.c, Icon::Magnet, b, if hov || pl::grid_snap(s) != pl::Snap::None { t.glyph } else { t.text });
-    for ((tool, icon), cx) in PlTool::ALL.into_iter().zip(TOOL_ICONS).zip(TOOL_X) {
-        let b = Rect::new(r.x + cx - 9.0, ty, 18.0, 18.0);
-        let on = s.playlist.tool == tool;
-        let hov = ui.hit(b, Action::PlTool(tool), tool.hint());
-        let ink = tool_face(ui, b, on, hov);
-        icons::draw(ui.c, icon, b, ink);
+    for (i,(tool,icon)) in [(pl::PlTool::Draw,Icon::Pencil),(pl::PlTool::Paint,Icon::Brush),(pl::PlTool::Slice,Icon::Slice),(pl::PlTool::Select,Icon::Select)].into_iter().enumerate() {
+        let b=Rect::new(r.x+49.+i as f32*22.,ty,20.,18.);
+        let hot=ui.hit(b,Action::PlTool(tool),tool.hint());
+        let ink=tool_face(ui,b,s.playlist.tool==tool,hot);icons::draw(ui.c,icon,b.inset(2.),ink);
     }
-    // Stretch mode (Shift+M, §9b): |<->| after the tools, lit while on.
-    {
-        let b = Rect::new(r.x + 254.0 - 9.0, ty, 18.0, 18.0);
-        let hov = ui.hit(b, Action::PlStretch, if s.playlist.stretch { "Stretch mode: on (Shift+M)" } else { "Stretch mode: off (Shift+M)" });
-        let on = s.playlist.stretch;
-        let col = tool_face(ui, b, on, hov);
-        let (cx, cy) = (b.cx(), b.cy());
-        ui.c.fill_rect(Rect::new(cx - 7.0, cy - 5.0, 1.2, 10.0), col);
-        ui.c.fill_rect(Rect::new(cx + 5.8, cy - 5.0, 1.2, 10.0), col);
-        ui.c.line(cx - 5.0, cy, cx + 4.0, cy, 1.2, col);
-        ui.c.fill_polygon(&[(cx - 5.5, cy), (cx - 2.5, cy - 2.5), (cx - 2.5, cy + 2.5)], col);
-        ui.c.fill_polygon(&[(cx + 4.5, cy), (cx + 1.5, cy - 2.5), (cx + 1.5, cy + 2.5)], col);
+    let b=Rect::new(r.x+145.,ty,49.,18.);
+    let active=s.playlist.tool==pl::PlTool::Comp;
+    let hot=ui.hit(b,Action::PlTool(if active {pl::PlTool::Paint}else{pl::PlTool::Comp}),if active {"Comping mode: on (G); click to exit"}else{"Comping mode: off (G); click to enable"});
+    let ink=tool_face(ui,b,active,hot);
+    ui.c.stroke_rrect(b,3.,1.,if active {t.accent}else{t.text_dim});
+    ui.c.text_center(Font::new(11),b,ink,"COMP");
+    for x in [139.,200.,260.] {ui.c.line(r.x+x,ty+3.,r.x+x,ty+15.,1.,t.text_faint);}
+    let b=Rect::new(r.x+207.,ty,47.,18.);
+    let hot=ui.hit(b,Action::PlClips,"Clips: patterns, audio clips and automation clips");
+    let ink=tool_face(ui,b,false,hot);ui.c.text(Font::new(12),b.x+3.,b.y+1.,ink,"Clips");
+    let (x,y)=(b.right()-6.,b.cy());ui.c.fill_polygon(&[(x-3.,y-1.),(x+3.,y-1.),(x,y+2.)],ink);
+    let font=Font::new(12);
+    let arr_w=(ui.c.text_width(font,&arr)+23.).min(180.).min((r.w-267.-68.).max(0.));
+    if arr_w>24. {
+        let b=Rect::new(r.x+267.,ty,arr_w,18.);
+        let hot=ui.hit(b,Action::PlArrangement,format!("Arrangement: {arr}"));
+        let ink=tool_face(ui,b,false,hot);
+        ui.c.text_clip(font,b.x+5.,b.y+1.,(b.w-18.).max(0.),ink,&arr);
+        let (x,y)=(b.right()-7.,b.cy());ui.c.fill_polygon(&[(x-3.,y-1.),(x+3.,y-1.),(x,y+2.)],ink);
     }
     if r.h < 2.0 * crate::app::TITLE_H {
         return; // collapsed to the title bar
     }
 
-    // A part of its own: a repaint of the grid alone (a scroll) skips it.
-    let pick = Rect::new(r.x, client.y, 160.0, client.h);
-    ui.part(Seg::PlPicker, pick, |ui| picker(ui, s, pick));
-
     // Track-header strip: add button and the NOTE / CHAN / PAT filters.
-    let strip = Rect::new(r.x + 162.0, client.y + 1.0, 108.0, 38.0);
+    let strip = Rect::new(r.x + 2.0, client.y + 1.0, 108.0, 38.0);
     if super::lemon(ui) {
         ui.c.fill_rrect(strip, lk::r_btn(t), t.track_header);
     } else {
         ui.c.fill_rect_gradient(strip, t.track_header.shade(0.05), t.track_header.shade(-0.03), 0.0);
     }
-    icons::draw(ui.c, Icon::Plus, Rect::new(strip.x + 6.0, client.y + 20.0, 16.0, 16.0), t.glyph);
-    for (i, (icon, label)) in [(Icon::Wave, "NOTE"), (Icon::Slide, "CHAN"), (Icon::PianoRoll, "PAT")].into_iter().enumerate() {
-        let cx = strip.x + 45.0 + 26.0 * i as f32;
-        icons::draw(ui.c, icon, Rect::new(cx - 8.0, client.y + 3.0, 16.0, 16.0), if i == 2 { t.glyph } else { t.text_faint });
-        ui.c.text_center(Font::condensed(8, 4).bold(), Rect::new(cx - 14.0, client.y + 25.0, 28.0, 10.0), if i == 2 { t.glyph } else { t.text_faint }, label);
-    }
+    clip_controls(ui, s, strip);
 
     // Arrangement geometry.
-    let head_x = r.x + 162.0;
+    let head_x = r.x + 2.0;
     let head_w = 98.0;
     let grid = grid_rect(s, r, client);
     debug_assert_eq!(grid, cover);
@@ -189,7 +189,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let mut visible = Vec::new();
     let mut row = g.track_at(grid.y);
     while row < TRACKS && g.y_of(row) < grid.bottom() {
-        visible.push(row);
+        if g.rows.height(row) > 0.0 { visible.push(row); }
         row += 1;
     }
     let gap_of = |row: u16| if g.rows.strip(row) { 1.0 } else { 3.0 };
@@ -228,13 +228,31 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     // Clips reaching the painted part of the grid (a scrolled-in strip is a small part, see `App::playlist_scrolled`);
     // a clip draws inside its own rect.
-    for (i, c) in pl::clips(s).iter().enumerate() {
-        if ui.c.visible(g.clip_rect(c).outset(2.0)) {
-            clip_paint(ui, s, &g, i, c);
+    // Paint the source clips first, automation second regardless of saved clip ordering.
+    for automation in [false,true] {
+        for (i,c) in pl::clips(s).iter().enumerate() {
+            if (pl::source_kind(s,c.source)==PickKind::Automation)==automation && ui.c.visible(g.clip_rect(c).outset(2.0)) {clip_paint(ui,s,&g,i,c);}
         }
+    }
+    for live in &s.mixer.recording.live {
+        let x=g.x_of(live.start as f32);
+        let right=g.x_of(live.start.saturating_add(live.length) as f32);
+        let r=Rect::new(x,g.y_of(live.row),(right-x).max(3.),(g.rows.height(live.row)-3.).max(1.));
+        let color=live.color.map(rgb).unwrap_or(t.accent);
+        ui.c.fill_rect(r,color.shade(-0.25));
+        ui.c.stroke_rrect(r,2.,1.2,t.h(0xff5252));
+        ui.c.text_clip(Font::new(12),r.x+4.,r.y+1.,(r.w-8.).max(0.),t.text,&format!("REC - {}",live.name));
     }
     // Overlays.
     match s.playlist.overlay {
+        Some(Overlay::Comp{clip,a,b}) => {
+            if let Some(c)=pl::clips(s).get(clip) {
+                let bounds=g.clip_rect(c);
+                let rect=Rect::new(g.x_of(a as f32),bounds.y,(g.x_of(b as f32)-g.x_of(a as f32)).max(1.),bounds.h);
+                ui.c.fill_rect(rect,ui.t.glyph.with_alpha(50));
+                ui.c.stroke_rrect(rect,0.,1.,ui.t.glyph);
+            }
+        }
         Some(Overlay::Marquee(m)) => {
             ui.c.fill_rect(m, Color::rgb(0xff5050).with_alpha(30));
             ui.c.stroke_rrect(m, 0.0, 1.0, Color::rgb(0xff6060));
@@ -322,7 +340,7 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
 
 /// The arrangement grid in a window laid out at `r` with client rect `client` (see `super::frame_rects`).
 fn grid_rect(s: &State, r: Rect, client: Rect) -> Rect {
-    let grid_x = r.x + 162.0 + 98.0 + 12.0;
+    let grid_x = r.x + 2.0 + 98.0 + 12.0;
     let grid_w = (r.right() - grid_x - 4.0 - bar_sizes().1).max(1.0);
     let grid_y = client.y + 42.0 + if pl::markers(s).is_empty() { 0.0 } else { MARKER_H };
     Rect::new(grid_x, grid_y, grid_w, (r.bottom() - grid_y).max(0.0))
@@ -337,144 +355,6 @@ fn kind_icon(kind: PickKind) -> Icon {
         PickKind::Automation => Icon::Slide,
     }
 }
-
-/// Picker panel: kind tabs, then the list of clip sources of that kind (§1).
-fn picker(ui: &mut Ui, s: &State, p: Rect) {
-    let t = ui.t;
-    ui.c.fill_rect(p, t.picker);
-    for (i, (kind, hint)) in [(PickKind::Pattern, "Patterns"), (PickKind::Audio, "Audio clips"), (PickKind::Automation, "Automation clips")].into_iter().enumerate() {
-        let icon = kind_icon(kind);
-        let cx = p.x + 23.0 + 47.0 * i as f32;
-        let b = Rect::new(cx - 14.0, p.y + 11.0, 28.0, 28.0);
-        let hov = ui.hit(b, Action::PlPickTab(kind), hint);
-        let on = s.playlist.picker == kind;
-        icons::draw(ui.c, icon, Rect::new(cx - 10.0, p.y + 15.0, 20.0, 20.0), if on { t.glyph } else if hov { t.text } else { t.text_faint });
-    }
-    let items: Vec<ClipSource> = pick_items(s);
-    let cur = pl::source(s);
-    // spec: ui/playlist.md §1a (picker panel, measured from FL): framed list + 15 px scroll bar, 19 px footer with "+".
-    let bottom = p.bottom() - FOOT_H;
-    let bx = Rect::span(p.x, p.right() - 6.0, p.y + 44.0, bottom);
-    if bx.h < 8.0 {
-        return;
-    }
-    ui.c.fill_rect(bx, ui.t.s(0x131718));
-    let list = Rect::span(bx.x + 1.0, bx.right() - 16.0, bx.y + 1.0, bx.bottom() - 1.0);
-    ui.c.fill_rect(list, ui.t.s(0x202527));
-    ui.hit(list, Action::PlPickList, "");
-    // Each list keeps its own item size (a right-drag on the scroll bar, spec: ui/scroll-bars.md §3).
-    let pitch = s.playlist.pick_row();
-    let total = items.len() as f32 * pitch + 4.0;
-    let scroll = s.playlist.pick_scroll.min((total - list.h).max(0.0)).max(0.0);
-    ui.c.push_clip(list);
-    let mut y = list.y + 3.0 - scroll;
-    for src in items {
-        if y > list.bottom() {
-            break;
-        }
-        if y + pitch < list.y {
-            y += pitch;
-            continue;
-        }
-        let row = Rect::new(list.x + 2.0, y, list.w - 4.0, pitch - 1.0);
-        // A taller item: the name in a title strip, its contents previewed under it (FL's resized picker).
-        let tall = pitch > PICK_ROW;
-        let title = if tall { Rect::new(row.x, row.y, row.w, PICK_TITLE) } else { row };
-        let body = if tall { Rect::span(row.x + 3.0, row.right() - 3.0, title.bottom(), row.bottom() - 3.0) } else { row.inset(3.0) };
-        let hov = ui.hit(row, Action::PlPick(src), "Select clip source (right-click for its menu)");
-        let filled = pick_used(s, src);
-        let k = if hov { 0.05 } else { 0.0 };
-        let lemon = super::lemon(ui);
-        // The source's colour, as its clips' titles take it (§2): an audio or automation clip's channel colour, a
-        // pattern's own colour when it has one; an unused source a darker shade of it.
-        let tint = match src {
-            ClipSource::Pattern(_) => pl::source_color(s, src),
-            ClipSource::Channel(_) => pl::clip_tint(s, src),
-        }
-        .map(rgb);
-        let (edge, face) = match tint {
-            Some(c) if filled => (offset(c, -42), offset(c, -17)),
-            Some(c) => (offset(c, -70), offset(c, -55)),
-            None if filled => (ui.t.s(0x2f3539), ui.t.s(0x464e53)),
-            None => (ui.t.s(0x2a2d2e), ui.t.s(0x2a2d2e)),
-        };
-        let face = face.shade(k);
-        if filled && lemon {
-            lk::outlined(ui.c, row, lk::r_btn(ui.t), edge, face);
-            preview(ui, s, src, body, tall, face);
-        } else if filled {
-            // Used source: a button with a faint preview of its contents (pl_asher.png).
-            ui.c.fill_rect(row, edge);
-            ui.c.fill_rect(row.inset(1.0), face);
-            preview(ui, s, src, body, tall, face);
-        } else if lemon {
-            ui.c.fill_rrect(row, lk::r_btn(ui.t), face);
-        } else if tint.is_some() {
-            ui.c.fill_rect(row, edge);
-            ui.c.fill_rect(row.inset(1.0), face);
-        } else {
-            // Empty pattern: dark face (owner's FL screenshot).
-            ui.c.fill_rect_gradient(row, ui.t.s(0x2a2d2e).shade(k), ui.t.s(0x232627).shade(k), 0.0);
-        }
-        if src == cur && !filled {
-            ui.c.stroke_rrect(row.inset(0.5), if lemon { lk::r_btn(ui.t) } else { 0.0 }, 1.0, ui.t.a(0xa8e44a));
-        }
-        let ic = Color::rgb(if filled { TITLE_TEXT } else { 0xa6aaab });
-        icons::draw(ui.c, kind_icon(pl::source_kind(s, src)), Rect::new(row.x + 4.0, title.cy() - 6.0, 12.0, 12.0), ic);
-        ui.c.text_clip(Font::new(14), row.x + 20.0, title.cy() - 8.0, row.w - 23.0, ic, &pl::source_name(s, src));
-        if src == cur {
-            let ax = list.x - 1.0;
-            let mark = if lemon { ui.t.accent } else { Color::rgb(0xe64363) };
-            ui.c.fill_polygon(&[(ax, row.cy() - 5.0), (ax + 6.0, row.cy()), (ax, row.cy() + 5.0)], mark);
-        }
-        y += pitch;
-    }
-    ui.c.pop_clip();
-    let track = Rect::span(list.right(), bx.right() - 1.0, list.y, list.bottom());
-    ui.c.fill_rect(Rect::new(track.x, track.y, 1.0, track.h), ui.t.s(0x131718));
-    let tr = Rect::span(track.x + 1.0, track.right(), track.y, track.bottom());
-    if super::lemon(ui) {
-        // The Lemon design's scroll bar, as the other views' (spec: ui/lemon-design.md).
-        super::scrollbar(ui, tr, true, scroll, list.h, total, crate::app::Scroll::PlPick);
-    } else {
-        classic_pick_bar(ui, tr, scroll, list.h, total);
-    }
-    // Footer "+": new pattern (find first empty).
-    let foot = Rect::new(p.x, bottom, bx.w, FOOT_H);
-    let hov = ui.hit(foot, Action::PlPickAdd, "New pattern (find first empty)");
-    let pc = if hov { ui.t.tx(0xa0a4a6) } else { ui.t.s(0x545657) };
-    let (cx, cy) = ((list.x + list.right()) / 2.0, foot.y + FOOT_H / 2.0);
-    ui.c.fill_rect(Rect::new(cx - 3.5, cy - 0.5, 8.0, 2.0), pc);
-    ui.c.fill_rect(Rect::new(cx - 0.5, cy - 3.5, 2.0, 8.0), pc);
-}
-
-/// The picker's scroll bar in the Classic design (§1a, measured from FL): bordered dithered track, raised thumb with
-/// a dark grip.
-fn classic_pick_bar(ui: &mut Ui, tr: Rect, scroll: f32, view: f32, total: f32) {
-    ui.c.fill_rect(tr, ui.t.s(0x212426));
-    let mut yy = tr.y;
-    while yy < tr.bottom() {
-        ui.c.fill_rect(Rect::new(tr.x, yy, tr.w, 1.0), ui.t.s(0x23272a));
-        yy += 2.0;
-    }
-    let max = (total - view).max(0.0);
-    let thumb = if max > 0.0 { (view / total * tr.h).max(14.0) } else { 14.0 };
-    let off = if max > 0.0 { scroll / max * (tr.h - thumb) } else { 0.0 };
-    let hov = ui.hit(tr, Action::Scrollbar(crate::app::Scroll::PlPick), super::PICK_BAR_HINT);
-    let th = Rect::new(tr.x, tr.y + off, tr.w, thumb);
-    ui.c.fill_rect(th, ui.t.s(0x36383a));
-    // A light thumb under High visibility (`os_ui::kit::scroll_thumb`).
-    let face = if crate::high_visibility::on() {
-        os_ui::kit::scroll_thumb(ui.t, os_ui::kit::State::hover(hov), true)
-    } else {
-        ui.t.s(0x2c2e30).shade(if hov { 0.06 } else { 0.0 })
-    };
-    ui.c.fill_rect(th.inset(1.0), face);
-    ui.c.fill_rect(Rect::new(th.cx() - 1.0, th.cy() - 2.5, 2.0, 5.0), ui.t.s(0x000000));
-    ui.bars.push(crate::app::Bar { target: crate::app::Scroll::PlPick, track: tr, vertical: true, max, view, thumb });
-}
-
-const FOOT_H: f32 = 19.0;
 
 /// Sources listed in the picker: used patterns only (scrolling the selector must not add rows).
 pub fn pick_items(s: &State) -> Vec<ClipSource> {
@@ -491,80 +371,6 @@ pub fn pick_items(s: &State) -> Vec<ClipSource> {
             .map(|c| ClipSource::Channel(c.index))
             .collect(),
         PickKind::Automation => s.project.automations.iter().map(|a| ClipSource::Channel(a.channel)).collect(),
-    }
-}
-
-fn pick_used(s: &State, src: ClipSource) -> bool {
-    match src {
-        ClipSource::Pattern(n) => s.project.pattern(n).is_some_and(|p| !p.notes.is_empty()),
-        _ => true,
-    }
-}
-
-/// Preview of a picker item's contents in `r`: a pattern's notes, faint behind the name of an item at the measured
-/// size; a `tall` item (resized, spec: ui/scroll-bars.md §3) shows them, an audio clip's waveform or an automation
-/// clip's curve under its title strip, as a clip's body shows them (§2). `face`: the item's colour.
-fn preview(ui: &mut Ui, s: &State, src: ClipSource, r: Rect, tall: bool, face: Color) {
-    if r.h < 4.0 {
-        return;
-    }
-    let t = ui.t;
-    match (pl::source_kind(s, src), src) {
-        (PickKind::Pattern, ClipSource::Pattern(n)) => {
-            let Some(p) = s.project.pattern(n) else { return };
-            let len = crate::piano::pattern_length(s, n).max(1) as f32;
-            let lo = p.notes.iter().map(|n| n.key).min().unwrap_or(0);
-            let hi = p.notes.iter().map(|n| n.key).max().unwrap_or(0);
-            let span = f32::from(hi - lo + 1).max(6.0);
-            let c = if tall { cc(t, NOTE) } else { t.s(0x5a6268) };
-            for note in &p.notes {
-                let x = r.x + note.position as f32 / len * r.w;
-                let w = (note.length.max(s.project.ppq as u32 / 4) as f32 / len * r.w).max(2.0);
-                let y = r.bottom() - 2.0 - f32::from(note.key - lo + 1) / span * (r.h - 2.0);
-                ui.c.fill_rect(Rect::new(x, y, w.min(r.right() - x).max(0.0), 2.0), c);
-            }
-        }
-        (PickKind::Audio, ClipSource::Channel(ch)) if tall => {
-            let Some(path) = s.project.channel(ch).and_then(|c| c.sample_path.clone()) else { return };
-            let Some(w) = s.playlist.wave(&path) else { return };
-            if w.peaks.is_empty() {
-                return;
-            }
-            // The whole sample: each pixel column spans its peaks' minimum to maximum.
-            let wave = pl::clip_tint(s, src).map(rgb).map_or(cc(t, WAVE), |c| offset(c, 80));
-            let (mid, amp) = (r.cy(), r.h / 2.0 - 1.0);
-            let n = r.w.floor().max(1.0) as usize;
-            let per = w.peaks.len() as f32 / n as f32;
-            let (mut top, mut bottom) = (Vec::with_capacity(n), Vec::with_capacity(n));
-            for i in 0..n {
-                let a = (i as f32 * per) as usize;
-                let b = (((i + 1) as f32 * per) as usize).clamp(a + 1, w.peaks.len());
-                let (lo, hi) = w.peaks[a.min(w.peaks.len() - 1)..b].iter().fold((f32::MAX, f32::MIN), |(lo, hi), &(x, y)| (lo.min(x), hi.max(y)));
-                let x = r.x + i as f32 + 0.5;
-                top.push((x, mid - hi.clamp(-1.0, 1.0) * amp - 0.35));
-                bottom.push((x, mid - lo.clamp(-1.0, 1.0) * amp + 0.35));
-            }
-            top.extend(bottom.into_iter().rev());
-            ui.c.fill_polygon(&top, wave);
-        }
-        (PickKind::Automation, ClipSource::Channel(ch)) if tall => {
-            let Some(a) = s.project.automation(ch) else { return };
-            // Over its points' span.
-            let Some(end) = a.points.last().map(|p| p.beat).filter(|&b| b > 0.0) else { return };
-            let pts: Vec<(f32, f32)> = (0..=(r.w / 2.0).ceil() as usize)
-                .map(|k| {
-                    let x = (r.x + 2.0 * k as f32).min(r.right());
-                    let beat = f64::from((x - r.x) / r.w) * end;
-                    (x, pl::value_y(r, a.value_at(beat).unwrap_or(0.0)))
-                })
-                .collect();
-            let mut area = pts.clone();
-            area.push((r.right(), r.bottom()));
-            area.push((r.x, r.bottom()));
-            ui.c.fill_polygon(&area, face.shade(0.07));
-            ui.c.polyline(&pts, 1.5, cc(t, CURVE));
-        }
-        _ => {}
     }
 }
 
@@ -796,9 +602,25 @@ fn offset(c: Color, d: i16) -> Color {
 /// One clip (§2): a near-black outline with rounded top corners, the title strip (pattern clips neutral, audio and
 /// automation clips in their channel's colour), the body in the track's colour, then the content.
 fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
+    let take=crate::comping::parent(s,c.track).is_some();
+    let muted=c.muted && !take;
     let t = ui.t;
     let (r, clip_x) = g.clip_draw_rect(c);
     let full_w = g.clip_rect(c).w;
+    if let ClipSource::Channel(ch)=c.source {
+        if g.automation_views.values().any(|a|*a==ch) {
+            let col=Color::rgb(0xf2cf7d);
+            ui.c.push_clip(r.intersect(&g.grid));
+            ui.c.fill_rect(r,col.with_alpha(24));
+            ui.c.stroke_rrect(r,1.0,1.0,col.with_alpha(160));
+            ui.c.fill_rect(Rect::new(r.x,r.y,r.w,TITLE_H),Color::rgb(0x17232b).with_alpha(150));
+            ui.c.text_clip(Font::new(11),r.x+4.0,r.y+1.0,(r.w-8.0).max(0.0),col,&pl::source_name(s,c.source));
+            let body=g.body(c);
+            let edges=Body {r:body,x:clip_x+1.0,w:f64::from((full_w-2.0).max(1.0))};
+            curve(ui,s,g,i,c,ch,edges,Color::rgb(0x21313b).with_alpha(24),col);
+            ui.c.pop_clip();return;
+        }
+    }
     // On a collapsed group's strip a clip is a bar in its colour (§6a).
     if g.rows.strip(c.track) {
         let col = if s.playlist.sel.contains(&i) {
@@ -809,13 +631,13 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
                 .or_else(|| pl::track_info(s, c.track).and_then(|t| t.color))
                 .map_or(cc(t, TITLE_TOP), rgb)
         };
-        let col = if c.muted || !pl::track_on(s, c.track) { col.mix(t.grid, 0.6) } else { col };
+        let col = if muted || !pl::track_on(s, c.track) { col.mix(t.grid, 0.6) } else { col };
         ui.c.fill_rrect(r, 1.5, col);
         return;
     }
     let kind = pl::source_kind(s, c.source);
     let selected = s.playlist.sel.contains(&i);
-    let track_on = pl::track_on(s, c.track);
+    let track_on = take || pl::track_on(s, c.track);
     let dim = |col: Color| if track_on { col } else { col.mix(t.grid, 0.5) };
     // Body colour: the track's colour, else the source's (§2 "Body colour source").
     let color = pl::track_info(s, c.track).and_then(|t| t.color).or_else(|| pl::source_color(s, c.source)).map(rgb);
@@ -826,7 +648,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     let (edge, high, top, bottom, text, body) = if selected {
         let sel = cc(t, SEL_TITLE);
         (sel.shade(-0.25), sel.shade(0.08), sel, sel.shade(-0.1), cc(t, SEL_TEXT), cc(t, SEL_BODY))
-    } else if c.muted {
+    } else if muted {
         let m = cc(t, MUTED_TITLE);
         (m.shade(-0.2), m, m, m, cc(t, MUTED_TEXT), cc(t, DEFAULT_BODY))
     } else {
@@ -840,13 +662,14 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     };
     // Outline (rounded at the top only); a clip a few pixels wide keeps its colours to its edges.
     let outline = dim(t.s(0x03090d));
+    let body_alpha=|c:Color| c.with_alpha(48);
     let narrow = r.w < 8.0;
     let lemon = super::lemon(ui);
     // Rect fills with the top corners knocked out (cheaper than rounded paths for hundreds of clips).
     if lemon {
-        ui.c.fill_rrect(r, lk::r_btn(t).min(r.w / 2.0).min(r.h / 2.0), outline);
+        ui.c.stroke_rrect(r, lk::r_btn(t).min(r.w / 2.0).min(r.h / 2.0), 1.0, outline);
     } else {
-        ui.c.fill_rect(r, outline);
+        ui.c.stroke_rrect(r,0.0,1.0,outline);
     }
     let row = if track_on { t.grid } else { t.grid.mix(t.grid_gap, 0.5) };
     if !narrow && !lemon {
@@ -860,7 +683,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     // Lemon (spec: ui/lemon-design.md §7): a rounded tile with a flat title strip.
     let ir = (lk::r_btn(t) - 1.0).min(inner.w / 2.0).min(inner.h / 2.0);
     if lemon {
-        ui.c.fill_rrect(inner, ir, dim(top));
+        ui.c.fill_rrect(Rect::new(inner.x, inner.y, inner.w, title_h + 1.0), ir, dim(top));
     } else {
         ui.c.fill_rect(Rect::new(inner.x, inner.y, inner.w, title_h + 1.0), dim(edge));
     }
@@ -878,10 +701,10 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     // The content is measured from the body's true edges (the drawn ones may be pulled in, `clip_draw_rect`).
     let body_at = Body { r: body_r, x: clip_x + f64::from(side), w: f64::from((full_w - 2.0 * side).max(1.0)) };
     if lemon {
-        ui.c.fill_rrect(body_r, ir, dim(body));
-        ui.c.fill_rect(Rect::new(body_r.x, body_r.y, body_r.w, ir.min(body_r.h)), dim(body));
+        ui.c.fill_rrect(body_r, ir, body_alpha(dim(body)));
+        ui.c.fill_rect(Rect::new(body_r.x, body_r.y, body_r.w, ir.min(body_r.h)), body_alpha(dim(body)));
     } else {
-        ui.c.fill_rect(body_r, dim(body));
+        ui.c.fill_rect(body_r, body_alpha(dim(body)));
         ui.c.fill_rect(Rect::new(body_r.x, body_r.y, body_r.w, 1.0), dim(body.shade(-0.08)));
         ui.c.fill_rect(Rect::new(body_r.x, body_r.bottom() - 1.0, body_r.w, 1.0), dim(body.shade(-0.3)));
     }
@@ -891,7 +714,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     let (ix, iy) = (inner.x + 3.0, inner.y + 2.0);
     let ic = dim(text);
     if r.w >= 12.0 {
-        if c.muted {
+        if muted {
             ui.c.line(ix, iy + 1.0, ix + 7.0, iy + 8.0, 1.2, ic);
             ui.c.line(ix + 7.0, iy + 1.0, ix, iy + 8.0, 1.2, ic);
         } else {
@@ -903,29 +726,40 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
         ui.c.text_clip(Font::new(12), inner.x + 14.0, inner.y - 1.0, inner.w - 16.0, ic, &pl::source_name(s, c.source));
     }
     // Content.
-    let content = if c.muted { dim(text).with_alpha(90) } else { dim(cc(t, NOTE)) };
-    if !(c.muted && kind == PickKind::Pattern) {
+    let content = if muted { dim(text).with_alpha(90) } else { dim(cc(t, NOTE)) };
+    if !(muted && kind == PickKind::Pattern) {
         match (kind, c.source) {
             (PickKind::Pattern, ClipSource::Pattern(n)) => pattern_notes(ui, s, g, c, n, body_at, content),
             (PickKind::Audio, ClipSource::Channel(ch)) => {
                 // The channel colour lifted by 80 (§2); without one the measured default.
                 let wave = tint.map_or(cc(t, WAVE), |c| offset(c, 80));
-                let col = if c.muted { content } else { dim(wave) };
+                let col = if muted { content } else { dim(wave) };
                 // Colorful waveforms colour a clip that plays; a muted one keeps its grey.
-                let waves = (!c.muted).then(|| crate::waves::current(t));
+                let waves = (!muted).then(|| crate::waves::current(t));
                 waveform(ui, s, g, c, ch, body_at, col, waves.as_ref().map(|w| (w, &dim as &dyn Fn(Color) -> Color)));
                 if !c.muted {
                     fades(ui, s, g, i, c, body_at, dim(wave));
                 }
             }
             (PickKind::Automation, ClipSource::Channel(ch)) => {
-                let col = if c.muted { content } else { dim(cc(t, CURVE)) };
+                let col = if muted { content } else { dim(cc(t, CURVE)) };
                 curve(ui, s, g, i, c, ch, body_at, dim(body), col);
             }
             _ => {}
         }
     }
     ui.c.pop_clip();
+    if take {
+        ui.c.push_clip(r.intersect(&g.grid));
+        for (a,b) in crate::comping::used(s,c) {
+            let x=g.x_of(a as f32);let w=(g.x_of(b as f32)-x).max(1.);
+            let region=Rect::new(x,r.y,w,r.h);
+            ui.c.fill_rect(region,ui.t.glyph.with_alpha(28));
+            ui.c.fill_rect(Rect::new(x,r.bottom()-3.,w,3.),ui.t.glyph);
+        }
+        ui.c.pop_clip();
+    }
+
 }
 
 /// A clip's body as drawn (`r`, its edges possibly pulled in by `PGeom::clip_draw_rect`) and its true left edge and
@@ -970,7 +804,14 @@ fn pattern_notes(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, n: u16, body: Body
         let k = if span <= 1.0 { 0.5 } else { f32::from(note.key - lo) / (span - 1.0) };
         let y = pl::snap(f64::from(br.y) + 2.0 + f64::from(usable * (1.0 - k)));
         let y1 = pl::snap(f64::from(y) + f64::from(h));
-        ui.c.fill_rect(Rect::new(x0, y, (x1 - x0 - 1.0).max(1.0), y1 - y), col);
+        let color = match s.playlist.controls.note_color {
+            0 => s.clip_colors.list.get(usize::from(note.group & 15)).copied().map(rgb).unwrap_or_else(|| {
+                let greens = [0x9fcf8d, 0x8dbfcf, 0xcfb18d, 0xc38dcf]; Color::rgb(greens[usize::from(note.group & 3)])
+            }),
+            1 => s.project.channel(note.channel).and_then(|c| c.color).map(rgb).unwrap_or(col),
+            _ => p.color.map(rgb).unwrap_or(col),
+        };
+        ui.c.fill_rect(Rect::new(x0, y, (x1 - x0 - 1.0).max(1.0), y1 - y), if c.muted { color.mix(ui.t.grid, 0.65) } else { color });
     }
 }
 
@@ -1018,10 +859,24 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
         }
         k
     };
+    let detail=crate::prefs::text("playlist_wave_detail").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0);
+    let fine=if detail>0 && ms_per_tick*frames_per_ms/ppt*px < w.per as f64 {
+        if w.fine.borrow().is_none() {
+            *w.fine.borrow_mut()=os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(&path))).ok();
+        }
+        w.fine.borrow().clone()
+    }else{None};
     // Peaks from `da` to `db` px into the body.
     let range = |da: f64, db: f64| -> Option<(f32, f32)> {
         let ms_a = w0 + da / ppt * ms_per_tick;
         let ms_b = w0 + db / ppt * ms_per_tick;
+        if let Some(sample)=&fine {
+            let per=if detail==1 {8} else {1};
+            let a=(ms_a*frames_per_ms).max(0.) as usize/per*per;
+            let b=(((ms_b*frames_per_ms).max(0.) as usize).div_ceil(per)*per).max(a+1).min(sample.frames());
+            if a>=b {return None;}
+            return Some(sample.left[a..b].iter().zip(&sample.right[a..b]).fold((f32::MAX,f32::MIN),|(lo,hi),(&l,&r)|{let v=(l+r)*0.5;(lo.min(v),hi.max(v))}));
+        }
         let fa = (ms_a * frames_per_ms).max(0.0) as usize / w.per;
         let fb = ((ms_b * frames_per_ms).max(0.0) as usize / w.per).max(fa + 1);
         if fa >= w.peaks.len() {
@@ -1126,7 +981,7 @@ fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body, wav
         curve(ui, edges.x, f64::from(xf.x1), xf.t_out, true);
     }
     // Handles only while the mouse is over the clip (as FL): white, brighter on the one under the mouse.
-    if !hovered {
+    if !hovered || !s.playlist.controls.fades {
         return;
     }
     let _ = wave;
@@ -1205,7 +1060,7 @@ fn curve(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, ch: u16, edges: 
     let mut area = pts.clone();
     area.push((x1, body.bottom()));
     area.push((x0, body.bottom()));
-    ui.c.fill_polygon(&area, bg.shade(0.07));
+    ui.c.fill_polygon(&area, if g.automation_views.values().any(|a|*a==ch) {col.with_alpha(18)} else {bg.shade(0.07).with_alpha(24)});
     ui.c.polyline(&pts, 1.5, col);
     // Points and tension handles while the mouse is over the clip (§8).
     if s.playlist.hover_clip == Some(i) {
@@ -1247,7 +1102,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let joins_below = (lead || member) && next_member;
     let on = pl::track_on(s, row);
     // A member takes its group track's colour, so the block reads as one.
-    let colored = pl::track_info(s, leader.unwrap_or(row)).and_then(|i| i.color).map(rgb);
+    let colored = s.mixer.recording.live.iter().find(|l|l.row==row).and_then(|l|l.color).or_else(||pl::track_info(s, leader.unwrap_or(row)).and_then(|i| i.color)).map(rgb);
     let base = colored.unwrap_or(t.track_header);
     let base = if s.playlist.track == row { base.shade(0.1) } else { base };
     let base = if on { base } else { base.mix(t.grid_gap, 0.4) };
@@ -1270,7 +1125,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         let left = if lead { hr.x + k } else { hr.x };
         ui.c.fill_rect(Rect::new(left, hr.bottom() - k, hr.right() - left, k), bottom);
     }
-    ui.hit(hr, Action::PlHeader(row), "Track (double-click: rename, right-click: menu, Shift+wheel: move)");
+    ui.hit(hr, Action::PlHeader(row), "Drag to move track with its takes and automation; double-click to rename");
     if strip {
         return;
     }
@@ -1278,9 +1133,18 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     // rows drop the "…" and keep the name clear of the LED.
     let short = g.rows.row_h < pl::ROW_H - 8.0;
     let led = Rect::new(hr.right() - 19.0, (h - gap - 15.0).max(1.0) + hr.y, 14.0, 14.0);
+    let auto = Rect::new(led.x, led.y - 17.0, 14.0, 14.0);
+    let active = s.playlist.automation_views.get(&row);
+    let hint = active.map(|ch| format!("Automation: {} (click to select another)", pl::source_name(s, ClipSource::Channel(*ch)))).unwrap_or_else(|| "Track automation: choose a parameter".into());
+    let toggle=Rect::new(auto.x-21.0,auto.y+2.0,18.0,10.0);
+    ui.hit(toggle.outset(2.0),Action::PlAutomationToggle(row),"Show / hide automation overlay");
+    ui.c.fill_rect(toggle,if active.is_some(){t.glyph}else{t.text_faint.shade(-0.5)});
+    ui.c.fill_rect(Rect::new(toggle.x+if active.is_some(){10.0}else{2.0},toggle.y+2.0,6.0,6.0),if active.is_some(){ui.t.tx(0x253039)}else{t.text});
+    let hot = ui.hit(auto, Action::PlAutomation(row), hint);
+    icons::draw(ui.c, Icon::Slide, auto.inset(1.0), if active.is_some() || hot { t.glyph } else { t.text_faint });
     ui.hit(led, Action::PlLed(row), "Mute track (right-click / Ctrl+click: solo)");
     let text = if colored.is_some() { ui.t.tx(0xdce8f0) } else { t.text_faint };
-    let text = if on { text } else { text.shade(-0.35) };
+    let text = if on || crate::comping::parent(s,row).is_some() { text } else { text.shade(-0.35) };
     let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
     if !editing {
         let name_w = if short { hr.w - 26.0 } else { hr.w - 4.0 };
@@ -1340,11 +1204,25 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
         // At the Pop-ups scaling (spec: ui/ui-scaling.md §1).
         ui.scaled(super::popup_scale(ui.c.scale), |ui, k| {
             let (w, h) = ui.c.size();
-            let (_, rows) = popup_list(ui, &p.items, p.x / k, p.y / k, (w, h), p.sub, false, p.scroll[0]);
-            if let Some(i) = p.sub {
-                if let (Some(item), Some(rr)) = (p.items.get(i), rows.get(i)) {
-                    popup_list(ui, &item.children, rr.right(), rr.y - 2.0, (w, h), None, true, p.scroll[1]);
+            let (rect, mut rows) = popup_list(ui,&p.items,p.x/k,p.y/k,(w,h),p.sub,0,p.scroll[0],&[]);
+            let mut occupied=vec![rect];
+            let mut entries=&p.items;
+            let mut selected=p.sub;
+            let mut depth=1;
+            while let Some(index)=selected {
+                let (Some(item),Some(row))=(entries.get(index),rows.get(index)) else {break};
+                if item.children.is_empty() || depth>240 {break;}
+                entries=&item.children;
+                let open=p.cascade.get(depth-1).map(|e|e.0);
+                let scroll=if depth==1 {p.scroll[1]} else {p.cascade[depth-2].1};
+                // Anchor to the column containing the selected item, not the far edge of a
+                // multi-column menu (e.g. the rack's separate Cut/Copy/Fill column).
+                if let Some(parent)=occupied.last_mut() {
+                    let border=os_ui::kit::menu::metrics(ui.c.scale).border;
+                    *parent=Rect::new(row.x-border,parent.y,row.w+2.0*border,parent.h);
                 }
+                let (rect,next_rows)=popup_list(ui,entries,row.right(),row.y-2.0,(w,h),open,depth,scroll,&occupied);
+                occupied.push(rect);rows=next_rows;selected=open;depth+=1;
             }
         });
     }
@@ -1396,7 +1274,7 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 /// screen: the ones that fit from column `scroll` on, and a scroll bar under them (spec: ui/menus.md "Menus wider than
 /// the window").
 #[allow(clippy::too_many_arguments)]
-fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, sub: bool, scroll: usize) -> (Rect, Vec<Rect>) {
+fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect]) -> (Rect, Vec<Rect>) {
     let t = ui.t;
     let font = Font::new(14);
     let mut lw: f32 = 80.0;
@@ -1422,10 +1300,15 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     let shown = if bar_h > 0.0 { ((room / cw) as usize).clamp(1, cols) } else { cols };
     let first = scroll.min(cols - shown);
     let (w, h) = (cw * shown as f32, body_h + 2.0 * m.border + bar_h);
-    let x = x.min(screen.0 - w - 2.0).max(0.0);
+    let x = if let Some(parent)=occupied.last() {
+        let left=occupied.iter().map(|r|r.x).fold(parent.x,f32::min);
+        let right=occupied.iter().map(|r|r.right()).fold(parent.right(),f32::max);
+        [parent.right(),parent.x-w,right,left-w].into_iter().find(|&at|at>=0.0 && at+w<=screen.0-2.0 && occupied.iter().all(|r|at+w<=r.x+0.1 || at>=r.right()-0.1))
+            .unwrap_or_else(||if parent.x>=w {parent.x-w} else {x.min(screen.0-w-2.0).max(0.0)})
+    } else {x.min(screen.0-w-2.0).max(0.0)};
     let y = y.min(screen.1 - h - 2.0).max(0.0);
     let r = Rect::new(x, y, w, h);
-    let menu = if sub { crate::app::MENU_SUB } else { crate::app::MENU_POPUP };
+    let menu = match depth {0=>crate::app::MENU_POPUP,1=>crate::app::MENU_SUB,d=>crate::app::MENU_DEEP+(d-2) as u8};
     let mut rows = Vec::with_capacity(items.len());
     let lemon = super::lemon(ui);
     if lemon {
@@ -1441,7 +1324,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
         let at = |col: usize| r.x + m.border + (col as f32 - first as f32) * cw;
         let rr = Rect::new(at(col), r.y + m.border + off, cw - 2.0 * m.border, item_h(&m, it));
         rows.push(rr);
-        let action = if sub { Action::PlPopupSub(i) } else { Action::PlPopup(i) };
+        let action = match depth {0=>Action::PlPopup(i),1=>Action::PlPopupSub(i),d=>Action::PlPopupDeep(d,i)};
         if col < first || col >= first + shown {
             // The wheel still steps to its rows: where the scroll that shows the column puts them.
             if it.enabled && !it.head && !it.sep && !it.col {
@@ -1519,7 +1402,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     if bar_h > 0.0 {
         // In whole columns.
         let track = Rect::new(r.x + m.border + 2.0, r.bottom() - m.border - bar_h + 2.0, r.w - 2.0 * m.border - 4.0, bar_h - 4.0);
-        let target = if sub { crate::app::Scroll::PopupSub } else { crate::app::Scroll::Popup };
+        let target = match depth {0=>crate::app::Scroll::Popup,1=>crate::app::Scroll::PopupSub,d=>crate::app::Scroll::PopupDeep(d)};
         super::scrollbar(ui, track, false, first as f32, shown as f32, cols as f32, target);
     }
     (r, rows)

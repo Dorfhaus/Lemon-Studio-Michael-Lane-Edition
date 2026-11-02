@@ -134,7 +134,7 @@ clicking it does nothing. The full, item-by-item roadmap lives on the
 - The sampler's closing fades
 - A fast resampler while playing, and the exact one for export
 - Idle plugins are skipped; Stop ends every voice, also in hosted plugins
-- Not yet: multi-core mixing (there is one audio thread)
+- Partial multi-core mixing: independent hosted mixer insert chains use persistent workers when measured cost justifies scheduling. Instruments, dependent buses, sidechains and internal effects remain serial.
 
 **CPU panel.** Shows the audio load, the voices playing (the engine's and every plugin's), memory and
 dropouts. Its right-click menu has refresh rates, a frames-per-second view and handle / thread / font

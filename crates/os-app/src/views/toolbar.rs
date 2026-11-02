@@ -84,6 +84,7 @@ pub enum Switch {
     Separators,
     Flat,
     HintBar,
+    CpuMemory,
     Hide,
 }
 
@@ -143,14 +144,29 @@ struct Ctx<'a> {
     preview: bool,
 }
 
+pub(super) fn visible_layout(s:&State)->crate::toolbar::Layout {
+    let mut layout=s.bar.layout.clone();
+    if !s.bar.editing {for row in &mut layout.rows {row.retain(|p|*p!=Panel::Caption);}}
+    layout
+}
+
 /// The band in its own px, `width` of them wide (`views::paint` scales it by Toolbars scaling). In each row the panels
 /// that would end past `room` are left out, from the first one that does not fit.
 pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let t = ui.t;
     let lemon = super::lemon(ui);
-    let l = &s.bar.layout;
     let editing = s.bar.editing;
-    let fit = fit(s, width);
+    let visible_layout = visible_layout(s);
+    let l = &visible_layout;
+    let action_font = Font::new(12);
+    let update_w = ui.c.text_width(action_font, "Update").ceil() + 12.0;
+    let donate_w = ui.c.text_width(action_font, "Donate").ceil() + 12.0;
+    let ai_w=48.;
+    let window_w = 104.0;
+    let actions_w = ai_w + update_w + donate_w + 18.0 + 32.0 + window_w;
+    let content_width = (width - actions_w).max(100.0);
+    s.toolbar_content_width.set(content_width);
+    let fit = room(content_width, crate::toolbar::natural_width(l, editing));
     let (rows, h) = (l.rows.len(), l.height());
     // Separator lines: off from the Toolbars menu (spec: ui/toolbar-menu.md §2).
     let seps = s.toolbar.separators;
@@ -176,7 +192,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     // Empty toolbar areas drag the window (registered first, so controls win).
     ui.hit(Rect::new(0.0, 0.0, width, h), Action::DragWindow, "");
 
-    let placed = place(l, width, editing);
+    let placed = place(l, content_width, editing);
     for row in 0..rows {
         for p in placed.iter().filter(|p| p.row == row) {
             let a = p.at();
@@ -211,11 +227,41 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         grips(ui, s);
     }
 
+    {
+        let ai=Rect::new(width-actions_w+2.,8.,ai_w,24.);
+        let hover=ui.hit(ai,Action::Ai,if !s.ai.enabled {"AI control is off — connect an assistant"}else if s.ai.client.is_empty(){"AI control enabled — waiting for an approved assistant"}else{"AI assistant connected — manage or disconnect"});
+        ui.c.fill_rrect(ai,3.,if hover{t.button_hi}else{t.sunken});
+        let chip=Rect::new(ai.x+6.,ai.y+7.,10.,10.);let ink=if s.ai.enabled{t.accent}else{t.text_dim};
+        ui.c.stroke_rrect(chip,2.,1.,ink);for d in [2.,5.,8.] {ui.c.line(chip.x-2.,chip.y+d,chip.x,chip.y+d,1.,ink);ui.c.line(chip.right(),chip.y+d,chip.right()+2.,chip.y+d,1.,ink);}
+        ui.c.text_clip(action_font,ai.x+22.,ai.y+5.,20.,t.text,"AI");
+        if !s.ai.client.is_empty(){ui.c.fill_circle(ai.right()-3.,ai.y+3.,2.,t.accent);}
+        let r = Rect::new(ai.right()+6., 8.0, update_w, 24.0);
+        let (label, hint) = crate::updates::display();
+        ui.hit(r, Action::Updates, if !cfg!(windows) { "Open the latest downloads".to_string() } else if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
+        ui.c.fill_rrect(r, 3.0, t.sunken);
+        ui.c.text_clip(action_font, r.x + 6.0, r.y + 5.0, r.w - 12.0, t.text, label);
+        let donate = Rect::new(r.right() + 6.0, r.y, donate_w, r.h);
+        ui.hit(donate, Action::Donate, "Donate through Michael Lane's PayPal.me page");
+        ui.c.fill_rrect(donate, 3.0, t.sunken);
+        ui.c.text_clip(action_font, donate.x + 6.0, donate.y + 5.0, donate.w - 12.0, t.text, "Donate");
+    }
+    // Window controls remain at the far right, outside the customizable panels.
+    ui.c.fill_rect(Rect::new(width-window_w-17.,11.,1.,18.),t.toolbar_line);
+    for (offset, icon, action, hint) in [
+        (0., Icon::Minimize, Action::Minimize, "Minimize"),
+        (32., Icon::Restore, Action::Maximize, "Restore / maximize"),
+        (64., Icon::Close, Action::Close, "Exit Lemon Studio"),
+    ] {
+        let r=Rect::new(width-window_w+offset,8.,30.,24.);
+        let hover=ui.hit(r,action,hint);
+        super::button_face(ui,r,if hover {super::Look::Hover}else{super::Look::Off});
+        icons::draw(ui.c,icon,r.inset(6.),t.glyph);
+    }
     // Panels left out (spec: ui/ui-scaling.md §1 "Toolbars scaling"): the ▶ arrow at the band's right end, in the logo's
     // place. Hovering it says why; a click does nothing.
     let mid = (h / 2.0).floor();
     if fit.is_finite() {
-        let r = Rect::new(width - MORE_W, 0.0, MORE_W, h);
+        let r = Rect::new(content_width - MORE_W, 0.0, MORE_W, h);
         ui.hit(r, Action::Swallow, MORE_HINT);
         os_ui::kit::triangle(ui.c, r.cx(), mid, 5.0, os_ui::kit::Dir::Right, t.glyph);
         return;
@@ -227,7 +273,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     // keeps to the right edge until the window is too narrow, then the edge crops it (spec ui/main-window.md §12); the
     // toolbar never moves.
     let end = placed.iter().map(|p| p.x + p.w).fold(0.0, f32::max);
-    let lx = (width - 45.0).max(end + 47.0);
+    let lx = (content_width - 45.0).max(end + 47.0);
     let r = Rect::new(lx - 35.0, 0.0, 78.0, h - 1.0);
     if editing {
         ui.hit(r, Action::Bar(BarHit::Logo), "Logo - drag onto the palette to take it off");
@@ -254,7 +300,7 @@ fn separator(ui: &mut Ui, x: f32, row: usize, lemon: bool) {
 /// Paints panel `p`; false when one of its buttons did not fit (its row ends there).
 fn panel(ui: &mut Ui, c: &Ctx, p: Panel) -> bool {
     match p {
-        Panel::Caption => caption(ui, c),
+        Panel::Caption => { if c.preview { caption(ui, c); } },
         Panel::Hint => hint_panel(ui, c),
         Panel::Transport => transport(ui, c),
         Panel::Recording => return recording(ui, c),
@@ -291,16 +337,26 @@ fn caption(ui: &mut Ui, c: &Ctx) {
     }
 }
 
-/// Hint panel: project title + hint / message.
+/// Two-line hints; project/template names belong in the project title, not here.
 fn hint_panel(ui: &mut Ui, c: &Ctx) {
     let (t, a, s, f) = (ui.t, c.a, c.s, c.f);
-    let hp = a.span(72.0, 376.0, 4.0, 36.0);
+    let hp = a.span(72.0, 312.0, 4.0, 36.0);
     sunken(ui, hp, t.sunken);
     ui.hit(hp, Action::DragWindow, "Hint bar");
-    ui.c.text_clip(Font::new(13), a.x(76.0), a.y(6.0), 280.0, t.text_dim.shade(-0.05), &f.title);
     let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or("") };
-    ui.c.text_clip(Font::new(14), a.x(77.0), a.y(19.0), 280.0, t.text, hint);
-    icons::draw(ui.c, Icon::MidiControl, a.span(360.0, 374.0, 17.0, 32.0), ui.t.s(0x515457));
+    let mut font=Font::new(13);
+    for size in (9..=13).rev() {
+        font=Font::new(size);
+        if ui.c.line_height(font)*2.<=hp.h-4. {break;}
+    }
+    let line_height=ui.c.line_height(font);
+    ui.c.push_clip(hp.inset(2.));
+    let chars:Vec<char>=hint.chars().collect();
+    let lines=super::settings::wrap(ui,font,hint,hp.w-10.);
+    for (row,(start,n)) in lines.into_iter().take(2).enumerate() {
+        ui.c.text_clip(font,hp.x+5.,hp.y+2.+row as f32*line_height,hp.w-10.,t.text,&chars[start..start+n].iter().collect::<String>());
+    }
+    ui.c.pop_clip();
 }
 
 /// Transport group: PAT / SONG, play, stop, record and the tempo (to the tempo box's right edge, x 570).
@@ -440,7 +496,7 @@ fn recording(ui: &mut Ui, c: &Ctx) -> bool {
     tool_button(ui, m, Icon::Metronome, crate::metronome::on(), Action::Metronome, "Metronome (Ctrl+M) - right-click for the sound and volume");
     // Start on input, Recording precount, Blend, Loop record (spec: ui/recording.md §3-4).
     use crate::record::Opt;
-    let opts = [(Icon::WaitInput, Opt::Wait), (Icon::Countdown, Opt::Precount), (Icon::Blend, Opt::Blend), (Icon::LoopRecord, Opt::Loop)];
+    let opts = [(Icon::WaitInput, Opt::Wait), (Icon::Countdown, Opt::Precount), (Icon::LoopRecord, Opt::Loop)];
     for (i, (icon, opt)) in opts.into_iter().enumerate() {
         let r = a.r(btn(613.0 + 33.0 * i as f32, 4.0));
         if r.right() > c.fit {
@@ -448,6 +504,10 @@ fn recording(ui: &mut Ui, c: &Ctx) -> bool {
         }
         tool_button(ui, r, icon, opt.on(), Action::RecOpt(opt), crate::record::option_hint(opt));
     }
+    let r = a.r(btn(712.0, 4.0));
+    if r.right() > c.fit { return false; }
+    tool_button(ui, r, Icon::Slide, c.s.params.capture_armed, Action::AutomationCapture,
+        "Create automation: click, then move a control; click again to cancel");
     true
 }
 
@@ -648,7 +708,7 @@ fn utilities(ui: &mut Ui, c: &Ctx) -> bool {
         (Icon::SaveRender, "Export audio... (Ctrl+R)"),
         (Icon::Info, "Project info (F11)"),
     ];
-    for (i, (icon, hint)) in utils.into_iter().enumerate() {
+    for (i, (icon, hint)) in utils.into_iter().filter(|(icon, _)| *icon == Icon::SaveRender || (*icon == Icon::Info && !crate::settings_file::flag("declutter_toolbar", false))).enumerate() {
         let r = a.r(btn(1209.0 + 33.0 * i as f32, 4.0));
         if r.right() > c.fit {
             return false;
@@ -709,9 +769,9 @@ fn volume(ui: &mut Ui, c: &Ctx) {
 fn pitch(ui: &mut Ui, c: &Ctx) {
     use crate::knobs::KnobId;
     let (t, a, s) = (ui.t, c.a, c.s);
-    ui.hit(a.span(340.0, 376.0, 45.0, 77.0), Action::Knob(KnobId::MasterPitch), s.knob_text(KnobId::MasterPitch));
+    ui.hit(a.span(340.0, 376.0, 45.0, 77.0), Action::Knob(KnobId::Varispeed), s.knob_text(KnobId::Varispeed));
     let (cx, cy) = (a.x(358.0), a.y(61.0));
-    super::knob(ui, cx, cy, 14.0, s.knob(KnobId::MasterPitch), true, t.glyph, t.button_hi);
+    super::knob(ui, cx, cy, 14.0, s.knob(KnobId::Varispeed), true, t.glyph, t.button_hi);
     for k in 0..20 {
         let ang = 0.75 * std::f32::consts::PI + 1.5 * std::f32::consts::PI * k as f32 / 19.0;
         ui.c.fill_circle(cx + 17.5 * ang.cos(), cy + 17.5 * ang.sin(), 0.7, t.glyph_dim);
@@ -884,8 +944,8 @@ fn window_buttons(ui: &mut Ui, c: &Ctx, which: Range<usize>) -> bool {
         // FL's store button is hidden: its stand-in, a repository of free and open-source plugins (spec:
         // ui/main-window.md §3), had the plugin picker's icon. It is to come back with a shop icon.
     ];
-    for (i, (icon, action, hint)) in wins.into_iter().enumerate().filter(|(i, _)| which.contains(i)) {
-        let r = a.r(btn(973.0 + 33.0 * i as f32, 45.0));
+    for (i, (icon, action, hint)) in wins.into_iter().enumerate().filter(|(i, _)| which.contains(i) && (!crate::settings_file::flag("declutter_toolbar", false) || ![5, 6, 8].contains(i))) {
+        let r = a.r(btn(973.0 + 33.0 * (if crate::settings_file::flag("declutter_toolbar", false) && i == 7 { 5 } else { i }) as f32, 45.0));
         if r.right() > c.fit {
             return false;
         }

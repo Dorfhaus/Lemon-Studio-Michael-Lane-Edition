@@ -10,7 +10,10 @@
 //! methods, under the instance's mutex.
 // spec: plugins/vst3-hosting.md
 
+pub mod ara;
+mod ara_playback;
 mod context_menu;
+mod editor;
 pub mod fl_state;
 mod host;
 pub mod preset;
@@ -223,6 +226,8 @@ pub struct Module {
     plugins: Vec<Descriptor>,
     /// Class ids, parallel to `plugins`.
     classes: Vec<IID>,
+    /// Advertised ARA factory class name and ID; not proof of a working document binding.
+    ara_factories: Vec<(String, String)>,
     factory: Option<VstPtr<dyn IPluginFactory>>,
     host: Com<HostApp>,
     lib: Option<libloading::Library>,
@@ -258,7 +263,7 @@ impl Module {
         unsafe {
             let code = if factory.is_null() { 0 } else { *(factory as *const usize) };
             let factory = owned::<dyn IPluginFactory>(factory);
-            let mut m = Module { path: path.to_path_buf(), plugins: Vec::new(), classes: Vec::new(), factory: None, host: HostApp::create(), lib, code };
+            let mut m = Module { path: path.to_path_buf(), plugins: Vec::new(), classes: Vec::new(), ara_factories: Vec::new(), factory: None, host: HostApp::create(), lib, code };
             let Some(factory) = factory else { return Err(format!("{}: no plug-in factory", file.display())) };
             if let Some(f3) = factory.cast::<dyn IPluginFactory3>() {
                 f3.set_host_context(m.host.raw());
@@ -269,7 +274,12 @@ impl Module {
             let f3 = factory.cast::<dyn IPluginFactory3>();
             for i in 0..factory.count_classes() {
                 let mut ci: PClassInfo = std::mem::zeroed();
-                if factory.get_class_info(i, &mut ci) != kResultOk || c_arr(&ci.category) != "Audio Module Class" {
+                if factory.get_class_info(i, &mut ci) != kResultOk { continue; }
+                if c_arr(&ci.category) == "ARA Main Factory Class" {
+                    m.ara_factories.push((c_arr(&ci.name), fuid_string(&ci.cid)));
+                    continue;
+                }
+                if c_arr(&ci.category) != "Audio Module Class" {
                     continue;
                 }
                 let (mut name, mut vendor, mut version, mut subcats) = (c_arr(&ci.name), fvendor.clone(), String::new(), String::new());
@@ -309,6 +319,7 @@ impl Module {
                 });
                 m.classes.push(ci.cid);
             }
+            for i in 0..m.plugins.len() {if m.ara_factory_id(&m.plugins[i].id).is_some(){m.plugins[i].features.push("ARA".into());}}
             m.factory = Some(factory);
             Ok(Arc::new(m))
         }
@@ -320,6 +331,17 @@ impl Module {
 
     pub fn plugins(&self) -> &[Descriptor] {
         &self.plugins
+    }
+
+    /// ARA's companion specification pairs audio and ARA factory classes by their exact name.
+    /// Never mark every audio class in a shell as ARA capable. Ambiguous names are rejected.
+    /// This is discovery only: callers must still validate the entry point and API generation.
+    pub fn ara_factory_id(&self, plugin_id: &str) -> Option<&str> {
+        let plugin = self.plugins.iter().find(|p| p.id.eq_ignore_ascii_case(plugin_id))?;
+        let mut matches = self.ara_factories.iter().filter(|(name, _)| name == &plugin.name);
+        let (_, id) = matches.next()?;
+        if matches.next().is_some() { return None; }
+        Some(id)
     }
 
     fn factory(&self) -> &VstPtr<dyn IPluginFactory> {
@@ -469,6 +491,9 @@ pub struct Plugin {
     controller: Option<VstPtr<dyn IEditController>>,
     processor: VstPtr<dyn IAudioProcessor>,
     component: VstPtr<dyn IComponent>,
+    ara: Option<ara::Document>,
+    ara_playback: Option<ara_playback::Playback>,
+    ara_source: Option<String>,
     /// The controller is its own object (initialised and terminated by the host).
     separate: bool,
     handler: Com<Handler>,
@@ -540,6 +565,13 @@ unsafe impl Send for Plugin {}
 impl Plugin {
     /// Creates and initialises class `id` of `module` (spec §4.1-4.4); buses are set up, not active yet.
     pub fn new(module: &Arc<Module>, id: &str) -> Result<Plugin, String> {
+        Self::construct(module,id,None)
+    }
+    pub fn new_ara(module:&Arc<Module>,id:&str,sample:Arc<os_engine::sample::Sample>,archive:Option<&[u8]>)->Result<Plugin,String>{
+        let doc=ara::Document::new(module,id,sample,archive)?;
+        Self::construct(module,id,Some(doc))
+    }
+    fn construct(module:&Arc<Module>,id:&str,ara:Option<ara::Document>)->Result<Plugin,String>{
         let i = module.plugins.iter().position(|d| d.id.eq_ignore_ascii_case(id)).ok_or_else(|| format!("no plug-in {id} in {}", module.path.display()))?;
         let desc = module.plugins[i].clone();
         let cid = module.classes[i];
@@ -572,6 +604,9 @@ impl Plugin {
                 controller,
                 processor,
                 component,
+                ara_playback: ara.as_ref().map(|d|ara_playback::Playback::new(d.duration())),
+                ara_source: None,
+                ara,
                 separate,
                 handler: Handler::create(shared.clone()),
                 frame: Frame::create(shared.clone()),
@@ -595,7 +630,7 @@ impl Plugin {
                 bus_in: Vec::new(),
                 bus_out: Vec::new(),
                 queue: Vec::with_capacity(256),
-                note_ids: NoteIds { ids: [-1; 128], next: 0 },
+                note_ids: NoteIds { ids: [-1; 128], next: 0, active: Vec::with_capacity(128) },
                 fx_in: (Vec::new(), Vec::new()),
                 from_processor: Vec::with_capacity(256),
                 pending_since: None,
@@ -616,6 +651,7 @@ impl Plugin {
                 dbg_frames: 0,
                 _module: module.clone(),
             };
+            if let Some(doc)=&mut p.ara {doc.bind(&p.component)?;}
             if let Some(c) = &p.controller {
                 if separate {
                     if let (Some(a), Some(b)) = (p.component.cast::<dyn IConnectionPoint>(), c.cast::<dyn IConnectionPoint>()) {
@@ -643,6 +679,19 @@ impl Plugin {
             p.setup_buses();
             Ok(p)
         }
+    }
+
+    pub fn ara_document(&self)->Option<&ara::Document>{self.ara.as_ref()}
+    /// Render an ARA source-relative block. Activation and model mutation remain on the UI thread.
+    pub fn render_ara_at(&mut self,rate:u32,frame:u64,left:&mut [f32],right:&mut [f32])->Result<(),String>{
+        if self.ara.is_none()||self.rate!=rate||left.len()!=right.len(){return Err("ARA renderer is not ready".into());}
+        self.start_processing();
+        let mut at=0;
+        while at<left.len(){let n=(left.len()-at).min(self.max_frames as usize);
+            let pos=frame+at as u64;let beats=pos as f64/rate as f64*2.;
+            self.set_context(Some(os_engine::TransportInfo{playing:true,tempo:120.,frame:pos,beats,bar_start:(beats/4.).floor()*4.,bar:(beats/4.) as i32,numerator:4,denominator:4,looping:None}));
+            self.process_chunk(&mut left[at..at+n],&mut right[at..at+n],None,None);at+=n;
+        }Ok(())
     }
 
     pub fn desc(&self) -> &Descriptor {
@@ -783,7 +832,9 @@ impl Plugin {
             return true;
         }
         self.deactivate();
-        let setup = ProcessSetup { process_mode: 0, symbolic_sample_size: 0, max_samples_per_block: self.max_frames as i32, sample_rate: f64::from(rate) };
+        // Source-relative ARA voices seek independently. Synchronous processing prevents
+        // an asynchronous seek cache from emitting silence (also essential for offline export).
+        let setup = ProcessSetup { process_mode: if self.ara.is_some() {2} else {0}, symbolic_sample_size: 0, max_samples_per_block: self.max_frames as i32, sample_rate: f64::from(rate) };
         unsafe {
             if self.processor.setup_processing(&setup) != kResultOk {
                 if debug() {
@@ -844,6 +895,7 @@ impl Plugin {
     /// UI-thread housekeeping: restart requests, rate changes, the processor's parameter output, edits waiting for a
     /// stream.
     pub fn idle(&mut self) {
+        if let Some(d)=&self.ara { d.poll(); }
         let flags = self.shared.restart.swap(0, Ordering::AcqRel);
         if flags != 0 && debug() {
             eprintln!("[os-vst3] {} restart flags {flags:#x}", self.desc.name);
@@ -901,7 +953,7 @@ impl Plugin {
         self.auto.clear();
         self.params_out.get().clear();
         let mut data = ProcessData {
-            process_mode: 0,
+            process_mode: if self.ara.is_some() {2} else {0},
             symbolic_sample_size: 0,
             num_samples: 0,
             num_inputs: 0,
@@ -1056,6 +1108,11 @@ impl Plugin {
 
     /// The instance's state in the layout FL Studio's plugin wrapper keeps ([`fl_state`], spec §8).
     pub fn save_state(&self) -> Option<Vec<u8>> {
+        if let Some(doc)=&self.ara {
+            return ara::State { plugin_path:self.desc.path.clone(), class_id:self.desc.id.clone(),
+                source_path:self.ara_source.clone()?, factory_id:doc.factory_id(), archive_id:doc.archive_id(),
+                frames:doc.frames(), rate:doc.sample_rate(), fingerprint:doc.fingerprint(), archive:doc.archive().ok()? }.encode().ok();
+        }
         unsafe {
             let s = Stream::create(Vec::new());
             if self.component.get_state(s.shared()) != kResultOk {
@@ -1082,6 +1139,7 @@ impl Plugin {
     /// Restores `save_state` bytes; also a `.vstpreset` (what Lemon Studio saved before, and preset files; one of
     /// another class is refused) and a bare component state (imports, other hosts' chunks).
     pub fn load_state(&mut self, data: &[u8]) -> bool {
+        if self.ara.is_some() || ara::State::is(data) { return false; }
         let p = if data.starts_with(b"VST3") {
             match preset::Preset::parse(data) {
                 Some(p) if p.class_id.eq_ignore_ascii_case(&self.desc.id) => p,
@@ -1155,8 +1213,9 @@ impl Plugin {
             let e = self.queue[i];
             if (e.time as usize) < n {
                 if self.takes_notes {
-                    if let Some(event) = self.note_ids.event(e) {
+                    while let Some(event) = self.note_ids.event(e) {
                         ev.push(event);
+                        if !matches!(e.kind,NoteKind::Off) {break;}
                     }
                     match e.kind {
                         NoteKind::On => self.ledger.start(e.key, -1),
@@ -1222,7 +1281,7 @@ impl Plugin {
             self.bus_out.push(AudioBusBuffers { num_channels: ch as i32, silence_flags: 0, buffers: unsafe { self.ptrs.as_mut_ptr().add(start) } });
         }
         let mut data = ProcessData {
-            process_mode: 0,
+            process_mode: if self.ara.is_some() {2} else {0},
             symbolic_sample_size: 0,
             num_samples: n as i32,
             num_inputs: self.bus_in.len() as i32,
@@ -1266,6 +1325,7 @@ impl Plugin {
 struct NoteIds {
     ids: [i32; 128],
     next: i32,
+    active: Vec<(u8, i32)>,
 }
 
 impl NoteIds {
@@ -1279,11 +1339,15 @@ impl NoteIds {
                 let id = self.next;
                 self.next = (id + 1) & 0x7fff_ffff;
                 self.ids[key] = id;
+                self.active.push((n.key,id));
                 let on = NoteOnEvent { channel: 0, pitch: i16::from(n.key), tuning: 0.0, velocity: n.velocity, length: 0, note_id: id };
                 (NOTE_ON_EVENT, EventData { note_on: on })
             }
             NoteKind::Off => {
-                (NOTE_OFF_EVENT, EventData { note_off: NoteOffEvent { channel: 0, pitch: i16::from(n.key), velocity: 0.0, note_id: -1, tuning: 0.0 } })
+                let at=self.active.iter().rposition(|&(k,_)|k==n.key)?;
+                let (_,id)=self.active.remove(at);
+                self.ids[key]=self.active.iter().rfind(|&&(k,_)|k==n.key).map_or(-1,|&(_,id)|id);
+                (NOTE_OFF_EVENT, EventData { note_off: NoteOffEvent { channel: 0, pitch: i16::from(n.key), velocity: 0.0, note_id: id, tuning: 0.0 } })
             }
             NoteKind::Tune => {
                 let id = self.ids[key];
@@ -1326,6 +1390,20 @@ impl os_host::Plugin for Plugin {
 
     fn editor_size(&self) -> Option<(u32, u32)> {
         Plugin::editor_size(self)
+    }
+
+    fn editor_resizable(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| unsafe { v.can_resize() } == kResultTrue)
+    }
+
+    fn resize_editor(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        let view = self.view.as_ref()?;
+        let size = editor::resize(view, width, height, self.editor_scale)?;
+        if let Ok(mut pending) = self.shared.size.lock() {
+            *pending = Some(size);
+        }
+        self.shared.attention.raise();
+        Some(self.to_px(size.0, size.1))
     }
 
     fn close_editor(&mut self) {
@@ -1398,6 +1476,8 @@ impl os_host::Plugin for Plugin {
         true
     }
 
+    fn take_state_changed(&mut self)->bool {self.ara.as_ref().is_some_and(|d|d.take_changed())}
+
     fn take_param_events(&mut self) -> Vec<os_host::ParamEvent> {
         self.shared.events.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
     }
@@ -1423,10 +1503,12 @@ impl os_host::Plugin for Plugin {
 
 impl os_engine::Instrument for Plugin {
     fn active(&self) -> bool {
+        if let Some(p)=&self.ara_playback{return p.count()>0;}
         self.sounding
     }
 
     fn voices(&self) -> usize {
+        if let Some(p)=&self.ara_playback{return p.count();}
         self.ledger.count()
     }
 
@@ -1435,6 +1517,7 @@ impl os_engine::Instrument for Plugin {
     /// (spec: audio/voices.md §3). Note offs still waiting for that block stay queued: Stop resets, and Play resets
     /// again before any block has run.
     fn reset(&mut self) {
+        if let Some(p)=&mut self.ara_playback {p.clear();}
         self.queue.retain(|n| matches!(n.kind, NoteKind::Off));
         self.sounding = false;
         let mut sent = [false; 128];
@@ -1460,6 +1543,7 @@ impl os_engine::Instrument for Plugin {
     }
 
     fn note_on(&mut self, offset: u32, key: u8, velocity: f32) {
+        if self.ara.is_some(){self.note_on_from(offset,key,velocity,0.);return;}
         if let Some(m) = self.bend.as_mut().and_then(|b| b.note_on(key)) {
             os_engine::Instrument::midi(self, offset, m);
         }
@@ -1467,6 +1551,7 @@ impl os_engine::Instrument for Plugin {
     }
 
     fn note_off(&mut self, offset: u32, key: u8) {
+        if let Some(p)=&mut self.ara_playback {p.event(offset,ara_playback::Action::KeyOff(key));return;}
         self.queue.push(Note { time: offset, kind: NoteKind::Off, key, velocity: 0.0 });
     }
 
@@ -1492,6 +1577,7 @@ impl os_engine::Instrument for Plugin {
     /// Portamento glides (spec: audio/channel-voices.md): the tuning note expression of the key's sounding note, or
     /// pitch bend for a plug-in without one.
     fn tune(&mut self, offset: u32, key: u8, semitones: f32) {
+        if self.ara.is_some(){return;} // Timing and pitch are edited in the ARA document.
         match &mut self.bend {
             Some(b) => {
                 if let Some(m) = b.tune(key, semitones) {
@@ -1517,6 +1603,20 @@ impl os_engine::Instrument for Plugin {
         self.song = Some(*info);
     }
 
+    fn note_on_from(&mut self, offset:u32,key:u8,velocity:f32,start:f32) {
+        self.voice_start(offset,key,velocity,start,os_engine::NoteLevels::default(),u32::MAX-u32::from(key));
+    }
+    fn voice_start(&mut self,offset:u32,key:u8,velocity:f32,start:f32,levels:os_engine::NoteLevels,voice:u32) {
+        if let Some(p)=&mut self.ara_playback {p.event(offset,ara_playback::Action::Start{key,id:voice,start,velocity,levels});}
+        else {self.note_on(offset,key,velocity);}
+    }
+    fn voice_gains(&self)->bool {self.ara.is_some()}
+    fn voice_gain(&mut self,offset:u32,voice:u32,gain:f32) {
+        if let Some(p)=&mut self.ara_playback {p.event(offset,ara_playback::Action::Gain(voice,gain));}
+    }
+    fn voice_choke(&mut self,offset:u32,key:u8,voice:u32) {
+        if let Some(p)=&mut self.ara_playback {p.event(offset,ara_playback::Action::Stop(voice));}else{self.note_off(offset,key);}
+    }
     fn process(&mut self, rate: u32, left: &mut [f32], right: &mut [f32]) {
         left.fill(0.0);
         right.fill(0.0);
@@ -1526,6 +1626,17 @@ impl os_engine::Instrument for Plugin {
             self.shared.attention.raise();
             os_host::wake();
             return;
+        }
+        if let Some(mut playback)=self.ara_playback.take() {
+            if playback.idle() && self.editor && self.song.is_none() {
+                self.start_processing();
+                for (l,r) in left.chunks_mut(self.max_frames as usize).zip(right.chunks_mut(self.max_frames as usize)) {
+                    self.set_context(None);self.process_chunk(l,r,None,None);
+                }
+                self.ara_playback=Some(playback);self.song=None;return;
+            }
+            playback.process(rate,left,right,|frame,l,r|{if self.render_ara_at(rate,frame,l,r).is_err(){l.fill(0.);r.fill(0.);}});
+            self.ara_playback=Some(playback);self.song=None;return;
         }
         self.start_processing();
         // Stable sort: notes at the same time keep their order (a note off before the next note on).
@@ -1602,6 +1713,7 @@ impl Drop for Plugin {
     fn drop(&mut self) {
         self.close_editor();
         self.deactivate();
+        if let Some(doc)=&mut self.ara {doc.unbind();}
         unsafe {
             if let Some((a, b)) = self.points.take() {
                 a.disconnect(shared_of(&b));

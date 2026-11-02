@@ -21,6 +21,8 @@ pub enum KnobId {
     /// `Project::main_volume` / `main_pitch`; spec: audio/mixer.md "Main volume", audio/voice-levels.md).
     MasterVol,
     MasterPitch,
+    Varispeed,
+    ChanPitch(usize),
     /// Mixer track pan (model).
     MixPan(u16),
     MixSep(u16),
@@ -35,6 +37,7 @@ pub enum KnobId {
     /// Mixer track `.0`'s equaliser: band `.1` (0 low shelf, 1 peaking, 2 high shelf), setting `.2` (0 gain, the
     /// band's fader; 1 frequency; 2 width) (model `MixerTrack::eq`; spec: ui/mixer.md §8, audio/mixer.md "Equaliser").
     Eq(u16, u8, u8),
+    Strip(u16, u8),
     /// A knob of the piano roll's Strum dialog (dialog state, not project data; spec: ui/piano-strum.md §1).
     Strum(crate::strum::Knob),
     /// A knob (or the Range box) of the piano roll's Arpeggiate dialog (dialog state; spec: ui/piano-arpeggiate.md §1).
@@ -60,7 +63,7 @@ impl KnobId {
     /// Value change per wheel notch: master pitch steps a semitone.
     pub fn notch(self) -> f32 {
         match self {
-            KnobId::MasterPitch => 1.0 / 24.0,
+            KnobId::MasterPitch | KnobId::Varispeed => 1.0 / 24.0,
             // spec: ui/channel-rack.md §11 (3 % per notch; pan percent spans half the range), §7 (swing 4-5 %).
             KnobId::ChanVol(_) => 0.03,
             KnobId::ChanPan(_) => 0.015,
@@ -78,8 +81,8 @@ impl KnobId {
             // spec: ui/channel-rack.md §11 (0.4 % / px volume, 0.8 % / px pan) and §7 (30 px = 17 % swing).
             KnobId::ChanVol(_) | KnobId::ChanPan(_) => 0.004,
             KnobId::Swing => 0.17 / 30.0,
-            // A band's gain fader: its handle about follows the mouse over the graph's height.
-            KnobId::Eq(_, _, 0) => 1.0 / 160.0,
+            // All native channel-strip knobs share the EQ gain knobs' mouse travel.
+            KnobId::Eq(..) | KnobId::Strip(..) => 1.5625 / 160.0,
             // A tension's side is half as many notches as a strength's (spec: ui/piano-strum.md §1).
             KnobId::Strum(k) if k.tension() => 2.0 * PER_PX,
             // The stepped controls move one value per 12 px.
@@ -96,7 +99,7 @@ impl KnobId {
             KnobId::MasterVol | KnobId::Send(..) => 0.8,
             KnobId::ChanVol(_) => 0.78125,
             KnobId::SlotMix(..) => 1.0,
-            KnobId::Swing => 0.0,
+            KnobId::Swing | KnobId::Strip(..) => 0.0,
             KnobId::Arp(k) => crate::arpeggiate::Settings::default().get(k),
             KnobId::PianoDlg(k) => k.default_pos(),
             KnobId::Eq(_, b, f) => eq_pos(f, os_model::EQ_DEFAULT[usize::from(b.min(2))][usize::from(f.min(2))]),
@@ -138,7 +141,7 @@ impl Control {
 /// The right-click menu of a control with nothing to offer but its default: "Reset".
 pub fn reset_menu(c: Control, x: f32, y: f32) -> crate::playlist::Popup {
     use crate::playlist::{Cmd, PItem, Popup};
-    Popup { x, y, items: vec![PItem::new("Reset", Cmd::Reset(c))], sub: None, scroll: [0; 2] }
+    Popup { x, y, items: vec![PItem::new("Reset", Cmd::Reset(c))], sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// "Centered", "38% right", "2% left".
@@ -171,7 +174,10 @@ impl State {
             // Main swing is project data, 0..=128 (spec: flp/events/project-info.md, event 11).
             KnobId::Swing => f32::from(self.project.swing.unwrap_or(0).min(128)) / 128.0,
             KnobId::MasterVol => f32::from(self.project.main_volume.unwrap_or(os_model::Project::MAIN_VOLUME_DEFAULT).min(16000)) / 16000.0,
+            KnobId::Varispeed => 0.5 + f32::from(self.project.varispeed_cents) / 2400.0,
+            KnobId::ChanPitch(i) => self.project.channels.get(i).map_or(0.5, |c| (0.5 + c.pitch_cents as f32 / (200.0 * c.misc.pitch_range.max(1) as f32)).clamp(0.0, 1.0)),
             KnobId::MasterPitch => (0.5 + f32::from(self.project.main_pitch.unwrap_or(0)) / 2400.0).clamp(0.0, 1.0),
+            KnobId::Strip(t,k) => self.project.mixer.iter().find(|m|m.index==t).map_or(0.0,|m|f32::from(if k==8 {if m.is_vocal(){m.tune[0]}else{0}}else if k==7 {m.deess_amount()}else{m.strip[usize::from(k.min(4))]})/65535.0),
             KnobId::Eq(t, b, f) => {
                 let (b, f) = (usize::from(b.min(2)), usize::from(f.min(2)));
                 let eq = self.project.mixer.iter().find(|m| m.index == t).map_or(os_model::EQ_DEFAULT, |m| m.eq);
@@ -193,6 +199,11 @@ impl State {
             }
         }
         match id {
+            KnobId::Varispeed => { self.project.varispeed_cents = ((v - 0.5) * 2400.0).round() as i16; self.piano.dirty = true; }
+            KnobId::ChanPitch(i) => {
+                if let Some(c) = self.project.channels.get_mut(i) { c.pitch_cents = ((v - 0.5) * 200.0 * c.misc.pitch_range.max(1) as f32).round() as i32; }
+                self.piano.dirty = true;
+            }
             KnobId::MixPan(t) => {
                 if let Some(m) = self.project.mixer.iter_mut().find(|m| m.index == t) {
                     m.pan = Some(f64::from((v - 0.5) * 2.0));
@@ -243,6 +254,12 @@ impl State {
                 self.project.main_pitch = Some(((v - 0.5) * 2400.0).round() as i16);
                 self.piano.dirty = true;
             }
+            KnobId::Strip(t,k) => {
+                if let Some(m)=self.project.mixer.iter_mut().find(|m|m.index==t) {
+                    if k==8 {m.tune[0]=(v*65535.0).round() as u16;}else if k==7 {m.deess=Some((v*65535.0).round() as u16);}else{m.strip[usize::from(k.min(4))]=(v*65535.0).round() as u16;}
+                    self.piano.dirty=true;
+                }
+            }
             KnobId::Eq(t, b, f) => {
                 if let Some(m) = self.project.mixer.iter_mut().find(|m| m.index == t) {
                     let stored = if f == 0 { ((v * 2.0 - 1.0) * 1800.0).round() as i32 } else { (v * 65536.0).round() as i32 };
@@ -283,6 +300,8 @@ impl State {
         let n = self.knob(id);
         let bipolar = (n - 0.5) * 2.0;
         match id {
+            KnobId::Varispeed => format!("Varispeed: {:+.2} st / {:.1}%", self.project.varispeed_cents as f64 / 100.0, 100.0 * 2f64.powf(self.project.varispeed_cents as f64 / 1200.0)),
+            KnobId::ChanPitch(i) => format!("Channel pitch: {:+.2} st (Shift-drag: fine; double-click: reset)", self.project.channels.get(i).map_or(0, |c| c.pitch_cents) as f64 / 100.0),
             KnobId::MasterVol => {
                 // The gain is the level curve of stored / 12800 (spec: audio/mixer.md "Main volume").
                 let g = os_dsp::level::curve(n / 0.8);
@@ -307,6 +326,10 @@ impl State {
             }
             KnobId::Swing => format!("Main swing: {:.0}%", n * 100.0),
             // "EQ band 1 (low shelf) level: 0.0dB", "... freq: 90Hz", "... width: 0.27" (spec: ui/mixer.md §8).
+            KnobId::Strip(_,0) => if n==0.0 { "Low cut: OUT".into() } else { format!("Low cut: {:.0} Hz",os_dsp::channel_strip::cut_hz(n)) },
+            KnobId::Strip(_,8) => if n==0.0 {"Tune (SnapTune): OUT — right-click for Male / Female".into()}else{format!("Tune: {:.0}% — retune {:.0} ms — right-click for Male / Female",n*100.,200.*(1.-n).powi(2))},
+            KnobId::Strip(_,7) => if n==0.0 {"DS (DeBess): OUT".into()}else{format!("DS (DeBess): {:.0}%",n*100.)},
+            KnobId::Strip(_,k) => format!("{}: {:.0}%",["Low cut","Compressor","Drive","Gate","Tame"][usize::from(k.min(4))],n*100.0),
             KnobId::Eq(_, b, f) => {
                 let band = EQ_BANDS[usize::from(b.min(2))];
                 match f {

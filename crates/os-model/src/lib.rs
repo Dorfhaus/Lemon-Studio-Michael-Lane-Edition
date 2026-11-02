@@ -25,8 +25,18 @@ impl Rgb {
     }
 }
 
+/// Original source and editable source-seconds -> destination-beats anchors for a rendered warp.
+#[derive(Debug,Clone,PartialEq)]
+pub struct AudioWarp {pub source:String,pub rendered:String,pub points:Vec<(f64,f64)>}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Project {
+    pub audio_warps:Vec<AudioWarp>,
+    pub peak_links: Vec<PeakLink>,
+    /// Native piano harmony key, scale entry and editor/input flags.
+    pub harmony: Option<(u8,u8,u8)>,
+    /// Lemon instrument recording assignments: (channel id, arrangement, playlist row, pattern).
+    pub instrument_lanes: Vec<(u16,u16,u16,u16)>,
     /// Version string of the program that saved the file, e.g. `26.1.7.5653`.
     pub saved_by: String,
     /// Ticks per quarter note.
@@ -77,6 +87,8 @@ pub struct Project {
     pub main_volume: Option<u16>,
     /// Main pitch in cents, -1200..=1200 (event 80; spec: audio/voice-levels.md). `None` = not in the file (0).
     pub main_pitch: Option<i16>,
+    /// Tape-style master playback rate, in cents.
+    pub varispeed_cents: i16,
     /// When the project was started and the time spent working on it (event 237; spec: flp/events/project-info.md).
     /// `None` = not in the file.
     pub work_time: Option<WorkTime>,
@@ -90,6 +102,10 @@ pub struct Project {
     /// controls automatically"): controls that take a value when the song starts.
     pub init_controls: Vec<InitControl>,
 }
+
+/// A direct audio-envelope link; range is normalized to the destination parameter.
+#[derive(Debug,Clone,Copy,PartialEq)]
+pub struct PeakLink {pub source:u16,pub target:u32,pub base:f32,pub depth:f32,pub inverted:bool,pub release_ms:u16}
 
 /// One of the project's initial values: a control and the value it takes when the song starts (spec:
 /// ui/settings-choices.md "Advanced: Initialize controls automatically"). A 12-byte record of event 216, kept as read,
@@ -137,11 +153,13 @@ impl InitControl {
         let v = v.clamp(0.0, 1.0);
         let value = match target::decode(t) {
             Target::ChannelVolume(_) | Target::ChannelPan(_) | Target::SlotMix(..) => 12800.0 * v,
+            Target::MainPitch => 2400.0*v-1200.0,
             Target::ChannelPitch(_) => 9600.0 * v - 4800.0,
             Target::MixerVolume(_) | Target::MixerSend(..) => 16000.0 * v,
             Target::MixerPan(_) => 12800.0 * v - 6400.0,
             Target::MixerSeparation(_) => 128.0 * v - 64.0,
             Target::MixerEq(_, _, 0) => 3600.0 * v - 1800.0,
+            Target::MixerStrip(..) => 65535.0 * v,
             Target::MixerEq(..) => 65536.0 * v,
             Target::SlotOn(..) => v.round_ties_even(),
             Target::Tempo => 10000.0 + 512000.0 * v,
@@ -159,11 +177,13 @@ impl InitControl {
         let v = f64::from(self.value);
         let unit = match target::decode(self.target) {
             Target::ChannelVolume(_) | Target::ChannelPan(_) | Target::SlotMix(..) => v / 12800.0,
+            Target::MainPitch => (v+1200.0)/2400.0,
             Target::ChannelPitch(_) => (v + 4800.0) / 9600.0,
             Target::MixerVolume(_) | Target::MixerSend(..) => v / 16000.0,
             Target::MixerPan(_) => (v + 6400.0) / 12800.0,
             Target::MixerSeparation(_) => (v + 64.0) / 128.0,
             Target::MixerEq(_, _, 0) => (v + 1800.0) / 3600.0,
+            Target::MixerStrip(..) => v / 65535.0,
             Target::MixerEq(..) => v / 65536.0,
             Target::SlotOn(..) => f64::from(u8::from(self.value != 0)),
             Target::Tempo => (v - 10000.0) / 512000.0,
@@ -251,6 +271,7 @@ impl Project {
         }
         for a in &mut self.arrangements {
             a.clips.iter_mut().for_each(|c| c.rescale(from, to));
+            for clips in a.tracks.iter_mut().filter_map(|t|t.frozen.as_mut()) {clips.iter_mut().for_each(|c|c.rescale(from,to));}
             a.markers.iter_mut().for_each(|m| m.rescale(from, to));
         }
         if let Some(v) = &mut self.playlist_view {
@@ -450,6 +471,7 @@ impl Project {
             }
         }
         let m = |c: u16| map.get(usize::from(c)).copied().flatten();
+        self.instrument_lanes.retain_mut(|v|m(v.0).map(|ch|v.0=ch).is_some());
         let old = std::mem::take(&mut self.channels);
         self.channels = order
             .iter()
@@ -494,7 +516,8 @@ impl Project {
         self.automations.extend(clones);
         self.automations.sort_by_key(|a| a.channel);
         for arr in &mut self.arrangements {
-            arr.clips.retain_mut(|c| match c.source {
+            for clips in std::iter::once(&mut arr.clips).chain(arr.tracks.iter_mut().filter_map(|t| t.frozen.as_mut())) {
+            clips.retain_mut(|c| match c.source {
                 ClipSource::Channel(ch) => m(ch)
                     .map(|n| {
                         c.source = ClipSource::Channel(n);
@@ -504,6 +527,7 @@ impl Project {
                     .is_some(),
                 ClipSource::Pattern(_) => true,
             });
+            }
         }
     }
 }
@@ -903,6 +927,8 @@ pub struct ChannelMisc {
     pub root: u8,
     /// Follows the main (project) pitch.
     pub main_pitch: bool,
+    /// Preserved global transposition when follow is disengaged.
+    pub pitch_follow_offset: i32,
     /// Adds the root note to played keys.
     pub add_key: bool,
     /// Fine tuning, cents (-100..=100).
@@ -954,11 +980,12 @@ impl Default for ChannelMisc {
             echo: Echo::default(),
             root: 60,
             main_pitch: true,
+            pitch_follow_offset: 0,
             add_key: false,
             fine: 0,
             key_range: [0, 256],
             layer: LayerSettings::default(),
-            pitch_range: 2,
+            pitch_range: 12,
         }
     }
 }
@@ -1297,15 +1324,25 @@ impl Note {
     }
 }
 
+/// A real hosted processor replacing the native mixer strip. Its audio/state remain in the normal slot system.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RackStrip {
+    pub slot: u8,
+    pub native_bypassed: bool,
+    pub eq_on: bool,
+}
+
+
 #[derive(Debug, Clone)]
 pub struct MixerTrack {
+    pub rack_strip: Option<RackStrip>,
     /// 0 = Master.
     pub index: u16,
     pub name: Option<String>,
     pub color: Option<Rgb>,
     pub enabled: bool,
-    /// Effects by slot (0..10); `None` = empty slot.
-    pub slots: [Option<SlotPlugin>; 10],
+    /// Up to 63 user effects; physical index 10 is reserved for the dedicated parametric EQ.
+    pub slots: [Option<SlotPlugin>; 64],
     /// Destination tracks this track sends to.
     pub routes: Vec<u16>,
     /// Explicit send levels `(destination, level 0..=1)`; routes without an entry send at unity
@@ -1322,12 +1359,29 @@ pub struct MixerTrack {
     pub swap: bool,
     /// The track's "effects enabled" switch (event 236 flag 0x04): when off no slot runs.
     pub slots_enabled: bool,
+    /// Draw a group separator before this track (FL event 236, flag 0x400).
+    pub separator: bool,
     /// Per slot: enabled (the slot LED) and mix level 0..=1 (spec: ui/mixer.md §7).
-    pub slot_on: [bool; 10],
-    pub slot_mix: [f64; 10],
+    pub slot_on: [bool; 64],
+    pub slot_mix: [f64; 64],
     /// The three-band equaliser as stored, per band `[gain, frequency, width]`: gain -1800..=1800 in 0.01 dB,
     /// frequency and width 0..=65536 (spec: audio/mixer.md "Equaliser"). Band 1 low shelf, 2 peaking, 3 high shelf.
     pub eq: [[i32; 3]; 3],
+    /// Dedicated parametric EQ in reserved slot 10, before the ten user slots when true.
+    pub parametric_pre: bool,
+    /// Native strip: low cut, compression, drive, gate, TAME (0..65535; zero bypasses), then compressor profile (0..5) and drive type (0..3).
+    pub strip: [u16; 7],
+    /// DeBess amount; None selects the vocal default, Some(0) bypasses.
+    pub deess: Option<u16>,
+    /// SnapTune amount, key (C=0), scale, voice (0 male, 1 female).
+    pub tune: [u16;4],
+    pub tune_enabled: bool,
+    /// Transient learning request; never saved to the project.
+    pub tune_learn: u32,
+    /// 0 Standard, 1 Custom, 2 Vox. Travels with the channel.
+    pub channel_layout: u8,
+    /// Bypass native knobs without changing their values or plugin-slot switches.
+    pub strip_bypassed: bool,
     /// The track's output and input latency settings in milliseconds, either sign, 0 = none (event 236; spec:
     /// flp/layouts.md "A mixer track's record", audio/delay-compensation.md "Settings").
     pub latency_out: f32,
@@ -1346,6 +1400,7 @@ impl PartialEq for MixerTrack {
     fn eq(&self, o: &Self) -> bool {
         // Every field but `origin`, named so that a new field is not left out.
         let MixerTrack {
+            rack_strip,
             index,
             name,
             color,
@@ -1359,9 +1414,18 @@ impl PartialEq for MixerTrack {
             polarity,
             swap,
             slots_enabled,
+            separator,
             slot_on,
             slot_mix,
             eq,
+            parametric_pre,
+            strip,
+            deess,
+            tune,
+            tune_enabled,
+            tune_learn: _,
+            channel_layout,
+            strip_bypassed,
             latency_out,
             latency_in,
             icon,
@@ -1379,9 +1443,18 @@ impl PartialEq for MixerTrack {
             && *stereo_separation == o.stereo_separation
             && *polarity == o.polarity
             && *swap == o.swap
+            && *separator == o.separator
             && *slots_enabled == o.slots_enabled
             && *slot_on == o.slot_on
             && *slot_mix == o.slot_mix
+            && *strip == o.strip
+            && *deess == o.deess
+            && *tune == o.tune
+            && *tune_enabled == o.tune_enabled
+            && *channel_layout == o.channel_layout
+            && *strip_bypassed == o.strip_bypassed
+            && *rack_strip == o.rack_strip
+            && *parametric_pre == o.parametric_pre
             && *eq == o.eq
             && *latency_out == o.latency_out
             && *latency_in == o.latency_in
@@ -1393,14 +1466,25 @@ impl PartialEq for MixerTrack {
 pub const EQ_DEFAULT: [[i32; 3]; 3] = [[0, 5777, 17500], [0, 33145, 17500], [0, 55825, 17500]];
 
 impl MixerTrack {
+    /// Factory effect returns; the main FX bus is deliberately excluded.
+    pub fn is_fx_return(&self) -> bool {
+        matches!(self.name.as_deref().unwrap_or("").trim().to_ascii_uppercase().as_str(),
+            "VERB LONG" | "VERB SHORT" | "VOCAL VERB" | "ANALOG VERB" | "DELAY VERB" | "SLAP" | "1/8" | "1/4" | "1/2")
+    }
+    pub fn is_vocal(&self) -> bool { self.index != 0 && self.channel_layout == 2 }
+    pub fn deess_amount(&self) -> u16 {
+        if self.is_vocal() { self.deess.unwrap_or(0) } else { 0 }
+    }
+
     /// A default track: unnamed, enabled, unity volume, centred, empty slots, routed to the master (except the master).
     pub fn new(index: u16) -> Self {
         MixerTrack {
+            rack_strip: None,
             index,
             name: None,
             color: None,
             enabled: true,
-            slots: Default::default(),
+            slots: std::array::from_fn(|_|None),
             routes: if index == 0 { Vec::new() } else { vec![0] },
             send_levels: Vec::new(),
             volume: Some(0.8),
@@ -1409,9 +1493,18 @@ impl MixerTrack {
             polarity: false,
             swap: false,
             slots_enabled: true,
-            slot_on: [true; 10],
-            slot_mix: [1.0; 10],
+            separator: false,
+            slot_on: [true; 64],
+            slot_mix: [1.0; 64],
             eq: EQ_DEFAULT,
+            parametric_pre: false,
+            strip: [0; 7],
+            deess: None,
+            tune: [0;4],
+            tune_enabled: false,
+            tune_learn: 0,
+            channel_layout: 1,
+            strip_bypassed: false,
             latency_out: 0.0,
             latency_in: 0.0,
             icon: None,
@@ -1703,6 +1796,10 @@ impl TimeMarker {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistTrack {
+    /// Original clips retained for reversible instrument freezing. Mixer processing stays live.
+    pub frozen: Option<Vec<Clip>>,
+    /// Comp group leader: associated mixer insert. Children are muted source take lanes.
+    pub comp: Option<u16>,
     /// 1-based.
     pub number: u32,
     pub name: Option<String>,
@@ -1720,7 +1817,7 @@ pub struct PlaylistTrack {
 impl PlaylistTrack {
     /// Track `number` as a new project has it: unnamed, default colour, on, not grouped.
     pub fn new(number: u32) -> Self {
-        PlaylistTrack { number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
+        PlaylistTrack { frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
     }
 }
 
@@ -1876,6 +1973,7 @@ pub mod target {
     pub const CHANNEL_VOLUME_MULT: u16 = 0x11;
     pub const CHANNEL_MOD_X: u16 = 0x13;
     pub const CHANNEL_MOD_Y: u16 = 0x14;
+    pub const MAIN_PITCH: u32 = 0x4000_0002;
     pub const TEMPO: u32 = 0x4000_0005;
     pub const MIXER_VOLUME: u8 = 0xC0;
     pub const MIXER_PAN: u8 = 0xC1;
@@ -1889,6 +1987,9 @@ pub mod target {
     pub const SLOT_MIX: u8 = 1;
     /// Send levels from FL 24.2 on: `0x2000 + destination` at the sending track's place.
     pub const SEND: u16 = 0x2000;
+
+    /// Lemon-native strip automation namespace, separate from FL mixer parameter IDs.
+    pub fn strip(track: u16, control: u8) -> u32 { (0x6000u32 + u32::from(track)) << 16 | u32::from(if control == 7 || control == 8 {control} else {control.min(4)}) }
 
     pub fn channel(ch: u16, param: u16) -> u32 {
         u32::from(ch) << 16 | u32::from(param)
@@ -1928,6 +2029,7 @@ pub mod target {
         ChannelVolume(u16),
         ChannelPan(u16),
         ChannelPitch(u16),
+        MainPitch,
         /// Channel, one of its filter knobs or level adjustments ([`CHANNEL_CUTOFF`], [`CHANNEL_RESONANCE`],
         /// [`CHANNEL_PAN_OFFSET`], [`CHANNEL_VOLUME_MULT`], [`CHANNEL_MOD_X`], [`CHANNEL_MOD_Y`]).
         ChannelLevel(u16, u16),
@@ -1936,6 +2038,7 @@ pub mod target {
         MixerSeparation(u16),
         /// Mixer track, equaliser band (0..3), setting (0 gain, 1 frequency, 2 width).
         MixerEq(u16, u8, u8),
+        MixerStrip(u16, u8),
         /// Mixer track, destination track: the send level.
         MixerSend(u16, u16),
         /// Mixer track, slot: the slot's switch / its mix level.
@@ -1950,22 +2053,22 @@ pub mod target {
     }
 
     pub fn decode(t: u32) -> Target {
+        if t==MAIN_PITCH {return Target::MainPitch;}
         if t == TEMPO {
             return Target::Tempo;
         }
         let hi = (t >> 16) as u16;
         let lo = t as u16;
+        if (0x6000..0x6080).contains(&hi) && (lo <= 4 || lo == 7 || lo == 8) { return Target::MixerStrip(hi-0x6000,lo as u8); }
         if (0x7000..0x7000 + 128 * 64).contains(&hi) && lo >= PLUGIN_PARAM {
             let loc = hi - 0x7000;
-            if loc % 64 < 10 {
-                return Target::SlotParam(loc / 64, (loc % 64) as u8, lo - PLUGIN_PARAM);
-            }
+            return Target::SlotParam(loc / 64, (loc % 64) as u8, lo - PLUGIN_PARAM);
         }
         if hi < 0x4000 && lo >= PLUGIN_PARAM {
             return Target::ChannelParam(hi, lo - PLUGIN_PARAM);
         }
         // Mixer places from FL 24.2 on (spec: flp/layouts.md "Mixer places", "Parameter ids in an automation link").
-        if (0x7000..0x7000 + 127 * 64).contains(&hi) && (hi - 0x7000) % 64 < 10 {
+        if (0x7000..0x7000 + 127 * 64).contains(&hi) {
             let (track, slot) = ((hi - 0x7000) / 64, ((hi - 0x7000) % 64) as u8);
             let id = lo as u8;
             return match lo >> 8 {
@@ -2006,6 +2109,7 @@ pub mod target {
         matches!(
             decode(t),
             Target::ChannelPan(_)
+                | Target::MainPitch
                 | Target::ChannelPitch(_)
                 | Target::ChannelLevel(_, CHANNEL_PAN_OFFSET | CHANNEL_VOLUME_MULT | CHANNEL_MOD_X | CHANNEL_MOD_Y)
                 | Target::MixerPan(_)
@@ -2219,5 +2323,31 @@ mod fade_tests {
                 assert!((sum - 1.0).abs() < 1e-12, "t {t} x {x}: {sum}");
             }
         }
+    }
+}
+
+impl Project {
+    /// Channels addressed by clips, including layer children. IDs (not rack positions).
+    pub fn clip_channels(&self, clips: &[Clip]) -> std::collections::BTreeSet<u16> {
+        let mut ids = std::collections::BTreeSet::new();
+        for c in clips.iter().filter(|c|!c.muted) { match c.source {
+            ClipSource::Channel(ch) => {ids.insert(ch);},
+            ClipSource::Pattern(n) => if let Some(p)=self.pattern(n) {ids.extend(p.notes.iter().map(|n|n.channel));},
+        }}
+        loop {
+            let old=ids.len();
+            for c in &self.channels { if ids.contains(&c.index) { ids.extend(c.layer_children.iter().copied()); } }
+            if old==ids.len() {break;}
+        }
+        ids
+    }
+    pub fn frozen_instrument_rows(&self) -> Vec<usize> {
+        let Some(a)=self.arrangement() else {return vec![];};
+        let original: Vec<_>=a.tracks.iter().filter_map(|t|t.frozen.as_ref()).flatten().copied().collect();
+        let frozen=self.clip_channels(&original);
+        // Even muted material on another row retains its generator for audition/unmute.
+        let mut clips=a.clips.clone(); for c in &mut clips {c.muted=false;}
+        let used=self.clip_channels(&clips);
+        self.channels.iter().enumerate().filter(|(_,c)|frozen.contains(&c.index)&&!used.contains(&c.index)).map(|(r,_)|r).collect()
     }
 }

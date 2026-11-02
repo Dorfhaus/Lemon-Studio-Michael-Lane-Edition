@@ -125,6 +125,7 @@ fn set_value(s: &mut State, c: InitControl) -> bool {
         Target::MixerSeparation(t) => {
             p.mixer.iter_mut().find(|m| m.index == t).is_some_and(|m| set(&mut m.stereo_separation, Some((f / 64.0).clamp(-1.0, 1.0))))
         }
+        Target::MixerStrip(t,k) => p.mixer.iter_mut().find(|m|m.index==t).is_some_and(|m|if k==7 {set(&mut m.deess,Some(v.clamp(0,65535) as u16))}else{set(&mut m.strip[usize::from(k.min(4))],v.clamp(0,65535) as u16)}),
         Target::MixerEq(t, b, k) => p
             .mixer
             .iter_mut()
@@ -165,6 +166,7 @@ pub fn name(s: &State, t: u32) -> String {
         _ => {}
     }
     match target::decode(t) {
+        Target::MainPitch => "Master pitch".into(),
         Target::Tempo => "Tempo".into(),
         Target::ChannelVolume(ch) => format!("{} - Channel volume", channel(ch)),
         Target::ChannelPan(ch) => format!("{} - Channel panning", channel(ch)),
@@ -183,6 +185,7 @@ pub fn name(s: &State, t: u32) -> String {
         Target::MixerVolume(m) => format!("{} - Volume", mix(m)),
         Target::MixerPan(m) => format!("{} - Pan", mix(m)),
         Target::MixerSeparation(m) => format!("{} - Stereo separation", mix(m)),
+        Target::MixerStrip(m,k) => format!("{} - {}",mix(m),["Low cut","Compressor","PRE saturation","Gate","Tame"][usize::from(k.min(4))]),
         Target::MixerEq(m, b, k) => format!("{} - EQ band {} {}", mix(m), b + 1, ["gain", "frequency", "width"][usize::from(k).min(2)]),
         Target::MixerSend(m, d) => format!("{} - Send to {}", mix(m), mix(d)),
         Target::SlotOn(m, k) => format!("{} - Slot {} switch", mix(m), k + 1),

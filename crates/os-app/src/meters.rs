@@ -74,6 +74,8 @@ pub const SILENT: f32 = -200.0;
 /// One track's meter state, in dB.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meter {
+    pub vu: [f32; 2],
+    pub vu_idle: f32,
     pub db: [f32; 2],
     /// Peak-hold line level and how long it has been held (seconds).
     pub hold: [f32; 2],
@@ -82,18 +84,24 @@ pub struct Meter {
 
 impl Default for Meter {
     fn default() -> Self {
-        Meter { db: [SILENT; 2], hold: [SILENT; 2], held: [0.0; 2] }
+        Meter { vu: [0.0; 2], vu_idle: 0.0, db: [SILENT; 2], hold: [SILENT; 2], held: [0.0; 2] }
     }
 }
 
 impl Meter {
     pub fn active(&self) -> bool {
-        self.db.iter().chain(&self.hold).any(|&d| d > SILENT)
+        self.db.iter().chain(&self.hold).any(|&d| d > SILENT) || self.vu.iter().any(|&v| v > 1e-6)
     }
 }
 
 pub fn to_db(v: f32) -> f32 {
     if v > 1e-10 { 20.0 * v.log10() } else { SILENT }
+}
+
+pub const VU_REFERENCE: f32 = -18.0;
+pub fn vu_db(amplitude: f32) -> f32 { to_db(amplitude) - VU_REFERENCE }
+pub fn vu_fraction(db: f32) -> f32 {
+    if db < -40.0 { 0.0 } else { (10f32.powf((db - 3.0) / 20.0)).clamp(0.0, 1.0) }
 }
 
 /// Advances one meter by `dt` seconds with the new block peaks `peak` (linear). True while it still moves.

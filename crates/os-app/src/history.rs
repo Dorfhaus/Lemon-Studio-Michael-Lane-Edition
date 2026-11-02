@@ -53,6 +53,12 @@ pub const PROJECT_INFO: &str = "Project info";
 /// What a step changes, as it is on the other side of the step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Snap {
+    AudioWarps(Vec<os_model::AudioWarp>),
+    Tempo(f64),
+    Ara(usize, Option<String>, Option<Vec<u8>>),
+    MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
+    ChannelRoute(usize,u16),
+    InstrumentLanes(Vec<(u16,u16,u16,u16)>),
     /// Pattern `number`'s notes, control points and length (the piano roll, the step sequencer).
     Pattern { number: u16, notes: Vec<Note>, controls: Vec<ControlPoint>, length: Option<u32> },
     /// The playlist (`playlist::capture`).
@@ -61,6 +67,18 @@ pub enum Snap {
     Knob(KnobId, f64),
     /// Mixer track `.0`'s volume fader (0..1, the fader law; `None`: the track's default).
     Fader(u16, Option<f64>),
+    Effects(u16, bool, bool),
+    AllEffects(bool),
+    StripProfile(u16,u16),
+    StripBypass(u16,bool),
+    DriveType(u16,u16),
+    EqPosition(u16,bool),
+    ChannelLayout(u16,u8),
+    Tune(u16,[u16;4]),
+    TuneEnabled(u16,bool),
+    PeakLinks(Vec<os_model::PeakLink>),
+    MixerChannel(Box<crate::mixer::ChannelCopy>),
+    RackStrips(Vec<crate::mixer::ChannelCopy>),
     /// Parameter `.1` of hosted plugin instance `.0` (normalized), set by Lemon Studio itself (`crate::params`).
     Param(usize, usize, f64),
     /// What a sample load changes on channel `row`: its sample, its name ("Auto name channels"), its root note and its
@@ -178,6 +196,7 @@ pub struct Settings {
 /// instruments as the delete found them (row, `Plugins::available` index, saved state), hosted again by an undo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
+    pub original_values: std::collections::HashMap<u16, f64>,
     pub full: bool,
     pub gone: Vec<usize>,
     pub back: Vec<(usize, usize, Vec<u8>)>,
@@ -198,6 +217,7 @@ impl Rows {
     pub fn now(s: &State, full: bool, gone: Vec<usize>, back: Vec<(usize, usize, Vec<u8>)>) -> Rows {
         let (p, r) = (&s.project, &s.rack);
         Rows {
+            original_values: s.playlist.original_values.clone(),
             full,
             gone,
             back,
@@ -234,6 +254,7 @@ impl Rows {
         let p = &mut s.project;
         (p.channels, p.patterns, p.automations) = (self.channels, self.patterns, self.automations);
         (p.arrangements, p.init_controls) = (self.arrangements, self.init_controls);
+        s.playlist.original_values = self.original_values;
         (s.rack.groups, s.rack.filter, s.rack.unsorted_at) = (self.groups, self.filter, self.unsorted_at);
         (s.rack.sel, s.selected_channel) = (self.sel, self.selected);
         if m(s.plugin_channel).is_none() {
@@ -302,6 +323,8 @@ impl RackSide {
 }
 
 impl Snap {
+    pub fn ara(s:&State,row:usize)->Option<Self>{let c=s.project.channels.get(row)?;Some(Self::Ara(row,c.plugin.clone(),c.plugin_state.clone()))}
+
     /// Pattern `number` as it is now.
     pub fn pattern(s: &State, number: u16) -> Snap {
         let p = s.project.pattern(number);
@@ -323,11 +346,28 @@ impl Snap {
     /// What this covers, as the project has it now.
     fn now(&self, s: &State) -> Snap {
         match self {
+            Snap::AudioWarps(_)=>Snap::AudioWarps(s.project.audio_warps.clone()),
+            Snap::Tempo(_) => Snap::Tempo(s.tempo),
+            Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
+            Snap::InstrumentLanes(_)=>Snap::InstrumentLanes(s.project.instrument_lanes.clone()),
+            Snap::Ara(row,..) => Self::ara(s,*row).unwrap_or_else(||self.clone()),
             Snap::Pattern { number, .. } => Snap::pattern(s, *number),
             Snap::Playlist(_) => Snap::Playlist(Box::new(crate::playlist::capture(s))),
             Snap::Knob(id, _) => Snap::Knob(*id, knob_value(s, *id)),
             // A track or an instance gone since is left as the step has it (`put` does nothing then).
             Snap::Fader(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::Fader(*t, m.volume)),
+            Snap::RackStrips(v) => Snap::RackStrips(v.iter().filter_map(|c|crate::mixer::channel_copy(s,c.track.index)).collect()),
+            Snap::MixerChannel(c) => crate::mixer::channel_copy(s,c.track.index).map(|c|Snap::MixerChannel(Box::new(c))).unwrap_or_else(||self.clone()),
+            Snap::ChannelLayout(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::ChannelLayout(*t,m.channel_layout)),
+            Snap::PeakLinks(_)=>Snap::PeakLinks(s.project.peak_links.clone()),
+            Snap::TuneEnabled(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::TuneEnabled(*t,m.tune_enabled)),
+            Snap::Tune(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::Tune(*t,m.tune)),
+            Snap::EqPosition(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::EqPosition(*t,m.parametric_pre)),
+            Snap::DriveType(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::DriveType(*t,m.strip[6])),
+            Snap::StripBypass(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::StripBypass(*t,m.strip_bypassed)),
+            Snap::StripProfile(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::StripProfile(*t,m.strip[5])),
+            Snap::AllEffects(_) => Snap::AllEffects(s.mixer.all_fx_bypassed),
+            Snap::Effects(t, _, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::Effects(*t, m.slots_enabled, s.mixer.all_fx_bypassed)),
             Snap::Param(key, i, _) => crate::params::param_value(s, *key, *i).map_or_else(|| self.clone(), |v| Snap::Param(*key, *i, v)),
             // A channel gone since is left as the step has it (`put` does nothing then).
             Snap::Sample { row, .. } => Snap::sample(s, *row).unwrap_or_else(|| self.clone()),
@@ -348,6 +388,7 @@ impl Snap {
             },
             Snap::Timebase(_) => Snap::Timebase(Box::new(Timebase::now(s))),
             Snap::Info(_) => Snap::Info(Box::new(s.project.info.clone())),
+            Snap::ChannelRoute(row,_) => Snap::ChannelRoute(*row,s.project.channels.get(*row).map_or(0,|c|c.mixer_track)),
             Snap::Several(v) => Snap::Several(v.iter().map(|x| x.now(s)).collect()),
         }
     }
@@ -371,6 +412,7 @@ impl Snap {
             }
             Snap::Playlist(p) => {
                 p.0.iter_mut().for_each(|c| c.rescale(from, to));
+                for clips in p.2.iter_mut().filter_map(|t|t.frozen.as_mut()) {clips.iter_mut().for_each(|c|c.rescale(from,to));}
                 p.1.iter_mut().for_each(|m| m.rescale(from, to));
             }
             Snap::Patterns { patterns, .. } => {
@@ -384,7 +426,25 @@ impl Snap {
             Snap::Several(v) => v.iter_mut().for_each(|x| x.rescale(from, to)),
             // A channel or an initial value holds no ticks; a timebase step's are at its own timebase.
             Snap::Knob(..)
+            | Snap::AudioWarps(..)
+            | Snap::Tempo(..)
+            | Snap::MixerMove{..}
+            | Snap::InstrumentLanes(..)
+            | Snap::ChannelRoute(..)
             | Snap::Fader(..)
+            | Snap::Ara(..)
+            | Snap::RackStrips(..)
+            | Snap::MixerChannel(..)
+            | Snap::StripBypass(..)
+            | Snap::StripProfile(..)
+            | Snap::ChannelLayout(..)
+            | Snap::Tune(..)
+            | Snap::TuneEnabled(..)
+            | Snap::PeakLinks(..)
+            | Snap::EqPosition(..)
+            | Snap::DriveType(..)
+            | Snap::AllEffects(..)
+            | Snap::Effects(..)
             | Snap::Param(..)
             | Snap::Sample { .. }
             | Snap::Channel { .. }
@@ -405,6 +465,7 @@ impl Snap {
                 }
                 for a in &mut r.arrangements {
                     a.clips.iter_mut().for_each(|c| c.rescale(from, to));
+                    for clips in a.tracks.iter_mut().filter_map(|t|t.frozen.as_mut()) {clips.iter_mut().for_each(|c|c.rescale(from,to));}
                     a.markers.iter_mut().for_each(|m| m.rescale(from, to));
                 }
             }
@@ -414,12 +475,15 @@ impl Snap {
     /// Puts this into the project. A pattern's step also shows that pattern, as the piano roll's undo always did.
     fn put(self, s: &mut State) {
         match self {
+            Snap::AudioWarps(v)=>s.project.audio_warps=v,
+            Snap::Tempo(v) => s.tempo=v,
             Snap::Pattern { number, notes, controls, length } => {
                 s.pattern = number;
                 let p = crate::patterns::pat_mut(s, number);
                 (p.notes, p.controls, p.length) = (notes, controls, length);
                 s.piano.clear_selection();
             }
+            Snap::Ara(row,plugin,state) => {if let Some(ch)=s.project.channels.get_mut(row){ch.plugin=plugin;ch.plugin_state=state;}},
             Snap::Playlist(p) => crate::playlist::restore(s, *p),
             Snap::Knob(id, v) => set_knob_value(s, id, v),
             Snap::Fader(t, v) => {
@@ -429,6 +493,23 @@ impl Snap {
             }
             Snap::Param(key, i, v) => {
                 crate::params::set_param_value(s, key, i, v);
+            }
+            Snap::RackStrips(v) => {for c in v {crate::mixer::put_channel(s,c);}},
+            Snap::MixerChannel(c) => crate::mixer::put_channel(s,*c),
+            Snap::MixerMove{from,to,arrangements,lanes}=>{crate::mixer::reorder(s,from,to,false);s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
+            Snap::InstrumentLanes(v)=>s.project.instrument_lanes=v,
+            Snap::ChannelLayout(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.channel_layout=p;}},
+            Snap::PeakLinks(v)=>{crate::peak_link::restore_removed(s,&v);s.project.peak_links=v;},
+            Snap::TuneEnabled(t,on) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune_enabled=on;}},
+            Snap::Tune(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune=p;m.tune_learn=0;}},
+            Snap::EqPosition(t,p) => {if let Some(m)=crate::mixer::track_mut(s,t){m.parametric_pre=p;}},
+            Snap::DriveType(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip[6]=p;}},
+            Snap::StripBypass(t,b) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip_bypassed=b;}},
+            Snap::StripProfile(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip[5]=p;}},
+            Snap::AllEffects(bypassed) => s.mixer.all_fx_bypassed = bypassed,
+            Snap::Effects(t, enabled, global) => {
+                s.mixer.all_fx_bypassed = global;
+                if let Some(m) = crate::mixer::track_mut(s, t) { m.slots_enabled = enabled; }
             }
             Snap::Sample { row, path, name, root, stretch, flags } => {
                 if let Some(ch) = s.project.channels.get_mut(row) {
@@ -503,6 +584,7 @@ impl Snap {
                 (s.rack.groups, s.rack.filter, s.rack.unsorted_at) = (groups, filter, unsorted_at);
                 (s.rack.sel, s.selected_channel) = (sel, selected);
             }
+            Snap::ChannelRoute(row,t) => {if let Some(c)=s.project.channels.get_mut(row){c.mixer_track=t;}},
             Snap::Several(v) => v.into_iter().rev().for_each(|x| x.put(s)),
         }
         s.piano.dirty = true;
@@ -570,11 +652,14 @@ fn knob_name(id: KnobId) -> &'static str {
         KnobId::ChanPan(_) => "Channel panning",
         KnobId::MasterVol => "Main volume",
         KnobId::MasterPitch => "Main pitch",
+        KnobId::Varispeed => "Varispeed",
+        KnobId::ChanPitch(_) => "Channel pitch",
         KnobId::MixPan(_) => "Mixer track panning",
         KnobId::MixSep(_) => "Mixer track stereo separation",
         KnobId::SlotMix(..) => "Effect mix level",
         KnobId::Send(..) => "Send level",
         KnobId::Swing => "Main swing",
+        KnobId::Strip(..) => "Channel strip processing",
         KnobId::Eq(..) => "Mixer track equalizer",
         KnobId::Strum(_) => "Piano roll strum",
         KnobId::Arp(_) => "Piano roll arpeggiate",

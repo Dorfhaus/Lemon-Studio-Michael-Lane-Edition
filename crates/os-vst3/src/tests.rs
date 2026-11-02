@@ -415,6 +415,7 @@ fn hosts_a_plugin_from_env() {
     let Some(path) = std::env::var_os("OS_VST3_PLUGIN") else { return };
     let m = Module::load(Path::new(&path)).expect("load");
     for d in m.plugins() {
+        if std::env::var("OS_VST3_NAME").ok().is_some_and(|name| d.name != name) { continue; }
         eprintln!("{} | {} | {} | {:?} | {:?}", d.uid(), d.name, d.vendor, d.kind, d.features);
         let shared = m.clone().create(&d.id).expect("create");
         let mut p = shared.lock().unwrap();
@@ -430,6 +431,34 @@ fn hosts_a_plugin_from_env() {
         eprintln!("  params {}, latency {}, editor {}, state {:?} bytes, peak {}", p.param_count(), p.latency(), p.has_editor(), state.as_ref().map(Vec::len), peak(&l));
         if let Some(s) = state {
             assert!(p.load_state(&s));
+        }
+    }
+}
+
+/// A plug-in whose edit controller is a class of its own, the layout of most VST 3 plug-ins (`mock.rs`).
+#[test]
+#[ignore = "requires an installed plugin named by OS_VST3_PLUGIN and OS_VST3_NAME"]
+fn editor_creation_from_env_without_window() {
+    let path = std::env::var_os("OS_VST3_PLUGIN").expect("plugin path");
+    let name = std::env::var("OS_VST3_NAME").expect("plugin name");
+    let m = Module::load(Path::new(&path)).expect("load");
+    let d = m.plugins().iter().find(|d| d.name == name).expect("named plugin");
+    let mut p = Plugin::new(&m, &d.id).expect("create");
+    assert!(p.activate(48000));
+    eprintln!("{}: editor available {}", name, p.has_editor());
+    let c = p.controller.as_ref().expect("controller");
+    for i in 0..2 {
+        unsafe {
+            let v = owned::<dyn IPlugView>(c.create_view(c"editor".as_ptr())).expect("create editor view");
+            let mut r = ViewRect::default();
+            eprintln!("view {i}: platform {}, size result {}, {}x{}", v.is_platform_type_supported(PLATFORM_TYPE.as_ptr()), v.get_size(&mut r), r.right-r.left, r.bottom-r.top);
+            eprintln!("set frame: {:?}", os_host::guard::catch(|| v.set_frame(p.frame.raw())));
+            if let Some(scale) = v.cast::<dyn IPlugViewContentScaleSupport>() {
+                let result = os_host::guard::catch(|| scale.set_scale_factor(1.25));
+                eprintln!("scale before attach: {result:?}");
+                assert!(result.is_ok(), "scale before attach crashed");
+            }
+            v.set_frame(std::ptr::null_mut());
         }
     }
 }
@@ -1066,6 +1095,25 @@ mod window {
         }
     }
 
+    fn capture_live(hwnd: HWND, w: i32, h: i32) -> Vec<u8> {
+        unsafe {
+            let dc = GetDC(hwnd);
+            let mem = CreateCompatibleDC(dc);
+            let mut bmi: BITMAPINFO = std::mem::zeroed();
+            bmi.bmiHeader = BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            let bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+            let old = SelectObject(mem, bmp);
+            BitBlt(mem, 0, 0, w, h, dc, 0, 0, SRCCOPY);
+            let px = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+            SelectObject(mem, old);
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            ReleaseDC(hwnd, dc);
+            px
+        }
+    }
+
     fn write_bmp(path: &Path, w: i32, h: i32, px: &[u8]) {
         let mut f = Vec::new();
         f.extend_from_slice(b"BM");
@@ -1080,6 +1128,64 @@ mod window {
         f.extend_from_slice(&[0; 24]);
         f.extend_from_slice(px);
         std::fs::write(path, f).unwrap();
+    }
+
+    /// Opt-in ARA editor diagnostic with synthetic audio; no sound device or user project.
+    #[test]
+    #[ignore = "opens an installed ARA editor; requires explicit permission for GUI testing"]
+    fn ara_editor_audio_from_env() {
+        #[link(name = "ole32")]
+        extern "system" { fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32; }
+        unsafe { CoInitializeEx(std::ptr::null_mut(), 2); }
+        let path = std::env::var_os("OS_VST3_PLUGIN").expect("plugin path");
+        let name = std::env::var("OS_VST3_NAME").expect("plugin name");
+        let module = Module::load(Path::new(&path)).expect("load");
+        let desc = module.plugins().iter().find(|p| p.name == name).expect("named plugin");
+        let wav = tone(&format!("lemon-ara-editor-{}.wav", std::process::id()), 96000);
+        let sample = os_engine::sample::load_shared(&wav).unwrap();
+        let mut plugin = Plugin::new_ara(&module, &desc.id, sample, None).expect("ARA binding");
+        assert!(plugin.activate(48000));
+        let hwnd = host_window(true);
+        let (w,h) = plugin.open_editor(hwnd.cast(), 1.0).expect("ARA editor");
+        unsafe { SetWindowPos(hwnd, HWND_TOPMOST, 60,60,w as i32,h as i32,SWP_NOACTIVATE); }
+        pump(&mut plugin, 3000);
+        let mut left = vec![0.;48000]; let mut right=left.clone();
+        plugin.render_ara_at(48000,0,&mut left,&mut right).expect("render");
+        let value = peak(&left).max(peak(&right));
+        eprintln!("ARA editor {}x{}; rendered peak {value}",w,h);
+        pump(&mut plugin, 300);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            let out=PathBuf::from(dir); std::fs::create_dir_all(&out).unwrap();
+            write_bmp(&out.join("ara-editor.bmp"),w as i32,h as i32,&capture_live(hwnd,w as i32,h as i32));
+        }
+        plugin.close_editor(); unsafe { DestroyWindow(hwnd); }
+        drop(plugin); std::fs::remove_file(wav).unwrap();
+        assert!(value > 0.001, "ARA playback silent with its editor attached");
+    }
+
+    /// The editor attaches to a host window (never shown), reports its size, and detaches.
+    #[test]
+    #[ignore = "creates a hidden editor for the installed plugin named in the environment"]
+    fn installed_editor_attaches_to_hidden_window() {
+        #[link(name = "ole32")]
+        extern "system" { fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32; }
+        eprintln!("COM initialization: {}", unsafe { CoInitializeEx(std::ptr::null_mut(), 2) });
+        let path = std::env::var_os("OS_VST3_PLUGIN").expect("plugin path");
+        let name = std::env::var("OS_VST3_NAME").expect("plugin name");
+        let m = Module::load(Path::new(&path)).expect("load");
+        let d = m.plugins().iter().find(|d| d.name == name).expect("named plugin");
+        let shared = m.clone().create(&d.id).expect("create");
+        let mut p = shared.lock().unwrap();
+        assert!(p.activate(48000));
+        let hwnd = host_window(false);
+        let result = p.open_editor(hwnd as *mut c_void, 1.25);
+        eprintln!("editor result {result:?}; stopped {:?}", p.stopped());
+        let (w, h) = result.expect("editor opens");
+        assert!(w > 0 && h > 0);
+        pump(&mut *p, 100);
+        assert_eq!(p.stopped(), None);
+        p.close_editor();
+        unsafe { DestroyWindow(hwnd) };
     }
 
     /// The editor attaches to a host window (never shown), reports its size, and detaches.
@@ -1137,4 +1243,63 @@ mod window {
             unsafe { DestroyWindow(hwnd) };
         }
     }
+}
+
+/// Offline synthetic note test: no editor, audio device, MIDI hardware or microphone.
+#[test]
+#[ignore = "requires an installed instrument with a short default release via OS_VST3_PLUGIN"]
+fn installed_instrument_releases_notes_without_editor() {
+    let path=std::env::var_os("OS_VST3_PLUGIN").expect("instrument path");
+    let m=Module::load(Path::new(&path)).expect("load");
+    let d=m.plugins().iter().find(|d|d.is_instrument()).expect("instrument");
+    let shared=m.clone().create(&d.id).expect("create");
+    let mut p=shared.lock().unwrap();assert!(p.activate(48000));
+    let (mut l,mut r)=(vec![0.;480],vec![0.;480]);
+    for key in [60,64,60] {
+        p.note_on(0,key,0.8);let mut sounding=0.0f32;
+        for _ in 0..50 {l.fill(0.);r.fill(0.);p.process(48000,&mut l,&mut r);sounding=sounding.max(peak(&l)).max(peak(&r));}
+        p.note_off(0,key);let mut tail=0.0f32;
+        for block in 0..300 {l.fill(0.);r.fill(0.);p.process(48000,&mut l,&mut r);if block>=250{tail=tail.max(peak(&l)).max(peak(&r));}}
+        eprintln!("{} key={key}: held peak {sounding}, released peak {tail}",d.name);
+        assert!(sounding>0.001,"instrument must actually sound");
+        assert!(tail<0.0001,"note keeps sounding after key release");
+    }
+}
+
+#[test]
+fn released_notes_keep_their_matching_ids() {
+    let mut ids=NoteIds{ids:[-1;128],next:0,active:Vec::with_capacity(128)};
+    let note=|kind,key|Note{time:17,kind,key,velocity:0.8};
+    let a=ids.event(note(NoteKind::On,60)).unwrap();
+    let b=ids.event(note(NoteKind::On,60)).unwrap();
+    let c=ids.event(note(NoteKind::On,64)).unwrap();
+    let (a,b,c)=unsafe{(a.event.note_on.note_id,b.event.note_on.note_id,c.event.note_on.note_id)};
+    assert_ne!(a,b);
+    let tune=ids.event(note(NoteKind::Tune,60)).unwrap();
+    assert_eq!(unsafe{tune.event.note_expression_value.note_id},b);
+    let mut ended=Vec::new();
+    while let Some(e)=ids.event(note(NoteKind::Off,60)){assert_eq!(e.sample_offset,17);ended.push(unsafe{e.event.note_off.note_id});}
+    ended.sort();assert_eq!(ended,vec![a,b]);
+    assert!(ids.event(note(NoteKind::Tune,60)).is_none());
+    let other=ids.event(note(NoteKind::Off,64)).unwrap();assert_eq!(unsafe{other.event.note_off.note_id},c);
+    assert!(ids.active.is_empty());
+    let d=ids.event(note(NoteKind::On,60)).unwrap();let off=ids.event(note(NoteKind::Off,60)).unwrap();
+    assert_eq!(unsafe{d.event.note_on.note_id},unsafe{off.event.note_off.note_id});
+}
+
+#[test]
+fn ara_discovery_matches_only_the_advertised_audio_class() {
+    let probe = Arc::new(crate::mock::Probe::default());
+    let mut module = unsafe {Module::from_factory(Path::new("mock.vst3"),crate::mock::Factory::create(&probe),None)}.unwrap();
+    let id = module.plugins()[0].id.clone();
+    assert_eq!(module.ara_factory_id(&id),None);
+    let m=Arc::get_mut(&mut module).unwrap();
+    m.ara_factories.push(("Other plugin in shell".into(),"wrong".into()));
+    assert_eq!(m.ara_factory_id(&id),None);
+    m.ara_factories.push((m.plugins[0].name.clone(),"factory".into()));
+    assert_eq!(m.ara_factory_id(&id),Some("factory"));
+    assert_eq!(m.ara_factory_id("missing"),None);
+    m.ara_factories.push((m.plugins[0].name.clone(),"ambiguous".into()));
+    assert_eq!(m.ara_factory_id(&id),None);
+    assert_eq!(probe.live.load(std::sync::atomic::Ordering::Relaxed),0,"discovery must not create a processor or editor");
 }

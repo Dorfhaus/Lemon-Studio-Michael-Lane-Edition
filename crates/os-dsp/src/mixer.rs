@@ -154,6 +154,7 @@ impl Band {
 /// song plays").
 #[derive(Debug, Clone)]
 pub struct TrackEq {
+    smooth: bool,
     bands: [Band; 3],
     rate: u32,
 }
@@ -172,7 +173,7 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
             let s = settings[k];
             Band { settings: s, kind: k, coef: design(k, s, rate), state: [[0.0; 4]; 2], running: s[0] != 0, dirty: false, count: None }
         };
-        TrackEq { bands: [band(0), band(1), band(2)], rate }
+        TrackEq { smooth: false, bands: [band(0), band(1), band(2)], rate }
     }
 
     /// An equaliser whose bands take their type from `kinds` (0 low shelf, 1 peaking, 2 high shelf) and where every
@@ -185,7 +186,21 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
             let count = (s[0] == 0).then(|| idle_count(rate));
             Band { settings: s, kind, coef: design(kind, s, rate), state: [[0.0; 4]; 2], running: true, dirty: false, count }
         };
-        TrackEq { bands: [band(0), band(1), band(2)], rate }
+        TrackEq { smooth: false, bands: [band(0), band(1), band(2)], rate }
+    }
+
+    /// Console tone controls use the same analog-style shelves/bell with 10 ms coefficient settling.
+    pub fn with_smoothing(mut self, smooth: bool) -> Self { self.smooth=smooth; self }
+
+    /// Keep the console filter memory and smoothly settle to the new knob settings after an engine update.
+    pub fn inherit_console(&mut self, old: &Self) {
+        if !self.smooth || self.rate!=old.rate {return;}
+        for (new,previous) in self.bands.iter_mut().zip(&old.bands) {
+            new.state=previous.state;
+            new.coef=previous.coef;
+            new.running |= previous.running;
+            if new.running && new.settings[0]==0 {new.count=Some(idle_count(self.rate));}
+        }
     }
 
     /// True when no band runs (the equaliser passes its input unchanged).
@@ -215,15 +230,18 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
     pub fn process(&mut self, buf: &mut [f32]) {
         let n = (buf.len() / 2) as i64;
         let rate = self.rate;
+        let settling=1.0-(-1.0/(0.010*f64::from(rate))).exp();
         for band in self.bands.iter_mut() {
             if !band.running {
                 continue;
             }
+            let target=design(band.kind,band.settings,rate);
             if band.dirty {
-                band.coef = design(band.kind, band.settings, rate);
+                if !self.smooth {band.coef = target;}
                 band.dirty = false;
             }
             for f in buf.chunks_exact_mut(2) {
+                if self.smooth {for (coef,target) in band.coef.iter_mut().zip(target) {*coef+=(target-*coef)*settling;}}
                 f[0] = band.run(0, f[0]);
                 f[1] = band.run(1, f[1]);
             }
@@ -314,6 +332,19 @@ mod tests { // This code is a part of L e m o n S t u d i o.
     use super::*;
 
     /// The default bands sit at 90 Hz, 1500 Hz and 8000 Hz (spec: ui/mixer.md §8); the knob spans 10 Hz .. 16 kHz.
+    #[test]
+    fn mini_eq_console_knobs_settle_without_a_step() {
+        let mut eq=TrackEq::new(EQ_DEFAULT,48000).with_smoothing(true);
+        let mut signal=vec![0.1;960];
+        eq.process(&mut signal);
+        eq.set(0,0,1200);
+        let mut next=vec![0.1;960];eq.process(&mut next);
+        assert!((next[0]-0.1).abs()<0.001);
+        for _ in 0..50 {next.fill(0.1);eq.process(&mut next);}
+        assert!((next[958]-0.1*10f32.powf(12./20.)).abs()<0.01);
+        assert!(next.iter().all(|v|v.is_finite()));
+    }
+
     #[test]
     fn eq_frequency_law() {
         let hz: Vec<f32> = EQ_DEFAULT.iter().map(|b| eq_frequency(b[1]).round()).collect();

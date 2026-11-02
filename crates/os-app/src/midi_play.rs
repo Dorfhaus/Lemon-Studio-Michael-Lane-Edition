@@ -198,7 +198,28 @@ impl App {
         }
         let ext = cfg::ext_sync();
         let mut notes = false;
-        for ev in evs {
+        let row=self.state.selected_channel;
+        let chop_slab=evs.iter().any(|e|e.dev.to_ascii_lowercase().contains("slab")) && self.plugins.descriptor(row).is_some_and(|d| d.name=="Lemon Chop" && crate::project_plugins::is_builtin(&d)) &&
+            self.plugins.state(row).and_then(|b|serde_json::from_slice::<serde_json::Value>(b.get(8..)?).ok())
+            .and_then(|v|v["fields"]["chop-document"].as_str().and_then(|s|serde_json::from_str::<lemon_chop::params::Document>(s).ok())).is_some_and(|d|d.slab);
+        for mut ev in evs {
+            // A held SLAB pad still releases after selecting another rack channel or disabling its profile.
+            if !chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {
+                if let Msg::Off{ch,key,vel}=ev.msg {
+                    if let Some(mapped)=lemon_chop::controller::pad_note(ch,key).filter(|k|self.midi_play.held.iter().any(|h|h.src==Src::Midi(*k))) {
+                        ev.msg=Msg::Off{ch:0,key:mapped,vel};
+                    }
+                }
+            }
+            if chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {
+                match ev.msg {
+                    Msg::On{ch,key,vel} if lemon_chop::controller::pad_note(ch,key).is_some()=>ev.msg=Msg::On{ch:0,key:lemon_chop::controller::pad_note(ch,key).unwrap(),vel},
+                    Msg::Off{ch,key,vel} if lemon_chop::controller::pad_note(ch,key).is_some()=>ev.msg=Msg::Off{ch:0,key:lemon_chop::controller::pad_note(ch,key).unwrap(),vel},
+                    Msg::On{ch,key,..}|Msg::Off{ch,key,..} if lemon_chop::controller::button(ch,key).is_some()=>{self.midi_forward(ev.msg);continue;},
+                    Msg::Cc{ch,n,v} if lemon_chop::controller::cc(ch,n,v).is_some()=>{self.midi_forward(ev.msg);continue;},
+                    _=>{},
+                }
+            }
             match ev.msg {
                 Msg::Start | Msg::Continue | Msg::Stop | Msg::Spp(_) => {
                     if ext.as_deref() == Some(&*ev.dev) {
@@ -285,7 +306,8 @@ impl App {
         if row >= n {
             return;
         }
-        self.midi_start(Src::Midi(key), key, row, u16::from(key), vel, extra);
+        let play=if self.state.piano.harmony.midi_snap {self.state.piano.harmony.snap(i32::from(key),127)}else{u16::from(key)};
+        self.midi_start(Src::Midi(key), key, row, play, vel, extra);
     }
 
     /// Starts a note; a key the pedal still holds ends its earlier note first (spec §3).
@@ -295,13 +317,13 @@ impl App {
             self.midi_end(h, h.up.unwrap_or(64));
         }
         self.sync_live();
-        self.transport.note_on(row, play, vel);
+        if !self.midi_play.held.iter().any(|h|h.row==row&&h.play==play){self.transport.note_on(row, play, vel);}
         self.midi_play.held.push(Held { key, src, row, play, up: None });
         self.step_edit_down_with(src, play, vel, extra);
     }
 
     fn midi_end(&mut self, h: Held, release: u8) {
-        self.transport.note_off(h.row, h.play);
+        if !self.midi_play.held.iter().any(|other|other.row==h.row&&other.play==h.play){self.transport.note_off(h.row, h.play);}
         self.step_edit_up_with(h.src, Some(release));
     }
 
@@ -636,7 +658,7 @@ impl App {
             let it = PItem::new(d.name.clone(), Cmd::MidiExt(Some(d.name.clone()))).mark(Mark::Radio(on));
             items.push(if cfg::input(&d.name).enabled { it } else { it.off() });
         }
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -682,6 +704,21 @@ mod tests {
         assert_eq!(release_of(10), 64);
     }
 
+    #[test]
+    fn harmony_midi_snaps_heard_and_recorded_notes_and_releases_original_keys() {
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        app.state.piano.harmony.midi_snap=true;
+        app.transport.pretend_at(0.,false);app.toggle_record();
+        app.midi_notes(vec![on(61),on(60)]);
+        assert_eq!(app.midi_play.held.len(),2);assert!(app.midi_play.held.iter().all(|h|h.play==60));
+        app.state.piano.harmony.root=2; // release still uses mapped pitch captured at note-on
+        app.transport.pretend_at(96.,false);app.midi_notes(vec![off(61)]);
+        assert_eq!(app.midi_play.held.len(),1);assert_eq!(app.midi_play.held[0].play,60);
+        app.midi_notes(vec![off(60)]);assert!(app.midi_play.held.is_empty());
+        assert!(crate::piano::notes(&app.state).iter().any(|n|n.key==60&&n.length>0));
+        assert!(!crate::piano::notes(&app.state).iter().any(|n|n.key==61));
+    }
+
     fn on(key: u8) -> Msg {
         Msg::On { ch: 0, key, vel: 100 }
     }
@@ -699,6 +736,20 @@ mod tests {
         app.state.selected_channel = 0;
         assert!(app.state.project.channels.len() >= 2, "the new project has channels");
         app
+    }
+
+    #[test]
+    fn chop_slab_notes_keep_recording_and_release_after_channel_change() {
+        let mut a=app();a.plugins=crate::plugins::Plugins::builtins();
+        let idx=a.plugins.index_of("Lemon Chop").unwrap();a.plugins.create(0,idx).unwrap();
+        let state=a.plugins.state(0).unwrap();let mut j:serde_json::Value=serde_json::from_slice(&state[8..]).unwrap();
+        let doc=lemon_chop::params::Document{slab:true,..Default::default()};j["fields"]["chop-document"]=serde_json::json!(serde_json::to_string(&doc).unwrap());
+        let body=serde_json::to_vec(&j).unwrap();let mut state=(body.len() as u64).to_le_bytes().to_vec();state.extend(body);a.plugins.create_with(0,idx,Some(&state)).unwrap();
+        let ev=|msg|Ev{dev:std::sync::Arc::from("SLAB"),msg};
+        a.midi_events(vec![ev(Msg::On{ch:7,key:12,vel:100})]);
+        assert_eq!(a.midi_play.held.len(),1);assert_eq!(a.midi_play.held[0].play,36);
+        a.state.selected_channel=1;a.midi_events(vec![ev(Msg::Off{ch:7,key:12,vel:0})]);assert!(a.midi_play.held.is_empty());
+        a.state.selected_channel=0;a.midi_events(vec![ev(Msg::On{ch:0,key:81,vel:127})]);assert!(a.midi_play.held.is_empty(),"controller undo must not become a recorded note");
     }
 
     /// spec §3 Foot pedal controls note off.

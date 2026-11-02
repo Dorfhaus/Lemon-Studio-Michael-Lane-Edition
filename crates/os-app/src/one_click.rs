@@ -16,6 +16,13 @@ pub const RECORDED: &str = "Recorded items";
 
 /// A recording under way, or its file being made.
 pub struct AudioRec {
+    loop_span: Option<(u32,u32)>,
+    loop_wrapped: bool,
+    last_tick: f64,
+    others: Vec<ExtraTake>,
+    input: Input,
+    failure: Option<String>,
+    destination: Option<crate::mixer_recording::Destination>,
     /// A system input device's stream (`None`: the ASIO driver's inputs, in its output callback).
     stream: Option<InputStream>,
     recorder: Option<Recorder>,
@@ -30,6 +37,13 @@ pub struct AudioRec {
     ending: bool,
     /// The take goes into Tesla on the master track instead of the playlist.
     editor: bool,
+}
+
+struct ExtraTake {
+    source: &'static capture::Capture,
+    recorder: Recorder,
+    input: Input,
+    destination: crate::mixer_recording::Destination,
 }
 
 /// The menu (the button's, and TOOLS > One-click audio recording's submenu): the audio editor (which asks for the
@@ -77,7 +91,7 @@ fn header(label: String) -> PItem {
 }
 
 /// `capture::devices`, listed again at most every few seconds (the menu is drawn on every repaint while open).
-fn devices() -> Vec<(String, bool, u16)> {
+pub(crate) fn devices() -> Vec<(String, bool, u16)> {
     #[cfg(test)]
     {
         vec![("Test ASIO".to_string(), true, 2)]
@@ -101,6 +115,32 @@ fn devices() -> Vec<(String, bool, u16)> {
 }
 
 impl App {
+    pub(crate) fn set_audio_destination(&mut self,d:crate::mixer_recording::Destination) {
+        if let Some(r)=self.audio_rec.as_mut(){r.start_tick=d.start; r.last_tick=d.start as f64; r.loop_wrapped=false; r.start_secs=os_engine::laws::tick_to_frame(f64::from(d.start),self.state.project.ppq.max(1),self.state.project.tick_tempo(self.state.tempo),48000) as f64/48000.;r.destination=Some(d);}
+    }
+    pub(crate) fn begin_mixer_group(&mut self, tracks: Vec<(Input,crate::mixer_recording::Destination)>, stream: Option<InputStream>) -> Result<(),String> {
+        if tracks.is_empty() || tracks.len() > 64 { return Err("Select between 1 and 64 recording tracks".into()); }
+        capture::stop_group();
+        let dir = crate::data_folder::folder(&self.state).or_else(crate::app::theme_dir).unwrap_or_else(std::env::temp_dir).join("Recorded");
+        let mut extras = Vec::new();
+        for (k,(input,destination)) in tracks.iter().skip(1).enumerate() {
+            let source = capture::extra_capture(k);
+            source.start_input(input);
+            let safe: String = destination.name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+            let name = capture::file_name(&format!("{}-{}",destination.mixer,safe),chrono::Local::now().naive_local());
+            match Recorder::start_from(dir.join(name),48000,source) {
+                Ok(recorder) => extras.push(ExtraTake { source, recorder, input:input.clone(), destination:destination.clone() }),
+                Err(e) => { source.stop(); return Err(e); }
+            }
+        }
+        let (input,dest) = &tracks[0];
+        self.one_click_begin(input.clone(),stream,false)?;
+        self.set_audio_destination(dest.clone());
+        self.audio_rec.as_mut().unwrap().others = extras;
+        self.state.mixer.recording.live = tracks.into_iter().map(|(_,d)| d).collect();
+        Ok(())
+    }
+
     /// The microphone: stops a recording, else opens the menu under the button.
     pub(crate) fn one_click_button(&mut self) {
         if self.audio_rec.as_ref().is_some_and(|r| !r.ending) {
@@ -108,14 +148,14 @@ impl App {
         }
         let (x, y) = self.mouse;
         let (x, y) = self.top_hit(x, y).map_or((x, y), |h| (h.rect.x, h.rect.bottom() + 2.0));
-        self.state.playlist.popup = Some(Popup { x, y, items: items(&self.state), sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items: items(&self.state), sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
     /// Into the audio editor: the inputs, at the cursor (as FL prompts for one).
     pub(crate) fn one_click_editor_prompt(&mut self) {
         let (x, y) = self.mouse;
-        self.state.playlist.popup = Some(Popup { x, y, items: inputs(true), sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y, items: inputs(true), sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -126,11 +166,15 @@ impl App {
             self.state.message = Some("Already recording audio".into());
             return self.invalidate();
         }
+        if crate::input_monitor::monitor().on() && !self.input_monitor.same_device(&input) {
+            self.state.message = Some("Disarm the mixer input before recording from a different device".into());
+            return self.invalidate();
+        }
         capture::set_last_input(&input);
         if self.transport.playing() {
             self.act(Action::Stop);
         }
-        let stream = if input.asio {
+        let stream = if input.asio || self.input_monitor.owns(&input) {
             None
         } else {
             match capture::open_input(&input.device) {
@@ -149,6 +193,7 @@ impl App {
             self.act(Action::PatSong(true));
         }
         // Armed directly: the audio was the answer to "what to record".
+        crate::mixer_recording::audio_filter();
         self.state.rec.armed = true;
         self.play_counted_if_armed();
         self.invalidate();
@@ -156,10 +201,11 @@ impl App {
 
     /// Starts taking in `input` into a new file (no playback: `one_click_start` plays).
     pub(crate) fn one_click_begin(&mut self, input: Input, stream: Option<InputStream>, editor: bool) -> Result<(), String> {
-        let rate = stream.as_ref().map(|s| s.rate);
+        let rate = stream.as_ref().map(|s| s.rate).or(if input.asio { None } else { self.input_monitor.rate });
         let dir = crate::data_folder::folder(&self.state).or_else(crate::app::theme_dir).unwrap_or_else(std::env::temp_dir).join("Recorded");
         let name = capture::file_name(&crate::backup::project_name(self.state.path.as_deref()), chrono::Local::now().naive_local());
-        capture().start(input.first, input.stereo);
+        capture().start_input(&input);
+        capture::start_group();
         let recorder = match Recorder::start(dir.join(name), rate.unwrap_or(48000)) {
             Ok(r) => r,
             Err(e) => {
@@ -169,10 +215,18 @@ impl App {
         };
         let start_tick = self.state.playlist.pos;
         let p = &self.state.project;
-        let tempo = p.tick_tempo(p.tempo.unwrap_or(140.0).max(1.0));
+        let tempo = p.tick_tempo(self.state.tempo.max(1.0));
         let start_secs = os_engine::laws::tick_to_frame(f64::from(start_tick), p.ppq.max(1), tempo, 48000) as f64 / 48000.0;
         self.state.rec.audio = true;
-        self.audio_rec = Some(AudioRec { stream, recorder: Some(recorder), rate, start_tick, start_secs, est: (0.0, 0), ending: false, editor });
+        let loop_span = if crate::record::Opt::Loop.on() { self.selection_loop() } else { None };
+        self.audio_rec = Some(AudioRec { loop_span, loop_wrapped:false, last_tick:start_tick as f64, others: Vec::new(), input, failure:None, destination:None,stream, recorder: Some(recorder), rate, start_tick, start_secs, est: (0.0, 0), ending: false, editor });
+        if !editor {
+            let mixer=self.state.selected_mixer;
+            self.set_audio_destination(crate::mixer_recording::Destination {
+                mixer, row:crate::playlist::free_track(&self.state,0,start_tick,start_tick.saturating_add(1)), start:start_tick, length:1,
+                name:crate::mixer::name(&self.state,mixer), color:crate::mixer::track(&self.state,mixer).and_then(|m|m.color),
+            });
+        }
         Ok(())
     }
 
@@ -184,8 +238,19 @@ impl App {
             let t = &self.transport;
             let live = t.playing() && !t.paused() && self.state.rec.count.is_none();
             let device = t.opened();
+            if r.input.asio && device.as_ref().is_some_and(|d|d.host==crate::device::ASIO&&d.name==r.input.device&&(r.input.first+u16::from(r.input.stereo)>=d.inputs || r.others.iter().any(|e| e.input.first+u16::from(e.input.stereo)>=d.inputs))) {
+                r.failure=Some("The ASIO driver did not open the selected input. Check Settings > Audio and the interface input configuration".into());
+                t.stop();
+            }
             let rate = r.rate.or(device.as_ref().map(|d| d.rate)).unwrap_or(48000);
-            if live && t.song() {
+            if live && r.loop_span.is_some() {
+                let tick=t.tick();
+                if tick+0.5<r.last_tick {r.loop_wrapped=true;}
+                r.last_tick=tick;
+            }
+            // Position wraps on a loop, while recorded frame counts keep growing. Estimate
+            // latency only on the first pass, never average later passes into the file trim.
+            if live && !r.loop_wrapped && self.state.rec.armed && t.song() && t.seconds()+0.001>=r.start_secs {
                 r.est.0 += capture().frames() as f64 - (t.seconds() - r.start_secs) * f64::from(rate);
                 r.est.1 += 1;
             }
@@ -198,8 +263,11 @@ impl App {
                 _ => 0,
             };
             let head = if r.est.1 > 0 { (r.est.0 / f64::from(r.est.1)).round() as i64 + latency } else { capture().frames() as i64 };
-            capture().stop();
+            capture::stop_group();
             r.stream = None;
+            for extra in &r.others {
+                extra.recorder.set_rate(rate); extra.recorder.set_head(head); extra.recorder.finish();
+            }
             r.rate = Some(rate);
             if let Some(w) = &r.recorder {
                 w.set_rate(rate);
@@ -211,14 +279,17 @@ impl App {
             self.invalidate();
             return;
         }
-        if !r.recorder.as_ref().is_none_or(Recorder::done) {
+        if !r.recorder.as_ref().is_none_or(Recorder::done) || r.others.iter().any(|e| !e.recorder.done()) {
             return;
         }
         let Some(r) = self.audio_rec.take() else { return };
+        self.state.mixer.recording.live.clear();
         let rate = r.rate.unwrap_or(48000).max(1);
+        let group_failed = r.failure.is_some();
         self.state.message = Some(match r.recorder.map_or(Err("no recorder".into()), Recorder::join) {
+            Ok((path,frames)) if r.failure.is_some()=>{if frames==0{let _=std::fs::remove_file(path);}format!("Audio recording: {}",r.failure.unwrap_or_default())}
             Ok((path, frames)) if frames * 1000 >= u64::from(rate) => {
-                let placed = if r.editor { self.take_to_editor(&path) } else { self.place_take(&path, frames, rate, r.start_tick) };
+                let placed = if r.editor { self.take_to_editor(&path) } else { self.place_take(&path, frames, rate, r.start_tick,r.destination.as_ref(),r.loop_span) };
                 match capture().dropped() {
                     0 => placed,
                     lost => format!("{placed} ({lost} frames were lost: the disk was too slow)"),
@@ -230,19 +301,53 @@ impl App {
             }
             Err(e) => format!("Audio recording: {e}"),
         });
+        let mut messages = vec![self.state.message.clone().unwrap_or_default()];
+        for extra in r.others {
+            messages.push(match extra.recorder.join() {
+                Ok((path, _)) if group_failed => format!("{}: capture stopped after input error; file retained at {}",extra.destination.name,path.display()),
+                Ok((path, frames)) if frames * 1000 >= u64::from(rate) => {
+                    let placed = self.place_take(&path, frames, rate, r.start_tick, Some(&extra.destination),r.loop_span);
+                    if extra.source.dropped() == 0 { placed } else { format!("{placed}: {} input frames lost", extra.source.dropped()) }
+                }
+                Ok((path, _)) => { let _ = std::fs::remove_file(path); format!("{}: nothing recorded",extra.destination.name) }
+                Err(e) => format!("{}: {e}",extra.destination.name),
+            });
+        }
+        self.state.message = Some(messages.join("; "));
         self.invalidate();
     }
 
     /// The take's audio clip channel and clip at `start`, on the first track free over it: one undo step.
-    fn place_take(&mut self, path: &std::path::Path, frames: u64, rate: u32, start: u32) -> String {
+    fn place_take(&mut self, path: &std::path::Path, frames: u64, rate: u32, start: u32,destination:Option<&crate::mixer_recording::Destination>,loop_span:Option<(u32,u32)>) -> String {
         let s = &mut self.state;
         let p = &s.project;
-        let tempo = p.tick_tempo(p.tempo.unwrap_or(140.0).max(1.0));
+        let tempo = p.tick_tempo(s.tempo.max(1.0));
         let len = (frames as f64 / f64::from(rate) * tempo / 60.0 * f64::from(p.ppq.max(1))).ceil() as u32;
-        let track = crate::playlist::free_track(s, 0, start, start + len.max(1));
+        let end=loop_span.filter(|&(a,b)|b>a&&start>=a&&start<b).map_or(start.saturating_add(len.max(1)),|r|r.1);
+        let track = destination.and_then(|d|crate::comping::recording_target(s,d.mixer,start,end)).unwrap_or_else(|| {
+            (0..crate::playlist::TRACKS).find(|&r| !crate::playlist::clips(s).iter().any(|c|c.track==r) && crate::playlist::track_info(s,r).is_none_or(|t| !t.locked && !t.grouped && t.comp.is_none())).unwrap_or_else(||crate::playlist::free_track(s,0,start,start+len.max(1)))
+        });
         let text = path.to_string_lossy();
         match crate::playlist::add_audio_clip_as(s, &text, track, start, RECORDED) {
-            Some(_) => format!("Recorded {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()),
+            Some(i) => {
+                if let Some(d)=destination {
+                    let source=crate::playlist::clips(s)[i].source;
+                    if let os_model::ClipSource::Channel(ch)=source {
+                        if let Some(c)=s.project.channels.iter_mut().find(|c|c.index==ch){c.mixer_track=d.mixer;c.color=d.color;c.name=Some(format!("{} - take",d.name));}
+                    }
+                    let arr=crate::playlist::arr_mut(s);
+                    while arr.tracks.len()<=usize::from(track){arr.tracks.push(os_model::PlaylistTrack::new(arr.tracks.len() as u32+1));}
+                    let row=&mut arr.tracks[usize::from(track)];row.name=Some(d.name.clone());row.color=d.color;row.grouped=false;row.collapsed=false;row.enabled=true;
+                    if let Err(message)=crate::comping::recorded(s,i,d.mixer,loop_span) {
+                        if crate::playlist::track_info(s,track).is_some_and(|t|t.comp.is_some()) {
+                            crate::playlist::arr_mut(s).clips[i].muted=true;
+                            return format!("{message}. New clip muted to preserve the existing comp");
+                        }
+                        return message;
+                    }
+                }
+                format!("Recorded {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+            }
             None => format!("{text} could not be read"),
         }
     }
@@ -279,7 +384,7 @@ mod tests {
     use crate::views::menus::{submenu, TOOLS_MENU};
 
     /// The tests that record share the one input capture.
-    static RECORDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::capture::TEST_RECORDING as RECORDING;
 
     fn app() -> App {
         let mut app = App::new(None);
@@ -303,6 +408,33 @@ mod tests {
 
     /// A take from the song's start to stop: a WAV in the Recorded folder, a new audio clip channel and its clip at
     /// the start, as "Recorded items"; a take with nothing in it places nothing (spec §2 The take).
+    #[test]
+    fn startup_typing_off_and_recordings_continue_on_the_same_track() {
+        let mut app=app();
+        assert!(!app.typing_on());
+        assert!(!app.typing_key(winit::keyboard::KeyCode::KeyZ,true,false,false));
+        app.toggle_typing();assert!(app.typing_on());app.toggle_typing();
+        let path=std::env::temp_dir().join(format!("lemon-continuation-{}.wav",std::process::id()));
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),48000,&vec![0.25;96000]).unwrap();
+        let d=crate::mixer_recording::Destination{mixer:1,row:0,start:0,length:1,name:"Vocal".into(),color:None};
+        app.place_take(&path,48000,48000,0,Some(&d),None);
+        let first=crate::playlist::clips(&app.state)[0];let row=first.track;
+        app.place_take(&path,48000,48000,first.end(),Some(&d),None);
+        let clips=crate::playlist::clips(&app.state);
+        assert_eq!(clips.len(),2);assert!(clips.iter().all(|c|c.track==row&&!c.muted));
+        assert_eq!(crate::comping::for_mixer(&app.state,1),None);
+        app.place_take(&path,48000,48000,first.end()+1000,Some(&d),None);
+        assert!(crate::playlist::clips(&app.state).iter().all(|c|c.track==row&&!c.muted));
+        // Recording back over that row creates just the extra take lane.
+        app.place_take(&path,48000,48000,0,Some(&d),None);
+        assert_eq!(crate::comping::for_mixer(&app.state,1),Some(row));
+        assert_eq!(crate::playlist::clips(&app.state).iter().filter(|c|c.track!=row).count(),1);
+        app.place_take(&path,48000,48000,first.end()+3000,Some(&d),None);
+        assert_eq!(crate::playlist::clips(&app.state).last().unwrap().track,row);
+        assert!(!crate::playlist::clips(&app.state).last().unwrap().muted);
+        let _=std::fs::remove_file(path);
+    }
+
     #[test]
     fn a_take_becomes_a_clip() {
         let _one = RECORDING.lock().unwrap_or_else(|e| e.into_inner());

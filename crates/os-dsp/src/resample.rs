@@ -34,6 +34,21 @@ pub enum Quality {
     Table,
     /// The formula for every sample (export).
     Exact,
+    /// 16-point base window, widened at extreme downsampling ratios; table weights for live work.
+    Live16,
+    /// At least 512 points with exact weights for offline rendering.
+    Export512,
+}
+
+fn quality_width(ratio: f64, quality: Quality) -> usize {
+    match quality {
+        Quality::Live16 => {
+            let r = ratio.abs().round_ties_even().min(1e6) as usize;
+            ((r + 3) / 4 * 4).clamp(8, N_MAX)
+        }
+        Quality::Export512 => half_width(ratio).max(256),
+        _ => half_width(ratio),
+    }
 }
 
 /// Frames either side at playback ratio `ratio` (source frames per output sample): 16 up to 16.5, then `Round(ratio)
@@ -65,6 +80,7 @@ const SINC_SPAN: usize = 17;
 
 struct Tables {
     poly: Vec<[f32; 2 * N_MIN]>,
+    live: Vec<[f32; 16]>,
     sinc: Vec<f32>,
     win: Vec<f32>,
 }
@@ -89,7 +105,11 @@ fn tables() -> &'static Tables {
             })
             .collect();
         let win = (0..=WIN_RES + 1).map(|i| window((i as f64 / WIN_RES as f64).min(1.0)) as f32).collect();
-        Tables { poly, sinc, win }
+        let live = (0..=PHASES).map(|j| {
+            let f = j as f64 / PHASES as f64;
+            std::array::from_fn(|t| weight(f + 7.0 - t as f64, PI, 8) as f32)
+        }).collect();
+        Tables { poly, live, sinc, win }
     })
 }
 
@@ -109,6 +129,13 @@ pub fn weights(f: f64, ratio: f64, n: usize, quality: Quality, w: &mut [f32]) {
     let w = &mut w[..2 * n];
     let ratio = ratio.abs();
     match quality {
+        Quality::Live16 if n == 8 && ratio <= 1.0 => {
+            let x = f * PHASES as f64;
+            let j = (x as usize).min(PHASES - 1);
+            let fr = (x - j as f64) as f32;
+            let (a, b) = (&tables().live[j], &tables().live[j + 1]);
+            for i in 0..16 { w[i] = a[i] + (b[i] - a[i]) * fr; }
+        }
         Quality::Table if n == N_MIN && ratio <= 1.0 => {
             let t = tables();
             let x = f * PHASES as f64;
@@ -119,7 +146,7 @@ pub fn weights(f: f64, ratio: f64, n: usize, quality: Quality, w: &mut [f32]) {
                 w[i] = a[i] + (b[i] - a[i]) * fr;
             }
         }
-        Quality::Table => {
+        Quality::Table | Quality::Live16 => {
             // sinc(u / ratio) / ratio * window(u / N), from the two tables.
             let t = tables();
             let r = ratio.max(1.0);
@@ -131,7 +158,7 @@ pub fn weights(f: f64, ratio: f64, n: usize, quality: Quality, w: &mut [f32]) {
                 *w = lerp(&t.sinc, u * su) * scale * lerp(&t.win, u * wu);
             }
         }
-        Quality::Exact => {
+        Quality::Exact | Quality::Export512 => {
             // sin(a u) and cos(pi u / N) stepped by one frame per tap: two rotations instead of three functions.
             let a = if ratio > 1.0 { PI / ratio } else { PI };
             let b = PI / n as f64;
@@ -172,11 +199,11 @@ pub fn read(left: &[f32], right: &[f32], pos: f64, ratio: f64, quality: Quality)
         let i = (k0 as usize).min(len - 1);
         return (left[i], right[i]);
     }
-    let n = half_width(ratio);
+    let n = quality_width(ratio, quality);
     let mut small = [0.0f32; 2 * N_MIN];
     let mut big;
-    let w: &mut [f32] = if n == N_MIN {
-        &mut small
+    let w: &mut [f32] = if n <= N_MIN {
+        &mut small[..2 * n]
     } else {
         big = [0.0f32; 2 * N_MAX];
         &mut big[..2 * n]
@@ -202,6 +229,11 @@ pub fn read(left: &[f32], right: &[f32], pos: f64, ratio: f64, quality: Quality)
 
 /// The frames a [`read`] at `pos` and `ratio` of a sample of `len` frames uses: the first and the last (inclusive).
 pub fn reach(len: usize, pos: f64, ratio: f64) -> (usize, usize) {
+    reach_quality(len, pos, ratio, Quality::Table)
+}
+
+/// Source range for the actual playback/export kernel, including streamed samples.
+pub fn reach_quality(len: usize, pos: f64, ratio: f64, quality: Quality) -> (usize, usize) {
     if len == 0 {
         return (0, 0);
     }
@@ -213,7 +245,7 @@ pub fn reach(len: usize, pos: f64, ratio: f64) -> (usize, usize) {
         let i = k0.min(last) as usize;
         return (i, i);
     }
-    let n = half_width(ratio) as i64;
+    let n = quality_width(ratio, quality) as i64;
     ((k0 - n + 1).clamp(0, last) as usize, (k0 + n).clamp(0, last) as usize)
 }
 
@@ -229,11 +261,11 @@ pub fn read_by(len: usize, pos: f64, ratio: f64, quality: Quality, at: impl Fn(u
     if f == 0.0 && ratio.abs() == 1.0 {
         return at((k0 as usize).min(len - 1));
     }
-    let n = half_width(ratio);
+    let n = quality_width(ratio, quality);
     let mut small = [0.0f32; 2 * N_MIN];
     let mut big;
-    let w: &mut [f32] = if n == N_MIN {
-        &mut small
+    let w: &mut [f32] = if n <= N_MIN {
+        &mut small[..2 * n]
     } else {
         big = [0.0f32; 2 * N_MAX];
         &mut big[..2 * n]
@@ -252,6 +284,31 @@ pub fn read_by(len: usize, pos: f64, ratio: f64, quality: Quality, at: impl Fn(u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_and_export_policy_preserves_tones_and_streamed_reads() {
+        assert_eq!(quality_width(1.0, Quality::Live16), 8);
+        assert_eq!(quality_width(1.0, Quality::Export512), 256);
+        let signal: Vec<f32> = (0..8192).map(|i| (2.0 * PI * 1000.0 * i as f64 / 48000.0).sin() as f32 * 0.5).collect();
+        for quality in [Quality::Live16, Quality::Export512] {
+            for ratio in [0.5, 1.0, 48000.0 / 44100.0, 2.0, 24.0] {
+                for pos in [0.25, 1024.125, 4000.75, 8191.5] {
+                    let (lo, hi) = reach_quality(signal.len(), pos, ratio, quality);
+                    let ram = read(&signal, &signal, pos, ratio, quality);
+                    let disk = read_by(signal.len(), pos, ratio, quality, |i| {
+                        assert!((lo..=hi).contains(&i)); (signal[i], signal[i])
+                    });
+                    assert_eq!(ram, disk);
+                    assert!(ram.0.is_finite());
+                    if (1000.0..7000.0).contains(&pos) && ratio < 3.0 {
+                        let ideal = (2.0 * PI * 1000.0 * pos / 48000.0).sin() as f32 * 0.5;
+                        assert!((ram.0 - ideal).abs() < 0.005, "{quality:?} {ratio}: {} vs {ideal}", ram.0);
+                    }
+                }
+                assert_eq!(read(&signal, &signal, 100.0, 1.0, quality), (signal[100], signal[100]));
+            }
+        }
+    }
 
     fn exact(f: f64, ratio: f64) -> Vec<f64> {
         let n = half_width(ratio);

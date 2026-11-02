@@ -60,6 +60,7 @@ pub struct FrameInfo {
     pub sounding: Vec<(u16, u16)>,
     /// The song position slider's handle is being dragged (it shows the dragged position, not the playhead).
     pub song_pos_drag: bool,
+    pub active_knob: Option<crate::knobs::KnobId>,
     /// What the toolbar editor's drag carries (spec: ui/toolbar-menu.md §8).
     pub bar_drag: Option<crate::toolbar::BarDrag>,
 }
@@ -116,7 +117,10 @@ pub fn scale_rect(r: Rect, k: f32) -> Rect {
 
 /// The top band's toolbar panels as laid out now, in the band's own px.
 fn placed(s: &State) -> Vec<crate::toolbar::Placed> {
-    crate::toolbar::place(&s.bar.layout, s.screen.0 / band_k(s), s.bar.editing)
+    // Reuse the measured room left by the fixed right-side actions. Painting,
+    // invalidation and pointer mapping must use exactly the same layout.
+    let width=s.toolbar_content_width.get();
+    crate::toolbar::place(&toolbar::visible_layout(s), if width>0. {width} else {s.screen.0/band_k(s)}, s.bar.editing)
 }
 
 /// How far toolbar panel `p` is from its home (`toolbar::Panel::home`); `None` when it is not on the toolbar.
@@ -159,6 +163,7 @@ pub const BROWSER_W: f32 = 209.0;
 /// Width of the docked browser incl. the splitter, as dragged (`State::browser_w`), at most half the window (spec:
 /// ui/browser.md §9).
 pub fn browser_w(s: &State) -> f32 {
+    if s.browser_auto_hidden {return 8.;}
     s.browser_w.min(s.screen.0 / 2.0).max(BROWSER_W)
 }
 
@@ -191,13 +196,14 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     // fills the workspace, so windows below it are covered and not painted.
     let docked_at = s.z.iter().rposition(|&w| s.is_max(w));
     // Each part is skipped by a repaint that misses it (`Ui::part`).
-    if s.show_browser {
+    if s.show_browser && s.native_view.is_none() {
         let r = Rect::new(0.0, top, browser_w(s), h - top);
         ui.part(Seg::Browser, r, |ui| browser::paint(ui, s, r));
     }
     let _ = work;
     for (i, &win) in s.z.iter().enumerate() {
-        if docked_at.is_some_and(|d| i < d) {
+        if s.native_view.map_or(s.native_detached.contains(&win),|v|v!=win) {continue;}
+        if s.native_view.is_none() && docked_at.is_some_and(|d| i < d) {
             continue;
         }
         ui.win = Some(win);
@@ -231,17 +237,19 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
         ui.c.pop_clip();
         ui.win = None;
     }
-    if !s.toolbar.hidden {
+    if !s.toolbar.hidden && s.native_view.is_none() {
         // At Toolbars scaling (spec: ui/ui-scaling.md §1): the band works in its own px, `k` of the window's each, so
         // it is `w / k` of them wide; what doesn't fit is left out (`toolbar::room`).
         let scale = toolbar_scale(ui.c.scale);
         ui.part(Seg::Toolbar, Rect::new(0.0, 0.0, w, band_h(s)), |ui| ui.scaled(scale, |ui, k| toolbar::paint(ui, s, f, w / k)));
     }
     // The floating hint bar, over every window (spec: ui/toolbar-menu.md §4).
-    if s.toolbar.hint_bar {
+    if s.toolbar.hint_bar && s.native_view.is_none() {
         toolbar::paint_hint_bar(ui, s, f);
     }
     let overlays = ui.hit_count();
+    if s.native_view != s.native_input {return overlays;}
+    crate::plugin_downloads::paint_tooltip(ui, s);
     // The toolbar editor's palette goes over the windows, which docked plugin windows leave free like any overlay (spec:
     // ui/toolbar-menu.md §8).
     if s.bar.editing && !s.toolbar.hidden {
@@ -312,7 +320,7 @@ pub fn window_body(ui: &mut Ui, r: Rect) {
 /// reaching 3 px outside the window. Not for maximized or collapsed windows.
 pub fn resize_zones(ui: &mut Ui, s: &State, win: Win, r: Rect) {
     let Some(i) = win.slot() else { return };
-    if s.wins[i].maxed || s.wins[i].mini {
+    if s.native_view==Some(win) || s.wins[i].maxed || s.wins[i].mini {
         return;
     }
     use crate::app::{EDGE_B, EDGE_L, EDGE_R, EDGE_T};
@@ -335,6 +343,13 @@ pub fn resize_zones(ui: &mut Ui, s: &State, win: Win, r: Rect) {
 
 /// Minimize / maximize / close buttons from `x0` at the title bar of a window at top `y`.
 pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, _normal: Color, _hover: Color) {
+    if win.slot().is_some() {
+        let r=Rect::new(x0-23.,y+3.,19.,17.);
+        let hover=ui.hit(r,Action::DetachWin(win),"Detach / attach window - move freely between monitors");
+        ui.c.fill_rrect(r,2.,if hover {ui.t.button_hi} else {ui.t.sunken});
+        ui.c.stroke_rrect(r,2.,1.,if hover {ui.t.accent} else {ui.t.text_dim});
+        ui.c.text_center(os_ui::Font::new(13),r,ui.t.text,"D");
+    }
     let mut hovered = None;
     for (i, (hint, action)) in [
         ("Minimize window", Action::MinWin(win)),
@@ -384,6 +399,7 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
 /// 1 px dark border, 5 px frame, 1 px inner line around the client, flat 28 px title bar.
 /// Returns the inner rect (laid out like the docked window) when `win` floats, else `None`.
 pub fn float_frame(ui: &mut Ui, s: &State, win: Win, r: Rect) -> Option<Rect> {
+    if s.native_view==Some(win) {return None;}
     let ws = &s.wins[win.slot()?];
     if ws.maxed || ws.mini || r.h < 2.0 * crate::app::TITLE_H {
         return None;
@@ -404,7 +420,7 @@ pub fn float_frame(ui: &mut Ui, s: &State, win: Win, r: Rect) -> Option<Rect> {
 
 /// The (layout rect, client rect) that `framed` returns for `win` at `r`, without painting.
 pub fn frame_rects(s: &State, win: Win, r: Rect) -> (Rect, Rect) {
-    let floats = win.slot().is_some_and(|i| !s.wins[i].maxed && !s.wins[i].mini) && r.h >= 2.0 * crate::app::TITLE_H;
+    let floats = s.native_view!=Some(win) && win.slot().is_some_and(|i| !s.wins[i].maxed && !s.wins[i].mini) && r.h >= 2.0 * crate::app::TITLE_H;
     let r = if floats { Rect::new(r.x + 7.0, r.y + 5.0, r.w - 14.0, r.h - 12.0) } else { r };
     (r, Rect::new(r.x, r.y + 23.0, r.w, r.h - 23.0))
 }
@@ -434,16 +450,30 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let len = if vertical { track.h } else { track.w };
     let total = total.max(view).max(1.0);
     let max = (total - view).max(0.0);
-    let (_, thumb) = os_ui::kit::thumb(len, pos, view, total);
+    let (mut thumb_at, mut thumb) = os_ui::kit::thumb(len, pos, view, total);
+    if target==Scroll::PlaylistY {
+        thumb=thumb.max(72.0_f32.min(len));
+        thumb_at=if max>0. {pos.clamp(0.,max)/max*(len-thumb)}else{0.};
+    }
     let hint = match target {
         Scroll::PianoX | Scroll::PlaylistX => "Drag to scroll - right-drag: left/right scrolls, up/down zooms",
         Scroll::PlPick => PICK_BAR_HINT,
+        Scroll::PlaylistY => "Drag to scroll - drag thumb ends to resize tracks; right-drag sideways also resizes",
         _ => "Drag to scroll",
     };
     let act = Action::Scrollbar(target);
     let hov = ui.hit(track, act.clone(), hint);
     let st = kit::State::new(hov, ui.down(track, &act), false);
-    kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);
+    if target==Scroll::PlaylistY {
+        ui.c.fill_rect(track,ui.t.scrollbar);
+        let r=Rect::new(track.x+1.,track.y+thumb_at,(track.w-2.).max(1.),thumb);
+        ui.c.fill_rrect(r,2.,kit::scroll_thumb(ui.t,st,kit::high_visibility()));
+    } else {kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);}
+    if target==Scroll::PlaylistY {
+        for y in [track.y+thumb_at+2.,track.y+thumb_at+thumb-3.] {
+            ui.c.fill_rect(Rect::new(track.x+3.,y,(track.w-6.).max(1.),1.),ui.t.text_dim);
+        }
+    }
     ui.bars.push(Bar { target, track, vertical, max, view, thumb });
 }
 

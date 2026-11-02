@@ -408,7 +408,7 @@ struct Painter {
 impl Painter {
     fn new(scale: f32) -> Option<Painter> {
         let (w, h) = device(scale);
-        let caption = Canvas::new((DISC.2 * scale).round() as u32, (CAPTION_H * scale).round() as u32, scale).ok()?;
+        let caption = Canvas::new((DISC.2 * scale).round() as u32, ((CAPTION_H + 22.0) * scale).round() as u32, scale).ok()?;
         Some(Painter {
             scale,
             frame: Canvas::new(w, h, scale).ok()?,
@@ -513,6 +513,12 @@ impl Painter {
         }
         let y = ((CAPTION_H - c.line_height(font)) / 2.0).round();
         c.text(font, ((DISC.2 - w) / 2.0).round(), y, Color::rgb(CAPTION_INK), text);
+        let edition = "Michael Lane edition";
+        let edition_font = Font::new(11);
+        let edition_x = ((DISC.2 - c.text_width(edition_font, edition)) / 2.0).round();
+        let edition_y = CAPTION_H + 7.0;
+        c.text(edition_font, edition_x, edition_y + 1.0, Color::rgb(0x161616), edition);
+        c.text(edition_font, edition_x, edition_y, Color::rgb(0xbdbdbd), edition);
     }
 }
 
@@ -1242,6 +1248,11 @@ mod tests {
             let (w, h) = device(scale);
             let (w, h) = (w as usize, h as usize);
             let px = p.paint(&look(0.25, 0.0)).clone();
+            if let Some(dir) = std::env::var_os("LEMON_SPLASH_PREVIEW") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                px.save_png(dir.join(format!("edition-{scale}.png"))).unwrap();
+            }
             let rgba = |x: usize, y: usize| {
                 let c = px.pixel(x as u32, y as u32).unwrap().demultiply();
                 (c.red(), c.green(), c.blue(), c.alpha())

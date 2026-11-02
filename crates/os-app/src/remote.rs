@@ -132,6 +132,8 @@ fn target_text(t: Target) -> String {
         Target::Knob(k) => match k {
             KnobId::MasterVol => "mainvol".into(),
             KnobId::MasterPitch => "mainpitch".into(),
+            KnobId::Varispeed => "varispeed".into(),
+            KnobId::ChanPitch(r) => format!("chanpitch:{r}"),
             KnobId::MixPan(m) => format!("mixpan:{m}"),
             KnobId::MixSep(m) => format!("mixsep:{m}"),
             KnobId::SlotMix(m, s) => format!("slotmix:{m}:{s}"),
@@ -139,6 +141,7 @@ fn target_text(t: Target) -> String {
             KnobId::ChanVol(r) => format!("chanvol:{r}"),
             KnobId::ChanPan(r) => format!("chanpan:{r}"),
             KnobId::Swing => "swing".into(),
+            KnobId::Strip(m,k) => format!("strip:{m}:{k}"),
             KnobId::Eq(m, b, f) => format!("eq:{m}:{b}:{f}"),
             KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_) => "none".into(),
         },
@@ -154,6 +157,8 @@ fn parse_target(s: &str) -> Option<Target> {
     Some(match kind {
         "mainvol" => Target::Knob(KnobId::MasterVol),
         "mainpitch" => Target::Knob(KnobId::MasterPitch),
+        "varispeed" => Target::Knob(KnobId::Varispeed),
+        "chanpitch" => Target::Knob(KnobId::ChanPitch(n()?)),
         "swing" => Target::Knob(KnobId::Swing),
         "mixpan" => Target::Knob(KnobId::MixPan(n()? as u16)),
         "mixsep" => Target::Knob(KnobId::MixSep(n()? as u16)),
@@ -161,6 +166,7 @@ fn parse_target(s: &str) -> Option<Target> {
         "send" => Target::Knob(KnobId::Send(n()? as u16, n()? as u16)),
         "chanvol" => Target::Knob(KnobId::ChanVol(n()?)),
         "chanpan" => Target::Knob(KnobId::ChanPan(n()?)),
+        "strip" => Target::Knob(KnobId::Strip(n()? as u16,n()? as u8)),
         "eq" => Target::Knob(KnobId::Eq(n()? as u16, n()? as u8, n()? as u8)),
         "fader" => Target::Fader(n()? as u16),
         "param" => Target::Param(n()?, n()?),

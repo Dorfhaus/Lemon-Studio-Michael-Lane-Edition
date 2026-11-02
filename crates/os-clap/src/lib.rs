@@ -662,6 +662,8 @@ pub struct Plugin {
     /// extra outputs get unheard scratch (spec: audio/sidechain.md "Hosted plugins' input buses").
     aux_ins: Vec<usize>,
     aux_outs: Vec<usize>,
+    aux_frames: usize,
+    aux_capture: Vec<Vec<f32>>,
     /// Buffers for channels the host has no audio for (a mono input's mix of both sides, channels beyond two, the
     /// other ports), the channel pointers and the port buffers of the current process call: sized at activation, so
     /// the audio thread never allocates.
@@ -881,6 +883,8 @@ impl Plugin {
                 outs: 2,
                 aux_ins: Vec::new(),
                 aux_outs: Vec::new(),
+                aux_frames: 0,
+                aux_capture: Vec::new(),
                 scratch: Vec::new(),
                 in_ptrs: Vec::new(),
                 out_ptrs: Vec::new(),
@@ -977,6 +981,7 @@ impl Plugin {
         (self.ins, self.outs) = (ins.first().copied().unwrap_or(0), outs.first().copied().unwrap_or(0));
         self.aux_ins = ins.get(1..).unwrap_or_default().to_vec();
         self.aux_outs = outs.get(1..).unwrap_or_default().to_vec();
+        self.aux_capture=if self.desc.id=="org.lemonstudio.lemon-chop" {(0..self.aux_outs.len().min(15)).map(|_|vec![0.;self.max_frames as usize*2]).collect()}else{Vec::new()};
         let (aux_in, aux_out): (usize, usize) = (self.aux_ins.iter().sum(), self.aux_outs.iter().sum());
         self.scratch = vec![0.0; (self.ins + self.outs + aux_in + aux_out) * self.max_frames as usize];
         self.in_ptrs = Vec::with_capacity(self.ins + aux_in);
@@ -1932,7 +1937,18 @@ impl os_engine::Instrument for Plugin {
         self.song = Some(*info);
     }
 
+    fn extra_outputs(&self)->usize {
+        // Opt in the built-in slicer only; other instruments retain their existing routing.
+        if self.desc.id=="org.lemonstudio.lemon-chop" {self.aux_outs.len().min(15)} else {0}
+    }
+    fn extra_output(&mut self,port:usize,left:&mut[f32],right:&mut[f32])->bool {
+        if port>=self.extra_outputs() || left.len()!=self.aux_frames || right.len()!=left.len() {return false;}
+        let Some(samples)=self.aux_capture.get(port) else{return false;};
+        for (i,pair) in samples[..left.len()*2].chunks_exact(2).enumerate(){left[i]=pair[0];right[i]=pair[1];}true
+    }
     fn process(&mut self, rate: u32, left: &mut [f32], right: &mut [f32]) {
+        self.aux_frames=0;
+        for port in &mut self.aux_capture {if port.len()<left.len()*2{port.resize(left.len()*2,0.);}port[..left.len()*2].fill(0.);}
         left.fill(0.0);
         right.fill(0.0);
         if self.rate != rate {
@@ -1967,8 +1983,16 @@ impl os_engine::Instrument for Plugin {
             self.chunk_song = song.map(|s| s.advanced(at as u64, rate));
             let (l, r) = (&mut left[at..at + n], &mut right[at..at + n]);
             self.process_chunk(l, r);
+            let mut base=self.ins+self.outs+self.aux_ins.iter().sum::<usize>();
+            for (port,&channels) in self.aux_outs.iter().enumerate().take(self.aux_capture.len()) {
+                if channels>0 {
+                    let r=base+usize::from(channels>1);
+                    for f in 0..n {self.aux_capture[port][(at+f)*2]=self.scratch[base*max+f];self.aux_capture[port][(at+f)*2+1]=self.scratch[r*max+f];}
+                }base+=channels;
+            }
             at += n;
         }
+        self.aux_frames=left.len();
         if debug() {
             // OS_DEBUG: the hosted plugin's peak level about once a second (stderr).
             self.dbg_peak = left.iter().chain(right.iter()).fold(self.dbg_peak, |m, v| m.max(v.abs()));

@@ -27,7 +27,7 @@ pub const BITRATES: [u32; 8] = [64, 96, 128, 160, 192, 224, 256, 320];
 /// The sample rates besides the device's (index 0).
 pub const RATES: [u32; 5] = [44100, 48000, 88200, 96000, 192000];
 pub const CHANNELS: [&str; 4] = ["Stereo", "Mono (merged)", "Mono (left)", "Mono (right)"];
-/// The resampling choices: the window's width in points (2: linear); 27 is what playback uses.
+/// The resampling choices: the window's width in points (2: linear); live playback uses 16.
 pub const POINTS: [u32; 8] = [2, 8, 16, 27, 64, 128, 256, 512];
 pub const TAILS: [&str; 3] = ["Cut", "Ring out", "Wrap"];
 
@@ -92,7 +92,7 @@ impl Default for Options {
             ogg_kbps: 192,
             rate: 0,
             channels: 0,
-            points: 27,
+            points: 512,
             tail: Tail::Ring,
             dither: false,
             hq: true,
@@ -233,6 +233,10 @@ pub struct Marker {
 /// markers, the loop, the tempo and the mixer tracks' names.
 #[derive(Debug, Clone)]
 pub struct Job {
+    /// Track renders isolate hosted generators without changing their rack identities.
+    pub instrument_rows: Option<Vec<usize>>,
+    /// Only these mixer stems need buffering (None keeps ordinary split-export behavior).
+    pub capture_tracks: Option<Vec<usize>>,
     pub options: Options,
     /// The files' folder and name (without extension).
     pub folder: PathBuf,
@@ -254,6 +258,8 @@ impl Job {
     pub fn wav(path: &Path) -> Job {
         let options = Options { markers: false, loops: false, ..Options::default() };
         Job {
+        instrument_rows: None,
+        capture_tracks: None,
             options,
             folder: path.parent().map(Path::to_path_buf).unwrap_or_default(),
             name: path.file_stem().map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned()),
@@ -709,7 +715,7 @@ mod tests {
     #[test]
     fn resampling_keeps_a_tone() {
         let a = tone(4800, 48000, 1000.0);
-        for points in [2, 27, 64] {
+        for points in [2, 16, 27, 64, 512] {
             let b = resample(&a, 2, 48000, 44100, points);
             assert_eq!(b.len() / 2, 4410);
             // The level of a 1 kHz tone stays (away from the edges).

@@ -407,6 +407,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn peak_eq_routes_roundtrip_plugin_and_native(){
+        let mut state=default_state();eq::routed::save_routes(&mut state,[1,2,3,4,0,1,2],false);
+        let back=fl_from_plugin_state(&plugin_state_from_fl(&state)).unwrap();assert_eq!(eq::routed::routes(&back,false),[1,2,3,4,0,1,2]);
+        let params=EqParams::default();params.set_extra(state);let fields=params.serialize_fields();let restored=EqParams::default();restored.deserialize_fields(&fields);assert_eq!(eq::routed::routes(&restored.extra_copy(),false),[1,2,3,4,0,1,2]);
+    }
+
+    #[test]
     fn default_state_matches_the_measured_defaults() {
         let b = default_state();
         assert_eq!(b.len(), 354);
