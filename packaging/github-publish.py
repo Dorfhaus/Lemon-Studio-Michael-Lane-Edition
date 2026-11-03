@@ -24,7 +24,9 @@ with tempfile.TemporaryDirectory(prefix='lemon-publication-') as folder:
         if not json.loads(existing.stdout)['isDraft']:raise SystemExit('Published release is immutable; verify it instead of overwriting')
     else:gh('release','create',tag,'--target',os.environ['GITHUB_SHA'],'--title',plan['title'],'--notes-file',str(notes),'--draft')
     gh('release','upload',tag,*map(str,assets),'--clobber')
-    data=json.loads(subprocess.check_output(['gh','api','repos/'+os.environ['GH_REPO']+'/releases/tags/'+tag],text=True))
+    releases=json.loads(subprocess.check_output(['gh','api','repos/'+os.environ['GH_REPO']+'/releases?per_page=100'],text=True))
+    data=next((release for release in releases if release['tag_name']==tag),None)
+    if data is None:raise SystemExit('Prepared draft release not found')
     remote={a['name']:a for a in data['assets']}
     for path in assets:
         expected='sha256:'+hashlib.sha256(path.read_bytes()).hexdigest()
