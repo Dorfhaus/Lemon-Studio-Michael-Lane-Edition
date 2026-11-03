@@ -1,0 +1,42 @@
+{
+  "tag": "v2026.11.03.1",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.03.1 \u2014 Wave, MPE and Intel Mac",
+  "notes": "Complete Lemon Studio DAW release for Windows, Linux x64, Apple-silicon Mac and Intel Mac. Includes built-in Lemon Wave, organized factory instruments and effects, per-note MPE, independent clip effects, instrument layers, browser and tempo improvements, and the integrated Master Assistant.\n\nMatching source archives and SHA256SUMS are included. [Full changelog and downloads](https://michaellanemusic.de/lemon-studio/).\n\nMac requires macOS 12 or newer; packages are ad-hoc signed, not notarized. Intel build and focused instrument/MPE/mastering checks passed under Rosetta, not physical Intel hardware. Linux was compiled and packaged; Linux runtime/audio testing was not performed. Physical MPE controllers and every third-party patch remain untested. Known ARA limitations remain.\n\nBuild source: bc6aba779a52d98dd8f17ac9a48e2e26f874dfb6. Later concurrent Lemon Wave envelope/filter development is outside this release.",
+  "assets": [
+    {
+      "name": "Lemon-Studio-Windows-Setup-2026.11.03.1.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110301/Lemon-Studio-Windows-Setup-2026.11.03.1.exe",
+      "sha256": "e1206bb5fc3223b806a3a41101e016823b44a264dd9a922911d99e944ef50d92"
+    },
+    {
+      "name": "Lemon-Studio-Linux-x86_64-2026110301.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110301/Lemon-Studio-Linux-x86_64-2026110301.tar.gz",
+      "sha256": "053a71d878afa1c91f9c144508e700ce44aed99c28a22baa1058563ccbf10e92"
+    },
+    {
+      "name": "Lemon-Studio-Source-2026110301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110301/Lemon%20Studio%20Source.zip",
+      "sha256": "579b25918f2c2d28e439f17486e49c652dd4ecf6f86e8006880eb644888a1b6b"
+    },
+    {
+      "name": "Lemon-Studio-Mac-arm64-2026110301.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110301/Lemon-Studio-Mac-arm64-2026110301.dmg",
+      "sha256": "64d9d41408d55519d5a1a0b738a8efbf235766a95e08824c653aa6b3708b598b"
+    },
+    {
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110301/Lemon-Studio-Source-Mac-arm64-2026110301.zip",
+      "sha256": "767498ad7d02e674f18aa5252a0be9f9af9b14fc936d359336f4aad0f96629a1"
+    },
+    {
+      "name": "Lemon-Studio-Mac-x86_64-2026110301.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110301/Lemon-Studio-Mac-x86_64-2026110301.dmg",
+      "sha256": "bd344a68edabecaf4308b13f03c90f6411158953d8cdd8593d7c3146a64f4e39"
+    },
+    {
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110301/Lemon-Studio-Source-Mac-x86_64-2026110301.zip",
+      "sha256": "767498ad7d02e674f18aa5252a0be9f9af9b14fc936d359336f4aad0f96629a1"
+    }
+  ]
+}
