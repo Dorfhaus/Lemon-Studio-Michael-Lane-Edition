@@ -738,6 +738,17 @@ const SEARCH_ROW: f32 = 27.0;
 pub fn row_h(s:&State)->f32 {if s.browser_tab==6{return crate::feature_votes::ROW_H;}if s.browser_tab==5 {crate::plugin_downloads::ROW_H}else{ROW_H}}
 
 /// Largest useful scroll offset.
+/// Scroll geometry shared by painting and pointer handling.
+pub fn scrollbar(s: &State) -> Option<(Rect, Rect)> {
+    let h = list_h(s).max(0.);
+    let max = max_scroll(s);
+    if max <= 0. || h <= 0. { return None; }
+    let track = Rect::new(crate::views::browser_w(s) - 12., list_top(s), 11., h);
+    let thumb_h = (h * h / (h + max)).max(24.).min(h);
+    let y = track.y + s.browser_scroll.clamp(0., max) / max * (h - thumb_h);
+    Some((track, Rect::new(track.x + 2., y, 7., thumb_h)))
+}
+
 pub fn max_scroll(s: &State) -> f32 {
     if s.browser_tab==6{return crate::feature_votes::max_scroll(s);}
     (rows(s).len() as f32 * row_h(s) - list_h(s)).max(0.0)
@@ -881,7 +892,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             _ => c,
         };
         icons::draw(ui.c, row.icon, Rect::new(x + 6.0, y + 3.0, 17.0, 17.0), ic);
-        let (f, w) = (os_ui::Font::new(17), bw - 1.0 - x - 27.0);
+        let (f, w) = (os_ui::Font::new(17), bw - 13.0 - x - 27.0);
         let over = ui.c.text_width(f, &row.label) - w;
         // Hovered, a label that does not fit scrolls (§9) rather than being cut.
         if hov && over > 0.0 {
@@ -906,6 +917,11 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         } else { ui.c.text(os_ui::Font::new(14).italic(), 22.0, top + 6.0, t.text_faint, empty); }
     } else if s.browser_tab == 0 { crate::starter_pack::paint_status(ui, list); }
     ui.c.pop_clip();
+    if let Some((track, thumb)) = scrollbar(s) {
+        ui.c.fill_rect(track, t.browser_list);
+        let hover = ui.hit(track, Action::BrowserScroll, "Drag to scroll samples");
+        ui.c.fill_rrect(thumb, 3., if hover { t.text_dim } else { t.splitter.shade(0.15) });
+    }
     if crate::browser_preview::visible(s) {crate::browser_preview::paint(ui,s,Rect::new(0.,list.bottom(),bw,ih));}
     else if let Some(p) = &info {
         paint_info(ui, s, p, Rect::new(0.0, list.bottom(), bw, ih));

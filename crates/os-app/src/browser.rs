@@ -33,6 +33,15 @@ impl App {
     /// Browser actions; returns whether `a` was one.
     pub(crate) fn browser_act(&mut self, a: &Action) -> bool {
         if let Action::BrowserPreview(cmd)=*a {crate::browser_preview::act(self,cmd);return true;}
+        if *a == Action::BrowserScroll {
+            if let Some((_, thumb)) = view::scrollbar(&self.state) {
+                let y = self.mouse.1;
+                let offset = if y >= thumb.y && y <= thumb.bottom() { y - thumb.y } else { thumb.h / 2. };
+                self.browser_scroll_drag(y, offset);
+                self.drag = Some(Drag::BrowserScroll { offset });
+            }
+            return true;
+        }
         if *a == Action::BrowserSplitter {
             self.browser_split_press();
             return true;
@@ -113,6 +122,30 @@ impl App {
         }
         self.invalidate();
         true
+    }
+
+    pub(crate) fn browser_scroll_drag(&mut self, y: f32, offset: f32) {
+        if let Some((track, thumb)) = view::scrollbar(&self.state) {
+            let travel = track.h - thumb.h;
+            if travel > 0. {
+                self.state.browser_scroll = ((y - offset - track.y) / travel).clamp(0., 1.) * view::max_scroll(&self.state);
+                self.invalidate();
+            }
+        }
+    }
+
+    fn browser_sample_step(&mut self, down: bool) {
+        let rows = view::rows(&self.state);
+        if rows.is_empty() { return; }
+        let current = rows.iter().position(|r| Some(&r.key) == self.state.browser_sel.as_ref());
+        let i = match current { Some(i) if down => (i + 1).min(rows.len() - 1), Some(i) => i.saturating_sub(1), None if down => 0, None => rows.len() - 1 };
+        if current == Some(i) { return; }
+        let row = &rows[i];
+        select(&mut self.state, &row.key);
+        if let Item::Sample(path) = &row.item { self.preview_sample(path); }
+        else { crate::browser_preview::dismiss(self); }
+        reveal(&mut self.state);
+        self.invalidate();
     }
 
     /// Clicking a sample plays it once (spec §7): cut off after `PREVIEW_LIMIT` unless "Full sample preview" is ticked.
@@ -233,6 +266,12 @@ impl App {
         let shift = self.shift;
         let focus = self.state.browser_search_focus;
         let over = self.over_browser() || focus;
+        if over && !ctrl && !alt && !shift && matches!(self.state.browser_tab, 0 | 3) {
+            if let Key::Named(k @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) = key {
+                self.browser_sample_step(*k == NamedKey::ArrowDown);
+                return true;
+            }
+        }
         let cmd = match key {
             Key::Named(NamedKey::F2) if !self.state.browser_search.is_empty() => Some(BCmd::Find(-1)),
             Key::Named(NamedKey::F3) if !self.state.browser_search.is_empty() => Some(BCmd::Find(1)),
@@ -959,6 +998,40 @@ pub(crate) fn favorites() -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod favorite_tests {
     use super::*;
+    #[test]
+    fn sample_browser_scrollbar_and_arrow_preview() {
+        use winit::keyboard::{Key, NamedKey};
+        let dir = std::env::temp_dir().join(format!("lemon-browser-arrows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..80 { std::fs::write(dir.join(format!("Sample{i:03}.wav")), []).unwrap(); }
+        let mut app = App::new(None);
+        app.state.screen = (1000., 650.);
+        app.state.show_browser = true;
+        app.state.browser_tab = 0;
+        app.add_browser_folder(dir.clone());
+        app.mouse = (30., view::list_top(&app.state) + 10.);
+        let rows = view::rows(&app.state);
+        let first = rows.iter().find(|r| matches!(r.item, Item::Sample(_))).unwrap();
+        app.state.browser_sel = Some(first.key.clone());
+        assert!(app.browser_key(&Key::Named(NamedKey::ArrowDown), false, false));
+        assert_ne!(app.state.browser_sel.as_ref(), Some(&first.key));
+        assert!(app.state.browser_preview.path.as_ref().unwrap().ends_with("Sample001.wav"));
+        assert!(app.drag.is_none());
+        assert!(app.browser_key(&Key::Named(NamedKey::ArrowUp), false, false));
+        assert!(app.state.browser_preview.path.as_ref().unwrap().ends_with("Sample000.wav"));
+        let (track, thumb) = view::scrollbar(&app.state).unwrap();
+        app.browser_scroll_drag(track.bottom() + 500., thumb.h / 2.);
+        assert_eq!(app.state.browser_scroll, view::max_scroll(&app.state));
+        app.browser_scroll_drag(track.y - 500., 0.);
+        assert_eq!(app.state.browser_scroll, 0.);
+        app.mouse.0 = 700.;
+        assert!(!app.browser_key(&Key::Named(NamedKey::ArrowDown), false, false));
+        // No device is opened: preview decoding is asynchronous and is not pumped.
+        app.state.browser_folders.clear();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn personal_library_browsing_search_and_restart() {
         let dir=std::env::temp_dir().join(format!("lemon-personal-library-{}",std::process::id()));

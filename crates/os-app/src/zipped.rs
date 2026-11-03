@@ -37,7 +37,7 @@ pub struct Zipping {
 
 enum Done {
     /// The project file unzipped.
-    Unzipped(PathBuf),
+    Unzipped { project: PathBuf, archive: PathBuf },
     /// The zip written, how many samples it holds, and the samples not found (not in it).
     Zipped { zip: PathBuf, samples: usize, missing: Vec<String> },
 }
@@ -77,7 +77,7 @@ pub fn import(app: &mut App, zip: PathBuf) {
     }
     let fallback = crate::app::theme_dir().map(|d| d.join(UNZIP_DIR));
     let z = zip.clone();
-    run(app, "Unzipping project", &zip, move |done, total| unzip(&z, fallback.as_deref(), done, total).map(Done::Unzipped));
+    run(app, "Unzipping project", &zip, move |done, total| unzip(&z, fallback.as_deref(), done, total).map(|project|Done::Unzipped { project, archive: z }));
 }
 
 /// A file in the zip: its index, its path inside the zip, its size.
@@ -343,8 +343,12 @@ pub fn tick(app: &mut App) {
     };
     let z = app.zipping.take().expect("checked");
     match result {
-        Ok(Done::Unzipped(project)) => app.open(project),
+        Ok(Done::Unzipped { project, archive }) => {
+            app.open(project.clone());
+            if app.state.path.as_ref()==Some(&project) {crate::recent::add(&archive);}
+        },
         Ok(Done::Zipped { zip, samples, missing }) => {
+            crate::recent::add(&zip);
             app.state.message = Some(format!("Exported {} with {samples} samples", zip.display()));
             if !missing.is_empty() {
                 let mut names = missing;
@@ -461,10 +465,13 @@ mod tests {
         // On another computer: the original folders are gone.
         std::fs::remove_dir_all(d.join("one")).unwrap();
         std::fs::remove_dir_all(d.join("two")).unwrap();
-        let project = unzip(&zip, None, &done, &total).unwrap();
-        app.open(project);
+        let _project = unzip(&zip, None, &done, &total).unwrap();
+        import(&mut app,zip.clone());
+        let start=std::time::Instant::now();while app.zipping.is_some(){tick(&mut app);assert!(start.elapsed().as_secs()<10);std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert_eq!(crate::recent::list().first(),Some(&zip));
+        let unzipped=app.state.path.as_ref().unwrap().parent().unwrap().to_path_buf();
         let resolved = |row: usize| crate::plugins::resolve_sample(app.state.project.channels[row].sample_path.as_deref().unwrap());
-        let unzipped = d.join("out").join("Song");
+
         assert_eq!(resolved(rows[0]), unzipped.join("Kick.wav").to_string_lossy());
         assert_eq!(resolved(rows[1]), unzipped.join("Kick_2.wav").to_string_lossy());
         assert_eq!(resolved(rows[2]), unzipped.join("Kick.wav").to_string_lossy());

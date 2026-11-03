@@ -261,6 +261,7 @@ pub enum Action {
     FeatureVote(u64,i8),
     /// Browser list background (wheel scrolls).
     BrowserList,
+    BrowserScroll,
     /// Title-bar up arrow: close every node of the tab.
     BrowserCollapse,
     /// Title-bar curved arrow: Reread structure (spec: ui/browser.md §4, "Title-bar icons").
@@ -893,6 +894,7 @@ pub enum Drag {
     PianoSplit { dy: f32, top: f32, h: f32 },
     /// The browser's splitter: `dx` = grab offset from the browser's right edge (spec: ui/browser.md §9).
     BrowserSplit { dx: f32 },
+    BrowserScroll { offset: f32 },
     /// Monitor debug panel slider.
     MonParam(usize),
     /// Cable physics debug panel slider.
@@ -4064,7 +4066,7 @@ impl App {
                 }
             }
             if self.state.cpu.update(now, load, voices, dropouts) {
-                self.damage_band(CPU_RECT);
+                self.damage_rect(Rect::new(0.,0.,self.state.screen.0,views::work_y(&self.state)));
                 let (x, y) = self.mouse;
                 if self.top_hit(x, y).is_some_and(|h| h.action == Action::CpuPanel) {
                     self.hint = Cow::Owned(self.state.cpu.hint());
@@ -5654,6 +5656,7 @@ impl App {
                     }
                 }
                 Drag::BrowserSplit { dx } => self.browser_split_drag(x - dx),
+                Drag::BrowserScroll { offset } => self.browser_scroll_drag(y, offset),
                 Drag::SongPosHold { .. } => {}
                 Drag::PrefSlider { label, x: x0, w } => self.pref_slider_drag(label, x0, w),
                 Drag::Ppi { x0, n0 } => self.ppi_set(crate::ppi::dragged(n0, x - x0, self.px_scale)),
@@ -7107,7 +7110,7 @@ impl App {
     fn wheel_act(&mut self, dx: f32, dy: f32, shift: bool, ctrl: bool) -> Option<Win> {
         let (x, y) = self.mouse;
         let area = self.top_hit(x, y).map(|h| h.action.clone());
-        if matches!(area, Some(Action::BrowserList | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::PluginDownload(_, _) | Action::FeatureVote(_,_))) {
+        if matches!(area, Some(Action::BrowserScroll | Action::BrowserList | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::PluginDownload(_, _) | Action::FeatureVote(_,_))) {
             self.browser_wheel(dy + dx);
             return None;
         }
@@ -7709,6 +7712,9 @@ impl App {
         self.state.rec.smart.origin=Some(start.max(0.).round() as u32);
         self.state.rec.smart.initial.clear();
         crate::record::run_on_flag().store(self.state.rec.armed&&!crate::record::Opt::Loop.on(),std::sync::atomic::Ordering::Relaxed);
+        // Browser audition must not double the first hit of transport playback.
+        crate::browser_preview::dismiss(self);
+        self.transport.stop_preview();
         self.transport.play_counted(&p, self.play_mode(), start, bars);
     }
 
@@ -8643,7 +8649,7 @@ impl App {
                 self.damage_win(Win::PianoRoll);
             }
             Action::CloseWin(w) => s.hide(w),
-            Action::BrowserPreview(_) | Action::StarterPack(_) | Action::FeatureVote(_,_) | Action::PluginDownload(_, _) | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserSplitter => {}
+            Action::BrowserPreview(_) | Action::StarterPack(_) | Action::FeatureVote(_,_) | Action::PluginDownload(_, _) | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserScroll | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserSplitter => {}
             Action::TypeIn(t) => crate::typein::click(s, t),
             Action::Ai | Action::Donate | Action::Updates | Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::Swallow => {}
             Action::PlTool(_)

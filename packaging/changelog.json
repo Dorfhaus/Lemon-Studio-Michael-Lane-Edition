@@ -4,6 +4,20 @@
   "sections": [
     {
       "date": "2026-11-03",
+      "title": "Threaded community replies, browser controls and compact CPU meter · public build 2026110305",
+      "changes": [
+        "Community replies now stay with their original messages, with nested reply spacing, quoted context and a clear composer reply target. Pagination follows the conversation, including replies posted from the owner dashboard.",
+        "Individual forum reports can be marked Completed without deleting their messages or closing the whole discussion. Existing discussions and reply links are preserved.",
+        "Added a draggable sample-browser scrollbar and Up/Down sample selection with automatic preview in Samples and Favorites.",
+        "Added a compact CPU audio-load percentage and meter to the single-row toolbar. Double-click opens plugin performance; right-click offers monitoring and audio settings.",
+        "Starting playback stops browser sample audition, including pending preview loads, preventing preview audio from doubling the beginning of a song.",
+        "Opened and exported ZIP projects now appear in Recent Projects, alongside the editable extracted project.",
+        "The Update button now shows checking, downloading, restart, retry and up-to-date states on every platform. Mac updates check the app location before downloading and explain when the app must be moved from its DMG to a writable Applications folder.",
+        "Includes all changes from build 2026110304 and the current built-in Lemon Wave. Available for Windows, Linux x64, Apple-silicon Mac and Intel Mac. Linux is compiled and packaged; live device-specific crackling, Tahoe update failure, ARA vendor playback and Masterdesk preset reports still need reproduction."
+      ]
+    },
+    {
+      "date": "2026-11-03",
       "title": "Community bug fixes and project window recall · public build 2026110304",
       "changes": [
         "Restored Mode Buttons and Song Position when enabled in the toolbar editor, including the typing-keyboard piano button.",

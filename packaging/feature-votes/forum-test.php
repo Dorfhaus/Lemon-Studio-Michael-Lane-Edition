@@ -32,7 +32,21 @@ try{
  forum_moderate($db,['action'=>'forum_block','id'=>$pid,'value'=>false]);
  for($i=0;$i<24;$i++){query($db,'INSERT INTO forum_posts(thread,author,body,created) VALUES(?,?,?,?)',[$tid,$user,'Paging fixture '.$i,time()]);}
  $page=$call(['action'=>'forum_list','thread'=>$tid,'offset'=>20]);checkf(count($page['posts'])===6&&$page['total']===26,'bounded pagination');
- forum_moderate($db,['action'=>'forum_hide_thread','id'=>$tid,'value'=>true]);denyf(fn()=>$call(['action'=>'forum_list','thread'=>$tid]),404);checkf(forum_page($db,'',$tid,0,true)['total']===26,'owner hidden review');
+ forum_moderate($db,['action'=>'forum_complete_post','id'=>$pid,'value'=>true]);checkf($call(['action'=>'forum_list','thread'=>$tid])['posts'][0]['completed']===1,'completion visible');
+ denyf(fn()=>$call(['action'=>'forum_complete_post','thread'=>$tid,'id'=>$pid,'value'=>false]),400);
+ // A late reply is placed next to its parent, not at the end of the chronological feed.
+ query($db,'DELETE FROM limits WHERE k LIKE ?', ['forum-post-minute:%']);
+ $late=$call(['action'=>'forum_reply','thread'=>$tid,'parent'=>$pid,'body'=>'Late reply to opening post']);
+ checkf($late['offset']===0,'reply response opens parent page');
+ checkf($late['posts'][2]['body']==='Late reply to opening post'&&$late['posts'][2]['depth']===1,'grouped replies');
+ checkf($late['posts'][2]['parent_body']==='How do you start?'&&$late['posts'][2]['parent_author']!=='','quoted parent');
+ $lateId=$late['posts'][2]['id'];
+ $nested=$call(['action'=>'forum_reply','thread'=>$tid,'parent'=>$lateId,'body'=>'Nested follow up']);
+ checkf($nested['posts'][3]['depth']===2&&$nested['posts'][3]['parent_body']==='Late reply to opening post','nested context');
+ forum_moderate($db,['action'=>'forum_hide_post','id'=>$pid,'value'=>true]);
+ $hidden=$call(['action'=>'forum_list','thread'=>$tid]);checkf($hidden['posts'][0]['parent_body']===''&&$hidden['posts'][0]['depth']===0,'hidden parent text never leaked');
+ forum_moderate($db,['action'=>'forum_hide_post','id'=>$pid,'value'=>false]);
+ forum_moderate($db,['action'=>'forum_hide_thread','id'=>$tid,'value'=>true]);denyf(fn()=>$call(['action'=>'forum_list','thread'=>$tid]),404);checkf(forum_page($db,'',$tid,0,true)['total']===28,'owner hidden review');
  forum_moderate($db,['action'=>'forum_hide_thread','id'=>$tid,'value'=>false]);
  query($db,'DELETE FROM limits WHERE k LIKE ?', ['forum-post-minute:%']);
  for($i=0;$i<5;$i++){$call(['action'=>'forum_reply','thread'=>$tid,'body'=>'Rate test '.$i]);}

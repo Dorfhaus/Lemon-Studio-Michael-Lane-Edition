@@ -184,6 +184,15 @@ mod tests {
         assert_eq!(crate::app::preview_project(&path.to_string_lossy()).channels[0].sound.fx,os_model::SampleFx::default());
         let _=std::fs::remove_file(path);
     }
+    #[test] fn community_play_cancels_pending_sample_preview() {
+        let mut app=App::new(None);app.state.song_mode=false;
+        app.state.browser_preview=Preview{path:Some("preview.wav".into()),resume:true,pending:Some(Arc::new(Mutex::new(None))),..Default::default()};
+        app.start_playback();
+        assert!(app.state.browser_preview.path.is_none());
+        assert!(app.state.browser_preview.pending.is_none());
+        assert!(!app.state.browser_preview.resume);
+        app.transport.stop();
+    }
     #[test] fn long_preview_and_seek_keep_song_independent() {
         let p=project("test.wav",600.,450.,120.);
         assert_eq!(p.arrangements[0].clips[0].window,Some((450000.,600000.)));

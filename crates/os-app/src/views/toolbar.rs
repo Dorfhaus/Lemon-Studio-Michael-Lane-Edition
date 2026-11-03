@@ -163,7 +163,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let donate_w = ui.c.text_width(action_font, "Donate").ceil() + 12.0;
     let ai_w=48.;
     let window_w = 104.0;
-    let actions_w = ai_w + update_w + donate_w + 18.0 + 32.0 + window_w;
+    let mini_cpu_w = 54.;
+    let actions_w = mini_cpu_w + ai_w + update_w + donate_w + 18.0 + 32.0 + window_w;
     let content_width = (width - actions_w).max(100.0);
     s.toolbar_content_width.set(content_width);
     let fit = room(content_width, crate::toolbar::natural_width(l, editing));
@@ -228,7 +229,15 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     }
 
     {
-        let ai=Rect::new(width-actions_w+2.,8.,ai_w,24.);
+        let cr=Rect::new(width-actions_w+2.,8.,48.,24.);
+        ui.c.fill_rrect(cr,3.,t.sunken);
+        ui.hit(cr,Action::CpuPanel,s.cpu.hint());
+        let load=s.cpu.now.load;
+        let ink=if load>=100{t.meter_clip}else if load>=75{t.meter_high}else{t.text_dim};
+        ui.c.text_center(Font::new(10),Rect::new(cr.x,cr.y+2.,cr.w,15.),ink,&format!("CPU {}%",load.min(999)));
+        ui.c.fill_rect(Rect::new(cr.x+4.,cr.bottom()-5.,40.,2.),t.toolbar_line);
+        ui.c.fill_rect(Rect::new(cr.x+4.,cr.bottom()-5.,40.*(load as f32/100.).min(1.),2.),ink);
+        let ai=Rect::new(cr.right()+6.,8.,ai_w,24.);
         let hover=ui.hit(ai,Action::Ai,if !s.ai.enabled {"AI control is off — connect an assistant"}else if s.ai.client.is_empty(){"AI control enabled — waiting for an approved assistant"}else{"AI assistant connected — manage or disconnect"});
         ui.c.fill_rrect(ai,3.,if hover{t.button_hi}else{t.sunken});
         let chip=Rect::new(ai.x+6.,ai.y+7.,10.,10.);let ink=if s.ai.enabled{t.accent}else{t.text_dim};
@@ -237,7 +246,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         if !s.ai.client.is_empty(){ui.c.fill_circle(ai.right()-3.,ai.y+3.,2.,t.accent);}
         let r = Rect::new(ai.right()+6., 8.0, update_w, 24.0);
         let (label, hint) = crate::updates::display();
-        ui.hit(r, Action::Updates, if !cfg!(windows) { "Open the latest downloads".to_string() } else if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
+        ui.hit(r, Action::Updates, if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
         ui.c.fill_rrect(r, 3.0, t.sunken);
         ui.c.text_clip(action_font, r.x + 6.0, r.y + 5.0, r.w - 12.0, t.text, label);
         let donate = Rect::new(r.right() + 6.0, r.y, donate_w, r.h);

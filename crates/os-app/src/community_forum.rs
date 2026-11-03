@@ -7,7 +7,7 @@ use crate::feature_votes::{button,comment_lines,text};
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Topic {pub id:u64,pub title:String,pub author:String,#[serde(default)]pub avatar:String,#[serde(default)]pub member:String,pub created:i64,pub updated:i64,pub locked:u8,pub posts:u64}
 #[derive(Clone,Debug,Serialize,Deserialize)]
-pub struct Post {pub id:u64,pub thread:u64,pub parent:Option<u64>,pub author:String,#[serde(default)]pub avatar:String,#[serde(default)]pub member:String,pub body:String,pub created:i64,pub up:u64,pub down:u64,pub mine:i8}
+pub struct Post {pub id:u64,pub thread:u64,pub parent:Option<u64>,#[serde(default)]pub depth:u32,#[serde(default)]pub completed:u8,#[serde(default)]pub parent_author:String,#[serde(default)]pub parent_body:String,pub author:String,#[serde(default)]pub avatar:String,#[serde(default)]pub member:String,pub body:String,pub created:i64,pub up:u64,pub down:u64,pub mine:i8}
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
 pub struct Profile {pub name:String,pub avatar:String}
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
@@ -18,7 +18,7 @@ fn valid_avatar(s:&str)->bool {s.is_empty()||(s.len()==6144&&s.bytes().all(|b|b.
 pub fn valid(p:&Page)->bool {
  let safe=|s:&str,max:usize|s.chars().count()<=max&&!s.chars().any(|c|c.is_control()&&c!='\n'&&c!='\t');
  let topic=|t:&Topic|t.id>0&&t.locked<=1&&safe(&t.title,100)&&safe(&t.author,32)&&safe(&t.member,32)&&valid_avatar(&t.avatar);
- safe(&p.profile.name,32)&&valid_avatar(&p.profile.avatar)&&p.threads.len()<=20&&p.posts.len()<=20&&p.offset<=1000000&&p.threads.iter().all(topic)&&p.topic.as_ref().is_none_or(topic)&&p.posts.iter().all(|p|p.id>0&&safe(&p.body,800)&&safe(&p.author,32)&&safe(&p.member,32)&&valid_avatar(&p.avatar)&&(-1..=1).contains(&p.mine))
+ safe(&p.profile.name,32)&&valid_avatar(&p.profile.avatar)&&p.threads.len()<=20&&p.posts.len()<=20&&p.offset<=1000000&&p.threads.iter().all(topic)&&p.topic.as_ref().is_none_or(topic)&&p.posts.iter().all(|p|p.id>0&&p.completed<=1&&p.depth<=1000&&safe(&p.parent_author,32)&&safe(&p.parent_body,800)&&safe(&p.body,800)&&safe(&p.author,32)&&safe(&p.member,32)&&valid_avatar(&p.avatar)&&(-1..=1).contains(&p.mine))
 }
 pub fn request(s:&State)->serde_json::Value {let p=&s.feature_votes.forum.page;serde_json::json!({"action":"forum_list","thread":p.topic.as_ref().map_or(0,|t|t.id),"offset":p.offset})}
 pub fn accept(v:&mut crate::feature_votes::View,page:Page,submitted:bool) {
@@ -74,7 +74,7 @@ pub fn key(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->bool {
  else {let max=if f.focus==3{32}else if f.focus==1{100}else{800};let field=if f.focus==3{&mut f.name}else if f.focus==1{&mut f.title}else{&mut f.body};let before=field.clone();field.key(key,ctrl,alt);if field.len()>max{*field=before;}}
  app.invalidate();true
 }
-const TOP:f32=280.;
+const TOP:f32=304.;
 pub fn max_scroll(s:&State)->f32 {(s.feature_votes.forum.height.get()-(s.screen.1-crate::views::browser::list_top(s)-28.-32.-TOP).max(0.)).max(0.)}
 fn input(ui:&mut Ui,r:Rect,field:&crate::dialog::Field,focus:bool,placeholder:&str,cmd:i8) {
  ui.c.fill_rrect(r,5.,ui.t.s(0x172125));ui.c.stroke_rrect(r,5.,1.,if focus{ui.t.h(0xb5d98b)}else{ui.t.s(0x364447)});
@@ -120,19 +120,24 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
  else {text(ui,Rect::new(x,r.y+111.,w,45.),"A space for the Lemon community. Posts are public; keep personal information private.",12);}
  if f.new_thread||p.topic.as_ref().is_some_and(|t|t.locked==0) {
   input(ui,Rect::new(x,r.y+152.,w,52.),&f.body,f.focus==2,"Write a message (up to 800 characters)",14);
+  let context=if let Some(id)=f.reply {f.page.posts.iter().find(|p|p.id==id).map(|p|format!("Replying to {} · #{}",p.author,id)).unwrap_or_else(||format!("Replying to message #{id}"))}else if f.new_thread{"New discussion".into()}else{"Replying to this discussion".into()};
+  ui.c.text_clip(Font::new(11).bold(),x,r.y+238.,w,ui.t.h(0xb5d98b),&context);
   let label=if f.new_thread{"Post thread"}else{"Post reply"};
   button(ui,Rect::new(x,r.y+210.,w*0.52,26.),label,Action::FeatureVote(0,15),enabled,true,"Publish your message · Ctrl+Enter");
   if let Some(id)=f.reply{button(ui,Rect::new(x+w*0.55,r.y+210.,w*0.45,26.),&format!("To #{id} ×"),Action::FeatureVote(0,21),true,false,"Cancel reply target");}
  } else if p.topic.is_some(){ui.c.text(Font::new(12),x,r.y+161.,ui.t.text_dim,"Thread closed · messages remain readable");}
  if !f.new_thread {
-  button(ui,Rect::new(x,r.y+247.,64.,23.),"Previous",Action::FeatureVote(0,19),!v.busy&&p.offset>0,false,"Previous page");
-  button(ui,Rect::new(x+w-64.,r.y+247.,64.,23.),"Next",Action::FeatureVote(0,20),!v.busy&&p.offset+20<p.total,false,"Next page");
+  button(ui,Rect::new(x,r.y+271.,64.,23.),"Previous",Action::FeatureVote(0,19),!v.busy&&p.offset>0,false,"Previous page");
+  button(ui,Rect::new(x+w-64.,r.y+271.,64.,23.),"Next",Action::FeatureVote(0,20),!v.busy&&p.offset+20<p.total,false,"Next page");
   let label=if p.total==0{"No posts yet".into()}else{format!("{}–{} / {}",p.offset+1,(p.offset+20).min(p.total),p.total)};
-  ui.c.text_center(Font::new(10),Rect::new(x+66.,r.y+247.,(w-132.).max(0.),23.),ui.t.text_dim,&label);
+  ui.c.text_center(Font::new(10),Rect::new(x+66.,r.y+271.,(w-132.).max(0.),23.),ui.t.text_dim,&label);
  }
  let list=Rect::new(x,r.y+TOP,w,(r.h-TOP).max(0.));ui.c.push_clip(list);
- let posts:Vec<_>=p.posts.iter().map(|post|(post,comment_lines(ui,&post.body,w-24.))).collect();
- let height=if f.new_thread{0.}else if p.topic.is_some(){posts.iter().map(|(_,lines)|76.+lines.len() as f32*16.).sum()}else{p.threads.len() as f32*104.};f.height.set(height);
+ let posts:Vec<_>=p.posts.iter().map(|post|{
+  let indent=post.depth.min(2) as f32*10.;
+  (post,comment_lines(ui,&post.body,w-indent-24.))
+ }).collect();
+ let height=if f.new_thread{0.}else if p.topic.is_some(){posts.iter().map(|(post,lines)|76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.}).sum()}else{p.threads.len() as f32*104.};f.height.set(height);
  let scroll=s.browser_scroll.min((height-list.h).max(0.));let mut offset=0.;
  if !f.new_thread&&p.topic.is_none() {
   if p.threads.is_empty(){text(ui,Rect::new(x+8.,list.y+12.,w-16.,52.),"No discussions yet. Start the first thread.",13);}
@@ -145,14 +150,24 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
   }
  }else if !f.new_thread {
   for (post,lines) in posts {
-   let height=76.+lines.len() as f32*16.;let y=list.y+offset-scroll;offset+=height;if y+height<=list.y||y>=list.bottom(){continue;}
+   let indent=post.depth.min(2) as f32*10.;let x=x+indent;let w=w-indent;
+   let height=76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.};let y=list.y+offset-scroll;offset+=height;if y+height<=list.y||y>=list.bottom(){continue;}
    ui.c.fill_rrect(Rect::new(x,y,w,height-8.),7.,ui.t.s(0x273236));
    ui.hit(Rect::new(x,y.max(list.y),w,((y+height-8.).min(list.bottom())-y.max(list.y)).max(0.)),Action::BrowserList,format!("{} · {} · message #{}{}",post.author,post.member,post.id,post.parent.map(|n|format!(" · reply to #{n}")).unwrap_or_default()));
    let date=chrono::DateTime::from_timestamp(post.created,0).map(|d|d.format("%d %b %H:%M UTC").to_string()).unwrap_or_default();
    avatar(ui,Rect::new(x+8.,y+7.,28.,28.),&post.avatar,&post.author);
-   ui.c.text_clip(Font::new(10).bold(),x+43.,y+9.,w-53.,ui.t.h(0xb5d98b),&format!("{} · #{}",post.author,post.id));
+   ui.c.text_clip(Font::new(10).bold(),x+43.,y+9.,w-53.,ui.t.h(0xb5d98b),&format!("{} · #{}{}",post.author,post.id,if post.completed!=0{" · Completed"}else{""}));
    ui.c.text_clip(Font::new(9),x+43.,y+24.,w-53.,ui.t.text_dim,&format!("{} · {date}{}",post.member,post.parent.map(|n|format!(" · reply to #{n}")).unwrap_or_default()));
-   let mut cy=y+41.;for line in lines {ui.c.text_clip(Font::new(12),x+10.,cy,w-20.,ui.t.text,&line);cy+=16.;}
+   let mut cy=y+41.;
+   if let Some(parent)=post.parent {
+    ui.c.fill_rect(Rect::new(x+8.,cy,2.,40.),ui.t.h(0x8caa78));
+    let who=if post.parent_author.is_empty(){format!("Reply to #{parent} (earlier / unavailable)")}else{format!("Reply to {} · #{parent}",post.parent_author)};
+    ui.c.text_clip(Font::new(10).bold(),x+16.,cy,w-24.,ui.t.h(0xb5d98b),&who);
+    let quote=post.parent_body.replace('\n'," ");
+    for (i,line) in comment_lines(ui,&quote,w-26.).iter().take(2).enumerate(){ui.c.text_clip(Font::new(10),x+16.,cy+13.+i as f32*12.,w-24.,ui.t.text_dim,line);}
+    cy+=48.;
+   }
+   for line in lines {ui.c.text_clip(Font::new(12),x+10.,cy,w-20.,ui.t.text,&line);cy+=16.;}
    let bw=(w-28.)/3.;let usable=enabled&&p.topic.as_ref().is_some_and(|t|t.locked==0)&&cy>=list.y&&cy+24.<=list.bottom();
    for (col,cmd,label,selected) in [(0,17,format!("Like {}",post.up),post.mine==1),(1,18,format!("Dislike {}",post.down),post.mine == -1),(2,16,"Reply".into(),false)] {
     button(ui,Rect::new(x+8.+col as f32*(bw+6.),cy,bw,24.),&label,Action::FeatureVote(post.id,cmd),usable,selected,"React once per message, or reply to this message");
@@ -185,6 +200,7 @@ pub fn tick(app:&mut App) {
  use super::*;
  #[test] fn community_update_forum_profile_reply_and_bounds(){
   let page:Page=serde_json::from_value(serde_json::json!({"threads":[],"posts":[{"id":7,"thread":2,"parent":null,"author":"Test Musician","member":"Member ABC123","avatar":"","body":"A community message. ".repeat(10),"created":1793577600,"up":2,"down":1,"mine":1}],"topic":{"id":2,"title":"Making music together","author":"Test Musician","created":1793577600,"updated":1793577600,"locked":0,"posts":1},"offset":0,"total":1})).unwrap();assert!(valid(&page));
+  let mut page=page;let mut reply=page.posts[0].clone();reply.id=8;reply.parent=Some(7);reply.depth=1;reply.parent_author="Test Musician".into();reply.parent_body="Original report".into();reply.body="A reply under its original report".into();page.posts.push(reply);page.total=2;
   let mut app=App::new(None);app.state.show_browser=true;app.state.browser_tab=6;app.state.feature_votes.community_forum=true;app.state.feature_votes.online=true;app.state.feature_votes.forum.page=page;
   act(&mut app,7,16);assert_eq!(app.state.feature_votes.forum.reply,Some(7));assert_eq!(app.state.feature_votes.forum.focus,2);
   let before=app.state.project.clone();assert!(crate::feature_votes::key(&mut app,&winit::keyboard::Key::Character("Hello everyone".into()),false,false));assert_eq!(app.state.project,before);assert_eq!(app.state.feature_votes.forum.body.text,"Hello everyone");assert!(!app.typing_key(winit::keyboard::KeyCode::KeyA,true,false,false));
