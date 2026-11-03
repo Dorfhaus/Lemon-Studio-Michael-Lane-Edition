@@ -2,7 +2,7 @@
 from pathlib import Path
 import subprocess, sys, zipfile, os
 
-from private_build import private_source
+from private_build import private_source, public_source_bytes
 public = "--public" in sys.argv[2:]
 
 root = Path(__file__).resolve().parents[1]
@@ -22,7 +22,10 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         if not name or not p.is_file(): continue
         if any(part.startswith('target') or part == '.git' for part in Path(name).parts): continue
         if '.before-' in name or p.suffix in {'.pem', '.key', '.enc'} or p.name == '.env': continue
-        z.write(p, 'Source/' + name)
+        if public:
+            z.writestr('Source/' + name, public_source_bytes(name, p.read_bytes()))
+        else:
+            z.write(p, 'Source/' + name)
     # Corresponding source includes the exact JUCE tree used for the bundled engine.
     if public:
         juce = Path(os.environ.get('LEMON_JUCE_SOURCE', root/'plugins/lemon-master-assistant/JUCE'))
@@ -31,5 +34,7 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for p in sorted(juce.rglob('*')):
             rel = p.relative_to(juce)
             if p.is_file() and '.git' not in rel.parts:
-                z.write(p, 'Source/plugins/lemon-master-assistant/JUCE/' + rel.as_posix())
+                name = 'plugins/lemon-master-assistant/JUCE/' + rel.as_posix()
+                if name not in names:
+                    z.writestr('Source/' + name, public_source_bytes(name, p.read_bytes()))
 print(out)
