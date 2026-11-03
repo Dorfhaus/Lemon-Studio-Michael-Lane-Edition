@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Original Lemon Wave controls. No Serum code, tables, skins or presets.
-use lemon_small_fx::{Card, Control, Display, Mark, Setting, Sound, Spec};
-use os_ui::{Canvas, Color, Rect};
+use lemon_small_fx::{Card, Control, Mark, Setting, Sound, Spec};
+use os_ui::Rect;
 pub const A_BANK: usize = 0;
 pub const A_POSITION: usize = 1;
 pub const A_LEVEL: usize = 2;
@@ -46,7 +46,41 @@ pub const CHORUS_MIX: usize = 40;
 pub const DELAY_TIME: usize = 41;
 pub const DELAY_FEEDBACK: usize = 42;
 pub const DELAY_MIX: usize = 43;
-pub const COUNT: usize = 44;
+pub const A_SOURCE: usize = 44;
+pub const A_MODE: usize = 45;
+pub const A_AMOUNT: usize = 46;
+pub const B_SOURCE: usize = 47;
+pub const B_MODE: usize = 48;
+pub const B_AMOUNT: usize = 49;
+pub const A_PHASE: usize = 50;
+pub const A_RANDOM: usize = 51;
+pub const A_BLEND: usize = 52;
+pub const B_PHASE: usize = 53;
+pub const B_RANDOM: usize = 54;
+pub const B_BLEND: usize = 55;
+pub const MOD1_SOURCE: usize = 56;
+pub const MOD1_TARGET: usize = 57;
+pub const MOD1_AMOUNT: usize = 58;
+pub const MOD2_SOURCE: usize = 59;
+pub const MOD2_TARGET: usize = 60;
+pub const MOD2_AMOUNT: usize = 61;
+pub const COUNT: usize = 62;
+pub const MOD_SOURCES: [&str; 5] = ["Off", "LFO 1", "Envelope 2", "Velocity", "Key track"];
+pub const MOD_TARGETS: [&str; 8] = [
+    "Pitch",
+    "Filter cutoff",
+    "A warp",
+    "B warp",
+    "A position",
+    "B position",
+    "Pan",
+    "Amplitude",
+];
+pub const WARP_IDS: [u32; 11] = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15];
+pub const WARP_NAMES: [&str; 11] = [
+    "Off", "Bend +", "Bend -", "Bend +/-", "PWM", "Asym +", "Asym -", "Asym +/-", "Flip", "Mirror",
+    "Quantize",
+];
 pub const SETTINGS: [Setting; COUNT] = [
     Setting {
         id: "a_bank",
@@ -356,8 +390,134 @@ pub const SETTINGS: [Setting; COUNT] = [
         start: 0,
         magnet: None,
     },
+    Setting {
+        id: "a_source",
+        name: "A Source",
+        range: (0, 1),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "a_mode",
+        name: "A Warp mode",
+        range: (0, 10),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "a_amount",
+        name: "A Warp amount",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "b_source",
+        name: "B Source",
+        range: (0, 1),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "b_mode",
+        name: "B Warp mode",
+        range: (0, 10),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "b_amount",
+        name: "B Warp amount",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "a_phase",
+        name: "A Phase",
+        range: (0, 360),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "a_random",
+        name: "A Random",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "a_blend",
+        name: "A Blend",
+        range: (0, 1000),
+        start: 750,
+        magnet: None,
+    },
+    Setting {
+        id: "b_phase",
+        name: "B Phase",
+        range: (0, 360),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "b_random",
+        name: "B Random",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "b_blend",
+        name: "B Blend",
+        range: (0, 1000),
+        start: 750,
+        magnet: None,
+    },
+    Setting {
+        id: "mod1_source",
+        name: "Mod 1 Source",
+        range: (0, 4),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod1_target",
+        name: "Mod 1 Target",
+        range: (0, 7),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod1_amount",
+        name: "Mod 1 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod2_source",
+        name: "Mod 2 Source",
+        range: (0, 4),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod2_target",
+        name: "Mod 2 Target",
+        range: (0, 7),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod2_amount",
+        name: "Mod 2 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
 ];
-pub const CONTROLS: [Control; COUNT] = [
+pub const CONTROLS: [Control; 50] = [
     Control::Knob {
         id: "a_bank",
         cx: 59.0,
@@ -710,8 +870,52 @@ pub const CONTROLS: [Control; COUNT] = [
         caption: "Delay mix",
         bipolar: false,
     },
+    Control::Choice {
+        id: "a_source",
+        x: 40.,
+        top: 730.,
+        names: &["Classic", "Reference Saw"],
+    },
+    Control::Knob {
+        id: "a_mode",
+        cx: 220.,
+        cy: 744.,
+        r: 21.,
+        caption: "Warp mode",
+        bipolar: false,
+    },
+    Control::Knob {
+        id: "a_amount",
+        cx: 314.,
+        cy: 744.,
+        r: 21.,
+        caption: "Amount",
+        bipolar: false,
+    },
+    Control::Choice {
+        id: "b_source",
+        x: 402.,
+        top: 730.,
+        names: &["Classic", "Reference Saw"],
+    },
+    Control::Knob {
+        id: "b_mode",
+        cx: 582.,
+        cy: 744.,
+        r: 21.,
+        caption: "Warp mode",
+        bipolar: false,
+    },
+    Control::Knob {
+        id: "b_amount",
+        cx: 676.,
+        cy: 744.,
+        r: 21.,
+        caption: "Amount",
+        bipolar: false,
+    },
 ];
-const CARDS: [Card; 7] = [
+const CARDS: [Card; 9] = [
     Card {
         x0: 16.,
         x1: 362.,
@@ -761,30 +965,41 @@ const CARDS: [Card; 7] = [
         y1: 660.,
         heading: "STEREO EFFECTS",
     },
+    Card {
+        x0: 16.,
+        x1: 362.,
+        y0: 690.,
+        y1: 798.,
+        heading: "A SOURCE / WARP",
+    },
+    Card {
+        x0: 378.,
+        x1: 724.,
+        y0: 690.,
+        y1: 798.,
+        heading: "B SOURCE / WARP",
+    },
 ];
 pub const SPEC: &Spec = &Spec {
     name: "Lemon Wave",
     word: "WAVE",
-    about: "Lemon Wave — original wavetable synthesis / Stage 1",
+    about: "Lemon Wave — wavetable synthesis / verified reference oscillator / embedded WAV tables",
     settings: &SETTINGS,
     version: Some(1),
     any_version: false,
     fields: &[],
     tail: &[],
-    size: (1100, 720),
+    size: (1180, 820),
     cards: &CARDS,
     controls: &CONTROLS,
-    display: Some(Display {
-        r: Rect::new(28., 52., 684., 66.),
-        draw: draw,
-    }),
+    display: None, // Per-instance waveforms are drawn by TableEditor.
     mark: Mark {
         x: 1084.,
-        y: 693.,
+        y: 828.,
         anchor: 1.,
         stacked: false,
     },
-    hint: Some(Rect::new(16., 680., 780., 26.)),
+    hint: Some(Rect::new(16., 814., 780., 26.)),
     labels: &[(910., 76., "POLYPHONIC WAVETABLE SYNTH")],
     text,
     parse,
@@ -805,11 +1020,16 @@ pub fn lfo_hz(v: f32) -> f32 {
 }
 pub fn text(k: usize, v: i32) -> String {
     match k {
+        A_PHASE | B_PHASE => format!("{v} deg"),
+        MOD1_SOURCE | MOD2_SOURCE => MOD_SOURCES[v.clamp(0, 4) as usize].into(),
+        MOD1_TARGET | MOD2_TARGET => MOD_TARGETS[v.clamp(0, 7) as usize].into(),
+        A_SOURCE | B_SOURCE => ["Classic", "Reference Saw"][v.clamp(0, 1) as usize].into(),
+        A_MODE | B_MODE => WARP_NAMES[v.clamp(0, 10) as usize].into(),
         A_BANK | B_BANK => ["Basic", "Hollow", "Glass", "Vowel"][v.clamp(0, 3) as usize].into(),
         FILTER => ["Bypass", "Low pass", "Band pass", "High pass"][v.clamp(0, 3) as usize].into(),
         LFO_SHAPE => ["Sine", "Triangle", "Ramp", "Square"][v.clamp(0, 3) as usize].into(),
         LFO_TARGET => {
-            ["Table position", "Cutoff", "Pitch", "Amplitude"][v.clamp(0, 3) as usize].into()
+            ["Position / warp", "Cutoff", "Pitch", "Amplitude"][v.clamp(0, 3) as usize].into()
         }
         LFO_SYNC => [
             "Free", "4 bars", "2 bars", "1 bar", "1/2", "1/4", "1/8", "1/16", "1/32",
@@ -832,7 +1052,20 @@ fn parse(k: usize, s: &str) -> Option<i32> {
     let s = s.trim();
     if matches!(
         k,
-        A_BANK | B_BANK | FILTER | LFO_SHAPE | LFO_TARGET | LFO_SYNC
+        A_BANK
+            | B_BANK
+            | FILTER
+            | LFO_SHAPE
+            | LFO_TARGET
+            | LFO_SYNC
+            | A_SOURCE
+            | B_SOURCE
+            | A_MODE
+            | B_MODE
+            | MOD1_SOURCE
+            | MOD2_SOURCE
+            | MOD1_TARGET
+            | MOD2_TARGET
     ) {
         return (SETTINGS[k].range.0..=SETTINGS[k].range.1)
             .find(|&v| text(k, v).eq_ignore_ascii_case(s));
@@ -854,26 +1087,8 @@ fn parse(k: usize, s: &str) -> Option<i32> {
         LFO_RATE => (x.max(0.05) / 0.05).ln() / 400.0_f32.ln() * 1000.,
         CHORUS_RATE => (x - 0.05) * 200.,
         DELAY_TIME => x - 50.,
-        A_TUNE | B_TUNE | A_UNISON | B_UNISON | A_DETUNE | B_DETUNE => x,
+        A_TUNE | B_TUNE | A_UNISON | B_UNISON | A_DETUNE | B_DETUNE | A_PHASE | B_PHASE => x,
         _ => x / 100. * SETTINGS[k].range.1 as f32,
     };
     Some((v.round() as i32).clamp(SETTINGS[k].range.0, SETTINGS[k].range.1))
-}
-fn draw(c: &mut Canvas, r: Rect, v: &[i32]) {
-    for o in 0..2 {
-        let x = r.x + o as f32 * 362.;
-        let b = o * 8;
-        let pts: Vec<_> = (0..320)
-            .map(|i| {
-                let phase = i as f32 / 319.;
-                let y = crate::dsp::preview(v[b] as usize, v[b + 1] as f32 / 1000., phase);
-                (x + i as f32, r.cy() - y * 25.)
-            })
-            .collect();
-        c.polyline(
-            &pts,
-            1.5,
-            Color::rgb(if o == 0 { 0xe7dc6b } else { 0x65d4c3 }),
-        );
-    }
 }

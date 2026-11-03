@@ -537,6 +537,18 @@ impl App {
         if !s.params.has_params(key) {
             return Some("This plugin has no parameters to browse".into());
         }
+        if crate::views::browser::opt(s, crate::views::browser::OPT_PARAMETERS) {
+            let node = crate::views::browser::parameter_node_key(key);
+            s.show_browser = true;
+            s.browser_auto_hidden = false;
+            s.browser_tab = crate::views::browser::PARAMETERS_TAB;
+            s.browser_search.clear();
+            s.browser_open.insert(node.clone());
+            s.browser_sel = Some(node);
+            crate::browser::reveal(s);
+            self.invalidate();
+            return None;
+        }
         let node = node_key(s, key)?;
         s.show_browser = true;
         s.browser_tab = PROJECT_TAB;
@@ -603,6 +615,49 @@ mod tests {
     /// The built-in EQ in a mixer slot: "Browse parameters" lists its parameters in the browser, a parameter row makes
     /// an automation clip (menu or drop on the playlist) aimed at the slot parameter and named after it, clip values read
     /// as the plugin's text, and the last tweaked parameter feeds the ADD / TOOLS entries.
+    #[test]
+    fn optional_parameters_tab_persists_searches_and_automates_correct_instance() {
+        use crate::views::browser as view;
+        use crate::browser::BCmd;
+        let mut a = App::new(None);
+        assert!(!view::tabs(&a.state).iter().any(|t| t.0 == view::PARAMETERS_TAB));
+        a.browser_cmd(BCmd::Toggle(view::OPT_PARAMETERS));
+        assert!(view::tabs(&App::new(None).state).iter().any(|t| t.0 == view::PARAMETERS_TAB));
+        a.state.project = crate::app::test_project();
+        a.reset_hosted();
+        a.plugins.effects = crate::plugins::builtin_effects();
+        for slot in [1, 2] {
+            a.state.project.mixer[2].slots[slot] = Some(os_model::SlotPlugin { name: crate::plugins::EQ_FILE_NAME.into(), state: lemon_parametric_eq_2::params::default_state() });
+        }
+        a.sync_effects();
+        a.browser_act(&Action::BrowserTab(view::PARAMETERS_TAB));
+        let mut canvas = os_ui::Canvas::new(1280, 800, 1.).unwrap();
+        a.state.show_browser = true;
+        a.paint(&mut canvas, None);
+        assert!(a.hits.iter().any(|h| h.action == Action::BrowserTab(view::PARAMETERS_TAB)));
+        let keys = [fx_key(2, 1), fx_key(2, 2)];
+        for key in keys { a.state.browser_open.insert(view::parameter_node_key(key)); }
+        let rows = view::rows(&a.state);
+        for key in keys { assert_eq!(rows.iter().filter(|r| matches!(r.item, view::Item::Param(k, _) if k == key)).count(), 36); }
+        assert_ne!(view::parameter_node_key(keys[0]), view::parameter_node_key(keys[1]));
+        a.state.browser_search = "main level".into();
+        let rows = view::rows(&a.state);
+        assert_eq!(rows.iter().filter(|r| matches!(r.item, view::Item::Param(_, 35))).count(), 2);
+        let row = rows.iter().position(|r| r.item == view::Item::Param(keys[1], 35)).unwrap();
+        assert!(a.params_browser_right(row, 10., 10.));
+        let menu = a.state.playlist.popup.take().unwrap();
+        let create = menu.items.iter().find(|i| i.label == "Create automation clip").unwrap();
+        assert!(matches!(create.cmd, Cmd::CreateAutomation(t, _, _) if t == target::slot_param(2, 2, 35)));
+        crate::playlist::run(&mut a, create.cmd.clone());
+        assert_eq!(a.state.project.automations.last().unwrap().target(), Some(target::slot_param(2, 2, 35)));
+        assert_eq!(a.browse_params(keys[0]), None);
+        assert_eq!(a.state.browser_tab, view::PARAMETERS_TAB);
+        assert_eq!(a.state.browser_sel.as_deref(), Some(view::parameter_node_key(keys[0]).as_str()));
+        a.browser_cmd(BCmd::Toggle(view::OPT_PARAMETERS));
+        assert_eq!(a.state.browser_tab, 0);
+        assert!(!view::tabs(&App::new(None).state).iter().any(|t| t.0 == view::PARAMETERS_TAB));
+    }
+
     #[test]
     fn slot_plugin_parameters_browse_and_automate() {
         use crate::views::browser::{rows, Item};

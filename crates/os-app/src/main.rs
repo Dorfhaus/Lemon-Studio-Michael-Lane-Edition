@@ -11,6 +11,9 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod app;
+mod marker_profiles;
+mod instrument_stack;
+mod clip_effects;
 mod ara;
 mod ai_control;
 mod ai_commands;
@@ -73,6 +76,7 @@ mod metronome;
 mod midi_cfg;
 mod midi_file;
 mod midi_in;
+mod mpe;
 mod midi_out;
 mod midi_play;
 mod mixer;

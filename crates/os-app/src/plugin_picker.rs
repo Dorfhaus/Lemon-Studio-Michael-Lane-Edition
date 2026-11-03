@@ -15,7 +15,7 @@ pub struct View {
 impl Default for View {fn default()->Self{Self{preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None}}}
 fn entries(s:&State,effect:bool)->Vec<&Entry>{
     let v=&s.plugin_picker;
-    if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_))) || (!effect && matches!(v.target,Target::Fx(_)))
+    if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
         || (v.filter==1 && effect) || (v.filter==2 && !effect) {return Vec::new();}
     let q=v.query.to_lowercase();
     let list=if effect{&s.plugdb.lists.fx}else{&s.plugdb.lists.gens};
@@ -25,7 +25,7 @@ fn entries(s:&State,effect:bool)->Vec<&Entry>{
 fn choices(s:&State)->Vec<(bool,usize)>{[true,false].into_iter().flat_map(|fx|entries(s,fx).into_iter().map(move|e|(fx,e.index))).collect()}
 fn panes(s:&State)->Vec<bool>{
     match s.plugin_picker.target {
-        Target::Gen(_)|Target::Replace(_)=>vec![false],Target::Fx(_)=>vec![true],
+        Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>vec![false],Target::Fx(_)|Target::ClipFx(..)=>vec![true],
         Target::All=>match s.plugin_picker.filter{1=>vec![false],2=>vec![true],_=>vec![true,false]},
     }
 }
@@ -50,7 +50,9 @@ fn choose(app:&mut App,fx:bool,index:usize){
     if !choices(&app.state).contains(&(fx,index)){return;}
     let target=app.state.plugin_picker.target;close(app);
     let cmd=match (target,fx){
+        (Target::ClipFx(channel,slot),_)=>PlugCmd::ClipFx{channel,slot,index},
         (Target::Fx(slot),_)=>PlugCmd::Effect{index,slot},(_,true)=>PlugCmd::Effect{index,slot:None},
+        (Target::Stack(row),false)=>PlugCmd::Stack{index,row},
         (Target::Replace(row),false)=>PlugCmd::Replace{index,row},
         (Target::Gen(after),false)=>PlugCmd::Generator{index,after},_=>PlugCmd::Generator{index,after:None},
     };
@@ -148,7 +150,7 @@ pub fn paint(ui:&mut Ui,s:&State){
     ui.hit(Rect::new(0.,0.,s.screen.0,s.screen.1),Action::PluginPicker(Hit::Background),"Plugin picker");
     let (r,cols,rows)=geometry(s);let panes=panes(s);
     ui.c.fill_rrect(r,10.,ui.t.s(0x182024));ui.c.stroke_rrect(r,10.,1.,ui.t.s(0x4b595e));
-    let title=match v.target{Target::Gen(_)|Target::Replace(_)=>"Choose an instrument",Target::Fx(_)=>"Choose an effect",Target::All=>"Plugin picker"};
+    let title=match v.target{Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)=>"Choose an effect",Target::All=>"Plugin picker"};
     let progress=crate::plugin_previews::progress();
     let caption=if progress.running{format!("{} / {} · {}",progress.done,progress.total,progress.current)}else{title.into()};
     ui.c.text_clip(Font::new(20).bold(),r.x+18.,r.y+16.,r.w-370.,ui.t.text,&caption);

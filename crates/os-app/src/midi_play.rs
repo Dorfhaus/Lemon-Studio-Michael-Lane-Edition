@@ -203,6 +203,7 @@ impl App {
             self.plugins.state(row).and_then(|b|serde_json::from_slice::<serde_json::Value>(b.get(8..)?).ok())
             .and_then(|v|v["fields"]["chop-document"].as_str().and_then(|s|serde_json::from_str::<lemon_chop::params::Document>(s).ok())).is_some_and(|d|d.slab);
         for mut ev in evs {
+            if self.mpe_input(&ev.dev,ev.msg){continue;}
             // A held SLAB pad still releases after selecting another rack channel or disabling its profile.
             if !chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {
                 if let Msg::Off{ch,key,vel}=ev.msg {
@@ -363,6 +364,7 @@ impl App {
 
     /// Every device note ends (the device list changed, remote control switched off).
     pub(crate) fn midi_release_all(&mut self) {
+        self.mpe_release_all();
         self.midi_play.pedal = false;
         for h in std::mem::take(&mut self.midi_play.held) {
             self.midi_end(h, 64);

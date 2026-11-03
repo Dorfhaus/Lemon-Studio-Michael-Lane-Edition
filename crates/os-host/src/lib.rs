@@ -189,6 +189,9 @@ pub const NOTE_MOD_Y: &str = "Filter bandwidth (modulation Y)";
 ///
 /// Main-thread calls (everything except the `Instrument` / `HostedEffect` methods) come from the UI thread only.
 pub trait Plugin: Instrument + HostedEffect + Send {
+    /// MPE delivery path: 0 unavailable, 1 channel MIDI (instrument mode required),
+    /// 2 native per-note expressions. This does not promise patch mappings.
+    fn mpe_support(&self)->u8{0}
     fn desc(&self) -> &Descriptor;
 
     /// Activates at `rate` (UI thread); reactivates when the rate changes. The audio thread renders silence (an

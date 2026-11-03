@@ -13,10 +13,23 @@
 <p class="muted">Windows, Mac and Linux now support signed automatic updates. Older Mac/Linux versions need one manual installation of this release; future updates install when you close or restart. Keep the Mac app or Linux folder in a location your user can write to.</p>
 <!-- CHANGELOG START -->
 <section class="source" id="change-log" aria-labelledby="change-log-title"><h2 id="change-log-title">Change Log</h2>
-<p>The recorded history of the Michael Lane Edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
+<p>The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
 <p id="change-empty" hidden>No changes match your search.</p>
-<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Master Assistant and Michael Lane Edition · public build 2026110204</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-03 · Lemon Wave, MPE and clip effects · public build 2026110301</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Lemon Wave is now included directly in Lemon Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.</li>
+<li style="margin:10px 0">Built-in instruments and effects are categorized without a plugin scan; Master Assistant is grouped under Utility. Installed copies of built-in Wave are not duplicated.</li>
+<li style="margin:10px 0">Added per-note MPE pitch, pressure and slide editing, live recording, independent unison playback, lower/upper zone settings, response controls, native project recall and expressive MIDI import/export. Compatible instruments and patch mappings are required; physical controllers and every third-party patch have not been tested.</li>
+<li style="margin:10px 0">Added individual audio Clip Effects with independent plugin chains, bypass, copy/paste settings, parameter automation and project recall. Clip FX uses available mixer inserts and leaves source audio unchanged.</li>
+<li style="margin:10px 0">Added instrument layering on an existing channel, preserving the original instrument and giving added instruments independent settings and mixer levels.</li>
+<li style="margin:10px 0">Added Piano Roll channel Mute/Solo, selected-note Move/Copy to another channel, and independent Playlist pattern-clip stretching.</li>
+<li style="margin:10px 0">Added optional Browser Single Folder View, preview-only Normalize/Reverse, and a hidden-by-default Parameters browser tab enabled through Browser settings.</li>
+<li style="margin:10px 0">Added named marker profiles with save/merge/replace and subdued marker colors.</li>
+<li style="margin:10px 0">Slowed tempo dragging and added decimal BPM entry with undo. Fixed narrow-toolbar overflow access. Sampler tempo estimation is now labelled as a length-based estimate, not a rhythm detector.</li>
+<li style="margin:10px 0">Includes the integrated Master Assistant, Lemon Chop and prior mixer/workflow improvements. Complete source and DAW downloads are also published to the Michael Lane Edition GitHub repository.</li>
+<li style="margin:10px 0">Added a separate Intel Mac package alongside Apple-silicon Mac, Windows and Linux x64. Mac builds are ad-hoc signed, not notarized. Intel compatibility is checked under Rosetta, not on physical Intel hardware; Linux audio/runtime testing remains unperformed. ARA compatibility limitations remain.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-02 · Master Assistant and Michael Lane Edition · public build 2026110204</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
 <li style="margin:10px 0">Published the integrated Lemon Master Assistant: mastering EQ, dynamic EQ, multiband compression, stereo imaging and maximizer, with dedicated master controls and settings saved in projects. The native engine is included in installations and automatic updates.</li>
 <li style="margin:10px 0">Added the channel-strip mixer view, hosting original Waves plugin interfaces above analog-style faders, with improved fitting, section-aligned paging and Abbey Road TG12345 paging. Waves is the currently tested focus; third-party plugins are not included.</li>
 <li style="margin:10px 0">Added routing by dragging channels onto hosted plugin panels and polished mixer spacing, metal separators, illuminated polarity/swap controls, pan and stereo separation controls.</li>
@@ -84,7 +97,7 @@
 <li style="margin:10px 0">Added vocal SnapTune pitch correction with an explicit bypass switch, manual key/scale and voice range, plus Learn key suggestions.</li>
 <li style="margin:10px 0">Added Follow audio level / Duck linking for supported native and hosted parameters, with source, depth and release controls.</li>
 <li style="margin:10px 0">Added independent Stereo / Mid / Side / Left / Right processing per EQ band, saved with project and A/B state.</li>
-<li style="margin:10px 0">Added signed automatic Windows updates, an Updates control and a compact Donate link; added the Michael Lane Edition startup label.</li>
+<li style="margin:10px 0">Added signed automatic Windows updates, an Updates control and a compact Donate link; added the Michael Lane edition startup label.</li>
 <li style="margin:10px 0">Opened the common download page with Windows, Linux and Mac downloads and matching source archives.</li>
 <li style="margin:10px 0">Added the shared source/build workflow and native Apple-silicon Mac packaging; published cross-platform build 2026103103.</li>
 <li style="margin:10px 0">Added compact dedicated mixer EQ with a spectrum display, Pre/Post routing and independent tone controls.</li>
@@ -129,7 +142,7 @@
 <li style="margin:10px 0">Smoothed recording transitions and added independent take solo.</li>
 <li style="margin:10px 0">Improved mixer dragging, established native public defaults and prepared the Windows installer and Mac source handoff.</li>
 </ul></details>
-<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-28 · Michael Lane Edition begins</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-10-28 · Michael Lane edition begins</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
 <li style="margin:10px 0">Established this customized edition from the existing Lemon Studio project; the original project predates this changelog.</li>
 <li style="margin:10px 0">Added a native starter-template workflow, template names for new sessions and mixer-first startup; repaired Windows settings-folder handling and installed factory-template support.</li>
 <li style="margin:10px 0">Simplified the toolbar and Playlist editing controls; moved the mixer plugin inspector to the left and improved plugin categories and scrolling.</li>

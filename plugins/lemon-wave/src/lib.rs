@@ -1,23 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Lemon Wave: original two-oscillator wavetable instrument, stage one.
 #![allow(semicolon_in_expressions_from_non_local_macros)]
+pub mod assets;
 pub mod controls;
 pub mod dsp;
-use lemon_small_fx::{Shared, params::FxParams};
+pub mod instrument_view;
+pub mod reference_oscillator;
+mod reference_voice;
+pub mod table_editor;
+pub mod wavetable;
+use lemon_small_fx::Shared;
+#[cfg(test)]
+mod import_tests;
 use nih_plug::prelude::*;
 use std::num::NonZeroU32;
 use std::sync::{Arc, atomic::Ordering};
 
 pub struct LemonWave {
-    params: Arc<FxParams>,
+    params: Arc<assets::WaveParams>,
     shared: Arc<Shared>,
     engine: dsp::Engine,
 }
 impl Default for LemonWave {
     fn default() -> Self {
+        let params = Arc::new(assets::WaveParams::default());
+        let shared = Arc::new(Shared {
+            extension: Some(Arc::new(table_editor::TableEditor::new(params.clone()))),
+            ..Shared::default()
+        });
         Self {
-            params: Arc::new(FxParams::new(controls::SPEC)),
-            shared: Arc::new(Shared::default()),
+            params,
+            shared,
             engine: dsp::Engine::new(44100.),
         }
     }
@@ -40,10 +53,35 @@ impl Plugin for LemonWave {
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
+    fn filter_state(state: &mut PluginState) {
+        // NIH-plug retains current values for missing parameters. Explicitly
+        // initialize appended controls so an old patch cannot inherit Reference
+        // mode from whichever patch was loaded immediately before it.
+        for setting in &controls::SETTINGS[44..] {
+            state
+                .params
+                .entry(setting.id.to_string())
+                .or_insert(nih_plug::wrapper::state::ParamValue::I32(setting.start));
+        }
+        if let Some(raw) = state.fields.get_mut("state") {
+            let hex = raw.trim_matches('"');
+            if hex.starts_with("01000000") && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                let old_count = hex.len().saturating_sub(8) / 8;
+                if (old_count == 44 || old_count == 50) && hex.len() == 8 + old_count * 8 {
+                    let suffix: String = controls::SETTINGS[old_count..]
+                        .iter()
+                        .flat_map(|s| s.start.to_le_bytes())
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    *raw = format!("\"{hex}{suffix}\"");
+                }
+            }
+        }
+    }
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         Some(Box::new(lemon_small_fx::editor::FxEditor::new(
             controls::SPEC,
-            self.params.clone(),
+            self.params.base.clone(),
             self.shared.clone(),
         )))
     }
@@ -58,7 +96,8 @@ impl Plugin for LemonWave {
         }
         self.engine = dsp::Engine::new(c.sample_rate);
         self.engine
-            .set(std::array::from_fn(|i| self.params.v(i) as f32));
+            .set(std::array::from_fn(|i| self.params.base.v(i) as f32));
+        self.engine.custom = self.params.tables.read().unwrap().clone();
         self.engine.reset();
         self.shared
             .rate
@@ -75,7 +114,12 @@ impl Plugin for LemonWave {
         ctx: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         self.engine
-            .set(std::array::from_fn(|i| self.params.v(i) as f32));
+            .set(std::array::from_fn(|i| self.params.base.v(i) as f32));
+        // Never block the audio callback behind an editor import. The writer retains
+        // retired assets so replacing this Arc cannot free a large table here.
+        if let Ok(tables) = self.params.tables.try_read() {
+            self.engine.custom = tables.clone();
+        }
         let tempo = ctx.transport().tempo.unwrap_or(120.) as f32;
         self.engine.tempo = if tempo.is_finite() {
             tempo.clamp(20., 400.)
@@ -184,6 +228,21 @@ os_plugkit::linked_clap_entry!(LemonWave);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lemon_small_fx::params::FxParams;
+    #[test]
+    fn factory_presets_extend_old_state_and_preserve_parameter_defaults() {
+        for index in 0..8 {
+            let state = table_editor::TableEditor::factory_state(index);
+            assert_eq!(state.params.len(), controls::COUNT);
+            for setting in &controls::SETTINGS[if index < 5 { 50 } else { controls::COUNT }..] {
+                assert!(
+                    matches!(state.params.get(setting.id),Some(nih_plug::wrapper::state::ParamValue::I32(v)) if *v==setting.start)
+                );
+            }
+            let raw = state.fields.get("state").unwrap().trim_matches('"');
+            assert_eq!(raw.len(), (4 + controls::COUNT * 4) * 2);
+        }
+    }
     #[test]
     fn parameter_identity_state_and_editor_layout() {
         let params = FxParams::new(controls::SPEC);
@@ -221,14 +280,16 @@ mod tests {
             }
         }
         for scale in [1., 1.5] {
-            let mut c = os_ui::Canvas::new(1100, 720, scale).unwrap();
-            let hits = lemon_small_fx::view::paint(
-                controls::SPEC,
+            let mut c = os_ui::Canvas::new(1180, 820, scale).unwrap();
+            let params = assets::WaveParams::default();
+            let hits = instrument_view::paint(
                 &mut c,
-                &os_theme::design::palette(os_theme::Design::Lemon, None),
                 &Model,
                 &Default::default(),
                 "",
+                &params,
+                [5; 2],
+                None,
             );
             for setting in controls::SETTINGS {
                 assert!(
@@ -238,7 +299,7 @@ mod tests {
                 );
             }
             for h in &hits {
-                assert!(h.r.x >= 0. && h.r.y >= 0. && h.r.right() <= 1100. && h.r.bottom() <= 720.);
+                assert!(h.r.x >= 0. && h.r.y >= 0. && h.r.right() <= 1180. && h.r.bottom() <= 820.);
             }
             if let Ok(dir) = std::env::var("LEMON_WAVE_PREVIEW") {
                 std::fs::create_dir_all(&dir).unwrap();

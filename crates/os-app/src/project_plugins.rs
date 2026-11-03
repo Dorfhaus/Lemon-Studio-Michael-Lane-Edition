@@ -63,14 +63,14 @@ pub fn is_wrapped(d: &Descriptor) -> bool {
     if WRAP_BUILTINS.with(|w| w.get()) {
         return matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2);
     }
-    matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2) && (!is_builtin(d) || d.name == "Lemon Chop" || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str()))
+    matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2) && (!is_builtin(d) || matches!(d.name.as_str(),"Lemon Chop"|"Lemon Wave") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str()))
 }
 
 /// The project-file identity of a hosted plugin with its saved state. A built-in effect with no file plugin of its own
 /// (`plugins::LINKED_EFFECTS`) names its CLAP bundle in the per-user CLAP folder, where `bundle-plugins --install` puts
 /// it: the wrapper takes the format from the file's extension, and another host can find the bundle there.
 pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
-    let path = if is_builtin(d) && (d.name == "Lemon Chop" || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str())) {
+    let path = if is_builtin(d) && (matches!(d.name.as_str(),"Lemon Chop"|"Lemon Wave") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str())) {
         let file = format!("{}.clap", d.name);
         os_clap::standard_dirs().into_iter().next().map_or_else(|| file.clone().into(), |dir| dir.join(&file))
     } else {

@@ -59,6 +59,7 @@ pub const PROJECT_DATA: &str = "Project data";
 /// The Current project and Plugin database tabs (spec §1).
 pub const PROJECT_TAB: usize = 1;
 pub const PLUGIN_TAB: usize = 2;
+pub const PARAMETERS_TAB: usize = 7;
 
 /// Tree key of the Current project tab's root.
 pub fn project_root() -> String {
@@ -141,19 +142,21 @@ pub const OPT_TREE_PLUGINS: &str = "sample_plugins";
 pub const OPT_PROJECT: &str = "project_tab";
 pub const OPT_PLUGINS: &str = "plugins_tab";
 pub const OPT_PRESETS: &str = "presets_tab";
+pub const OPT_SINGLE_FOLDER: &str = "single_folder";
+pub const OPT_PARAMETERS: &str = "parameters_tab";
 pub const DEFAULT_OPTS: &[&str] = &[OPT_FOLDERS, OPT_TAGS, OPT_INDEX, OPT_REINDEX, OPT_HIDEDRAG, OPT_PREVIEW, OPT_PANEL];
 pub fn saved_opts()->std::collections::HashSet<&'static str> {
     if crate::prefs::text("browser_full_preview_v2").as_deref()!=Some("1") {
         crate::prefs::set_text("browser_option_preview","1");
         crate::prefs::set_text("browser_full_preview_v2","1");
     }
-    [OPT_PANEL,OPT_TREE_PLUGINS,OPT_PARENTS,OPT_EXPAND,OPT_FOLDERS,OPT_TOP,OPT_TYPE,OPT_TAGS,OPT_INDEX,OPT_REINDEX,OPT_AUTOHIDE,OPT_HIDEDRAG,OPT_CONTRAST,OPT_PREVIEW,OPT_PROJECT,OPT_PLUGINS,OPT_PRESETS].into_iter().filter(|k| {
+    [OPT_PANEL,OPT_TREE_PLUGINS,OPT_PARENTS,OPT_EXPAND,OPT_FOLDERS,OPT_TOP,OPT_TYPE,OPT_TAGS,OPT_INDEX,OPT_REINDEX,OPT_AUTOHIDE,OPT_HIDEDRAG,OPT_CONTRAST,OPT_PREVIEW,OPT_PROJECT,OPT_PLUGINS,OPT_PRESETS,OPT_PARAMETERS,OPT_SINGLE_FOLDER].into_iter().filter(|k| {
         crate::prefs::text(&format!("browser_option_{k}")).map_or(DEFAULT_OPTS.contains(k),|v|v=="1")
     }).collect()
 }
 pub fn tabs(s:&State)->Vec<(usize,Icon,&'static str)> {
     let mut tabs=vec![(0,Icon::Wave,"Samples"),(3,Icon::Star,"Favorites"),(5,Icon::Download,"Plugin Downloads"),(6,Icon::Vote,"Feature voting")];
-    for (key,id,icon,label) in [(OPT_PROJECT,1,Icon::Page,"Current project"),(OPT_PLUGINS,2,Icon::Plug,"Plugin database"),(OPT_PRESETS,4,Icon::FilePreset,"Plugin presets")] {
+    for (key,id,icon,label) in [(OPT_PROJECT,1,Icon::Page,"Current project"),(OPT_PLUGINS,2,Icon::Plug,"Plugin database"),(OPT_PRESETS,4,Icon::FilePreset,"Plugin presets"),(OPT_PARAMETERS,PARAMETERS_TAB,Icon::Slide,"Parameters")] {
         if opt(s,key) || s.browser_tab==id {tabs.push((id,icon,label));}
     }
     tabs
@@ -194,8 +197,20 @@ pub fn search_changed(s: &State) -> bool {
 pub fn rows(s: &State) -> Vec<Row> {
     if s.browser_tab==6 {return Vec::new();}
     if s.browser_tab==5 {return crate::plugin_downloads::rows(s)}
+    if matches!(s.browser_tab,0|3) && opt(s,OPT_SINGLE_FOLDER) {
+        if let Some(folder)=&s.browser_single_folder {
+            let mut shallow=Vec::new();
+            disk_rows(s,folder,&disk_key(folder),0,&mut shallow);
+            shallow.retain(|r|r.depth==0);
+            for r in &mut shallow {if r.open.is_some(){r.open=Some(false);}}
+            let q=s.browser_search.to_lowercase();
+            if !q.is_empty(){shallow.retain(|r|r.label.to_lowercase().contains(&q));}
+            if let Some(parent)=folder.parent(){shallow.insert(0,Row{key:format!("single:up:{}",parent.display()),depth:0,label:".. (Parent folder)".into(),icon:Icon::Folder,cat:FOLDER,open:Some(false),bright:true,item:Item::None,path:Some(parent.into())});}
+            return shallow;
+        }
+    }
     if s.browser_search.is_empty() { return tree(s); }
-    if [1,2,4].contains(&s.browser_tab) {
+    if [1,2,4,PARAMETERS_TAB].contains(&s.browser_tab) {
         let q=s.browser_search.to_lowercase();
         let all=tree(s);
         let hit:Vec<_>=all.iter().map(|r|matches(s,r,&q)).collect();
@@ -257,6 +272,7 @@ pub fn rows(s: &State) -> Vec<Row> {
 fn tree(s: &State) -> Vec<Row> {
     let mut out = Vec::new();
     let tab = s.browser_tab;
+    if tab == PARAMETERS_TAB { return parameter_rows(s); }
     if [1,2,4].contains(&tab) {
         let root=match tab {1=>0,2=>1,_=>2};
         let (label,icon,cat)=ROOTS[root];
@@ -300,6 +316,32 @@ fn tree(s: &State) -> Vec<Row> {
         let open=is_open(s,&key);
         out.push(Row {key:key.clone(),depth:0,label:root_label(s,&path),icon:if open {Icon::FolderOpen}else{Icon::Folder},cat:FOLDER,open:Some(open),bright:open,item:Item::None,path:Some(path.clone())});
         if open {disk_rows(s,&path,&key,1,&mut out);}
+    }
+    out
+}
+
+/// Stable instance keys keep equally named plugins and their automation targets separate.
+pub fn parameter_node_key(key: usize) -> String { format!("{PARAMETERS_TAB}:plugin/{key}") }
+
+fn parameter_rows(s: &State) -> Vec<Row> {
+    let mut out = Vec::new();
+    for &key in s.params.lists.keys() {
+        if !s.params.has_params(key) { continue; }
+        let (label, icon) = if let Some((track, slot)) = crate::plugins::fx_of(key) {
+            let Some(label) = crate::params::effect_label(s, track, slot) else { continue; };
+            (format!("{label} - Slot {}", slot + 1), Icon::Speaker)
+        } else {
+            let Some(label) = channel_label(s, key) else { continue; };
+            (format!("{label} - Channel {}", key + 1), Icon::Plug)
+        };
+        let node = parameter_node_key(key);
+        let open = is_open(s, &node);
+        out.push(Row { key: node.clone(), depth: 0, label, icon, cat: 1, open: Some(open), bright: open, item: Item::None, path: None });
+        if open {
+            for (index, entry) in s.params.visible(key) {
+                out.push(Row { key: format!("{node}/{index}"), depth: 1, label: entry.name.clone(), icon: Icon::Slide, cat: 1, open: None, bright: false, item: Item::Param(key, index), path: None });
+            }
+        }
     }
     out
 }
@@ -857,7 +899,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.text_clip(f, x + 25.0, y, w, c, &label);
     }
     *s.browser_marquee.borrow_mut() = marquee;
-    let empty = if !s.browser_search.is_empty() { if search_busy(s) { "Searching samples..." } else { "No matches" } } else if s.browser_tab == 3 { "No favorites yet" } else { "No samples yet" };
+    let empty = if !s.browser_search.is_empty() { if search_busy(s) { "Searching samples..." } else { "No matches" } } else if s.browser_tab == PARAMETERS_TAB { "Load a plugin to browse parameters" } else if s.browser_tab == 3 { "No favorites yet" } else { "No samples yet" };
     if rows.is_empty() {
         if s.browser_tab == 0 && s.browser_search.is_empty() {
             crate::starter_pack::paint_empty(ui, list);
@@ -945,7 +987,7 @@ fn search_box(ui: &mut Ui, s: &State, r: Rect) {
         shown = &shown[cut..];
     }
     if shown.is_empty() && !s.browser_search_focus {
-        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==6 {"Search suggestions..."}else if s.browser_tab==5 {"Search plugins..."}else{"Search samples..."});
+        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==6 {"Search suggestions..."}else if s.browser_tab==5 {"Search plugins..."}else if s.browser_tab==PARAMETERS_TAB {"Search parameters..."}else{"Search samples..."});
     } else {
         ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.glyph, shown);
     }

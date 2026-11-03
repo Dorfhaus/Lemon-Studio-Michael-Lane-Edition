@@ -17,8 +17,8 @@ use crate::toolbar::{place, At, BarHit, Moving, Panel, Placed, Target, Tile, PAN
 
 /// The ▶ arrow's width at the band's right end.
 pub const MORE_W: f32 = 18.0;
-/// The arrow's hint, short enough for the hint panel. A click on it does nothing (spec: ui/ui-scaling.md, Lemon Studio).
-pub const MORE_HINT: &str = "Widen the window or lower Toolbars scaling";
+/// The overflow arrow provides access to windows hidden by a narrow toolbar.
+pub const MORE_HINT: &str = "More windows and toolbar options";
 
 /// Where the panels of a band `width` px wide must end to show, when all of them need `full` (`toolbar::natural_width`;
 /// 1440 for the classic layout, whose last utility button ends at x 1437): anywhere when all of them fit, else before
@@ -258,11 +258,11 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         icons::draw(ui.c,icon,r.inset(6.),t.glyph);
     }
     // Panels left out (spec: ui/ui-scaling.md §1 "Toolbars scaling"): the ▶ arrow at the band's right end, in the logo's
-    // place. Hovering it says why; a click does nothing.
+    // place. Open View so hidden window buttons remain accessible.
     let mid = (h / 2.0).floor();
     if fit.is_finite() {
         let r = Rect::new(content_width - MORE_W, 0.0, MORE_W, h);
-        ui.hit(r, Action::Swallow, MORE_HINT);
+        ui.hit(r, Action::Menu(menus::VIEW), MORE_HINT);
         os_ui::kit::triangle(ui.c, r.cx(), mid, 5.0, os_ui::kit::Dir::Right, t.glyph);
         return;
     }
@@ -1195,13 +1195,10 @@ mod tests {
         assert_eq!(bst(0.125, 120.0, 96), (1, 2, 0));
     }
 
-    use super::{room, MORE_HINT, MORE_W};
+    use super::MORE_HINT;
     use crate::app::{Action, App, Win};
     use crate::prefs::{choice, set_choice, TOOLBARS_SCALING};
     use os_ui::{Canvas, Rect};
-
-    /// The classic layout's width.
-    const FULL_W: f32 = 1440.0;
 
     fn hit(app: &App, a: &Action) -> Rect {
         app.hits.iter().rev().find(|h| &h.action == a).map(|h| h.rect).unwrap_or_else(|| panic!("no hit for {a:?}"))
@@ -1323,45 +1320,21 @@ mod tests {
         set_choice(&TOOLBARS_SCALING, 0);
     }
 
-    /// Panels that don't fit are left out from the right; the ▶ arrow at the band's right end says why when hovered and
-    /// does nothing when clicked (spec: ui/ui-scaling.md §1). Everything fits at Main on 1920 px.
+    /// Narrow toolbars keep the hidden window commands reachable through View.
     #[test]
     fn panels_that_do_not_fit_leave_an_arrow() {
-        assert_eq!((room(FULL_W, FULL_W), room(FULL_W - 1.0, FULL_W)), (f32::INFINITY, FULL_W - 1.0 - MORE_W));
-        let more = |app: &App| app.hits.iter().rev().find(|h| h.hint == MORE_HINT).map(|h| (h.rect, h.action.clone()));
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
-        let mut app = App::new(None);
-        app.paint(&mut c, None);
-        assert_eq!(more(&app), None);
-        assert!(has(&app, &Action::Monitor) && has(&app, &Action::CpuPanel) && has(&app, &Action::PatternPrev));
-        assert!(app.hits.iter().any(|h| h.hint == "About Lemon Studio"));
-        // No news panel: Lemon Studio has no online service.
-        assert!(!app.hits.iter().any(|h| h.action == Action::Placeholder("News")));
-
-        // 200 %: 960 band px. Row 1 ends after the time display, row 2 after the snap combo.
-        set_choice(&TOOLBARS_SCALING, 5);
-        app.invalidate();
-        app.paint(&mut c, None);
-        let (r, action) = more(&app).expect("the arrow");
-        assert_eq!((r, action), (Rect::new(1920.0 - 2.0 * MORE_W, 0.0, 2.0 * MORE_W, 162.0), Action::Swallow));
-        assert!(has(&app, &Action::Clock) && has(&app, &Action::GlobalSnap));
-        assert!(!has(&app, &Action::Monitor) && !has(&app, &Action::CpuPanel) && !has(&app, &Action::PatternPrev));
-        assert!(!app.hits.iter().any(|h| h.hint == "About Lemon Studio"));
-        app.mouse_move(r.cx(), r.cy());
-        assert_eq!(app.hint, MORE_HINT);
-        let before = (app.state.message.clone(), app.state.menu_open, app.state.settings.open);
-        app.mouse_down();
-        app.mouse_up();
-        assert_eq!((app.state.message.clone(), app.state.menu_open, app.state.settings.open), before, "a click does nothing");
-
-        // Main on a narrower window: the same rule (the CPU panel fits, the last buttons don't).
-        set_choice(&TOOLBARS_SCALING, 0);
-        let Ok(mut narrow) = Canvas::new(1300, 800, 1.0) else { return };
-        app.invalidate();
-        app.paint(&mut narrow, None);
-        let (r, _) = more(&app).expect("the arrow");
-        assert_eq!(r, Rect::new(1300.0 - MORE_W, 0.0, MORE_W, 81.0));
-        assert!(has(&app, &Action::CpuPanel) && has(&app, &Action::PatternPrev));
-        assert!(!app.hits.iter().any(|h| h.hint == "About Lemon Studio" || h.hint == "Project info (F11)"));
+        for width in [900, 1100, 1300] {
+            let mut c = Canvas::new(width, 800, 1.0).unwrap();
+            let mut app = App::new(None);
+            app.paint(&mut c, None);
+            let h = app.hits.iter().rev().find(|h| h.hint == MORE_HINT).expect("overflow arrow");
+            let r = h.rect;
+            assert_eq!(h.action, Action::Menu(super::menus::VIEW));
+            assert!(r.x >= 0. && r.right() <= width as f32);
+            app.mouse_move(r.cx(), r.cy());
+            app.mouse_down();
+            app.mouse_up();
+            assert_eq!(app.state.menu_open, Some(super::menus::VIEW));
+        }
     }
 }

@@ -490,7 +490,7 @@ fn markers_paint(ui: &mut Ui, s: &State, g: &PGeom, lane: Rect) {
             (at(w - slant - 0.3), top + 1.5),
             (at(w), bottom),
         ];
-        ui.c.fill_polygon(&tab, t.ruler.mix(t.track_header, 0.55));
+        ui.c.fill_polygon(&tab, m.color.map_or_else(||t.ruler.mix(t.track_header,0.55),|c|Color::rgb(c).mix(t.ruler,0.45)));
         marker_glyph(ui, m.kind, x, top + 8.0);
         let tx = x + 3.0 + pl::marker_icon(m.kind).0;
         ui.c.text_clip(Font::new(12), tx, lane.y + 1.0, right - tx, t.text, &marker_label(m));
@@ -787,7 +787,7 @@ fn pattern_notes(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, n: u16, body: Body
     // Only the notes reaching the painted part of the body.
     let Some(area) = ui.c.paint_bounds() else { return };
     let (x_min, x_max) = (area.x.max(br.x), area.right().min(br.right()));
-    let ppt = f64::from(g.ppt);
+    let ppt = f64::from(g.ppt)/c.pattern_rate();
     for note in &p.notes {
         let pos = f64::from(note.position);
         let len = f64::from(if note.length == 0 { step } else { note.length });

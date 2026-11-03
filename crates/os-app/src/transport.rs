@@ -408,7 +408,7 @@ enum Cmd {
     /// Play a project's playlist once on the preview stream (clip preview).
     PreviewSong(Box<Project>),
     /// Like `Preview`, faded out after the given time if still sounding (browser sample preview).
-    PreviewFor(Box<Project>, Option<Duration>),
+    PreviewFor(Box<Project>, Option<Duration>, Arc<os_engine::Sample>),
     /// The hosted instruments changed (in `Transport::instruments`): rebuild the engines.
     Instruments,
     /// Live note (typing keyboard): channel (rack position), key, velocity; `NoteOff` releases.
@@ -665,10 +665,10 @@ impl Transport {
     pub fn preview_status(&self)->(bool,f64) {
         (self.shared.preview_active.load(Ordering::Acquire),self.shared.preview_ms.load(Ordering::Relaxed) as f64/1000.)
     }
-    pub fn preview_for(&self, project: Project, limit: Option<Duration>) {
+    pub fn preview_for(&self, project: Project, limit: Option<Duration>, sample: Arc<os_engine::Sample>) {
         self.shared.preview_active.store(false,Ordering::Release);
         self.shared.preview_ms.store(0,Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::PreviewFor(Box::new(project), limit));
+        let _ = self.tx.send(Cmd::PreviewFor(Box::new(project), limit, sample));
     }
 
     /// Play the playlist of `project` once on the preview stream (spec: ui/playlist.md §10, clip Preview).
@@ -1319,7 +1319,8 @@ fn export(project: &Project, mode: PlayMode, rate: u32, job: &crate::export::Job
             break;
         }
     }
-    let tracks = e.take_track_audio();
+    let mut tracks = e.take_track_audio();
+    for m in project.mixer.iter().filter(|m|m.clip_fx){if let Some(audio)=tracks.get_mut(usize::from(m.index)){audio.clear();}}
     drop(e);
     // The file's length: the song, plus the tail when it rings out.
     let frames = if o.tail == crate::export::Tail::Ring { audio.len() as u64 / 2 } else { len };
@@ -1526,10 +1527,13 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 let target=if running{session.as_ref()}else{live.as_ref()};
                 if let Some(s)=target{let notes=audition_events(&project,s.rate);if let Ok(mut e)=s.engine.lock(){e.audition_notes(&notes);}s.feed.wake();}
             },
-            Ok(Cmd::PreviewFor(project, limit)) => {
+            Ok(Cmd::PreviewFor(project, limit, sample)) => {
+                // Never put processed previews into the song's sample cache.
+                let mut preview_library=SampleLibrary::new(library.factory_dir.clone());
+                if let Some(path)=project.channels.first().and_then(|c|c.sample_path.clone()) {preview_library.insert_buffer(path,sample);}
                 preview = None;
                 preview_until = limit.map(|d| Instant::now() + d);
-                match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut library, shared.clone(), &inst, At::default(), &mut device) {
+                match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut preview_library, shared.clone(), &inst, At::default(), &mut device) {
                     Ok(s) => preview = Some(s),
                     Err(e) => report(&shared, e),
                 }

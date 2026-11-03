@@ -326,12 +326,13 @@ def build(publish_now):
         out.mkdir(parents=True);plan=build_windows(out,cfg)
     elif platform.system()=='Darwin':
         run('bash',ROOT/'packaging/mac/build-release.command')
-        out=Path.home()/'Desktop/Lemon Studio Mac Public Download'/str(version());arch=platform.machine()
+        arch=os.environ.get('LEMON_MAC_ARCH',platform.machine())
+        out=Path.home()/'Desktop/Lemon Studio Mac Public Download'/str(version())/arch
         m=json.loads((out/f'mac-{arch}.json').read_text());site=out/'lemon-studio';(site/'platforms').mkdir(parents=True,exist_ok=True)
         for rel in (m['url'],m['source']):
             p=site/rel;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(out/Path(rel).name,p)
         shutil.copy2(out/f'mac-{arch}.json',site/'platforms'/f'mac-{arch}.json')
-        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path.home()/'.cache/lemon-studio-remote-target/bundled/Lemon Studio.app')
+        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path(os.environ.get('CARGO_TARGET_DIR',Path.home()/'.cache/lemon-studio-remote-target'))/'bundled/Lemon Studio.app')
         plan=write_plan(site,out,f'mac-{arch}')
     else:raise RuntimeError('Use the Windows desktop or MacBook for this release workflow.')
     # Archive the concrete publication plan and artifacts on the home server too.

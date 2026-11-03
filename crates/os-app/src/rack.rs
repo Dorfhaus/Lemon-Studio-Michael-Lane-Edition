@@ -662,6 +662,7 @@ pub fn gradient(s: &mut State) {
 /// another channel keeps them; spec: ui/settings-choices.md "Miscellaneous"). Locked channels keep their state.
 pub fn solo(s: &mut State, r: usize) {
     let locked = s.rack.locked.clone();
+    let group=os_model::instrument_stack(&s.project,r);
     let soloed_now = solo_of(s, r);
     // A solo still in effect (the last solo click's shape, untouched since) keeps the states saved when it started.
     let in_solo = s.rack.soloed.is_some_and(|a| solo_of(s, a));
@@ -677,7 +678,7 @@ pub fn solo(s: &mut State, r: usize) {
         } else if let Some(b) = &back {
             c.enabled = b.get(i).copied().unwrap_or(true);
         } else {
-            c.enabled = i == r || soloed_now;
+            c.enabled = group.contains(&i) || soloed_now;
         }
     }
     s.rack.soloed = (!soloed_now).then_some(r);
@@ -725,8 +726,9 @@ impl App {
 /// Channel `r` is the only unlocked channel on.
 fn solo_of(s: &State, r: usize) -> bool {
     let locked = &s.rack.locked;
+    let group=os_model::instrument_stack(&s.project,r);
     s.project.channels.get(r).is_some_and(|c| c.enabled)
-        && s.project.channels.iter().enumerate().all(|(i, c)| i == r || locked.contains(&i) || !c.enabled)
+        && s.project.channels.iter().enumerate().all(|(i, c)| group.contains(&i) || locked.contains(&i) || !c.enabled)
 }
 
 pub fn toggle_mute(s: &mut State, r: usize) {
@@ -799,6 +801,8 @@ pub fn relayout(s: &mut State, f: impl FnOnce(&mut State)) {
 pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
     let idx: BTreeMap<u16, u16> =
         p.channels.iter().enumerate().filter_map(|(pos, c)| map.get(pos).copied().flatten().map(|n| (c.index, n as u16))).collect();
+    p.mpe.channels.retain_mut(|v|map.get(usize::from(v.0)).copied().flatten().map(|id|v.0=id as u16).is_some());
+    p.clip_fx_channels=p.clip_fx_channels.iter().filter_map(|c|idx.get(c).copied()).collect();
     let mut chans: Vec<(usize, os_model::Channel)> =
         std::mem::take(&mut p.channels).into_iter().enumerate().filter_map(|(pos, c)| map.get(pos).copied().flatten().map(|n| (n, c))).collect();
     chans.sort_by_key(|(n, _)| *n);
@@ -917,6 +921,7 @@ pub fn clone_rows(app: &mut App, rows: &[usize]) {
     }
     let mut order = Vec::new();
     let mut sources = Vec::new();
+    let mut roots=Vec::new();
     for r in 0..n {
         order.push(r);
         if rows.contains(&r) {
@@ -931,18 +936,26 @@ pub fn clone_rows(app: &mut App, rows: &[usize]) {
                 a.channel = c.index;
                 app.state.project.automations.push(a);
             }
+            let root=app.state.project.channels.len();
+            let children=os_model::instrument_stack(&app.state.project,r).into_iter().skip(1).collect::<Vec<_>>();
             app.state.project.channels.push(c);
-            order.push(app.state.project.channels.len() - 1);
-            sources.push(r);
+            order.push(root);roots.push(root);sources.push((root,r));
+            if !children.is_empty(){
+                app.state.project.channels[root].layer_children.clear();
+                for child in children {
+                    let mut copy=app.state.project.channels[child].clone();
+                    let at=app.state.project.channels.len();copy.index=at as u16;
+                    app.state.project.channels[root].layer_children.push(copy.index);
+                    app.state.project.channels.push(copy);order.push(at);sources.push((at,child));
+                }
+            }
         }
     }
-    let states: Vec<Option<(usize, Vec<u8>)>> = sources.iter().map(|&r| app.plugin_copy(r)).collect();
+    let states: Vec<_> = sources.iter().map(|&(row,src)| (row,app.plugin_copy(src))).collect();
     reorder(app, &order);
-    let new_rows: Vec<usize> = order.iter().enumerate().filter(|(_, o)| **o >= n).map(|(i, _)| i).collect();
-    for (row, st) in new_rows.iter().zip(states) {
-        if let Some((index, blob)) = st {
-            app.plugin_paste(*row, index, &blob);
-        }
+    let new_rows: Vec<usize> = order.iter().enumerate().filter(|(_, o)| roots.contains(o)).map(|(i, _)| i).collect();
+    for (old, st) in states {
+        if let (Some(row),Some((index,blob)))=(order.iter().position(|&r|r==old),st){app.plugin_paste(row,index,&blob);}
     }
     let s = &mut app.state;
     s.rack.sel = new_rows.iter().copied().collect();
@@ -1390,6 +1403,7 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         PItem::sub("Insert", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
         PItem::sub("Replace", crate::plugin_menu::items(s, Target::Replace(r), true)),
     ];
+    items.extend(crate::instrument_stack::menu(s,r));
     if sampler { items.push(it("Load sample...", RCmd::LoadSample(r))); }
     items.extend([
         PItem::sep(),

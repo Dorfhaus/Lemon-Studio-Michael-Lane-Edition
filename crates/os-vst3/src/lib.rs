@@ -32,7 +32,7 @@ use vst3_sys::gui::{IPlugView, IPlugViewContentScaleSupport, ViewRect};
 use vst3_sys::utils::SharedVstPtr;
 use vst3_sys::vst::{
     AudioBusBuffers, BusInfo, Event, EventData, IAudioProcessor, IComponent, IConnectionPoint, IEditController, IMidiMapping, INoteExpressionController,
-    IUnitInfo, NoteExpressionTypeInfo, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent, ParameterInfo, ProcessContext, ProcessData, ProcessSetup, UnitInfo,
+    INoteExpressionPhysicalUIMapping, IUnitInfo, NoteExpressionTypeInfo, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent, ParameterInfo, ProcessContext, ProcessData, ProcessSetup, UnitInfo,
 };
 use vst3_sys::{c_void, ComInterface, VstPtr, IID};
 
@@ -536,6 +536,10 @@ pub struct Plugin {
     /// The parameter the controller maps each MIDI controller to (IMidiMapping, MIDI channel 1): controllers 0..127,
     /// then channel pressure (128) and pitch bend (129); `u32::MAX` = none (spec: ui/midi-settings.md §4).
     midi_map: Vec<u32>,
+    mpe: os_engine::mpe::Decoder,
+    mpe_map:[u32;3],
+    mpe_queue:Vec<Event>,
+    mpe_voices:Vec<(i32,u8,u8)>,
     /// Glides as pitch bend (through `midi_map`) for a plug-in whose controller lists no tuning note expression (spec:
     /// audio/channel-voices.md); `None`: glides are tuning expressions. `bend_range` survives a new reading.
     bend: Option<os_engine::TuningBend>,
@@ -636,6 +640,7 @@ impl Plugin {
                 pending_since: None,
                 param_ids: Vec::new(),
                 midi_map: Vec::new(),
+                mpe:Default::default(),mpe_map:[u32::MAX;3],mpe_queue:Vec::with_capacity(256),mpe_voices:vec![],
                 bend: None,
                 bend_range: os_engine::instrument::DEFAULT_BEND_RANGE,
                 auto: Vec::with_capacity(MAX_AUTO),
@@ -805,12 +810,15 @@ impl Plugin {
         }
         self.midi_map.clear();
         if let Some(m) = c.cast::<dyn IMidiMapping>() {
-            for cc in 0..130i16 {
+            for ch in 0..16 {for cc in 0..130i16 {
                 let mut id = u32::MAX;
-                let ok = unsafe { m.get_midi_controller_assignment(0, 0, cc, &mut id) } == kResultOk;
+                let ok = unsafe { m.get_midi_controller_assignment(0, ch, cc, &mut id) } == kResultOk;
                 self.midi_map.push(if ok { id } else { u32::MAX });
-            }
+            }}
         }
+        self.mpe_map=[u32::MAX;3];
+        if let Some(x)=c.cast::<dyn INoteExpressionController>(){unsafe{for i in 0..x.get_note_expression_count(0,0){let mut info:NoteExpressionTypeInfo=std::mem::zeroed();if x.get_note_expression_info(0,0,i,&mut info)==kResultOk {if info.type_id==2{self.mpe_map[0]=2;}if info.type_id==5{self.mpe_map[2]=5;}}}}}
+        if let Some(x)=c.cast::<dyn vst3_sys::vst::INoteExpressionPhysicalUIMapping>(){let mut maps=[vst3_sys::vst::PhysicalUIMap{physical_ui_type_id:0,note_expression_type_id:u32::MAX},vst3_sys::vst::PhysicalUIMap{physical_ui_type_id:2,note_expression_type_id:u32::MAX},vst3_sys::vst::PhysicalUIMap{physical_ui_type_id:1,note_expression_type_id:u32::MAX}];let mut list=vst3_sys::vst::PhysicalUIMapList{count:3,map:maps.as_mut_ptr()};if unsafe{x.get_physical_ui_mapping(0,0,&mut list)}==kResultOk{for(i,m)in maps.iter().enumerate(){if m.note_expression_type_id!=u32::MAX{self.mpe_map[i]=m.note_expression_type_id;}}}}
         // A plug-in that lists the tuning expression takes glides as one; another glides by pitch bend when it maps
         // pitch bend to a parameter, else not at all.
         let tuning = c.cast::<dyn INoteExpressionController>().is_some_and(|x| unsafe {
@@ -913,7 +921,7 @@ impl Plugin {
         } else if wanted != 0 && wanted != self.rate {
             self.activate(wanted);
         }
-        if flags & (RELOAD_COMPONENT | PARAM_TITLES_CHANGED) != 0 {
+        if flags & (RELOAD_COMPONENT | PARAM_TITLES_CHANGED | (1 << 5) | (1 << 6)) != 0 {
             self.refresh_param_ids();
         }
         if let Some(c) = &self.controller {
@@ -1164,6 +1172,7 @@ impl Plugin {
                 }
             }
         }
+        self.refresh_param_ids();
         true
     }
 
@@ -1229,6 +1238,8 @@ impl Plugin {
             }
         }
         self.queue.truncate(kept);
+        self.mpe_queue.retain_mut(|e|{if e.sample_offset<n as i32{ev.push(*e);false}else{e.sample_offset-=n as i32;true}});
+        ev.sort();
         self.fill_params();
         self.fill_auto(n as u32);
         self.params_out.get().clear();
@@ -1364,6 +1375,7 @@ impl NoteIds {
 }
 
 impl os_host::Plugin for Plugin {
+    fn mpe_support(&self)->u8{if [0,2].iter().all(|&i|self.mpe_map[i]!=u32::MAX){2}else if (1..16).all(|ch|[74,129].iter().all(|&cc|self.midi_map.get(ch*130+cc).is_some_and(|&id|id!=u32::MAX&&self.midi_map.get(cc)!=Some(&id)))){1}else{0}}
     fn desc(&self) -> &Descriptor {
         &self.desc
     }
@@ -1517,6 +1529,9 @@ impl os_engine::Instrument for Plugin {
     /// (spec: audio/voices.md §3). Note offs still waiting for that block stay queued: Stop resets, and Play resets
     /// again before any block has run.
     fn reset(&mut self) {
+        self.mpe_queue.retain_mut(|e|{e.sample_offset=0;e.type_==NOTE_OFF_EVENT});
+        for (_,ch,key) in self.mpe_voices.clone(){os_engine::Instrument::midi(self,0,[0xb0|ch,120,0]);let _=key;}
+        self.mpe.reset();
         if let Some(p)=&mut self.ara_playback {p.clear();}
         self.queue.retain(|n| matches!(n.kind, NoteKind::Off));
         self.sounding = false;
@@ -1559,6 +1574,8 @@ impl os_engine::Instrument for Plugin {
     /// the parameters its controller maps them to (IMidiMapping); other messages, and controllers it maps nowhere, are
     /// dropped.
     fn midi(&mut self, offset: u32, bytes: [u8; 3]) {
+        if let Some(events)=self.mpe.receive(bytes){for e in events{self.mpe_event(offset,e);}return;}
+
         let (d1, d2) = (bytes[1] & 0x7F, bytes[2] & 0x7F);
         let (cc, v) = match bytes[0] & 0xF0 {
             0xB0 => (usize::from(d1), f64::from(d2) / 127.0),
@@ -1566,7 +1583,7 @@ impl os_engine::Instrument for Plugin {
             0xE0 => (129, f64::from(u16::from(d1) | u16::from(d2) << 7) / 16383.0),
             _ => return,
         };
-        let Some(&id) = self.midi_map.get(cc) else { return };
+        let Some(&id) = self.midi_map.get(usize::from(bytes[0]&15)*130+cc) else { return };
         if id == u32::MAX || self.auto.len() >= MAX_AUTO {
             return;
         }
@@ -1734,3 +1751,18 @@ impl Drop for Plugin {
 mod mock;
 #[cfg(test)]
 mod tests;
+
+impl Plugin {
+ fn mpe_event(&mut self,offset:u32,e:os_engine::mpe::Event){
+  use os_engine::mpe::Event as E;
+  let (type_,event)=match e{
+   E::On{channel,key,id,velocity}=>{self.mpe_voices.push((id,channel,key));self.ledger.start(key,id);(NOTE_ON_EVENT,EventData{note_on:NoteOnEvent{channel:i16::from(channel),pitch:i16::from(key),tuning:0.,velocity,length:0,note_id:id}})},
+   E::Off{channel,key,id,velocity}=>{self.mpe_voices.retain(|v|v.0!=id);self.ledger.release_voice(id);(NOTE_OFF_EVENT,EventData{note_off:NoteOffEvent{channel:i16::from(channel),pitch:i16::from(key),velocity,note_id:id,tuning:0.}})},
+   E::Expression{id,lane,value}=>{let typ=self.mpe_map[lane as usize];if typ!=u32::MAX{let value=if lane==0{f64::from(value)/if typ==2{240.}else{self.mpe_voices.iter().find(|v|v.0==id).map_or(96.,|v|f64::from(self.mpe.bend_range(v.1))*2.)}+0.5}else{f64::from(value)};(NOTE_EXPRESSION_VALUE_EVENT,EventData{note_expression_value:NoteExpressionValueEvent{type_id:typ,note_id:id,value:value.clamp(0.,1.)}})}else{
+    let Some(&(_,channel,key))=self.mpe_voices.iter().find(|v|v.0==id)else{return;};let cc=match lane{0=>129,1=>128,_=>74};let param=self.midi_map.get(usize::from(channel)*130+cc).copied().unwrap_or(u32::MAX);
+    if param!=u32::MAX&&self.midi_map.get(cc).copied()!=Some(param){let value=if lane==0{f64::from(value)/(f64::from(self.mpe.bend_range(channel))*2.)+0.5}else{f64::from(value)};if self.auto.len()<MAX_AUTO{self.auto.push((offset,param,value.clamp(0.,1.)));}return;}
+    if lane!=1{return;}(3,EventData{poly_pressure:vst3_sys::vst::PolyPressureEvent{channel:i16::from(channel),pitch:i16::from(key),pressure:value,note_id:id}})
+   }}
+  };self.mpe_queue.push(Event{bus_index:0,sample_offset:offset as i32,ppq_position:0.,flags:0,type_,event});
+ }
+}

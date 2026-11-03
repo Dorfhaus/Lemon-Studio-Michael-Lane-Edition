@@ -269,6 +269,10 @@ pub enum Cmd {
     AddAutoMarker,
     AddJumpMarker,
     MarkerEveryMenu,
+    MarkerProfile(u8),
+    ClipEffects(usize),
+    Mpe(crate::mpe::Command),
+    ResetPatternStretch(usize),
     MarkerEvery(u32),
     AddSignature,
     PlaceLoop,
@@ -280,6 +284,7 @@ pub enum Cmd {
     PlaceLoopAt(u32),
     DeleteMarker(usize),
     RenameMarker(usize),
+    MarkerColor(usize,Option<u32>),
     /// Move content left (false) or right (true) of a marker's section.
     MoveContent(usize, bool),
     /// A marker's action: its kind (`TimeMarker::PLAIN` …); Time signature asks for the signature first.
@@ -362,6 +367,7 @@ pub enum Cmd {
     Param(crate::params::PCmd),
     /// "Type in value..." of a knob or parameter menu (spec: ui/type-in-value.md).
     TypeIn(crate::typein::Target),
+    TypeTempo,
     /// "Reset" of a knob, fader or slider menu: back to its default (spec: ui/mixer.md §6.3).
     Reset(crate::knobs::Control),
     /// Plugin presets (spec: plugins/presets.md).
@@ -552,6 +558,7 @@ pub enum EditTarget {
     ArrangementName,
     /// The value box of "Type in value..." and whether it reads normalized values (spec: ui/type-in-value.md).
     TypeIn(crate::typein::Target, bool),
+    Tempo,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1329,7 +1336,7 @@ pub fn refit_pattern_clips(s: &mut State, n: u16, old: u32) {
 
 /// A clip's window in its source's unit (pattern ticks, audio ms, automation beats), filled in when unset.
 pub fn window(s: &State, c: &Clip) -> (f64, f64) {
-    c.window.unwrap_or_else(|| (0.0, to_src(s, c.source, f64::from(c.length))))
+    c.window.unwrap_or_else(|| (0.0, to_src(s, c.source, f64::from(c.length)) * if matches!(c.source,ClipSource::Pattern(_)){c.pattern_rate()}else{1.}))
 }
 
 /// Ticks to the source's unit.
@@ -1340,6 +1347,8 @@ pub fn to_src(s: &State, src: ClipSource, ticks: f64) -> f64 {
         PickKind::Automation => ticks / f64::from(ppq(s)),
     }
 }
+
+fn clip_to_src(s:&State,c:&Clip,ticks:f64)->f64 {to_src(s,c.source,ticks)*if matches!(c.source,ClipSource::Pattern(_)){c.pattern_rate()}else{1.}}
 
 /// Undo snapshot of everything the playlist edits: a step of the project's undo history (`crate::history`).
 pub fn snapshot(s: &mut State) {
@@ -1659,7 +1668,7 @@ pub fn split(s: &mut State, i: usize, tick: u32) -> Option<usize> {
     }
     let (w0, w1) = window(s, &c);
     let left_len = tick - c.position;
-    let cut = to_src(s, c.source, f64::from(left_len));
+    let cut = clip_to_src(s, &c, f64::from(left_len));
     let mut left = c;
     left.length = left_len;
     left.window = Some((w0, w0 + cut));
@@ -1698,7 +1707,7 @@ pub fn slice(s: &mut State, tick: u32, t0: u16, t1: u16) -> usize {
 /// Move the content of a clip by `dt` ticks inside it (Slip tool).
 pub fn slip(s: &mut State, i: usize, orig: &Clip, dt: i64) {
     let (w0, w1) = window(s, orig);
-    let d = to_src(s, orig.source, -dt as f64);
+    let d = clip_to_src(s, orig, -dt as f64);
     let (mut a, mut b) = (w0 + d, w1 + d);
     if a < 0.0 {
         b -= a;
@@ -1713,8 +1722,8 @@ pub fn slip(s: &mut State, i: usize, orig: &Clip, dt: i64) {
 /// Resize from the right: the window end follows the length.
 pub fn resize_right(s: &mut State, i: usize, orig: &Clip, len: u32) {
     let (w0, _) = window(s, orig);
-    let end = crate::playlist_controls::zero_crossing(s, orig.source, w0 + to_src(s, orig.source, f64::from(len)));
-    let len = ((end - w0) / to_src(s, orig.source, 1.0)).round().max(1.0) as u32;
+    let end = crate::playlist_controls::zero_crossing(s, orig.source, w0 + clip_to_src(s, orig, f64::from(len)));
+    let len = ((end - w0) / clip_to_src(s, orig, 1.0)).round().max(1.0) as u32;
     // An audio clip without trims plays its whole sample (`fit_audio`), and an uncut pattern clip its whole pattern
     // whatever its length (spec: audio/song-structure.md): resized, either gets a window and plays only that. An
     // unset automation window already means "from the start for the clip's length".
@@ -1735,6 +1744,14 @@ pub fn resize_right(s: &mut State, i: usize, orig: &Clip, len: u32) {
 /// channel's stretch time becomes the whole sample's stretched length times the new / old clip length, the multiplier
 /// back at 1, the method and pitch kept (FL does this). False when not stretching.
 pub fn stretch_clip(s: &mut State, i: usize, orig: &Clip, pos: u32, len: u32) -> bool {
+    if s.playlist.stretch && matches!(orig.source,ClipSource::Pattern(_)) {
+        let rate=(orig.pattern_rate()*f64::from(orig.length.max(1))/f64::from(len.max(1))).clamp(1./64.,64.);
+        let length=(f64::from(orig.length.max(1))*orig.pattern_rate()/rate).round().max(1.) as u32;
+        let source_window=window(s,orig);
+        if let Some(c)=arr_mut(s).clips.get_mut(i){c.pattern_speed=rate;c.length=length;c.position=if pos!=orig.position{orig.end().saturating_sub(length)}else{pos};c.window=Some(source_window);}
+        s.piano.dirty=true;return true;
+    }
+
     if let ClipSource::Channel(id)=orig.source {if s.project.channels.iter().any(|c|c.index==id && crate::ara::is(c)) {
         s.message=Some("Use Trim mode for this ARA clip; edit timing in the ARA editor".into());return false;
     }}
@@ -1760,12 +1777,12 @@ pub fn stretch_clip(s: &mut State, i: usize, orig: &Clip, pos: u32, len: u32) ->
 pub fn resize_left(s: &mut State, i: usize, orig: &Clip, dt: i64) {
     let (w0, w1) = window(s, orig);
     // The window start may not go below the source start.
-    let min_dt = -(w0 / to_src(s, orig.source, 1.0)).floor() as i64;
+    let min_dt = -(w0 / clip_to_src(s, orig, 1.0)).floor() as i64;
     let dt = dt.max(min_dt).max(-i64::from(orig.position)).min(i64::from(orig.length) - 1);
-    let start = crate::playlist_controls::zero_crossing(s, orig.source, w0 + to_src(s, orig.source, dt as f64));
-    let dt = ((start-w0) / to_src(s, orig.source, 1.0)).round() as i64;
+    let start = crate::playlist_controls::zero_crossing(s, orig.source, w0 + clip_to_src(s, orig, dt as f64));
+    let dt = ((start-w0) / clip_to_src(s, orig, 1.0)).round() as i64;
     let dt = dt.max(min_dt).max(-i64::from(orig.position)).min(i64::from(orig.length) - 1);
-    let d = to_src(s, orig.source, dt as f64);
+    let d = clip_to_src(s, orig, dt as f64);
     if let Some(c) = arr_mut(s).clips.get_mut(i) {
         c.position = (i64::from(orig.position) + dt) as u32;
         c.length = (i64::from(orig.length) - dt) as u32;
@@ -2603,6 +2620,7 @@ pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
 /// as a menu of its own (a submenu holds no submenus here).
 fn time_marker_items() -> Vec<PItem> {
     vec![
+        PItem::sub("Marker profiles",vec![PItem::new("Save profile...",Cmd::MarkerProfile(0)),PItem::new("Load and replace markers...",Cmd::MarkerProfile(1)),PItem::new("Merge profile...",Cmd::MarkerProfile(2)),PItem::new("Manage profiles...",Cmd::MarkerProfile(3))]),
         PItem::new("Add one...", Cmd::AddMarker).key("Alt+T"),
         PItem::new("Add auto", Cmd::AddAutoMarker),
         PItem::not_yet("Add two..."),
@@ -2653,7 +2671,9 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
         PItem::new("Random color", Cmd::ClipRandomColor(i)),
         PItem::sep(),
     ];
+    if matches!(c.source,ClipSource::Pattern(_)) {items.push(PItem::new("Reset pattern stretch",Cmd::ResetPatternStretch(i)));}
     if source_kind(s, c.source) == PickKind::Audio {
+        items.push(PItem::new("Clip Effects...",Cmd::ClipEffects(i)));
         if crate::comping::parent(s, c.track).is_some() {
             items.push(PItem::new("Use entire take in comp", Cmd::CompUse(i, false)));
             let item = PItem::new("Use selected time range in comp", Cmd::CompUse(i, true));
@@ -2887,6 +2907,7 @@ pub fn marker_menu(s: &State, i: usize, tick: u32, x: f32, y: f32) -> Popup {
         PItem { head: true, ..PItem::new(format!("{} at {b}:{st:02}:{t:02}", m.name), Cmd::Nothing) },
         PItem::new("Delete", Cmd::DeleteMarker(i)),
         PItem::new("Rename...", Cmd::RenameMarker(i)),
+        PItem::sub("Color", [("Default",None),("Blue",Some(0x7298b1)),("Green",Some(0x7d9b72)),("Gold",Some(0xb79e62)),("Rose",Some(0xad7881)),("Violet",Some(0x9684b3))].into_iter().map(|(name,color)|PItem::new(name,Cmd::MarkerColor(i,color)).mark(Mark::Radio(m.color==color))).collect()),
         PItem::sep(),
         PItem::new("Move content left", Cmd::MoveContent(i, false)),
         PItem::new("Move content right", Cmd::MoveContent(i, true)),
@@ -4019,6 +4040,7 @@ pub fn press_led(app: &mut App, t: u16, right: bool) {
 
 pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
     let text = match target {
+        EditTarget::Tempo => format!("{:.3}", s.tempo),
         EditTarget::TrackName(t) => track_name(s, t),
         EditTarget::ArrangementName => arrangement_name(s),
         EditTarget::MarkerName(i) => markers(s).get(i).map(|m| m.name.clone()).unwrap_or_default(),
@@ -4041,9 +4063,25 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
 /// Enter in the text box.
 pub fn commit_edit(s: &mut State) {
     let Some(e) = s.playlist.edit.take() else { return };
+    if e.target == EditTarget::Tempo {
+        let text = e.text.trim();
+        if let Ok(bpm) = text.parse::<f64>() {
+            if bpm.is_finite() && (10.0..=522.0).contains(&bpm) {
+                if bpm != s.tempo {
+                    crate::history::record(s, "Tempo", crate::history::Snap::Tempo(s.tempo));
+                    s.tempo = bpm;
+                    s.piano.dirty = true;
+                }
+                return;
+            }
+        }
+        s.message = Some("Enter a tempo from 10 to 522 BPM.".into());
+        return;
+    }
     snapshot(s);
     let text = e.text.trim().to_string();
     match e.target {
+        EditTarget::Tempo => unreachable!(),
         EditTarget::ArrangementName => {
             if !text.trim().is_empty() {
                 arr_mut(s).name = Some(text.trim().to_string());
@@ -4177,6 +4215,23 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::MidiExt(d) => return app.set_ext_sync(d),
         Cmd::Reset(c) => {
             app.reset_control(c);
+            return None;
+        }
+        Cmd::ResetPatternStretch(i)=>{
+            if clips(&app.state).get(i).is_some_and(|c|matches!(c.source,ClipSource::Pattern(_)) && c.pattern_rate()!=1.) {
+                snapshot_as(&mut app.state,"Reset pattern stretch");
+                let c=&mut arr_mut(&mut app.state).clips[i];c.length=(f64::from(c.length)*c.pattern_rate()).round().max(1.) as u32;c.pattern_speed=1.;app.state.piano.dirty=true;
+            }
+            app.invalidate();return None;
+        },
+        Cmd::Mpe(c)=>{crate::mpe::command(app,c);return None;},
+        Cmd::ClipEffects(i)=>{let result=crate::clip_effects::open(app,i).err();app.invalidate();return result;},
+        Cmd::MarkerProfile(mode)=>{crate::marker_profiles::open(app,mode);return None;},
+        Cmd::TypeTempo => {
+            let at = (app.mouse.0.min((app.state.screen.0 - 240.).max(0.)), app.mouse.1);
+            start_edit(&mut app.state, EditTarget::Tempo, at);
+            if let Some(e) = &mut app.state.playlist.edit { e.sel = true; }
+            app.invalidate();
             return None;
         }
         Cmd::TypeIn(t) => {
@@ -4498,7 +4553,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             snapshot(s);
             (!delete_space(s)).then(|| "Delete space: make a time selection first (right-drag the ruler)".into())
         }
-        Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
+        Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
         Cmd::StretchMode => {
             s.playlist.stretch = !s.playlist.stretch;
             if s.playlist.stretch { crate::playlist_tools::select(s, PlTool::Paint); }
@@ -4630,6 +4685,10 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             s.piano.dirty = true;
             None
         }
+        Cmd::MarkerColor(i,color) => {
+            if markers(s).get(i).is_some(){snapshot_as(s,"Marker color");arr_mut(s).markers[i].color=color;s.piano.dirty=true;}
+            None
+        },
         Cmd::RenameMarker(i) => {
             let at = grid.zip(markers(s).get(i)).map_or((600.0, 200.0), |(g, m)| (PGeom::new(s, g).x_of(m.position as f32), g.y - MARKER_H));
             start_edit(s, EditTarget::MarkerName(i), at);
@@ -5030,7 +5089,7 @@ pub fn consolidate(app: &mut App) -> String {
         if c.position < a {
             let w = window(s, &c);
             let d = a - c.position;
-            c.window = Some((w.0 + to_src(s, c.source, f64::from(d)), w.1));
+            c.window = Some((w.0 + clip_to_src(s, &c, f64::from(d)), w.1));
             c.length -= d.min(c.length);
             c.position = a;
         }

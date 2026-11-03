@@ -136,6 +136,7 @@ pub enum Cursor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    Mpe(crate::mpe::Hit),
     RackStrip(crate::rack_mixer::Command),
     Ai,
     Updates,
@@ -290,6 +291,7 @@ pub enum Action {
     /// Toolbar "Piano roll tools" button: the Tools menu (spec: ui/piano-roll.md §11).
     PianoOptions,
     PianoToolsMenu,
+    PianoCommand(crate::piano_tools::NCmd),
     Harmony(crate::harmony::HCmd),
     /// Toolbar magnet: the Snap menu; right-click: Stock note lengths (spec: ui/piano-snap.md §1).
     PianoSnapMenu,
@@ -1058,6 +1060,7 @@ pub struct State {
     pub browser_open: std::collections::HashSet<String>,
     /// Folders dropped on the window: All-tab roots (spec: ui/browser.md §6).
     pub browser_folders: Vec<PathBuf>,
+    pub browser_single_folder: Option<PathBuf>,
     /// Their Browser names (File ▸ Browser extra search folders, `crate::search_folders`): a root's label in place of
     /// the folder's name.
     pub browser_names: std::collections::BTreeMap<PathBuf, String>,
@@ -1089,6 +1092,8 @@ pub struct State {
     pub browser_marquee: std::cell::RefCell<Option<views::browser::Marquee>>,
     /// Plugin parameter lists and the last tweaked parameters (spec: plugins/plugin-parameters.md).
     pub params: crate::params::ParamUi,
+    pub mpe:crate::mpe::UiState,
+    pub clip_fx_clipboard:Option<os_model::MixerTrack>,
     /// "Copy value": a normalized value for "Paste value", one for every control and automation point, as in FL
     /// (spec: ui/playlist.md §8 "Point menu").
     pub value_clip: Option<f64>,
@@ -1448,8 +1453,11 @@ impl App {
                 feature_votes: Default::default(),
                 browser_open: views::browser::default_open(),
                 browser_folders: crate::browser::load_folders(),
+                browser_single_folder: None,
                 browser_names: crate::browser::load_names(),
                 params: Default::default(),
+                mpe:Default::default(),
+                clip_fx_clipboard:None,
                 value_clip: None,
                 browser_dirs: Default::default(),
                 cables: std::cell::RefCell::new({
@@ -1762,6 +1770,7 @@ impl App {
     /// written.
     // spec: audio/export.md
     pub(crate) fn start_export(&mut self, job: crate::export::Job, song: bool) {
+        if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);self.invalidate();return;}
         if self.export.is_some() {
             return;
         }
@@ -1770,6 +1779,7 @@ impl App {
     }
 
     pub(crate) fn start_project_export(&mut self, p: os_model::Project, job: crate::export::Job, song: bool) {
+        if let Err(e)=crate::clip_effects::validate(&p){self.state.message=Some(e);self.invalidate();return;}
         if self.export.is_some() { return; }
         let rate = Transport::device_rate().unwrap_or(44100);
         let first = job.options.ticked().next().unwrap_or(0);
@@ -1833,6 +1843,7 @@ impl App {
     /// Writes the project to `target`: the size of the file written, None when the save failed. `edit` changes what is
     /// written (not the project), once the project's state is gathered.
     fn write_project(&mut self, target: PathBuf, edit: &mut dyn FnMut(&mut os_model::Project)) -> Option<u64> {
+        if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);return None;}
         if let Err(e)=crate::ara::store(self){self.state.message=Some(format!("Save failed: {e}"));return None;}
         // A file saved over is kept as an "overwritten on" backup (spec: ui/settings-choices.md "Backup files").
         crate::backup::keep_overwritten(&target, crate::data_folder::backup_folder(&self.state, Some(&target)));
@@ -2161,6 +2172,7 @@ impl App {
                     self.state.message = crate::presets::delete_chosen(self, key, path);
                 }
             }
+            Then::MarkerProfile(mode)=>{if let Some(path)=file {crate::marker_profiles::chosen(self,&path,mode);}},
             Then::SaveToolbarPreset => {
                 if let Some(p) = file {
                     self.toolbar_saved(p);
@@ -2309,6 +2321,8 @@ impl App {
 
     /// Drops every hosted instance (a new or opened project); `sync_samplers` hosts the new project's samplers.
     pub(crate) fn reset_hosted(&mut self) {
+        self.mpe_release_all();
+        self.state.mpe=Default::default();
         self.plugins.clear();
         self.loading = None;
         self.state.playlist.wave_wait = false;
@@ -2325,7 +2339,7 @@ impl App {
     /// a channel without an instance gets one, started from the channel's sample and envelopes. Without Lemon Sampler
     /// (plugin not found) sampler channels keep the engine's own sample playback.
     /// With a `deadline` it stops after the instance that passes it; returns whether every sampler row is done.
-    fn sync_samplers(&mut self, deadline: Option<std::time::Instant>) -> bool {
+    pub(crate) fn sync_samplers(&mut self, deadline: Option<std::time::Instant>) -> bool {
         crate::ara::reconcile(self);
         let Some(index) = self.plugins.index_of(crate::plugins::LEMON_SAMPLER) else { return true };
         let mut added = false;
@@ -2512,6 +2526,7 @@ impl App {
 
     /// Plugin host work on the UI thread: create / open requested plugins, apply plugin-window edits to the channel.
     pub(crate) fn plugin_tick(&mut self) {
+        self.mpe_tick();
         // Rows moved by an undone or redone channel delete: the instruments follow, the deleted ones come back.
         for (map, back) in std::mem::take(&mut self.state.rows_moved) {
             self.remap_rows(&|r| map.get(r).copied().flatten());
@@ -2534,6 +2549,7 @@ impl App {
         crate::zipped::tick(self);
         self.midi_tick();
         self.mixer_tick();
+        if let Err(e)=crate::clip_effects::normalize(self){self.transport.stop();self.state.message=Some(e);}
         crate::presets::pending_tick(self);
         self.params_tick();
         // While a project loads, `loading_tick` starts these a few per tick.
@@ -4102,7 +4118,7 @@ impl App {
         }
         // Edits (notes, steps, mixer, channel volume / pan / mute, tempo) reach playback right away,
         // also during a drag (at most once per tick).
-        if self.state.piano.dirty {
+        if self.state.piano.dirty && crate::clip_effects::normalize(self).is_ok() {
             self.state.piano.dirty = false;
             // Also while Play is still starting (not `playing` yet); ignored when stopped.
             {
@@ -4294,6 +4310,7 @@ impl App {
 
     /// Song playback from `tick` (Song mode; spec: ui/playlist.md §7).
     pub fn play_song_from(&mut self, tick: u32) {
+        if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);self.invalidate();return;}
         self.state.song_mode = true;
         if self.state.project.arrangement().is_none_or(|a| a.clips.is_empty()) {
             // Nothing plays in SONG mode, so a pattern that was playing stops too.
@@ -5249,6 +5266,7 @@ impl App {
         if crate::plugin_picker::mouse_move(self,x,y) { return true; }
         self.browser_auto_hide(x,y);
         self.mouse = (x, y);
+        if let Some((lane,r,id))=self.state.mpe.drag{crate::mpe::draw(self,lane,r,id,false);return true;}
         self.hold_moved(x, y);
         if let Some(d) = self.drag.clone() {
             match d {
@@ -5640,8 +5658,9 @@ impl App {
                 Drag::PickHue(r) => self.picker_hue(r, y),
                 Drag::WarpMarker(i)=>crate::warp::drag(self,i,x),
                 Drag::Tempo { y0, t0, step } => {
-                    // Rounded to the box's thousandths, so repeated steps don't drift.
-                    let t = self.set_tempo(((t0 + f64::from(y0 - y).round() * step) * 1000.0).round() / 1000.0);
+                    // Six logical pixels per digit step tame small hand movements.
+                    // Rounded to thousandths so repeated steps do not drift.
+                    let t = self.set_tempo(((t0 + (f64::from(y0 - y) / 6.0).round() * step) * 1000.0).round() / 1000.0);
                     self.hint = Cow::Owned(format!("Tempo {t:.3} BPM"));
                     self.damage_band(TEMPO_RECT);
                     self.damage_band(HINT_RECT);
@@ -5867,6 +5886,7 @@ impl App {
         self.hold = None;
         let (x, y) = self.mouse;
         let action = self.top_hit(x, y).map(|h| h.action.clone());
+        if let Some(Action::Mpe(crate::mpe::Hit::Curve(lane,r)))=action{if !self.modal_open(){crate::mpe::begin(self,lane,r,false);return;}}
         // A press stops the views easing where they are drawn; a scroll bar's arrow steps on from where its ease is
         // going (`crate::smooth`).
         if !matches!(action, Some(Action::ScrollStep(..))) {
@@ -6293,6 +6313,7 @@ impl App {
         self.smooth.stop();
         let (x, y) = self.mouse;
         let action = self.top_hit(x, y).map(|h| h.action.clone());
+        if let Some(Action::Mpe(crate::mpe::Hit::Curve(lane,r)))=action{crate::mpe::begin(self,lane,r,true);return;}
         if let Some(Action::Mix(crate::mixer::MHit::SlotName(slot) | crate::mixer::MHit::SlotArrow(slot)))=action {
             if crate::mixer::slot_name(&self.state,self.state.selected_mixer,slot).is_none() {
                 crate::plugin_picker::open(self,crate::plugin_menu::Target::Fx(Some(slot)));
@@ -6433,6 +6454,7 @@ impl App {
             if auto.is_some() || typein.is_some() {
                 let mut menu = crate::playlist::knob_menu(&self.state, auto, typein, x, y);
                 if *a == Action::Tempo {
+                    menu.items.push(crate::playlist::PItem::new("Type in BPM...", crate::playlist::Cmd::TypeTempo));
                     menu.items.insert(0, crate::playlist::PItem::new("Tap tempo", crate::playlist::Cmd::OpenTapper));
                     menu.items.insert(1, crate::playlist::PItem::sep());
                 }
@@ -6474,6 +6496,12 @@ impl App {
             self.drag = Some(Drag::ControlErase { last_x: x });
             self.erase_control_points(x, x);
             return;
+        }
+        if let Some(Action::PianoNote(i)) = action.as_ref() {
+            if self.state.piano.selection(self.state.pattern,piano::channel(&self.state)).contains(i) {
+                self.state.playlist.popup=Some(crate::piano_tools::selected_menu(&self.state,x,y));
+                return self.invalidate();
+            }
         }
         if let Some(a @ (Action::PianoNote(_) | Action::PianoGrid)) = action {
             // Select: same as the left button; Zoom: toggle zoomed out / last zoom; the other
@@ -6520,6 +6548,7 @@ impl App {
     }
 
     pub fn mouse_up(&mut self) {
+        self.state.mpe.drag=None;
         if crate::plugin_picker::mouse_up(self) { return; }
         if matches!(self.drag,Some(Drag::Knob{id:crate::knobs::KnobId::Eq(..)|crate::knobs::KnobId::Strip(_,0|3),..})){self.damage_win(Win::Mixer);}
         self.hold = None;
@@ -7251,6 +7280,7 @@ impl App {
             return None;
         }
         // The wheel over a mixer effect slot moves its effect up or down the track's chain (spec: ui/mixer.md §7).
+
         if let Some(Action::Mix(crate::mixer::MHit::SlotName(k) | crate::mixer::MHit::SlotArrow(k))) = area
             && dy + dx != 0.0
         {
@@ -7350,6 +7380,7 @@ impl App {
 
     /// The menu and Ctrl/Cmd+H share the same panic path, including browser previews.
     fn stop_sound(&mut self) {
+        self.mpe_release_all();
         self.typing_release_all();
         self.transport.stop_preview();
         self.transport.stop();
@@ -7643,6 +7674,7 @@ impl App {
 
     /// `start_playback` after a recording count-in of `bars` bars (spec: ui/recording.md §3).
     pub(crate) fn start_playback_counted(&mut self, bars: u32) {
+        if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);self.invalidate();return;}
         if let Err(e)=self.prepare_mixer_take(){self.state.message=Some(format!("Audio recording: {e}"));self.invalidate();return;}
         let song = self.state.song_mode;
         let recording=self.state.rec.armed&&(crate::record::Opt::Notes.on()||crate::record::Opt::Automation.on());
@@ -8390,6 +8422,8 @@ impl App {
                 crate::patterns::run(s, crate::patterns::Cmd::FindFirst, (at.x, at.y));
             }
             Action::Pat(h) => crate::patterns::hit(s, h),
+            Action::Mpe(crate::mpe::Hit::Command(c))=>crate::mpe::command(self,c),
+            Action::Mpe(crate::mpe::Hit::Curve(..))=>{},
             Action::Dlg(h) => self.dialog_click(h),
             Action::SongInfo => self.close_song_info(),
             Action::PlPickList => {}
@@ -8474,6 +8508,7 @@ impl App {
                 let (x,y)=self.mouse;
                 s.playlist.popup=Some(crate::piano_tools::options_menu(s,x-6.,y+10.));
             }
+            Action::PianoCommand(cmd) => {self.state.message=crate::piano_tools::run(self,cmd);self.invalidate();},
             Action::PianoToolsMenu => {
                 let (x, y) = self.mouse;
                 s.playlist.popup = Some(crate::piano_tools::tools_menu(s, x - 6.0, y + 10.0));
@@ -8885,6 +8920,7 @@ impl App {
 
     /// Rack rows were renumbered (`m(old) = new`, `None` = deleted): hosted plugins, their windows and playback follow.
     pub(crate) fn remap_rows(&mut self, m: &dyn Fn(usize) -> Option<usize>) {
+        self.mpe_release_all();
         self.typing_release_all();
         self.plugins.remap(m);
         self.sampler_failed = self.sampler_failed.iter().filter_map(|&r| m(r)).collect();
@@ -11192,6 +11228,34 @@ mod tests {
     }
 
     #[test]
+    fn tempo_type_in_accepts_decimal_bpm_and_undo_rejects_invalid_values() {
+        let mut canvas = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        frame(&mut app, &mut canvas, None);
+        let r = hit_rect(&app, &Action::Tempo);
+        app.mouse_move(r.cx(), r.cy());
+        app.mouse_down_right();
+        assert!(app.state.playlist.popup.as_ref().unwrap().items.iter().any(|i| i.cmd == crate::playlist::Cmd::TypeTempo));
+        crate::playlist::run(&mut app, crate::playlist::Cmd::TypeTempo);
+        assert!(app.state.playlist.edit.as_ref().unwrap().sel);
+        app.state.playlist.edit.as_mut().unwrap().text = "127.375".into();
+        crate::playlist::commit_edit(&mut app.state);
+        assert_eq!(app.state.tempo, 127.375);
+        assert!(app.state.piano.dirty);
+        assert_eq!(crate::history::undo(&mut app.state), Some("Tempo"));
+        assert_eq!(app.state.tempo, 130.0);
+        crate::history::redo(&mut app.state);
+        assert_eq!(app.state.tempo, 127.375);
+        for text in ["NaN", "inf", "0", "523", "abc"] {
+            crate::playlist::run(&mut app, crate::playlist::Cmd::TypeTempo);
+            app.state.playlist.edit.as_mut().unwrap().text = text.into();
+            crate::playlist::commit_edit(&mut app.state);
+            assert_eq!(app.state.tempo, 127.375);
+            assert!(app.state.message.is_some());
+        }
+    }
+
+    #[test]
     fn tempo_drag_locks_the_cursor() {
         let Ok(mut a) = Canvas::new(1920, 1080, 1.0) else { return };
         let mut app = App::new(None);
@@ -11204,7 +11268,7 @@ mod tests {
         frame(&mut app, &mut a, None);
         app.mouse_down();
         assert!(app.cursor_locked(), "tempo drags lock the cursor");
-        app.mouse_move(x, r.cy() - 10.0);
+        app.mouse_move(x, r.cy() - 60.0);
         assert_eq!(app.state.tempo, t0 + 10.0);
         app.mouse_up();
         assert!(!app.cursor_locked());
@@ -11231,7 +11295,9 @@ mod tests {
             frame(&mut app, &mut a, None);
             app.mouse_move(x, y);
             app.mouse_down();
-            app.mouse_move(x, y - 3.0);
+            app.mouse_move(x, y - 2.0);
+            assert_eq!(app.state.tempo, 130.0, "small hand movements must not change tempo");
+            app.mouse_move(x, y - 18.0);
             app.mouse_up();
             let want = 130.0 + 3.0 * step;
             assert!((app.state.tempo - want).abs() < 1e-9, "from x {x}: {} vs {want}", app.state.tempo);
@@ -12648,7 +12714,7 @@ mod tests {
             crate::dialog::Body::Shortcuts(_) => panic!("Manage shortcuts is on top"),
             crate::dialog::Body::TimeSig(_) => panic!("the time signature dialog is on top"),
             crate::dialog::Body::Project(_) => panic!("a project form is on top"),
-            crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
+            crate::dialog::Body::ClipFx(..) | crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
         }
     }
 

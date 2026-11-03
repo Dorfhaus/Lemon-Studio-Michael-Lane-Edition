@@ -10,6 +10,18 @@ The engine precomputes harmonic-limited table levels outside audio processing. I
 
 The editor uses Lemon Studio's existing parameter gestures, automation hooks and preset wrapper. Factory `.ospreset` files select the CLAP identity. The VST3 build can save its own host presets, but does not load CLAP preset headers directly.
 
+## Stage 2a — WAV import and embedded tables
+
+Each oscillator now has **Import WAV**, **Cycle**, and **Use built-in** controls. Choose the number of samples in each cycle before importing (64, 128, 256, 512, 1024, 2048 or 4096; default 2048). Position scans the imported frames. The Bank knob takes effect again after Use built-in. The two original example files in `wavetables` use 2048 samples per cycle and eight frames each.
+
+Supported input: mono/stereo RIFF WAV, PCM 8/16/24/32-bit or IEEE float32, up to 16 MB and 128 whole frames. Stereo channels are averaged. Files with incomplete frames, non-finite samples, unsupported formats or silence after DC removal are rejected without replacing the current sound. This imports periodic waves, not arbitrary recordings with automatic pitch/cycle detection. Frame size is explicit; vendor metadata does not override it.
+
+Imported frames are Fourier-resampled to 1024 samples, DC/Nyquist bins removed, and harmonic-limited levels prepared before playback. One peak-reduction gain preserves relative frame levels; quiet frames are not individually boosted. The engine retains up to 256 harmonics at its richest level. Files are embedded in saved plugin state, so projects and new user presets reopen without their source WAV. Forty-four parameter IDs and ranges remain unchanged. The updated eight starter presets carry full CLAP state, restoring built-in tables as well as controls. Older parameter-only presets cannot clear assets: use both Use built-in buttons before loading those older copies.
+
+Import/state recall is a discrete sound change: it may pause briefly while the host restores and reinitializes the instrument, and resets held notes/effect tails. Import between notes. Normal rendering does no file reads or FFT construction; table snapshots use a nonblocking read, and retired tables remain owned outside rendering. Bad embedded data falls back to built-in tables and reports an error in the editor. Oversampling/warp aliasing, hand drawing and spectral editing remain future work.
+
+Focused tests cover supported WAV formats/cycle sizes, truncated/invalid input, Fourier downsampling, frame interpolation, harmonic rejection, exact audio recall after deleting the source WAV, legacy state clearing, retired asset ownership, and offscreen import controls. `verify_host` additionally verifies embedded table audio recall in both actual Lemon Studio host formats. Live file-dialog/editor interaction and listening remain the user's check.
+
 ## Build and verify
 
 `cargo test --locked -p lemon-wave --lib`
@@ -22,7 +34,7 @@ Package `lemon_wave.dll` as `Lemon Wave.clap` and as `Lemon Wave.vst3/Contents/x
 
 ## Next stages (not implemented)
 
-1. Wavetable WAV import, embedded per-project tables, frame editing/drawing, spectral editing, table export, higher-quality warp/oversampling, phase/randomization controls.
+1. Continue wavetable editing: frame editing/drawing, spectral editing, table export, higher-quality warp/oversampling, phase/randomization controls. WAV import and embedded tables are implemented above.
 2. Drag-and-drop modulation matrix, multiple editable LFOs/envelopes, macros, MPE/aftertouch/velocity routing, modulation visualization, mono/legato/glide.
 3. Expanded filter/routing and reorderable effects rack: EQ, distortion modes, compression, reverb, phaser/flanger, delay synchronization and additional chorus modes.
 4. Serum 2-style broader synthesis options: third oscillator, sample/multisample, granular and spectral engines; arpeggiation/sequencing; larger preset browser and sound library.

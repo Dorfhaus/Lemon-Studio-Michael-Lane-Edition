@@ -192,6 +192,7 @@ impl<P: Plugin> HostedEffect for Guarded<P> {
 }
 
 impl<P: Plugin> Plugin for Guarded<P> {
+    fn mpe_support(&self)->u8{self.look(0,|p|p.mpe_support())}
     /// The descriptor is the host's own record, not plugin code.
     fn desc(&self) -> &Descriptor {
         self.inner.desc()

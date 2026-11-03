@@ -6,7 +6,7 @@ use std::time::{Duration,Instant};
 use os_ui::{Rect,Font};
 use crate::app::{App,State,Ui,Action};
 use crate::views::browser as view;
-pub const HEIGHT:f32=112.;
+pub const HEIGHT:f32=130.;
 type Loaded=Result<(Arc<os_engine::sample::Sample>,Vec<(f32,f32)>),String>;
 #[derive(Default)]
 pub struct Preview {
@@ -21,6 +21,7 @@ pub struct Preview {
     started:bool,
     requested:Option<Instant>,
     error:Option<String>,
+    resume:bool,
 }
 impl Preview {pub fn busy(&self)->bool {self.pending.is_some()||self.playing}}
 pub fn visible(s:&State)->bool {matches!(s.browser_tab,0|3)&&view::opt(s,view::OPT_PANEL)&&s.browser_preview.path.is_some()}
@@ -38,10 +39,11 @@ pub fn dismiss(app:&mut App) {
 pub fn select(app:&mut App,path:&str) {
     app.transport.stop_preview();
     let result=Arc::new(Mutex::new(None));
-    app.state.browser_preview=Preview{path:Some(path.into()),pending:Some(result.clone()),..Default::default()};
+    app.state.browser_preview=Preview{resume:true,path:Some(path.into()),pending:Some(result.clone()),..Default::default()};
     let path=crate::plugins::resolve_sample(path);
+    let (normal,reversed)=(normalize(),reverse());
     std::thread::spawn(move||{
-        let loaded=os_engine::sample::load_shared(std::path::Path::new(&path)).map(|s|{let peaks=overview(&s);(s,peaks)}).map_err(|e|format!("Cannot preview: {e}"));
+        let loaded=os_engine::sample::load_shared(std::path::Path::new(&path)).map(|s|{let s=processed(s,normal,reversed);let peaks=overview(&s);(s,peaks)}).map_err(|e|format!("Cannot preview: {e}"));
         if let Ok(mut out)=result.lock(){*out=Some(loaded);}
     });
     app.invalidate();
@@ -59,8 +61,20 @@ fn project(path:&str,duration:f64,at:f64,tempo:f64)->os_model::Project {
 
     p
 }
+fn processed(sample:Arc<os_engine::Sample>,normal:bool,reversed:bool)->Arc<os_engine::Sample>{
+    if !normal&&!reversed{return sample;}
+    let mut copy=(*sample).clone();
+    let peak=copy.left.iter().chain(&copy.right).filter(|v|v.is_finite()).fold(0f32,|a,v|a.max(v.abs()));
+    let gain=if normal&&peak>1e-9{1./peak}else{1.};
+    for side in [&mut copy.left,&mut copy.right]{
+        for v in side.iter_mut(){*v=if v.is_finite(){*v*gain}else{0.};}
+        if reversed{side.reverse();}
+    }
+    Arc::new(copy)
+}
 fn play(app:&mut App) {
     let preview=&mut app.state.browser_preview;
+    preview.resume=true;
     let Some(path)=preview.path.clone().filter(|_|preview.sample.is_some()) else{return;};
     if preview.position>=preview.duration {preview.position=0.;}
     preview.offset=preview.position;
@@ -68,7 +82,7 @@ fn play(app:&mut App) {
     let mut p=project(&path,preview.duration,preview.position,app.state.tempo);
     crate::preview_track::route(&mut p,&app.state.project,crate::prefs::number(&crate::prefs::BROWSER_PREVIEW_TRACK));
     let limit=(!view::opt(&app.state,view::OPT_PREVIEW)).then_some(crate::browser::PREVIEW_LIMIT);
-    app.transport.preview_for(p,limit);
+    app.transport.preview_for(p,limit,app.state.browser_preview.sample.clone().unwrap());
 }
 pub fn tick(app:&mut App) {
     let result=app.state.browser_preview.pending.as_ref().and_then(|p|p.lock().ok()?.take());
@@ -76,7 +90,7 @@ pub fn tick(app:&mut App) {
         let preview=&mut app.state.browser_preview;
         preview.pending=None;
         match result {
-            Ok((sample,peaks))=>{preview.duration=sample.frames() as f64/f64::from(sample.rate.max(1));preview.sample=Some(sample);preview.peaks=peaks;play(app);}
+            Ok((sample,peaks))=>{preview.duration=sample.frames() as f64/f64::from(sample.rate.max(1));preview.sample=Some(sample);preview.peaks=peaks;if preview.resume{play(app);}}
             Err(e)=>{preview.error=Some(e);preview.playing=false;}
         }
         app.invalidate();
@@ -90,15 +104,26 @@ pub fn tick(app:&mut App) {
         if visible(&app.state) {let r=panel_rect(&app.state);app.damage_rect(r);}
     }
 }
+pub fn normalize()->bool {crate::prefs::text("browser_preview_normalize").as_deref()==Some("1")}
+pub fn reverse()->bool {crate::prefs::text("browser_preview_reverse").as_deref()==Some("1")}
 pub fn act(app:&mut App,cmd:u8) {
     match cmd {
         0=>{if app.state.browser_preview.playing {app.transport.stop_preview();app.state.browser_preview.playing=false;} else {play(app);}},
-        1=>{app.transport.stop_preview();let p=&mut app.state.browser_preview;p.playing=false;p.position=0.;p.pending=None;},
+        1=>{app.transport.stop_preview();let p=&mut app.state.browser_preview;p.playing=false;p.resume=false;p.position=0.;p.pending=None;},
         2=>{
             let r=wave_rect(panel_rect(&app.state));
             let p=&mut app.state.browser_preview;
             p.position=f64::from(((app.mouse.0-r.x)/r.w).clamp(0.,1.))*p.duration;
             play(app);
+        },
+        3|4=>{
+            let key=if cmd==3 {"browser_preview_normalize"}else{"browser_preview_reverse"};
+            let on=if cmd==3 {normalize()}else{reverse()};
+            crate::prefs::set_text(key,if on {"0"}else{"1"});
+            if let Some(path)=app.state.browser_preview.path.clone(){
+                let position=app.state.browser_preview.position;let resume=app.state.browser_preview.playing || (app.state.browser_preview.pending.is_some() && app.state.browser_preview.resume);
+                select(app,&path);app.state.browser_preview.position=position;app.state.browser_preview.resume=resume;
+            }
         },
         _=>{},
     }
@@ -129,11 +154,36 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
         let hover=ui.hit(b,Action::BrowserPreview(i),label);
         ui.c.fill_rrect(b,3.,if hover {t.button_hi}else{t.sunken});ui.c.text_center(Font::new(11),b,t.text,label);
     }
-    ui.c.text_clip(Font::new(11),r.x+103.,r.y+84.,r.w-111.,t.text,&format!("{} / {}",time(p.position),time(p.duration)));
+    for (cmd,label,on,x,w,hint) in [(3,"Norm",normalize(),98.,43.,"Auto Normalize: preview only, peak target 0 dBFS"),(4,"Rev",reverse(),146.,36.,"Auto Reverse: preview only")] {
+        let b=Rect::new(r.x+x,r.y+80.,w,23.);
+        let hover=ui.hit(b,Action::BrowserPreview(cmd),hint);
+        ui.c.fill_rrect(b,3.,if on{t.accent}else if hover{t.button_hi}else{t.sunken});
+        ui.c.text_center(Font::new(11),b,if on{t.sunken}else{t.text},label);
+    }
+    ui.c.text_clip(Font::new(11),r.x+8.,r.y+109.,r.w-16.,t.text,&format!("{} / {}",time(p.position),time(p.duration)));
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn batch2_preview_options_change_audio_without_changing_file_or_import(){
+        let path=std::env::temp_dir().join(format!("lemon-preview-options-{}.wav",std::process::id()));
+        let rate=8000;let audio:Vec<f32>=(0..rate*2).flat_map(|i|{let v=if i<rate/2{0.1}else{0.};[v,v]}).collect();
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),rate,&audio).unwrap();
+        let original=std::fs::read(&path).unwrap();
+        let render=|normal,reversed,at|{
+            let p=project(&path.to_string_lossy(),2.,at,120.);
+            let mut lib=os_engine::SampleLibrary::default();lib.insert_buffer(path.to_string_lossy().into_owned(),processed(os_engine::sample::load_shared(&path).unwrap(),normal,reversed));let mut engine=os_engine::Engine::new(&p,&mut lib,rate,os_engine::PlayMode::Song);
+            let mut out=vec![0.;rate as usize*4];engine.process(&mut out);out
+        };
+        let plain=render(false,false,0.);let normal=render(true,false,0.);let rev=render(false,true,0.);let both=render(true,true,0.);
+        let peak=|s:&[f32]|s.iter().fold(0f32,|a,v|a.max(v.abs()));
+        assert!(peak(&normal)>peak(&plain)*5.);
+        assert!(peak(&rev[..rate as usize*2])<0.001);assert!(peak(&rev[rate as usize*3..])>0.02);
+        assert!(peak(&both)>peak(&rev)*5.);assert!(peak(&render(false,true,1.6)[..1000])>0.02);
+        assert_eq!(std::fs::read(&path).unwrap(),original);
+        assert_eq!(crate::app::preview_project(&path.to_string_lossy()).channels[0].sound.fx,os_model::SampleFx::default());
+        let _=std::fs::remove_file(path);
+    }
     #[test] fn long_preview_and_seek_keep_song_independent() {
         let p=project("test.wav",600.,450.,120.);
         assert_eq!(p.arrangements[0].clips[0].window,Some((450000.,600000.)));

@@ -24,6 +24,15 @@ use crate::params::{self, FxParams};
 use crate::view::{self, Target, ViewState};
 use crate::{Shared, Spec};
 
+/// Optional non-parameter instrument controls, called only on the editor thread.
+pub trait Extension: Send + Sync {
+    /// Optional complete instrument view. Existing effect editors retain their default view.
+    fn render(&self, _canvas: &mut os_ui::Canvas, _model: &dyn view::Model,
+        _state: &ViewState, _hint: &str) -> Option<Vec<view::Hit>> { None }
+    fn paint(&self, canvas: &mut os_ui::Canvas, model: &dyn view::Model);
+    fn click(&self, x: f32, y: f32, context: Option<&Arc<dyn GuiContext>>) -> bool;
+}
+
 pub struct FxEditor {
     pub spec: &'static Spec,
     pub params: Arc<FxParams>,
@@ -173,6 +182,7 @@ struct Drag {
 }
 
 pub struct Logic {
+    context: Option<Arc<dyn GuiContext>>,
     pub spec: &'static Spec,
     pub vals: Vals,
     pub params: Arc<FxParams>,
@@ -188,8 +198,8 @@ pub struct Logic {
 
 impl Logic {
     pub fn new(spec: &'static Spec, params: Arc<FxParams>, shared: Arc<Shared>, ctx: Option<Arc<dyn GuiContext>>) -> Self {
-        let vals = Vals::new(&*params, params.live.clone(), ctx);
-        Logic { spec, vals, params, shared, view: ViewState::default(), hits: Vec::new(), drag: None, hint: String::new(), copied: None, hosted: false }
+        let vals = Vals::new(&*params, params.live.clone(), ctx.clone());
+        Logic { context: ctx, spec, vals, params, shared, view: ViewState::default(), hits: Vec::new(), drag: None, hint: String::new(), copied: None, hosted: false }
     }
 
     pub fn dragging(&self) -> bool {
@@ -237,6 +247,9 @@ impl Logic {
 
     pub fn down(&mut self, x: f32, y: f32, btn: Btn, m: Mods, _dbl: bool) -> Vec<Act> {
         self.view.mouse = Some((x, y));
+        if btn == Btn::Left && self.shared.extension.as_ref().is_some_and(|e| e.click(x, y, self.context.as_ref())) {
+            return vec![Act::Repaint];
+        }
         let Some((t, _)) = self.hit(x, y) else { return vec![] };
         let id = t.id().to_string();
         let mut acts = vec![Act::Repaint];
@@ -369,7 +382,14 @@ impl Logic {
     /// Paints the editor; `hint` is drawn when the host does not show it.
     pub fn paint(&mut self, c: &mut os_ui::Canvas, palette: &os_theme::Palette) {
         let hint = if self.hosted { String::new() } else { self.hint.clone() };
+        if let Some(hits) = self.shared.extension.as_ref().and_then(|e| e.render(c, &self.vals, &self.view, &hint)) {
+            self.hits = hits;
+            return;
+        }
         self.hits = view::paint(self.spec, c, palette, &self.vals, &self.view, &hint);
+        if let Some(extension) = &self.shared.extension {
+            extension.paint(c, &self.vals);
+        }
     }
 }
 

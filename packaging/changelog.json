@@ -3,6 +3,23 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-03",
+      "title": "Lemon Wave, MPE and clip effects · public build 2026110301",
+      "changes": [
+        "Lemon Wave is now included directly in Lemon Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.",
+        "Built-in instruments and effects are categorized without a plugin scan; Master Assistant is grouped under Utility. Installed copies of built-in Wave are not duplicated.",
+        "Added per-note MPE pitch, pressure and slide editing, live recording, independent unison playback, lower/upper zone settings, response controls, native project recall and expressive MIDI import/export. Compatible instruments and patch mappings are required; physical controllers and every third-party patch have not been tested.",
+        "Added individual audio Clip Effects with independent plugin chains, bypass, copy/paste settings, parameter automation and project recall. Clip FX uses available mixer inserts and leaves source audio unchanged.",
+        "Added instrument layering on an existing channel, preserving the original instrument and giving added instruments independent settings and mixer levels.",
+        "Added Piano Roll channel Mute/Solo, selected-note Move/Copy to another channel, and independent Playlist pattern-clip stretching.",
+        "Added optional Browser Single Folder View, preview-only Normalize/Reverse, and a hidden-by-default Parameters browser tab enabled through Browser settings.",
+        "Added named marker profiles with save/merge/replace and subdued marker colors.",
+        "Slowed tempo dragging and added decimal BPM entry with undo. Fixed narrow-toolbar overflow access. Sampler tempo estimation is now labelled as a length-based estimate, not a rhythm detector.",
+        "Includes the integrated Master Assistant, Lemon Chop and prior mixer/workflow improvements. Complete source and DAW downloads are also published to the Michael Lane Edition GitHub repository.",
+        "Added a separate Intel Mac package alongside Apple-silicon Mac, Windows and Linux x64. Mac builds are ad-hoc signed, not notarized. Intel compatibility is checked under Rosetta, not on physical Intel hardware; Linux audio/runtime testing remains unperformed. ARA compatibility limitations remain."
+      ]
+    },
+    {
       "date": "2026-11-02",
       "title": "Master Assistant and Michael Lane Edition · public build 2026110204",
       "changes": [

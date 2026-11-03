@@ -13,7 +13,7 @@ from private_build import require_public_binary
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', required=True, type=Path)
 parser.add_argument('--key', type=Path, default=Path.home()/'.lemon-studio-release/update-signing-key.pem')
-parser.add_argument('--notes', default='Michael Lane Edition: bundled Master Assistant, original Waves channel-strip mixer, polished analog controls, audio warp markers, editable shortcuts, workflow fixes and Lemon Wave. Includes prior Lemon Chop and pitch updates. Auto-Tune ARA and Melodyne transport issues remain unresolved.')
+parser.add_argument('--notes', default='Michael Lane Edition: built-in Lemon Wave, per-note MPE, independent clip effects, instrument layers, organized factory plugins, browser and tempo improvements. Compatible MPE instruments required; ARA limitations remain.')
 args = parser.parse_args()
 out = args.output.resolve()
 if out == root or root in out.parents:

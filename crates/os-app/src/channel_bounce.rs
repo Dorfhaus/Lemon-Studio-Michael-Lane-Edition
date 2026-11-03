@@ -73,6 +73,7 @@ fn prepare(s: &State, row: usize, wet: bool) -> Result<(Project, crate::export::
 impl App {
     pub(crate) fn consolidate_channel(&mut self,row:usize) { self.bounce_channel(row,false); }
     pub(crate) fn bounce_channel(&mut self,row:usize,wet:bool) {
+        if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);self.invalidate();return;}
         if self.export.is_some() {return;}
         match prepare(&self.state,row,wet) {
             Err(e)=>{self.state.message=Some(e);self.invalidate();}

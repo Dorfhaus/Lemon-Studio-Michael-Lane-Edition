@@ -41,10 +41,11 @@ impl App {
         if let Action::StarterPack(cmd)=*a {crate::starter_pack::act(self,cmd);return true;}
         if let Action::PluginDownload(i,cmd)=*a {crate::plugin_downloads::act(self,i,cmd);return true;}
         if matches!(a,Action::BrowserTab(_)|Action::BrowserCollapse) {crate::browser_preview::dismiss(self);}
+        if *a == Action::BrowserTab(view::PARAMETERS_TAB) { self.params_tick(); }
         let s = &mut self.state;
         match *a {
             Action::BrowserTab(i) => {
-                s.browser_tab = if i <= 6 { i } else { 0 };
+                s.browser_tab = if i <= view::PARAMETERS_TAB { i } else { 0 };
                 s.browser_auto_hidden=false;
                 if let Some(label)=match i {1=>Some("Current project"),2=>Some("Plugin database"),4=>Some("Plugin presets"),_=>None} {s.browser_open.insert(format!("{i}:{label}"));}
                 s.browser_search.clear();
@@ -66,6 +67,10 @@ impl App {
             Action::BrowserSearch => s.browser_search_focus = true,
             Action::BrowserRow(i) => {
                 let Some(mut row) = view::rows(s).into_iter().nth(i) else { return true };
+                if matches!(s.browser_tab,0|3) && view::opt(s,view::OPT_SINGLE_FOLDER) && row.path.as_ref().is_some_and(|p|p.is_dir()) {
+                    s.browser_single_folder=row.path.clone();s.browser_search.clear();s.browser_scroll=0.;s.browser_sel=None;
+                    *s.browser_index.borrow_mut()=Default::default();self.invalidate();return true;
+                }
                 if row.open.is_some()&&row.key.starts_with("search:@") {
                     if let Some(path)=&row.path {
                         let roots=if s.browser_tab==3{favorites()}else{view::library_roots(s)};
@@ -131,7 +136,7 @@ impl App {
                 }
                 crate::prefs::set_text(&format!("browser_option_{k}"),if view::opt(s,k) {"1"}else{"0"});
                 if !view::opt(s,view::OPT_AUTOHIDE) {s.browser_auto_hidden=false;}
-                if [(view::OPT_PROJECT,1),(view::OPT_PLUGINS,2),(view::OPT_PRESETS,4)].iter().any(|(key,id)|*key==k && *id==s.browser_tab && !view::opt(s,k)) {s.browser_tab=0;}
+                if [(view::OPT_PROJECT,1),(view::OPT_PLUGINS,2),(view::OPT_PRESETS,4),(view::OPT_PARAMETERS,view::PARAMETERS_TAB)].iter().any(|(key,id)|*key==k && *id==s.browser_tab && !view::opt(s,k)) {s.browser_tab=0;}
                 s.browser_scroll = s.browser_scroll.min(view::max_scroll(s));
             }
             BCmd::History(dir) => {
@@ -815,8 +820,9 @@ pub fn options_menu(s: &crate::app::State) -> Vec<PItem> {
     vec![
         b("Add sample folder...",BCmd::AddFolder),
         PItem::sub("Content",vec![
+            t("Single Folder View",view::OPT_SINGLE_FOLDER),
             t("Show generators and effects in Samples",view::OPT_TREE_PLUGINS),
-            PItem::sub("Browser tabs",vec![t("Current project",view::OPT_PROJECT),t("Plugin database",view::OPT_PLUGINS),t("Plugin presets",view::OPT_PRESETS)]),
+            PItem::sub("Browser tabs",vec![t("Current project",view::OPT_PROJECT),t("Plugin database",view::OPT_PLUGINS),t("Plugin presets",view::OPT_PRESETS),t("Parameters",view::OPT_PARAMETERS)]),
             b("Configure sample folders...",BCmd::ConfigureFolders),
             b("Refresh plugin list",BCmd::Rescan),
             b(if crate::starter_pack::busy(){"Cancel Starter Pack download"}else{"Download Starter Pack"},BCmd::StarterPack),
@@ -1006,6 +1012,20 @@ mod favorite_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test] fn batch2_single_folder_view_navigates_and_preserves_tree(){
+        let root=std::env::temp_dir().join(format!("lemon-single-folder-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("A/Sub")).unwrap();std::fs::create_dir_all(root.join("B")).unwrap();
+        std::fs::write(root.join("A/one.wav"),[]).unwrap();std::fs::write(root.join("B/two.wav"),[]).unwrap();
+        let mut app=App::new(None);app.state.browser_folders=vec![root.clone()];
+        app.browser_cmd(BCmd::Toggle(view::OPT_SINGLE_FOLDER));app.state.browser_single_folder=Some(root.join("A"));
+        let rows=view::rows(&app.state);assert!(rows.iter().any(|r|r.label=="one"));assert!(!rows.iter().any(|r|r.label=="two"));
+        let sub=rows.iter().position(|r|r.label=="Sub").unwrap();app.browser_act(&Action::BrowserRow(sub));
+        assert_eq!(app.state.browser_single_folder,Some(root.join("A/Sub")));
+        app.browser_act(&Action::BrowserRow(0));assert_eq!(app.state.browser_single_folder,Some(root.join("A")));
+        app.browser_cmd(BCmd::Toggle(view::OPT_SINGLE_FOLDER));assert!(!view::opt(&App::new(None).state,view::OPT_SINGLE_FOLDER));
+        // Test-owned scratch fixture only.
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn browser_menu_restores_tabs_and_auto_hide() {
         let mut app=App::new(None);

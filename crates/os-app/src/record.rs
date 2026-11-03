@@ -170,6 +170,7 @@ struct Held {
 /// the selected one (omni preview), its Mod X / Mod Y (velocity linked to them).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Extra {
+    pub expression:Option<u32>,
     /// Channel index (`os_model::Channel::index`).
     pub channel: Option<u16>,
     pub mod_x: Option<u8>,
@@ -672,6 +673,7 @@ impl App {
         let (a, b) = quantized(s, start, end);
         let take = s.rec.take.as_mut().expect("checked");
         let mut note = Note { length: b - a, key: h.key, velocity: h.velocity, ..Note::step(h.channel, a) };
+        if let Some(id)=h.extra.expression{if let Some(mut e)=s.project.mpe.get(id).cloned(){let duration=(end-start).max(1)as f32;for lane in &mut e.lanes{for point in lane.iter_mut(){point.at=(point.at/duration).clamp(0.,1.);}lane.sort_by(|a,b|a.at.total_cmp(&b.at));}note.expression=s.project.mpe.add(e);}}
         note.mod_x = h.extra.mod_x.unwrap_or(note.mod_x);
         note.mod_y = h.extra.mod_y.unwrap_or(note.mod_y);
         note.release = h.release.unwrap_or(note.release);
@@ -1346,3 +1348,5 @@ mod tests {
         assert_eq!(notes(&app), [(0, 48, 0), (0, 96, 0)]);
     }
 }
+
+impl App{pub(crate) fn record_mpe_point(&mut self,src:Src,lane:u8,value:f32){let now=self.transport.tick();let Some(h)=self.state.rec.held.iter().find(|h|h.src==src)else{return;};let Some(id)=h.extra.expression else{return;};let at=(now-h.start).max(0.)as f32;if let Some(e)=id.checked_sub(1).and_then(|i|self.state.project.mpe.expressions.get_mut(i as usize)){let points=&mut e.lanes[usize::from(lane.min(2))];if points.len()<100_000&&points.last().is_none_or(|p|p.value!=value){points.push(os_model::mpe::Point{at,value,smooth:false});}}}}

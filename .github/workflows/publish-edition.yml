@@ -1,0 +1,21 @@
+name: Publish complete Michael Lane Edition
+on:
+  push:
+    branches: [michael-lane]
+    paths: ['packaging/github-release.json']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: michael-lane-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify downloads and publish full DAW release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 packaging/github-publish.py

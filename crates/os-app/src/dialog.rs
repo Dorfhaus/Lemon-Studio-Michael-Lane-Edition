@@ -92,6 +92,7 @@ pub enum Then {
     DeletePreset(usize, PathBuf),
     /// Where to save the toolbar's layout as a preset (spec: ui/toolbar-menu.md §8).
     SaveToolbarPreset,
+    MarkerProfile(u8),
     /// The delete question for this toolbar preset file: Yes deletes it.
     DeleteToolbarPreset(PathBuf),
     /// Load sample... for this rack row.
@@ -208,6 +209,7 @@ pub fn spans(parts: &[&str]) -> Vec<(String, bool)> {
 }
 
 pub enum Body {
+    ClipFx(u16,usize),
     Warp(crate::warp::Form),
     Ai,
     Headphones(crate::headphones::Form),
@@ -240,6 +242,7 @@ impl Modal {
 /// The parts of a dialog that take clicks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DHit {
+    ClipFx(crate::clip_effects::Command),
     Warp(crate::warp::Command),
     AiEnable,
     AiApprove(bool),
@@ -486,7 +489,7 @@ impl App {
         }
         self.modal_changed();
         let then = match m.body {
-            Body::Warp(_)=>{self.drag=None;return;},
+            Body::ClipFx(..) | Body::Warp(_)=>{self.drag=None;return;},
             Body::Msg(m) => {
                 // Ok with Remember my choice ticked turns the message off; Cancel never does.
                 if let Some((entry, true)) = m.remember {
@@ -530,7 +533,7 @@ impl App {
         Some(match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Reply::Button(m.escape()),
             Body::File(_) => Reply::File(None),
-            Body::Warp(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
+            Body::ClipFx(..) | Body::Warp(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
             Body::TimeSig(_) => Reply::Button(Answer::Cancel),
             Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => Reply::Button(Answer::Cancel),
         })
@@ -539,7 +542,7 @@ impl App {
     fn top_file(&mut self) -> Option<&mut FileDlg> {
         match &mut self.state.dialogs.last_mut()?.body {
             Body::File(f) => Some(f),
-            Body::Warp(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::ClipFx(..) | Body::Warp(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
         }
     }
 
@@ -612,7 +615,7 @@ impl App {
             DHit::Button(i) => {
                 let a = match &m.body {
                     Body::Msg(msg) => msg.buttons.get(i).copied().filter(|a| !(*a==Answer::Ok && matches!(msg.then,Then::StemChoose(_,0)))),
-                    Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+                    Body::ClipFx(..) | Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
                 };
                 if let Some(a) = a {
                     self.answer(Reply::Button(a));
@@ -621,6 +624,7 @@ impl App {
             // Manage shortcuts: Apply keeps the form and closes; a box opens or closes its list; an entry is picked
             // (a swap within its group, `Form::pick`); Reset all fills in the defaults.
             DHit::Apply => self.answer(Reply::Button(Answer::Ok)),
+            DHit::ClipFx(c)=>crate::clip_effects::command(self,c),
             DHit::Warp(c)=>crate::warp::command(self,c),
             DHit::CommandShortcut(i)=>{if let Body::Shortcuts(f)=&mut m.body{f.capture=Some(i);f.open=None;f.notice="Press a shortcut. Backspace clears; Esc cancels.".into();}}
             DHit::CommandPage=>{if let Body::Shortcuts(f)=&mut m.body{f.page=(f.page+1)%crate::shortcuts::COMMANDS.len().div_ceil(crate::shortcuts::COMMAND_PAGE);f.capture=None;}}
@@ -726,7 +730,7 @@ impl App {
         let Some(m) = self.state.dialogs.last_mut() else { return };
         match &mut m.body {
             Body::Warp(_)=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}else if matches!(key,Key::Named(NamedKey::Delete|NamedKey::Backspace)){crate::warp::command(self,crate::warp::Command::Delete);}}
-            Body::Ai=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}}
+            Body::ClipFx(..) | Body::Ai=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}}
             Body::RoutePicker(f)=>{
                 if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}
                 else if f.search.key(key,ctrl,alt){f.filter();}
@@ -862,7 +866,7 @@ impl App {
     pub fn top_message(&self) -> Option<(String, String)> {
         match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Some((m.title.clone(), m.plain())),
-            Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::ClipFx(..) | Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
         }
     }
 }

@@ -313,6 +313,7 @@ struct ChannelState {
     init_adjust: Adjust,
     /// A layer channel: its children and how it hands its notes on.
     layer: Option<layers::Layer>,
+    stack: Vec<usize>,
     /// The envelopes, LFOs and filter its hosted instrument gets (one that runs them on its voices).
     voicing: crate::instrument::ChannelVoicing,
     /// A hosted instrument's channel: the layer whose note it was given last. A hosted instrument hears that layer's
@@ -999,6 +1000,7 @@ pub struct Engine {
     /// Mixer tracks in processing order: every track before the tracks it sends to.
     order: Vec<usize>,
     parallel: mix_workers::State,
+    mpe:Vec<(usize,crate::mpe::Playback)>,
     triggers: Vec<Trigger>,
     next_trigger: usize,
     /// Audio clips already under way where playback starts, moved to that tick (spec: audio/audio-clips.md,
@@ -1219,6 +1221,9 @@ impl Engine {
         // as any pan edit (`continue_from`).
         let pan_law = laws::PanLaw::from_event(project.panning_law);
 
+        let stacks:Vec<_>=(0..project.channels.len()).map(|r|os_model::instrument_stack(project,r).into_iter().skip(1).collect::<Vec<_>>()).collect();
+        let mut stack_enabled:Vec<_>=project.channels.iter().map(|c|c.enabled).collect();
+        for (row,children) in stacks.iter().enumerate(){if !project.channels[row].enabled {for &child in children {stack_enabled[child]=false;}}}
         let mut channels: Vec<ChannelState> = project
             .channels
             .iter()
@@ -1260,7 +1265,8 @@ impl Engine {
                 };
                 let env_on = ch.kind == ChannelKind::Sampler;
                 let adjust = Adjust::of(ch);
-                let volume = if ch.enabled { laws::channel_gain(ch.volume) * f64::from(adjust.mult) } else { 0.0 };
+                let enabled=stack_enabled[row];
+                let volume = if enabled { laws::channel_gain(ch.volume) * f64::from(adjust.mult) } else { 0.0 };
                 // Stretching (spec: audio/time-stretch.md): resample plays the sample faster or slower; the other methods
                 // play a stretched copy, made once per library (the realtime ones one copy per key, made below). A
                 // library that leaves stretching to the host's sampler plugin plays them by resampling instead, at the
@@ -1302,7 +1308,7 @@ impl Engine {
                     pan_law,
                     insert,
                     base_rate: src_ratio,
-                    enabled: ch.enabled,
+                    enabled,
                     src_ratio,
                     knob,
                     init_knob: knob,
@@ -1333,6 +1339,7 @@ impl Engine {
                     adjust,
                     init_adjust: adjust,
                     layer: (ch.kind == ChannelKind::Layer).then(|| layers::Layer::of(ch)),
+                    stack: stacks[row].clone(),
                     voicing: crate::instrument::ChannelVoicing::of(ch, ppq),
                     via: None,
                 };
@@ -1396,7 +1403,7 @@ impl Engine {
                         vol: (m.volume.unwrap_or(0.8) * 16000.0).round() as i32,
                         pan: (m.pan.unwrap_or(0.0) * 6400.0).round() as i32,
                         sep: (m.stereo_separation.unwrap_or(0.0) * 64.0).round() as i32,
-                        on: m.enabled,
+                        on: m.enabled && (!m.clip_fx || project.arrangement().is_some_and(|a|a.clips.iter().any(|clip|!clip.muted && a.tracks.get(usize::from(clip.track)).is_none_or(|t|t.enabled) && matches!(clip.source,ClipSource::Channel(id) if project.channels.iter().any(|c|c.index==id&&c.mixer_track==m.index&&c.enabled))))),
                         law: pan_law,
                         swap: m.swap,
                         polarity: m.polarity,
@@ -1433,6 +1440,10 @@ impl Engine {
         controls.sort_by_key(|c| c.tick); // stable: equal ticks keep their order
         let (mut sched, end_tick) = schedule(project, mode, &mut report);
         sched.sort_by_key(|s| s.tick);
+        let mut mpe=vec![];
+        for (row,ch) in project.channels.iter().enumerate(){let config=project.mpe.config(ch.index);if !config.enabled{continue;}let notes=sched.iter().filter(|n|n.channel==row&&n.cut.is_none()&&!n.slide).map(|n|crate::mpe::Scheduled{start:n.tick,end:if n.len>0{n.tick+n.len}else{end_tick.max(n.tick+1)},key:n.key.min(127)as u8,velocity:n.velocity,release:n.release,expression:project.mpe.get(n.expression).map(|e|e.window(0.,if n.expression_len>0{n.len as f32/n.expression_len as f32}else{1.})).unwrap_or_default(),fine:laws::fine_pitch_cents(n.fine)as f32/100.}).collect();mpe.push((row,crate::mpe::Playback::new(config,notes)));}
+        sched.retain(|n|n.cut.is_some()||!mpe.iter().any(|v|v.0==n.channel));
+
         let mut triggers: Vec<Trigger> = sched
             .into_iter()
             .filter_map(|n: Sched| {
@@ -1595,6 +1606,7 @@ impl Engine {
             tracks,
             order,
             parallel: mix_workers::State::new(),
+            mpe,
             triggers,
             next_trigger: 0,
             late: Vec::new(),
@@ -1818,6 +1830,13 @@ impl Engine {
     /// next tick as it came; a channel without one takes pitch bend (0xE0) as a bend of ±`bend_cents` from the centre
     /// on top of its pitch, and ignores the rest.
     pub fn midi(&mut self, channel: usize, bytes: [u8; 3], bend_cents: f64) {
+        if let Some((_,p))=self.mpe.iter_mut().find(|p|p.0==channel){let events=p.live_message(bytes);let children=self.channels.get(channel).map(|c|c.stack.clone()).unwrap_or_default();for b in events{self.midi_one(channel,b,0.);for &child in &children{self.midi_one(child,b,0.);}}return;}
+
+        let children=self.channels.get(channel).map(|c|c.stack.clone()).unwrap_or_default();
+        for child in children {self.midi_one(child,bytes,bend_cents);}
+        self.midi_one(channel,bytes,bend_cents);
+    }
+    fn midi_one(&mut self, channel: usize, bytes:[u8;3],bend_cents:f64){
         let Some(ch) = self.channels.get_mut(channel) else { return };
         if ch.instrument.0.is_some() {
             self.tail_done = false;
@@ -1863,6 +1882,11 @@ impl Engine {
     }
 
     pub fn note_for(&mut self, channel: usize, key: u16, velocity: u8, frames: u64) {
+        let children=self.channels.get(channel).map(|c|c.stack.clone()).unwrap_or_default();
+        self.note_for_one(channel,key,velocity,frames);
+        for child in children {self.note_for_one(child,key,velocity,frames);}
+    }
+    fn note_for_one(&mut self,channel:usize,key:u16,velocity:u8,frames:u64){
         if !self.has_instrument(channel) {
             return;
         }
@@ -2023,6 +2047,7 @@ impl Engine {
     /// notes, an open editor): its held notes would ring there for as long as it is paused.
     pub fn release_instruments(&mut self) {
         self.send_held_offs();
+        for(_,p)in &mut self.mpe{p.released();}
         self.relaunch_clips |= self.inst_offs.iter().any(|o| o.3.is_some());
         self.inst_offs.clear();
         let channels = &self.channels;
@@ -2035,6 +2060,11 @@ impl Engine {
     /// Start a live note on channel `channel` (rack position) at the next tick; it rings until
     /// `note_off` (or the sample ends). Velocity 0..=128, 100 = unity.
     pub fn note_on(&mut self, channel: usize, key: u16, velocity: u8) {
+        let children=self.channels.get(channel).map(|c|c.stack.clone()).unwrap_or_default();
+        self.note_on_one(channel,key,velocity);
+        for child in children {self.note_on_one(child,key,velocity);}
+    }
+    fn note_on_one(&mut self,channel:usize,key:u16,velocity:u8){
         let Some(ch) = self.channels.get(channel) else { return };
         self.tail_done = false;
         if ch.instrument.0.is_some() {
@@ -2053,7 +2083,7 @@ impl Engine {
             Some(i) => ((i + 1) as u16, 1.0),
             None => (0, laws::playback_rate(key, 0)),
         };
-        self.note_off(channel, key); // retrigger
+        self.note_off_one(channel, key); // retrigger
         self.voices.push(Voice {
             origin: None,
             channel,
@@ -2083,6 +2113,11 @@ impl Engine {
 
     /// Release a live note with a short fade.
     pub fn note_off(&mut self, channel: usize, key: u16) {
+        let children=self.channels.get(channel).map(|c|c.stack.clone()).unwrap_or_default();
+        self.note_off_one(channel,key);
+        for child in children {self.note_off_one(child,key);}
+    }
+    fn note_off_one(&mut self,channel:usize,key:u16){
         if self.has_instrument(channel) && self.sounding.iter().any(|&(c, k, end)| c == channel && k == key && end == u64::MAX) {
             self.inst_live.push((channel, key.min(127) as u8, -1.0));
         }
@@ -2341,6 +2376,9 @@ impl Engine {
     /// take the new channel volume / pan and mixer levels (ramped). A tempo change keeps the tick position and sizes
     /// the ticks after it.
     pub fn continue_from(&mut self, old: &mut Engine) {
+        for(row,p)in &mut self.mpe{if let Some((_,previous))=old.mpe.iter_mut().find(|v|v.0==*row){p.adopt(previous);}}
+        for(row,p)in &mut old.mpe{if !self.mpe.iter().any(|v|v.0==*row){for b in p.shutdown(){old.inst_midi.push((*row,b));for &child in &old.channels[*row].stack{old.inst_midi.push((child,b));}}}}
+
         self.varispeed = std::mem::take(&mut old.varispeed);
         for (link,env) in &mut self.peak_links{if let Some((_,previous))=old.peak_links.iter().find(|(l,_)|l.source==link.source&&l.target==link.target){*env=*previous;}}
 
@@ -2410,6 +2448,18 @@ impl Engine {
         self.inst_live = std::mem::take(&mut old.inst_live);
         self.audition=std::mem::take(&mut old.audition);self.audition_held=std::mem::take(&mut old.audition_held);self.audition_frame=old.audition_frame;
         self.inst_midi = std::mem::take(&mut old.inst_midi);
+        // A detached stack member must not retain live notes or a sustain pedal whose
+        // release will now go only to its former parent.
+        let mut detached=std::collections::BTreeSet::new();
+        for (row,previous) in old.channels.iter().enumerate(){for &child in &previous.stack {
+            if child<n && !self.channels.get(row).is_some_and(|c|c.stack.contains(&child)){detached.insert(child);}
+        }}
+        for child in detached {
+            let keys:Vec<_>=self.sounding.iter().filter(|&&(c,_,end)|c==child&&end==u64::MAX).map(|&(_,k,_)|k).collect();
+            for key in keys {self.note_off_one(child,key);}
+            for channel in 0..16 {self.midi_one(child,[0xb0|channel,64,0],200.);self.midi_one(child,[0xb0|channel,123,0],200.);}
+        }
+
         // A controller's pitch bend stays on its channel.
         for (new, o) in self.channels.iter_mut().zip(&old.channels) {
             if o.bend != 0.0 {
@@ -2873,6 +2923,10 @@ impl Engine {
         let song_end = !self.looping && !self.live_only && self.end_tick > 0 && tick + 1 == self.end_tick;
         self.release_notes(tick, song_end);
         self.start_notes(tick);
+        let mut mpe_events=vec![];
+        for (row,p) in &mut self.mpe{p.pitch_offset=self.channels.get(*row).map_or(0.,ChannelState::hosted_shift);let on=!self.live_only&&self.channels.get(*row).is_some_and(|c|c.enabled);for b in p.tick(tick,on){mpe_events.push((*row,b));}}
+        for(row,b)in mpe_events{let children=self.channels.get(row).map(|c|c.stack.clone()).unwrap_or_default();self.midi_one(row,b,0.);for child in children{self.midi_one(child,b,0.);}}
+
         self.audition_tick(len);
         let (channels, w) = (&self.channels, self.sinc_w);
         let bus = &mut self.bus;
@@ -3121,6 +3175,11 @@ impl Engine {
     /// A slide note on a layer moves the voices the layer's notes started, on all its children; a slide note on a
     /// child does not move those (spec: audio/note-rules.md "Layer channels").
     fn start_slide(&mut self, t: Trigger) {
+        let children=self.channels[t.channel].stack.clone();
+        self.start_slide_one(t);
+        for child in children {self.start_slide_one(Trigger{channel:child,..t});}
+    }
+    fn start_slide_one(&mut self,t:Trigger){
         let n = t.end.map_or(0, |e| e.saturating_sub(t.tick)).min(u64::from(u32::MAX - 1)) as u32;
         let key = t.key.min(127) as u8;
         let is_layer = self.channels[t.channel].layer.is_some();
@@ -3180,6 +3239,11 @@ impl Engine {
 
     /// Starts one note or audio clip: a voice of the engine's sampler, or a note at the channel's instrument.
     fn start_trigger(&mut self, t: Trigger, step: u64) {
+        let children=self.channels[t.channel].stack.clone();
+        self.start_trigger_one(t,step);
+        for child in children {self.start_trigger_one(Trigger{channel:child,..t},step);}
+    }
+    fn start_trigger_one(&mut self,t:Trigger,step:u64){
         self.sounding.push((t.channel, t.key, t.end.unwrap_or(t.tick + step)));
         if self.channels[t.channel].plugin {
             if self.channels[t.channel].instrument.0.is_some() {
@@ -3804,6 +3868,8 @@ impl Engine {
     /// A note off to its instrument for every note held there: scheduled notes that have not ended, live notes, and
     /// voices whose notes have not ended.
     fn send_held_offs(&self) {
+        for(row,p)in &self.mpe{let events=p.offs();let mut rows=vec![*row];rows.extend(self.channels.get(*row).map(|c|c.stack.clone()).unwrap_or_default());for row in rows{if let Some(Ok(mut inst))=self.channels.get(row).and_then(|ch|ch.instrument.0.as_ref()).map(|i|i.lock()){for &b in &events{inst.midi(0,b);}}}}
+
         // The key each note was given to its instrument as (moved by the channel pitch, `InstTuning`).
         let sent = |c: usize, key: u8| self.inst_tuning.get(c).map_or(key, |t| t.sent(key));
         // Audio clips a hosted instrument plays end with a choke of their voice: a note off would leave a sample
@@ -4218,6 +4284,9 @@ fn processing_order(tracks: &[MixTrack]) -> Vec<usize> {
 /// A scheduled note on the song's tick line.
 #[derive(Debug, Clone, Copy)]
 struct Sched {
+    expression:u32,
+    expression_len:u64,
+    release:u8,
     origin: Option<ClipOrigin>,
     tick: u64,
     channel: usize,
@@ -4247,6 +4316,9 @@ struct Sched {
 impl Sched {
     fn note(tick: u64, n: &os_model::Note) -> Self {
         Sched {
+            expression:n.expression,
+            expression_len:u64::from(n.length),
+            release:n.release,
             origin: None,
             tick,
             channel: usize::from(n.channel),
@@ -4332,12 +4404,36 @@ fn push_note(out: &mut Vec<Sched>, start: i64, n: &os_model::Note, project: &Pro
 /// next clip of the same pattern taking the pattern over, or its end).
 #[derive(Debug, Clone, Copy)]
 struct PatternPlay {
+    rate:f64,
     pattern: u16,
     from: u64,
     len: u64,
     origin: i64,
     end: u64,
     starts_until: u64,
+}
+
+impl PatternPlay {
+    fn scaled_tick(self,tick:i64)->i64 {
+        let start=self.origin+self.from as i64;
+        start+((tick-start) as f64/self.rate).round() as i64
+    }
+}
+fn push_pattern_note(out:&mut Vec<Sched>,play:PatternPlay,n:&os_model::Note,project:&Project,swing:bool,cap:Option<u64>){
+    if play.rate==1. {push_note(out,play.origin,n,project,swing,cap);return;}
+    let start=out.len();push_note(out,play.origin,n,project,swing,None);
+    let mut written=start;
+    for i in start..out.len() {
+        let mut note=out[i];
+        let tick=play.scaled_tick(note.tick as i64);
+        if tick<0||tick as u64>=play.starts_until {continue;}
+        note.tick=tick as u64;
+        note.expression_len=(note.expression_len as f64/play.rate).round() as u64;
+        if note.len>0 {note.len=(note.len as f64/play.rate).round().max(1.) as u64;}
+        if let Some(cap)=cap {if note.len>0 {note.len=note.len.min(cap.saturating_sub(note.tick));}}
+        out[written]=note;written+=1;
+    }
+    out.truncate(written);
 }
 
 /// The pattern clips that play, with their windows. A clip whose start offset is negative (uncut) plays the whole
@@ -4362,13 +4458,13 @@ fn pattern_plays(project: &Project, clips: &[os_model::Clip]) -> Vec<PatternPlay
             continue;
         }
         let (from, len) = match c.window {
-            Some(w) => (w.0.max(0.0).round() as u64, u64::from(c.length)),
+            Some(w) => (w.0.max(0.0).round() as u64, (f64::from(c.length)*c.pattern_rate()).round() as u64),
             None => (0, pattern_length(project, n)),
         };
         let start = u64::from(c.position);
-        let end = start + len;
+        let end = start + (len as f64/c.pattern_rate()).round() as u64;
         let takeover = later.iter().take_while(|&&(_, _, m)| m == n).map(|&(_, d, _)| u64::from(d.position)).find(|&p| p > start);
-        out.push(PatternPlay { pattern: n, from, len, origin: i64::from(c.position) - from as i64, end, starts_until: end.min(takeover.unwrap_or(u64::MAX)) });
+        out.push(PatternPlay { rate:c.pattern_rate(), pattern: n, from, len, origin: i64::from(c.position) - from as i64, end, starts_until: end.min(takeover.unwrap_or(u64::MAX)) });
     }
     out
 }
@@ -4393,7 +4489,7 @@ fn schedule_controls(project: &Project, mode: PlayMode) -> Vec<(u64, usize, u16,
             // Points inside a clip's window act, placed with the clip like notes.
             for play in pattern_plays(project, clips) {
                 for p in points(play.pattern).iter().filter(|p| u64::from(p.position) >= play.from && u64::from(p.position) < play.from + play.len) {
-                    let tick = play.origin + i64::from(p.position);
+                    let tick = play.scaled_tick(play.origin + i64::from(p.position));
                     if tick >= 0 && (tick as u64) < play.starts_until {
                         out.push((tick as u64, usize::from(p.channel()), p.param(), p.value));
                     }
@@ -4468,16 +4564,16 @@ fn schedule(project: &Project, mode: PlayMode, report: &mut EngineReport) -> (Ve
                     let cap = truncated.then_some(play.end);
                     if p >= play.from && p < play.from + play.len {
                         // Starts inside the window: from its place in the clip, unless the pattern was taken over.
-                        if play.origin + (p as i64) < play.starts_until as i64 {
-                            push_note(&mut out, play.origin, note, project, true, cap);
+                        if play.scaled_tick(play.origin + (p as i64)) < play.starts_until as i64 {
+                            push_pattern_note(&mut out,play,note,project,true,cap);
                         }
                     } else if truncated && p < play.from && note.length > 0 && p + u64::from(note.length) > play.from {
                         // Began before the window and reaches into it: starts at the clip's position, for the part
                         // inside the window.
                         let inside = (p + u64::from(note.length)).min(play.from + play.len) - play.from;
                         let cut = os_model::Note { position: play.from as u32, length: inside as u32, ..*note };
-                        if play.origin + (play.from as i64) < play.starts_until as i64 {
-                            push_note(&mut out, play.origin, &cut, project, false, cap);
+                        if play.scaled_tick(play.origin + (play.from as i64)) < play.starts_until as i64 {
+                            push_pattern_note(&mut out,play,&cut,project,false,cap);
                         }
                     }
                 }
@@ -4501,7 +4597,7 @@ fn schedule(project: &Project, mode: PlayMode, report: &mut EngineReport) -> (Ve
                         // An audio clip plays its channel's sample from the window start (milliseconds), cut at the clip end.
                         Some(ChannelKind::AudioClip | ChannelKind::Sampler) => {
                             let from_s = c.window.map_or(0.0, |w| w.0.max(0.0) / 1000.0);
-                            out.push(Sched { origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: usize::from(ch), key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
+                            out.push(Sched { expression:0, expression_len:0, release:64, origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: usize::from(ch), key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
                         }
                         Some(ChannelKind::Automation) => {}
                         _ => report.automation_clips_ignored += 1,
@@ -4718,6 +4814,16 @@ mod tests {
     }
 
     // spec: audio/swing.md (whole ticks; notes in the first half of an odd step move towards its middle)
+    #[test] fn batch2_pattern_stretch_schedules_real_note_starts_and_lengths_per_clip(){
+        let notes=vec![long_note(0,48,0),long_note(96,48,0)];
+        let mut slow=os_model::Clip::new(0,384,0,ClipSource::Pattern(1));slow.window=Some((0.,192.));slow.pattern_speed=0.5;
+        let mut normal=os_model::Clip::new(768,192,0,ClipSource::Pattern(1));normal.window=Some((0.,192.));
+        let p=song(notes.clone(),vec![slow,normal]);let mut report=EngineReport::default();let (sched,_)=schedule(&p,PlayMode::Song,&mut report);
+        let got:Vec<_>=sched.iter().map(|n|(n.tick,n.len)).collect();assert_eq!(got,vec![(0,96),(192,96),(768,48),(864,48)]);
+        assert_eq!(p.patterns[0].notes,notes);
+        let mut p=p;p.arrangements[0].clips[0].pattern_speed=2.;p.arrangements[0].clips[0].length=96;
+        let (sched,_)=schedule(&p,PlayMode::Song,&mut report);assert_eq!((sched[1].tick,sched[1].len),(48,24));
+    }
     #[test]
     fn swing_delays_off_beat_sixteenths() {
         assert_eq!(swing_delay(0, 96, 128, 128), 0);
@@ -5814,6 +5920,17 @@ mod tests {
     /// The events of kind `kind` a recorder got: (frame, key, value).
     fn got(r: &Arc<std::sync::Mutex<Rec>>, kind: &str) -> Vec<(u64, u8, f32)> {
         r.lock().unwrap().log.iter().filter(|l| l.1 == kind).map(|l| (l.0, l.2, l.3)).collect()
+    }
+
+    #[test]fn batch2_instrument_stack_pattern_live_release_and_mute(){
+        let mut p=layered(0,vec![long_note(0,48,0)],&[ChannelKind::Plugin]);p.channels[0].kind=ChannelKind::Plugin;
+        let setup=|p:&Project|{let mut e=Engine::new(p,&mut SampleLibrary::new(None),48000,PlayMode::Pattern(1));let recs:Vec<_>=(0..2).map(|i|{let r=Arc::new(std::sync::Mutex::new(Rec::default()));e.set_instrument(i,r.clone());r}).collect();(e,recs)};
+        let (mut e,recs)=setup(&p);let out=e.render_all(512);assert!(out.iter().any(|v|v.abs()>0.1));assert_eq!(got(&recs[0],"on"),got(&recs[1],"on"));assert_eq!(got(&recs[0],"off"),got(&recs[1],"off"));assert_eq!(got(&recs[0],"on").len(),1);
+        p.patterns[0].notes.clear();let(mut e,recs)=setup(&p);e.note_on(0,64,100);e.render_ticks(2,&mut Vec::new());e.note_off(0,64);e.render_ticks(2,&mut Vec::new());
+        for r in recs{assert_eq!(got(&r,"on").len(),1);assert_eq!(got(&r,"off").len(),1);}
+        let(mut old,recs)=setup(&p);old.note_on(0,67,100);old.render_ticks(2,&mut Vec::new());
+        let mut detached=p.clone();detached.channels[0].layer_children.clear();let mut next=Engine::new(&detached,&mut SampleLibrary::new(None),48000,PlayMode::Pattern(1));for (i,r) in recs.iter().enumerate(){next.set_instrument(i,r.clone());}next.continue_from(&mut old);next.render_ticks(2,&mut Vec::new());assert!(got(&recs[0],"off").is_empty());assert_eq!(got(&recs[1],"off").len(),1);next.note_off(0,67);next.render_ticks(2,&mut Vec::new());assert_eq!(got(&recs[0],"off").len(),1);
+        p.channels[0].enabled=false;p.patterns[0].notes=vec![long_note(0,48,0)];let(mut e,_)=setup(&p);assert!(e.render_all(512).iter().all(|v|v.abs()<1e-6));
     }
 
     /// A layer's note makes no sound of its own: every child plays it as its own note, with the layer's pitch on its
@@ -8402,7 +8519,13 @@ mod tests {
         let e=Engine::with_instruments(&p,&mut lib,44100,PlayMode::Song,&[(0,probe)]);
         assert!(e.channels[0].instrument.0.is_some(),"unfreeze reattaches");
     }
-
+ #[test]fn mpe_engine_delivers_independent_notes_and_releases_on_pause(){
+  #[derive(Default)]struct MpeProbe{decoder:crate::mpe::Decoder,events:Vec<crate::mpe::Event>,held:std::collections::BTreeMap<i32,f32>}
+  impl Instrument for MpeProbe{fn note_on(&mut self,_:u32,_:u8,_:f32){panic!("MPE must not use a shared legacy note")}fn note_off(&mut self,_:u32,_:u8){}fn midi(&mut self,_:u32,b:[u8;3]){if let Some(e)=self.decoder.receive(b){for event in e{match event{crate::mpe::Event::On{id,..}=>{self.held.insert(id,0.);},crate::mpe::Event::Off{id,..}=>{self.held.remove(&id);},crate::mpe::Event::Expression{id,lane:0,value}=>{if let Some(v)=self.held.get_mut(&id){*v=value;}},_=>{}}self.events.push(event);}}}fn process(&mut self,_:u32,l:&mut[f32],r:&mut[f32]){let v=self.held.len()as f32*0.1;l.fill(v);r.fill(v);}fn active(&self)->bool{!self.held.is_empty()}}
+  let mut p=project(vec![long_note(0,96,0),long_note(0,96,0)],vec![]);p.channels[0].kind=ChannelKind::Plugin;p.mpe.set_config(0,os_model::mpe::Config{enabled:true,..Default::default()});let mut curve=os_model::mpe::Expression::default();curve.set(0,0.,12.,false);p.patterns[0].notes[0].expression=p.mpe.add(curve);
+  let probe=Arc::new(Mutex::new(MpeProbe::default()));let mut e=Engine::new(&p,&mut SampleLibrary::default(),48000,PlayMode::Pattern(1));e.set_instrument(0,probe.clone());let mut audio=vec![0.;512];e.process(&mut audio);assert!(audio.iter().any(|v|v.abs()>0.01));{let pr=probe.lock().unwrap();assert_eq!(pr.held.len(),2);assert!(pr.held.values().any(|v|(*v-12.).abs()<0.01));assert!(pr.held.values().any(|v|v.abs()<0.01));}
+  let mut next=Engine::new(&p,&mut SampleLibrary::default(),48000,PlayMode::Pattern(1));next.set_instrument(0,probe.clone());next.continue_from(&mut e);drop(e);assert_eq!(probe.lock().unwrap().held.len(),2,"engine update must retain sounding MPE voices");next.release_instruments();assert!(probe.lock().unwrap().held.is_empty());next.process(&mut audio);assert_eq!(probe.lock().unwrap().held.len(),2,"resume restores independent voices");drop(next);assert!(probe.lock().unwrap().held.is_empty());
+ }
 }
 
 #[cfg(test)]
@@ -8423,4 +8546,6 @@ mod rack_strip_tests {
   e.bus.iter_mut().for_each(|b|*b=vec![0.;256]);e.bus[1].fill(0.2);let transport=e.transport_at(0);e.mix(128,&transport);
   assert!(e.track_output(1).iter().all(|x|(*x-0.4).abs()<1e-5),"Only the hosted strip should process: no native strip, disabled EQ or bypassed effects");
  }
+
+
 }

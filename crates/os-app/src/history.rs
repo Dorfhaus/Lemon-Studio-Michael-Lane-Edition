@@ -54,6 +54,11 @@ pub const PROJECT_INFO: &str = "Project info";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Snap {
     AudioWarps(Vec<os_model::AudioWarp>),
+    StackLinks(usize,Vec<u16>),
+    ClipFxOwners(Vec<u16>),
+    MpeConfig(Vec<(u16,os_model::mpe::Config)>),
+    ClipFxTargets(Vec<os_model::Automation>,Vec<os_model::InitControl>,Vec<os_model::PeakLink>),
+    StackInstrument(Box<RackSide>,usize,Vec<u8>),
     Tempo(f64),
     Ara(usize, Option<String>, Option<Vec<u8>>),
     MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
@@ -196,6 +201,8 @@ pub struct Settings {
 /// instruments as the delete found them (row, `Plugins::available` index, saved state), hosted again by an undo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
+    pub mpe_channels:Vec<(u16,os_model::mpe::Config)>,
+    pub clip_fx_channels:Vec<u16>,
     pub original_values: std::collections::HashMap<u16, f64>,
     pub full: bool,
     pub gone: Vec<usize>,
@@ -217,6 +224,8 @@ impl Rows {
     pub fn now(s: &State, full: bool, gone: Vec<usize>, back: Vec<(usize, usize, Vec<u8>)>) -> Rows {
         let (p, r) = (&s.project, &s.rack);
         Rows {
+            mpe_channels:p.mpe.channels.clone(),
+            clip_fx_channels:p.clip_fx_channels.clone(),
             original_values: s.playlist.original_values.clone(),
             full,
             gone,
@@ -252,6 +261,8 @@ impl Rows {
         };
         let m = |r: usize| map.get(r).copied().flatten();
         let p = &mut s.project;
+        p.mpe.channels=self.mpe_channels;
+        p.clip_fx_channels=self.clip_fx_channels;
         (p.channels, p.patterns, p.automations) = (self.channels, self.patterns, self.automations);
         (p.arrangements, p.init_controls) = (self.arrangements, self.init_controls);
         s.playlist.original_values = self.original_values;
@@ -346,6 +357,14 @@ impl Snap {
     /// What this covers, as the project has it now.
     fn now(&self, s: &State) -> Snap {
         match self {
+            Snap::ClipFxTargets(..)=>Snap::ClipFxTargets(s.project.automations.clone(),s.project.init_controls.clone(),s.project.peak_links.clone()),
+            Snap::MpeConfig(_)=>Snap::MpeConfig(s.project.mpe.channels.clone()),
+            Snap::ClipFxOwners(_)=>Snap::ClipFxOwners(s.project.clip_fx_channels.clone()),
+            Snap::StackLinks(row,_)=>Snap::StackLinks(*row,s.project.channels.get(*row).map(|c|c.layer_children.clone()).unwrap_or_default()),
+            Snap::StackInstrument(r,index,blob)=>{
+                let current=s.project.channels.get(r.row).and_then(|_|s.params.lists.get(&r.row)).and_then(|l|l.plugin.upgrade()).and_then(|p|p.lock().ok()?.save_state()).unwrap_or_else(||blob.clone());
+                Snap::StackInstrument(Box::new(RackSide::now(s,r.row)),*index,current)
+            },
             Snap::AudioWarps(_)=>Snap::AudioWarps(s.project.audio_warps.clone()),
             Snap::Tempo(_) => Snap::Tempo(s.tempo),
             Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
@@ -426,6 +445,11 @@ impl Snap {
             Snap::Several(v) => v.iter_mut().for_each(|x| x.rescale(from, to)),
             // A channel or an initial value holds no ticks; a timebase step's are at its own timebase.
             Snap::Knob(..)
+            | Snap::ClipFxTargets(..)
+            | Snap::MpeConfig(..)
+            | Snap::ClipFxOwners(..)
+            | Snap::StackLinks(..)
+            | Snap::StackInstrument(..)
             | Snap::AudioWarps(..)
             | Snap::Tempo(..)
             | Snap::MixerMove{..}
@@ -475,6 +499,15 @@ impl Snap {
     /// Puts this into the project. A pattern's step also shows that pattern, as the piano roll's undo always did.
     fn put(self, s: &mut State) {
         match self {
+            Snap::ClipFxTargets(a,i,p)=>{s.project.automations=a;s.project.init_controls=i;crate::peak_link::restore_removed(s,&p);s.project.peak_links=p;},
+            Snap::MpeConfig(v)=>s.project.mpe.channels=v,
+            Snap::ClipFxOwners(v)=>s.project.clip_fx_channels=v,
+            Snap::StackLinks(row,v)=>{if let Some(c)=s.project.channels.get_mut(row){c.layer_children=v;}},
+            Snap::StackInstrument(r,index,blob)=>{
+                let (row,back)=(r.row,r.ch.is_some()&&r.row==s.project.channels.len());
+                put_rack(s,*r);
+                if back{s.rows_moved.push(((0..s.project.channels.len()).map(Some).collect(),vec![(row,index,blob)]));}
+            },
             Snap::AudioWarps(v)=>s.project.audio_warps=v,
             Snap::Tempo(v) => s.tempo=v,
             Snap::Pattern { number, notes, controls, length } => {

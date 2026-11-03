@@ -2184,6 +2184,9 @@ dependencies = [
  "os-theme",
  "os-ui",
  "os-vst3",
+ "rfd",
+ "serde",
+ "serde_json",
  "tiny-skia",
 ]
 
@@ -2999,6 +3002,7 @@ dependencies = [
  "lemon-stereo-enhancer",
  "lemon-stereo-shaper",
  "lemon-transient-processor",
+ "lemon-wave",
  "libc",
  "midir",
  "mp3lame-encoder",

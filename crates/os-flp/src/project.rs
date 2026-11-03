@@ -850,6 +850,10 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_audio_warps(file,&mut p);
     read_rack_strips(file,&mut p);
     read_instrument_lanes(file,&mut p);
+    read_pattern_speeds(file,&mut p);
+    read_marker_colors(file,&mut p);
+    read_clip_fx_owners(file,&mut p);
+    read_mpe(file,&mut p);
     for c in &file.chunks {if c.tag==Tag(*b"LSHK") {if let ChunkBody::Raw(d)=&c.body {if d.len()==4&&d[0]==1&&d[1]<12&&(67..=88).contains(&d[2]) {p.harmony=Some((d[1],d[2],d[3]&31));}}}}
     Ok(p)
 }
@@ -1360,6 +1364,7 @@ fn decode_note(r: &[u8]) -> Note {
     let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
     Note {
+        expression:0,
         position: u32_at(0),
         channel: u16_at(6),
         length: u32_at(8),
@@ -1447,6 +1452,7 @@ fn decode_clip(r: &[u8]) -> Clip {
     let n = r.len().min(CLIP_RECORD_LEN);
     raw[..n].copy_from_slice(&r[..n]);
     Clip {
+        pattern_speed:1.0,
         position: u32_at(0),
         length: u32_at(8),
         track: 499u16.saturating_sub(u16_at(12)),
@@ -3271,6 +3277,10 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_audio_warps(project,file);
     write_rack_strips(project,file);
     write_instrument_lanes(project,file);
+    write_pattern_speeds(project,file);
+    write_marker_colors(project,file);
+    write_clip_fx_owners(project,file);
+    write_mpe(project,file);
     Ok(())
 }
 
@@ -3804,6 +3814,10 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_audio_warps(project,&mut file);
     write_rack_strips(project,&mut file);
     write_instrument_lanes(project,&mut file);
+    write_pattern_speeds(project,&mut file);
+    write_marker_colors(project,&mut file);
+    write_clip_fx_owners(project,&mut file);
+    write_mpe(project,&mut file);
     Ok(file)
 }
 
@@ -6629,4 +6643,82 @@ fn read_audio_warps(file:&FlpFile,p:&mut Project){
             p.audio_warps.push(os_model::AudioWarp{source:source.into(),rendered:rendered.into(),points});
         }
     }
+}
+
+const PATTERN_SPEEDS:Tag=Tag(*b"LSPS");
+fn write_pattern_speeds(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=PATTERN_SPEEDS);let mut data=vec![1];
+    for a in &p.arrangements {
+        let lists=std::iter::once((u32::MAX,a.clips.as_slice())).chain(a.tracks.iter().filter_map(|t|t.frozen.as_deref().map(|clips|(t.number,clips))));
+        for (track,clips) in lists {for (index,c) in clips.iter().enumerate(){if matches!(c.source,ClipSource::Pattern(_)) && c.pattern_rate()!=1. {
+            data.extend(a.number.to_le_bytes());data.extend(track.to_le_bytes());data.extend((index as u32).to_le_bytes());data.extend(c.pattern_rate().to_le_bytes());
+        }}}
+    }
+    if data.len()>1{file.chunks.push(Chunk{tag:PATTERN_SPEEDS,body:ChunkBody::Raw(data)});}
+}
+fn read_pattern_speeds(file:&FlpFile,p:&mut Project){
+    for c in &file.chunks{if c.tag!=PATTERN_SPEEDS{continue;}let ChunkBody::Raw(data)=&c.body else{continue;};if data.first()!=Some(&1){continue;}
+        for r in data[1..].chunks_exact(18){
+            let arr=u16::from_le_bytes(r[0..2].try_into().unwrap());let track=u32::from_le_bytes(r[2..6].try_into().unwrap());let index=u32::from_le_bytes(r[6..10].try_into().unwrap()) as usize;let rate=f64::from_le_bytes(r[10..18].try_into().unwrap());
+            if !rate.is_finite()||!((1./64.)..=64.).contains(&rate){continue;}
+            let Some(a)=p.arrangements.iter_mut().find(|a|a.number==arr)else{continue;};
+            let clips=if track==u32::MAX{Some(&mut a.clips)}else{a.tracks.iter_mut().find(|t|t.number==track).and_then(|t|t.frozen.as_mut())};
+            if let Some(clip)=clips.and_then(|c|c.get_mut(index)).filter(|c|matches!(c.source,ClipSource::Pattern(_))){clip.pattern_speed=rate;}
+        }
+    }
+}
+
+const MARKER_COLORS:Tag=Tag(*b"LSMC");
+fn write_marker_colors(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=MARKER_COLORS);let mut data=vec![1];
+    for a in &p.arrangements {for (i,m) in a.markers.iter().enumerate(){if let Some(color)=m.color {
+        data.extend(a.number.to_le_bytes());data.extend((i as u32).to_le_bytes());data.extend((color&0xffffff).to_le_bytes());
+    }}}
+    if data.len()>1{file.chunks.push(Chunk{tag:MARKER_COLORS,body:ChunkBody::Raw(data)});}
+}
+fn read_marker_colors(file:&FlpFile,p:&mut Project){
+    for c in &file.chunks {if c.tag!=MARKER_COLORS{continue;}let ChunkBody::Raw(data)=&c.body else{continue;};if data.first()!=Some(&1){continue;}
+        for r in data[1..].chunks_exact(10){let a=u16::from_le_bytes(r[0..2].try_into().unwrap());let i=u32::from_le_bytes(r[2..6].try_into().unwrap()) as usize;let color=u32::from_le_bytes(r[6..10].try_into().unwrap());
+            if let Some(m)=p.arrangements.iter_mut().find(|arr|arr.number==a).and_then(|arr|arr.markers.get_mut(i)){m.color=Some(color&0xffffff);}
+        }
+    }
+}
+
+const CLIP_FX_OWNERS:Tag=Tag(*b"LSCF");
+fn write_clip_fx_owners(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=CLIP_FX_OWNERS);let mut data=vec![1];
+    for m in p.mixer.iter().filter(|m|m.clip_fx){
+        let owner=p.channels.iter().find(|c|c.mixer_track==m.index&&p.clip_fx_channels.contains(&c.index)).map_or(u16::MAX,|c|c.index);
+        data.extend(owner.to_le_bytes());data.extend(m.index.to_le_bytes());
+    }
+    if data.len()>1{file.chunks.push(Chunk{tag:CLIP_FX_OWNERS,body:ChunkBody::Raw(data)});}
+}
+fn read_clip_fx_owners(file:&FlpFile,p:&mut Project){
+    for chunk in &file.chunks{if chunk.tag!=CLIP_FX_OWNERS{continue;}let ChunkBody::Raw(data)=&chunk.body else{continue;};if data.first()!=Some(&1){continue;}
+        for pair in data[1..].chunks_exact(4){let id=u16::from_le_bytes(pair[..2].try_into().unwrap());let bus=u16::from_le_bytes(pair[2..].try_into().unwrap());
+            if let Some(m)=p.mixer.iter_mut().find(|m|m.index==bus&&bus!=0){m.clip_fx=true;}else{continue;}
+            if id!=u16::MAX&&!p.clip_fx_channels.contains(&id)&&p.channels.iter().any(|c|c.index==id&&c.kind.is_sampler()&&c.mixer_track==bus){p.clip_fx_channels.push(id);}
+        }
+    }
+}
+
+// Native MPE extension. Legacy FL note records remain unchanged.
+const MPE_DATA:Tag=Tag(*b"LSME");
+fn write_mpe(p:&Project,file:&mut FlpFile){
+ file.chunks.retain(|c|c.tag!=MPE_DATA);
+ if p.mpe.channels.is_empty()&&p.patterns.iter().all(|p|p.notes.iter().all(|n|n.expression==0)){return;}
+ let mut d=vec![1];d.extend((p.mpe.channels.len()as u16).to_le_bytes());
+ for &(id,c)in &p.mpe.channels{let c=c.valid();d.extend(id.to_le_bytes());d.extend([c.enabled as u8,c.upper as u8,c.members,c.bend]);for v in [c.sensitivity,c.pressure,c.slide]{d.extend(v.to_le_bytes());}}
+ let notes:Vec<_>=p.patterns.iter().flat_map(|pat|pat.notes.iter().enumerate().filter_map(|(i,n)|p.mpe.get(n.expression).map(|e|(pat.number,i,e)))).collect();
+ d.extend((notes.len()as u32).to_le_bytes());for(pat,i,e)in notes{d.extend(pat.to_le_bytes());d.extend((i as u32).to_le_bytes());for lane in &e.lanes{d.extend((lane.len()as u32).to_le_bytes());for p in lane{d.extend(p.at.to_le_bytes());d.extend(p.value.to_le_bytes());d.push(p.smooth as u8);}}}
+ file.chunks.push(Chunk{tag:MPE_DATA,body:ChunkBody::Raw(d)});
+}
+fn read_mpe(file:&FlpFile,p:&mut Project){
+ fn parse(d:&[u8])->Option<(os_model::mpe::Data,Vec<(u16,usize,u32)>)>{
+  struct Read<'a>(&'a[u8]);impl Read<'_>{fn bytes<const N:usize>(&mut self)->Option<[u8;N]>{let x=self.0.get(..N)?.try_into().ok()?;self.0=&self.0[N..];Some(x)}fn u8(&mut self)->Option<u8>{Some(self.bytes::<1>()?[0])}fn u16(&mut self)->Option<u16>{Some(u16::from_le_bytes(self.bytes()?))}fn u32(&mut self)->Option<u32>{Some(u32::from_le_bytes(self.bytes()?))}fn f32(&mut self)->Option<f32>{let v=f32::from_le_bytes(self.bytes()?);v.is_finite().then_some(v)}}
+  if d.len()>32*1024*1024{return None;}let mut r=Read(d);if r.u8()?!=1{return None;}let mut data=os_model::mpe::Data::default();let mut links=vec![];
+  for _ in 0..r.u16()?{let id=r.u16()?;let c=os_model::mpe::Config{enabled:r.u8()?!=0,upper:r.u8()?!=0,members:r.u8()?,bend:r.u8()?,sensitivity:r.f32()?,pressure:r.f32()?,slide:r.f32()?};data.set_config(id,c);}
+  let count=r.u32()?;if count>1_000_000{return None;}for _ in 0..count{let pat=r.u16()?;let note=r.u32()?as usize;let mut e=os_model::mpe::Expression::default();for lane in 0..3{let n=r.u32()?;if n>100_000{return None;}for _ in 0..n{let at=r.f32()?;let value=r.f32()?;let smooth=r.u8()?!=0;e.lanes[lane].push(os_model::mpe::Point{at:at.clamp(0.,1.),value:if lane==0{value.clamp(-96.,96.)}else{value.clamp(0.,1.)},smooth});}e.lanes[lane].sort_by(|a,b|a.at.total_cmp(&b.at));}let id=data.add(e);links.push((pat,note,id));}Some((data,links))
+ }
+ for c in &file.chunks{if c.tag!=MPE_DATA{continue;}let ChunkBody::Raw(d)=&c.body else{continue;};let Some((mut data,links))=parse(d)else{continue;};data.channels.retain(|(id,_)|p.channels.iter().any(|c|c.index==*id));for(pat,index,id)in links{if let Some(n)=p.patterns.iter_mut().find(|p|p.number==pat).and_then(|p|p.notes.get_mut(index)){n.expression=id;}}p.mpe=data;}
 }

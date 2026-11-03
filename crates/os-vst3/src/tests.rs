@@ -482,6 +482,19 @@ mod separate {
         (m, p)
     }
 
+    #[test]
+    fn mpe_native_events_keep_unisons_independent() {
+        let probe=Arc::new(Probe::default());let (_module,mut p)=instance(&probe);
+        p.mpe_map=[2,100000,5];
+        for b in os_model::mpe::Config::default().setup(){p.midi(0,b);}
+        p.midi(0,[0x91,60,100]);p.midi(0,[0x92,60,90]);p.midi(8,[0xe1,127,127]);p.midi(9,[0xd2,100,0]);p.midi(10,[0xb2,74,110]);
+        let ids:Vec<_>=p.mpe_queue.iter().filter(|e|e.type_==NOTE_ON_EVENT).map(|e|unsafe{e.event.note_on.note_id}).collect();assert_eq!(ids.len(),2);assert_ne!(ids[0],ids[1]);
+        assert!(p.mpe_queue.iter().any(|e|e.type_==NOTE_EXPRESSION_VALUE_EVENT&&unsafe{let v=e.event.note_expression_value;v.note_id==ids[0]&&v.type_id==2&&(v.value-0.7).abs()<1e-6}));
+        assert!(p.mpe_queue.iter().any(|e|e.type_==NOTE_EXPRESSION_VALUE_EVENT&&unsafe{let v=e.event.note_expression_value;v.note_id==ids[1]&&v.type_id==100000&&v.value>0.78}));
+        p.midi(11,[0x81,60,64]);assert_eq!(p.mpe_voices.len(),1);assert_eq!(p.mpe_voices[0].0,ids[1]);
+        p.reset();assert!(p.mpe_voices.is_empty());assert_eq!(p.mpe_queue.iter().filter(|e|e.type_==NOTE_OFF_EVENT).count(),2);
+    }
+
     fn ones(n: usize) -> (Vec<f32>, Vec<f32>) {
         (vec![1.0; n], vec![1.0; n])
     }
@@ -1302,4 +1315,22 @@ fn ara_discovery_matches_only_the_advertised_audio_class() {
     m.ara_factories.push((m.plugins[0].name.clone(),"ambiguous".into()));
     assert_eq!(m.ara_factory_id(&id),None);
     assert_eq!(probe.live.load(std::sync::atomic::Ordering::Relaxed),0,"discovery must not create a processor or editor");
+}
+
+/// Synthetic offline acceptance: never opens an editor or an audio device.
+#[test]
+#[ignore = "requires OS_VST3_PLUGIN with an initialized pitched MPE instrument"]
+fn mpe_installed_instrument_pitch_and_release() {
+    use os_engine::Instrument;use os_host::Plugin as _;
+    let path=std::env::var_os("OS_VST3_PLUGIN").expect("instrument path");let m=Module::load(Path::new(&path)).expect("load");let d=m.plugins().iter().find(|d|d.is_instrument()).unwrap();
+    let mut p=Plugin::new(&m,&d.id).unwrap();assert!(p.activate(48000));eprintln!("{}: native expression IDs {:?}, MPE capability {}",d.name,p.mpe_map,p.mpe_support());
+    let(mut l,mut r)=(vec![0.;480],vec![0.;480]);let mut rates=vec![];
+    for bend in [8192u16,10240] {
+        p.reset();for b in os_model::mpe::Config::default().setup(){p.midi(0,b);}p.midi(0,[0x91,60,100]);p.midi(0,[0xe1,(bend&127)as u8,(bend>>7)as u8]);
+        let mut samples=vec![];for block in 0..100{p.process(48000,&mut l,&mut r);if block>=50{samples.extend_from_slice(&l);}}
+        assert!(samples.iter().all(|v|v.is_finite()));assert!(peak(&samples)>0.001);
+        let crossings=samples.windows(2).filter(|v|v[0]<=0.&&v[1]>0.).count();rates.push(crossings as f64*2.);
+        p.midi(0,[0x81,60,64]);let mut tail=0.0f32;for block in 0..300{p.process(48000,&mut l,&mut r);if block>250{tail=tail.max(peak(&l)).max(peak(&r));}}assert!(tail<0.0001,"released peak {tail}");
+    }
+    eprintln!("MPE baseline/bent crossing rates: {rates:?}");assert!((rates[1]/rates[0]-2.).abs()<0.08,"independent note pitch must rise one octave");
 }

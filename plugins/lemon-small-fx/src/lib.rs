@@ -182,6 +182,8 @@ pub trait Kind: 'static + Send + Sync {
 
 /// What the audio thread and the editor share.
 pub struct Shared {
+    /// Optional instrument-specific controls; ordinary effects leave this unset.
+    pub extension: Option<Arc<dyn editor::Extension>>,
     pub rate: AtomicU32,
     /// Set while an editor is open.
     pub editor_open: AtomicBool,
@@ -189,7 +191,7 @@ pub struct Shared {
 
 impl Default for Shared {
     fn default() -> Self {
-        Shared { rate: AtomicU32::new(44100), editor_open: AtomicBool::new(false) }
+        Shared { extension: None, rate: AtomicU32::new(44100), editor_open: AtomicBool::new(false) }
     }
 }
 

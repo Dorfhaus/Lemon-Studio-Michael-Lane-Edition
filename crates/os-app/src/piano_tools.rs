@@ -47,6 +47,9 @@ pub enum NCmd {
     StockLength(crate::playlist::Snap),
     /// Make a channel rack row the piano roll's channel (the title's channel menu).
     Target(usize),
+    ChannelMute,
+    ChannelSolo,
+    Transfer(usize, bool),
 }
 
 fn item(label: &'static str, c: NCmd) -> PItem {
@@ -91,6 +94,14 @@ fn all_menu(s: &State, x: f32, y: f32) -> Popup {
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
+/// Selected notes expose transfer directly in their context menu.
+pub fn selected_menu(s:&State,x:f32,y:f32)->Popup {
+    let mut menu=options_menu(s,x,y);
+    menu.items.insert(0,crate::mpe::menu(s));
+    if let Some(item)=menu.items.iter().find(|i|i.label=="Edit").and_then(|i|i.children.iter().find(|c|c.label=="Send Selected Notes To...")).cloned(){menu.items.insert(0,item);menu.items.insert(1,PItem::sep());}
+    menu
+}
+
 /// Organized options use the same commands as keyboard editing and the tool dialogs.
 pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
     let all=all_menu(s,x,y).items;
@@ -98,6 +109,9 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
     let k=|label,key,ctrl,shift,alt,shortcut|item(label,NCmd::MenuKey(key,ctrl,shift,alt)).key(shortcut);
     let mut edit=vec![k("Undo","z",true,false,false,"Ctrl+Z"),k("Redo","z",true,true,false,"Ctrl+Shift+Z"),PItem::sep(),k("Cut","x",true,false,false,"Ctrl+X"),k("Copy","c",true,false,false,"Ctrl+C"),k("Paste","v",true,false,false,"Ctrl+V"),k("Delete","Delete",false,false,false,"Del")];
     edit.extend(group("Edit"));
+    let destinations=|copy| s.project.channels.iter().enumerate().filter(|(i,c)|*i!=s.selected_channel && !matches!(c.kind,os_model::ChannelKind::Automation)).map(|(i,_)|PItem::new(channel_name(s,i),Cmd::Piano(NCmd::Transfer(i,copy)))).collect();
+    edit.push(crate::mpe::menu(s));
+    edit.push(PItem::sub("Send Selected Notes To...",vec![PItem::sub("Move to channel",destinations(false)),PItem::sub("Copy to channel",destinations(true))]));
     edit.extend([PItem::sep(),k("Shift left","Left",false,true,false,"Shift+Left"),k("Shift right","Right",false,true,false,"Shift+Right"),k("Transpose up","Up",false,true,false,"Shift+Up"),k("Transpose down","Down",false,true,false,"Shift+Down"),k("Octave up","Up",true,false,false,"Ctrl+Up"),k("Octave down","Down",true,false,false,"Ctrl+Down"),item("Mute",NCmd::Mute(true)).key("Alt+M"),item("Unmute",NCmd::Mute(false)).key("Alt+Shift+M")]);
     let check=|label,key,default|item(label,NCmd::View(key)).mark(Mark::Check(view_on(key,default)));
     let mut helpers=group("View");helpers.retain(|i|!matches!(i.cmd,Cmd::Piano(NCmd::AddMarker)));
@@ -371,7 +385,10 @@ pub fn target_menu(s: &State, x: f32, y: f32) -> Popup {
         if has_notes(s, row) { it.mark(Mark::Check(true)) } else { it }
     };
     let head = |name: String| PItem { label: name.into(), ..PItem::head("") };
-    let mut items = vec![PItem::head("Current pattern")];
+    let mut items = vec![
+        item("Mute channel",NCmd::ChannelMute).mark(Mark::Check(s.project.channels.get(s.selected_channel).is_some_and(|c|!c.enabled))),
+        item("Solo channel",NCmd::ChannelSolo).mark(Mark::Check(s.rack.soloed==Some(s.selected_channel))),
+        PItem::head("Current pattern")];
     items.extend((0..n).filter(|&r| has_notes(s, r)).map(row_item));
     for g in &s.rack.groups {
         let rows: Vec<usize> = g.members.iter().copied().filter(|&r| r < n).collect();
@@ -408,6 +425,9 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
     let done = |changed: bool, what: &str| if changed { format!("Piano roll: {what}") } else { format!("Piano roll: {what}: nothing to change") };
     let msg = match cmd {
         NCmd::MenuKey(..)=>unreachable!(),
+        NCmd::ChannelMute=>{let row=s.selected_channel;crate::rack::toggle_mute(s,row);return None;},
+        NCmd::ChannelSolo=>{let row=s.selected_channel;crate::rack::solo(s,row);return None;},
+        NCmd::Transfer(row,copy)=>return Some(transfer(s,row,copy)),
         NCmd::Tool(tool)=>{s.piano.tool=tool;s.piano.overlay=None;return None;},
         NCmd::View(key)=>{crate::prefs::set_text(key,if view_on(key,true){"0"}else{"1"});return None;},
         NCmd::Zoom(n)=>{zoom_key(app,n);return None;},
@@ -422,7 +442,7 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
             let end = piano::pattern_end(s);
             done(apply(s, |_, ns| legato(ns, end)), "legato")
         }
-        NCmd::QuickChop => done(apply(s, |_, ns| chop_from_start(ns, unit.unwrap_or(1))), "chopped"),
+        NCmd::QuickChop => done(crate::mpe::chop(s,unit.unwrap_or(1)), "chopped"),
         NCmd::Mute(on) => {
             let f = |ns: Vec<Note>| ns.into_iter().map(|mut n| { n.set_muted(on); n }).collect();
             done(apply(s, |_, ns| f(ns)), if on { "muted" } else { "unmuted" })
@@ -636,6 +656,22 @@ mod tests {
         ns.iter().map(|n| (n.position, n.length, n.key)).collect()
     }
 
+    #[test] fn batch2_channel_controls_and_transfer_preserve_notes_and_undo(){
+        let mut a=App::new(None);a.state.project=crate::app::test_project();a.state.selected_channel=0;
+        let mut n=note(37,93,64);n.velocity=81;n.pan=19;n.mod_x=55;n.fine_pitch=123;
+        piano::pattern_mut(&mut a.state).notes=vec![n,note(200,24,67)];
+        a.state.piano.select(a.state.pattern,0,vec![0]);
+        let before=piano::notes(&a.state).to_vec();transfer(&mut a.state,1,true);
+        assert!(piano::notes(&a.state).contains(&n));assert!(piano::notes(&a.state).contains(&Note{channel:1,..n}));
+        crate::history::undo(&mut a.state);assert_eq!(piano::notes(&a.state),before);
+        a.state.piano.select(a.state.pattern,0,vec![0]);transfer(&mut a.state,1,false);
+        assert!(!piano::notes(&a.state).contains(&n));assert!(piano::notes(&a.state).contains(&Note{channel:1,..n}));
+        crate::history::undo(&mut a.state);assert_eq!(piano::notes(&a.state),before);
+        run(&mut a,NCmd::ChannelMute);assert!(!a.state.project.channels[0].enabled);assert!(a.state.piano.dirty);
+        run(&mut a,NCmd::ChannelMute);assert!(a.state.project.channels[0].enabled);
+        run(&mut a,NCmd::ChannelSolo);assert!(a.state.project.channels[0].enabled);assert!(a.state.project.channels[1..].iter().all(|c|!c.enabled));
+        assert_eq!(piano::notes(&a.state),before);
+    }
     #[test]
     fn quantize_moves_to_the_grid() {
         let n = quantize(note(30, 40, 60), 24, 1.0, false);
@@ -704,4 +740,22 @@ mod tests {
         assert_eq!(a.state.piano.clipboard,vec![piano::notes(&a.state)[0]]);
     }
 
+}
+
+/// Transfer only explicitly selected notes in the same pattern, preserving their complete records.
+fn transfer(s:&mut State,row:usize,copy:bool)->String {
+    let Some(source)=piano::channel(s) else{return "No source channel".into()};
+    let Some(dest)=s.project.channels.get(row).filter(|c|c.index!=source && !matches!(c.kind,os_model::ChannelKind::Automation)).map(|c|c.index) else{return "Choose another instrument channel".into()};
+    let selected=s.piano.selection(s.pattern,Some(source)).clone();
+    let notes=piano::notes(s);
+    let indices:Vec<usize>=selected.into_iter().filter(|&i|notes.get(i).is_some_and(|n|n.channel==source)).collect();
+    if indices.is_empty(){return "Select notes to send first".into();}
+    let picked:Vec<Note>=indices.iter().map(|&i|Note{channel:dest,..notes[i]}).collect();
+    let count=picked.len();
+    piano::snapshot_as(s,if copy{"Copy notes to channel"}else{"Move notes to channel"});
+    let pattern=piano::pattern_mut(s);
+    if !copy {pattern.notes=pattern.notes.iter().enumerate().filter(|(i,_)|!indices.contains(i)).map(|(_,n)|*n).collect();}
+    pattern.notes.extend(picked);
+    s.piano.clear_selection();piano::finish_edit(s);s.piano.dirty=true;
+    format!("{} {count} notes to {}",if copy{"Copied"}else{"Moved"},channel_name(s,row))
 }

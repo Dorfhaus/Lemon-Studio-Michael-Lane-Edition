@@ -762,11 +762,14 @@ pub fn slice(s: &mut State, tick: u32) -> usize {
         return 0;
     }
     snapshot(s);
+    let mut expressions=std::collections::BTreeMap::new();
+    for &i in &cut{let n=notes(s)[i];if let Some(e)=s.project.mpe.get(n.expression).cloned(){let at=(tick-n.position)as f32/n.length as f32;let a=s.project.mpe.add(e.window(0.,at));let b=s.project.mpe.add(e.window(at,1.));expressions.insert(i,(a,b));}}
     let p = pattern_mut(s);
     for &i in &cut {
         let n = p.notes[i];
         p.notes[i].length = tick - n.position;
-        p.notes.push(Note { position: tick, length: n.position + n.length - tick, ..n });
+        let (a,b)=expressions.get(&i).copied().unwrap_or((n.expression,n.expression));p.notes[i].expression=a;
+        p.notes.push(Note { expression:b,position: tick, length: n.position + n.length - tick, ..n });
     }
     s.piano.clear_selection();
     finish_edit(s);

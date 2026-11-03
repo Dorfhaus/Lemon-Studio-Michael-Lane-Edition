@@ -22,6 +22,9 @@ pub enum PlugCmd {
     Generator { index: usize, after: Option<usize> },
     /// Generator `index` in place of rack row `row`'s (channel menu / plugin window menu > Replace ▸).
     Replace { index: usize, row: usize },
+    Stack { index:usize,row:usize },
+    ClipFx{channel:u16,slot:u8,index:usize},
+    StackEdit {row:usize,child:usize,action:u8},
     /// Effect `index` (into `Plugins::effects`) into the selected mixer track: slot `slot`, else its first empty slot.
     Effect { index: usize, slot: Option<u8> },
     /// Find new plugins (a background scan).
@@ -42,15 +45,19 @@ pub enum Target {
     Gen(Option<usize>),
     /// Generators in place of rack row `r`'s generator.
     Replace(usize),
+    Stack(usize),
+    ClipFx(u16,u8),
     /// Effects into the selected track: slot `k`, else its first empty slot.
     Fx(Option<u8>),
 }
 
 fn pick(target: Target, effect: bool, index: usize) -> Cmd {
     Cmd::Plugin(match (target, effect) {
+        (Target::ClipFx(channel,slot),_)=>PlugCmd::ClipFx{channel,slot,index},
         (Target::Fx(slot), _) => PlugCmd::Effect { index, slot },
         (_, true) => PlugCmd::Effect { index, slot: None },
         (Target::Gen(after), false) => PlugCmd::Generator { index, after },
+        (Target::Stack(row),false)=>PlugCmd::Stack{index,row},
         (Target::Replace(row), false) => PlugCmd::Replace { index, row },
         (Target::All, false) => PlugCmd::Generator { index, after: None },
     })
@@ -315,8 +322,8 @@ pub fn items(s: &State, target: Target, nested: bool) -> Vec<PItem> {
             v.push(PItem::head("Effects"));
             v.extend(section(s, true, target, nested));
         }
-        Target::Gen(_) | Target::Replace(_) => v.extend(section(s, false, target, nested)),
-        Target::Fx(_) => v.extend(section(s, true, target, nested)),
+        Target::Gen(_) | Target::Replace(_) | Target::Stack(_) => v.extend(section(s, false, target, nested)),
+        Target::Fx(_) | Target::ClipFx(..) => v.extend(section(s, true, target, nested)),
     }
     v.extend(footer(s));
     if !cfg!(test) {
@@ -366,6 +373,9 @@ pub fn run(app: &mut App, c: PlugCmd) -> Option<String> {
     let m = match c {
         PlugCmd::Picker(target) => { crate::plugin_picker::open(app,target); None },
         PlugCmd::Generator { index, after } => add_generator(app, index, after),
+        PlugCmd::ClipFx{channel,slot,index}=>crate::clip_effects::add(app,channel,slot,index),
+        PlugCmd::Stack{index,row}=>crate::instrument_stack::add(app,row,index),
+        PlugCmd::StackEdit{row,child,action}=>crate::instrument_stack::edit(app,row,child,action),
         PlugCmd::Replace { index, row } => replace_generator(app, index, row),
         PlugCmd::Effect { index, slot } => add_effect(app, index, slot),
         PlugCmd::Find => {
@@ -498,6 +508,19 @@ mod tests {
         assert!(root.join("Plugin database/Effects/user-edit.txt").exists());
         assert!(std::fs::read_dir(&root).unwrap().map(Result::unwrap).any(|e|e.file_name().to_string_lossy().starts_with("Plugin database before import") && e.path().join("Effects/old.txt").exists()));
         assert!(apply_import(&root,br#"{"Effects/../../escape":"bad"}"#).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn factory_folders_are_organized_on_first_install() {
+        let root=std::env::temp_dir().join(format!("lemon-factory-layout-{}",std::process::id()));
+        let mut app=App::new(None);app.plugins=crate::plugins::Plugins::builtins();app.state.plugdb.rebuild(&app.plugins);
+        for(effect,list)in[(false,&app.state.plugdb.lists.gens),(true,&app.state.plugdb.lists.fx)] {
+            let dir=root.join(if effect{"Effects"}else{"Instruments"});sync_folder(&dir,list,effect).unwrap();sync_folder(&dir,list,effect).unwrap();let groups=folder_groups(&dir).unwrap();
+            assert!(!groups.contains_key("Unsorted"),"Every factory plugin needs a folder: {groups:?}");
+            for entry in list{let uid=format!("@{}",entry.uid);assert_eq!(groups.values().flatten().filter(|x|**x==uid).count(),1,"{}",entry.name);}
+            if !effect {let wave=list.iter().find(|e|e.name=="Lemon Wave").unwrap();assert!(groups["Synths"].contains(&format!("@{}",wave.uid)));}
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

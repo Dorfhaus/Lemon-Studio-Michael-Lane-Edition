@@ -100,7 +100,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // The target channel: name and arrow, orange with a ▾ while hovered (spec: ui/piano-target-channel.md §1).
     let name=format!("Piano roll: {name}");
     let font=Font::new(12);
-    let nx=r.x+350.;
+    let nx=r.x+if r.w>=500. {394.}else{350.};
+    if r.w>=500. {
+        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),344.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),368.)] {
+            let b=Rect::new(r.x+x,r.y+2.,20.,18.);
+            let hint=format!("{} channel: {}",if label=="M"{"Mute"}else{"Solo"},name);
+            let hover=ui.hit(b,Action::PianoCommand(cmd),hint);
+            ui.c.fill_rrect(b,3.,if on{t.accent}else if hover{t.button_hi}else{t.sunken});
+            ui.c.text_center(Font::new(10),b,if on{t.sunken}else{t.text},label);
+        }
+    }
     let nw=(ui.c.text_width(font,&name)+22.).min((r.right()-68.-nx).max(0.));
     if nw>24. {
         let b=Rect::new(nx,r.y+2.,nw,18.);
@@ -633,6 +642,7 @@ fn velocity_panel(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], 
     ui.c.fill_rect(Rect::new(l.panel.x - 2.0, l.panel.y, 1.0, l.panel.h), ui.t.s(0x131718));
     ui.c.fill_rect(Rect::new(l.panel.x - 1.0, l.panel.y, 1.0, l.panel.h), ui.t.s(0x000205));
 
+    if s.mpe.open{crate::mpe::paint(ui,s,l.panel,notes,sel);return;}
     // Panel grid: horizontal lines every 22 px, then the time columns (§7).
     let p = l.panel;
     ui.hit(p, Action::PianoVelocity, "Event panel: drag to set this property of notes");

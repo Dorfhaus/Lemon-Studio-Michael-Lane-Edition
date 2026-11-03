@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Embedded oscillator assets. Old tables are reclaimed on a state/UI thread.
+use crate::{
+    controls,
+    wavetable::{Source, Table},
+};
+use lemon_small_fx::params::FxParams;
+use nih_plug::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, RwLock},
+};
+pub const FIELD: &str = "lemon-wave-tables-v1";
+pub const MAX_STATE: usize = 8 * 1024 * 1024;
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sources {
+    pub oscillators: [Option<Source>; 2],
+}
+#[derive(Default)]
+pub struct Tables {
+    pub oscillators: [Option<Table>; 2],
+}
+pub struct WaveParams {
+    pub base: Arc<FxParams>,
+    pub tables: RwLock<Arc<Tables>>,
+    retired: Mutex<Vec<Arc<Tables>>>,
+    pub status: Mutex<String>,
+}
+impl Default for WaveParams {
+    fn default() -> Self {
+        Self { base:Arc::new(FxParams::new(controls::SPEC)), tables:RwLock::new(Arc::default()), retired:Mutex::default(), status:Mutex::new("Choose cycle length, then Import WAV. Imported tables travel with saved projects and presets.".into()) }
+    }
+}
+impl WaveParams {
+    pub fn sources(&self) -> Sources {
+        let tables = self.tables.read().unwrap();
+        Sources {
+            oscillators: std::array::from_fn(|o| {
+                tables.oscillators[o].as_ref().map(|t| t.source.clone())
+            }),
+        }
+    }
+    pub fn replace(&self, sources: Sources) -> Result<(), String> {
+        let [a, b] = sources.oscillators;
+        let tables = Arc::new(Tables {
+            oscillators: [
+                a.map(Table::compile).transpose()?,
+                b.map(Table::compile).transpose()?,
+            ],
+        });
+        let mut current = self.tables.write().unwrap();
+        let old = std::mem::replace(&mut *current, tables);
+        let mut retired = self.retired.lock().unwrap();
+        retired.retain(|x| Arc::strong_count(x) > 1);
+        retired.push(old);
+        Ok(())
+    }
+    pub fn message(&self, s: impl Into<String>) {
+        *self.status.lock().unwrap() = s.into();
+    }
+}
+// SAFETY: parameter pointers are owned by base, which lives as long as this Params object.
+unsafe impl Params for WaveParams {
+    fn param_map(&self) -> Vec<(String, ParamPtr, String)> {
+        self.base.param_map()
+    }
+    fn serialize_fields(&self) -> BTreeMap<String, String> {
+        let mut fields = self.base.serialize_fields();
+        fields.insert(
+            FIELD.into(),
+            serde_json::to_string(&self.sources()).unwrap(),
+        );
+        fields
+    }
+    fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
+        self.base.deserialize_fields(fields);
+        let result = match fields.get(FIELD) {
+            None => self.replace(Sources::default()), // Older/factory patches must clear imported tables.
+            Some(s) if s.len() > MAX_STATE => Err("Embedded table state exceeds size limit".into()),
+            Some(s) => serde_json::from_str::<Sources>(s)
+                .map_err(|e| e.to_string())
+                .and_then(|s| self.replace(s)),
+        };
+        match result {
+            Ok(()) => self.message("Tables recalled with this patch"),
+            Err(e) => {
+                let _ = self.replace(Sources::default());
+                self.message(format!("Table recall failed: {e}"));
+            }
+        }
+    }
+}

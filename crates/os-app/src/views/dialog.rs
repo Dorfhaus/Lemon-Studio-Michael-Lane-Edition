@@ -49,6 +49,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         ui.c.fill_rect(full, Color::rgb(0).with_alpha(80));
         ui.hit(full, Action::Swallow, "");
         match &m.body {
+            Body::ClipFx(channel,page)=>{let r=place(s,m,510.,386.);frame(ui,r,"Clip Effects");crate::clip_effects::paint(ui,s,r,*channel,*page);},
             Body::Warp(f)=>{let r=place(s,m,(s.screen.0-24.).clamp(600.,1000.),430.);frame(ui,r,"Audio warp markers");crate::warp::paint(ui,r,f);},
             Body::Ai => ai_box(ui,s,m),
             Body::RoutePicker(f) => route_picker_box(ui,s,m,f),

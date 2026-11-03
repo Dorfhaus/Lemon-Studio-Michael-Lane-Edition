@@ -616,6 +616,8 @@ pub struct Plugin {
     /// Controller messages waiting for their block (frame, message) and those of the block being sent
     /// (`Instrument::midi`, as CLAP MIDI events on note port 0).
     midi_queue: Vec<(u32, [u8; 3])>,
+    mpe:os_engine::mpe::Decoder,
+    mpe_queue:Vec<(u32,os_engine::mpe::Event)>,
     midis: Vec<clap_event_midi>,
     /// This chunk's events in time order (pointers into `notes` / `mods`).
     order: Vec<*const clap_event_header>,
@@ -848,6 +850,7 @@ impl Plugin {
                 mods: Vec::with_capacity(64),
                 exprs: Vec::with_capacity(64),
                 midi_queue: Vec::new(),
+                mpe:Default::default(),mpe_queue:vec![],
                 midis: Vec::with_capacity(16),
                 order: Vec::with_capacity(320),
                 start_param: None,
@@ -1341,6 +1344,7 @@ impl Plugin {
             && !self.host_data.process.load(Ordering::Acquire)
             && self.queue.is_empty() && self.param_queue.is_empty() && self.auto.is_empty() && self.mod_resend.is_empty()
             && self.midi_queue.is_empty()
+            && self.mpe_queue.is_empty()
     }
 
     /// `process_chunk` with an audio input (effects): `input` holds the frames to process, `left` / `right` receive
@@ -1377,6 +1381,16 @@ impl Plugin {
             }
         }
         self.midi_queue = later;
+        let mut pending=vec![];
+        for (time,e) in self.mpe_queue.drain(..){if time>=n{pending.push((time-n,e));continue;}
+            use os_engine::mpe::Event as E;
+            let header=|size,type_|clap_event_header{size,time,space_id:CLAP_CORE_EVENT_SPACE_ID,type_,flags:0};
+            match e{
+                E::On{channel,key,id,velocity}|E::Off{channel,key,id,velocity}=>{let on=matches!(e,E::On{..});self.notes.push(clap_event_note{header:header(std::mem::size_of::<clap_event_note>()as u32,if on{CLAP_EVENT_NOTE_ON}else{CLAP_EVENT_NOTE_OFF}),note_id:id,port_index:0,channel:i16::from(channel),key:i16::from(key),velocity:f64::from(velocity)});seq.push(Seq::Note(self.notes.len()-1));if on{self.ledger.start(key,id);}else{self.ledger.release_voice(id);}},
+                E::Expression{id,lane,value}=>{self.exprs.push(clap_event_note_expression{header:header(std::mem::size_of::<clap_event_note_expression>()as u32,CLAP_EVENT_NOTE_EXPRESSION),expression_id:match lane{0=>CLAP_NOTE_EXPRESSION_TUNING,1=>6,_=>5},note_id:id,port_index:0,channel:-1,key:-1,value:f64::from(value)});seq.push(Seq::Expr(self.exprs.len()-1));}
+            }
+        }self.mpe_queue=pending;
+
         // Sounding voices' new mod amounts (the channel's mods changed) go first.
         for (id, key, param, amount) in self.mod_resend.drain(..) {
             self.mods.push(param_mod(0, param, id, key, amount));
@@ -1662,6 +1676,7 @@ impl Plugin {
 
 // The hosting layer's view of a CLAP instance (the inherent methods above do the work).
 impl os_host::Plugin for Plugin {
+    fn mpe_support(&self)->u8{if self.bend.is_none(){2}else{1}}
     fn desc(&self) -> &Descriptor {
         &self.desc
     }
@@ -1822,6 +1837,7 @@ impl os_engine::Instrument for Plugin {
 
     fn reset(&mut self) {
         self.queue.clear();
+        self.mpe.reset();self.mpe_queue.clear();self.midi_queue.clear();
         self.sounding = false;
         self.ledger.clear();
         if let Some(m) = self.bend.as_mut().and_then(|b| b.reset()) {
@@ -1856,6 +1872,7 @@ impl os_engine::Instrument for Plugin {
     }
 
     fn midi(&mut self, offset: u32, bytes: [u8; 3]) {
+        if self.bend.is_none(){if let Some(events)=self.mpe.receive(bytes){self.mpe_queue.extend(events.into_iter().map(|e|(offset,e)));return;}}
         self.midi_queue.push((offset, bytes));
     }
 
@@ -2126,6 +2143,21 @@ mod mono_mock;
 mod tests {
     use super::*;
     use os_engine::Instrument;
+
+    #[test]
+    fn mpe_native_events_keep_unisons_independent() {
+        let entry=&crate::mono_mock::ENTRY as *const _ as *const std::ffi::c_void;
+        let lib=unsafe{Library::from_entry(entry,Path::new("MPE Test.clap"))}.unwrap();let mut p=Plugin::new(&lib,&lib.plugins[0].id).unwrap();
+        assert!(os_host::Plugin::activate(&mut p,48000));p.bend=None;
+        for b in os_model::mpe::Config::default().setup(){p.midi(0,b);}
+        p.midi(0,[0x91,60,100]);p.midi(0,[0x92,60,90]);p.midi(8,[0xe1,127,127]);p.midi(9,[0xd2,100,0]);p.midi(10,[0xb2,74,110]);
+        let(mut l,mut r)=(vec![0.;64],vec![0.;64]);p.process(48000,&mut l,&mut r);
+        let ids:Vec<_>=p.notes.iter().filter(|n|n.header.type_==CLAP_EVENT_NOTE_ON).map(|n|n.note_id).collect();assert_eq!(ids.len(),2);assert_ne!(ids[0],ids[1]);
+        assert!(p.exprs.iter().any(|e|e.note_id==ids[0]&&e.expression_id==CLAP_NOTE_EXPRESSION_TUNING&&(e.value-48.).abs()<1e-6));
+        assert!(p.exprs.iter().any(|e|e.note_id==ids[1]&&e.expression_id==6&&e.value>0.78));
+        assert!(p.exprs.iter().any(|e|e.note_id==ids[1]&&e.expression_id==5&&e.value>0.86));
+        p.midi(0,[0x81,60,64]);p.process(48000,&mut l,&mut r);assert!(p.notes.iter().any(|n|n.header.type_==CLAP_EVENT_NOTE_OFF&&n.note_id==ids[0]));p.reset();assert!(p.mpe_queue.is_empty());
+    }
 
     /// A plugin whose main ports are mono (DPF's Kars has a mono output) gets one channel each way: its output is
     /// heard on both sides, and an effect's input reaches it as the average of both sides. Without the audio-ports
