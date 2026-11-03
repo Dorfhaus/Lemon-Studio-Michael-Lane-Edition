@@ -3400,6 +3400,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                     }
                     group = (first..arr.clips.len()).collect();
                     regroup_copies(s, first);
+                    s.playlist.sel = group.clone();
                     s.piano.dirty = true;
                 }
                 let orig: Vec<(usize, Clip)> = group.iter().filter_map(|&j| clips(s).get(j).map(|c| (j, *c))).collect();

@@ -132,6 +132,19 @@ impl Tables {
     }
 }
 
+pub fn editable_bank(bank: usize) -> crate::wavetable::Source {
+    let t = Tables::new();
+    let mut samples = Vec::with_capacity(FRAMES * SIZE);
+    for f in 0..FRAMES {
+        let start = ((bank.min(3) * FRAMES + f) * MIPS + MIPS - 1) * SIZE;
+        samples.extend_from_slice(&t.data[start..start + SIZE]);
+    }
+    crate::wavetable::Source {
+        name: ["Basic", "Hollow", "Glass", "Vowel"][bank.min(3)].into(),
+        samples,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Env {
     value: f32,

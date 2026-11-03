@@ -1178,6 +1178,7 @@ impl ApplicationHandler for Shell {
                     self.grab = None;
                     self.unmax = None;
                     self.app.typing_release_all();
+                    self.app.cancel_mouse_audition();
                     window.request_redraw();
                 }
             }

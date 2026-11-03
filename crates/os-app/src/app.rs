@@ -1712,6 +1712,7 @@ impl App {
                 s.playlist_scroll = (0.0, 0.0); // Open projects at the beginning, keeping their zoom.
                 s.piano.dirty = true; // live notes use the new project
                 piano::center_keys(s, self.piano_grid.map_or(700.0, |g| g.h));
+                crate::layout::restore_project_layout(&mut self.state);
                 self.mark_saved();
                 crate::missing::opened(self);
                 self.loading = Some(crate::loading::Loading::start(&self.state.project));
@@ -1872,6 +1873,7 @@ impl App {
             }
         }
         self.store_builtin_states();
+        let project_layout=crate::layout::project_snapshot(&self.state,&self.plugins);
         let s = &mut self.state;
         s.project.tempo = Some(s.tempo);
         s.project.song_mode = Some(s.song_mode);
@@ -1916,7 +1918,7 @@ impl App {
         // Added mixer tracks are written before the hidden last track (spec: flp/events/mixer.md "Adding tracks").
         let result = os_flp::project::apply(&proj, &mut file)
             .map_err(|e| e.to_string())
-            .and_then(|()| file.to_bytes().map_err(|e| e.to_string()))
+            .and_then(|()| {crate::layout::write_project_layout(&mut file,project_layout);file.to_bytes().map_err(|e| e.to_string())})
             .and_then(|b| crate::safe_save::write(&target, &b).map(|()| b.len() as u64).map_err(|e| e.to_string()));
         s.message = Some(match &result {
             Ok(_) if lost.is_empty() => format!("Saved {}", target.display()),
@@ -2400,6 +2402,7 @@ impl App {
         if decoded && self.sync_samplers(Some(deadline)) && self.host_plugins(deadline) && self.loading.as_mut().is_some_and(|l| l.builds_done()) {
             self.loading = None;
             self.state.playlist.wave_wait = false;
+            crate::layout::restore_project_plugins(self);
             // What was not found is listed now (spec: ui/project-loading.md §6).
             crate::missing::loaded(self);
             return self.invalidate();
@@ -6548,6 +6551,11 @@ impl App {
         self.sync_live();self.invalidate();
     }
 
+    pub(crate) fn cancel_mouse_audition(&mut self) {
+        self.hold_key(None,false);
+        if matches!(self.drag,Some(Drag::PianoKeys{..})){self.drag=None;}
+    }
+
     pub fn mouse_up(&mut self) {
         self.state.mpe.drag=None;
         if crate::plugin_picker::mouse_up(self) { return; }
@@ -9429,7 +9437,7 @@ fn sampler_channel(i: u16, name: &str, mixer_track: u16) -> Channel {
 
 /// What a plugin window's strip shows for rack row `row` (spec: ui/plugin-window.md).
 #[cfg(plugin_windows)]
-fn channel_info(p: &Project, row: usize) -> Option<crate::plugin_window::ChannelInfo> {
+pub(crate) fn channel_info(p: &Project, row: usize) -> Option<crate::plugin_window::ChannelInfo> {
     let ch = p.channels.get(row)?;
     Some(crate::plugin_window::ChannelInfo {
         name: ch.name.clone().unwrap_or_else(|| format!("Channel {}", ch.index + 1)),
@@ -17974,6 +17982,58 @@ mod tests {
         assert_eq!(app.mouse_note, None, "the key stops with the button");
         frame(&mut app, &mut b, None);
         assert_same(&a, &b, "keyboard released");
+    }
+
+    #[test]
+    fn forum_project_layout_roundtrip_and_legacy() {
+        let mut a=App::new(None);a.state.project=test_project();a.state.startup_layout_pending=false;
+        a.state.wins[1]=WinState{rect:Rect::new(130.,170.,700.,480.),maxed:false,mini:true};
+        a.state.hide(Win::PianoRoll);a.state.rack_pos=(240.,200.);a.state.rack_size=(600.,350.);
+        let value=crate::layout::project_snapshot(&a.state,&a.plugins);
+        let mut file=os_flp::project::create(&a.state.project).unwrap();
+        crate::layout::write_project_layout(&mut file,value.clone());
+        crate::layout::write_project_layout(&mut file,value);
+        let mut b=App::new(None);let old=b.state.wins[1].rect;
+        crate::layout::restore_project_layout(&mut b.state);assert_eq!(b.state.wins[1].rect,old);
+        b.state.file=Some(os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap());
+        crate::layout::restore_project_layout(&mut b.state);
+        assert_eq!(b.state.wins[1].rect,a.state.wins[1].rect);assert!(b.state.wins[1].mini);
+        assert_eq!(b.state.rack_pos,a.state.rack_pos);assert!(!b.state.shown(Win::PianoRoll));
+    }
+
+    #[test]
+    fn forum_focus_loss_releases_mouse_piano_key() {
+        let mut a=App::new(None);a.state.piano.held=Some(60);a.mouse_note=Some((0,60));a.drag=Some(Drag::PianoKeys{key:60});
+        a.cancel_mouse_audition();
+        assert_eq!(a.state.piano.held,None);assert_eq!(a.mouse_note,None);assert!(a.drag.is_none());
+    }
+
+    #[test]
+    fn forum_shift_drag_selects_copies() {
+        let mut c=Canvas::new(1280,900,1.).unwrap();
+        let (mut a,_,g,bar)=ruler_app(&mut c);
+        crate::playlist::arr_mut(&mut a.state).clips.push(os_model::Clip::new(0,bar,0,os_model::ClipSource::Pattern(1)));
+        frame(&mut a,&mut c,None);
+        let clips=crate::playlist::clips(&a.state);
+        assert!(!clips.is_empty());
+        let before=clips.len();let original=clips[0];let r=g.clip_rect(&original);
+        a.state.playlist.sel=vec![0];a.shift=true;
+        a.mouse_move(r.cx(),r.cy());a.mouse_down();
+        a.mouse_move(r.cx()+100.,r.cy());a.mouse_up();
+        assert!(crate::playlist::clips(&a.state).len()>before);
+        assert!(a.state.playlist.sel.iter().all(|&i|i>=before));
+        assert!(!a.state.playlist.sel.is_empty());
+        assert_eq!(crate::playlist::clips(&a.state)[0],original);
+    }
+
+    #[test]
+    fn forum_enabled_toolbar_panels_are_visible() {
+        use crate::toolbar::{Layout,Panel};
+        let mut a=App::new(None);a.state.project=test_project();
+        a.state.bar.layout=Layout{rows:vec![vec![Panel::Modes,Panel::SongPos]],logo:false};
+        let mut c=Canvas::new(1280,900,1.).unwrap();frame(&mut a,&mut c,None);
+        assert!(a.hits.iter().any(|h|h.action==Action::Typing));
+        assert!(a.hits.iter().any(|h|h.action==Action::SongPos));
     }
 
     fn ruler_app(c: &mut Canvas) -> (App, Rect, crate::playlist::PGeom, u32) {

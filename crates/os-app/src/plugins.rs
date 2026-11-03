@@ -962,7 +962,7 @@ impl Plugins {
         let Some(h) = self.hosted.get_mut(&row) else { return Err("not a plugin channel".into()) };
         // A detached window reopens where it was; the first time, on a monitor as the settings say (spec: as above).
         let pos = match (h.detached, h.placed) {
-            (true, Some(at)) => at,
+            (_, Some(at)) => at,
             (true, None) => crate::plugin_window::first_position(owner, scale, crate::prefs::check(&crate::prefs::DETACHED_WITH_MAIN)),
             (false, _) => crate::plugin_window::default_position(owner, scale),
         };
@@ -1047,9 +1047,7 @@ impl Plugins {
             if let Some(w) = &h.window {
                 h.detached = w.detached();
                 #[cfg(windows)]
-                if h.detached {
-                    h.placed = w.position().or(h.placed);
-                }
+                { h.placed = w.position().or(h.placed); }
             }
             if let Ok(mut p) = h.plugin.lock() {
                 p.close_editor();

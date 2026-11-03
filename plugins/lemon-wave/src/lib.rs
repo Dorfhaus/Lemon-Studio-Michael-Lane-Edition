@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Lemon Wave: original two-oscillator wavetable instrument, stage one.
 #![allow(semicolon_in_expressions_from_non_local_macros)]
+pub mod design;
 pub mod assets;
 pub mod controls;
 pub mod dsp;
@@ -12,6 +13,8 @@ pub mod reference_filter;
 pub mod reference_oscillator;
 mod reference_voice;
 pub mod table_editor;
+pub mod table_tools;
+mod wavetable_editor;
 pub mod wavetable;
 pub mod sample;
 pub mod included_library;
@@ -313,6 +316,8 @@ mod tests {
                 [5; 2],
                 None,
             );
+            params.env_tab.store(1, Ordering::Relaxed);
+            hits.extend(instrument_view::paint(&mut c,&Model,&Default::default(),"",&params,[5;2],None));
             params.page.store(1, Ordering::Relaxed);
             hits.extend(instrument_view::paint(
                 &mut c,
@@ -323,7 +328,13 @@ mod tests {
                 [5; 2],
                 None,
             ));
+            // Bank/source selection is now handled by the unified asset menu,
+            // rather than generic parameter-selector hit targets.
             for setting in controls::SETTINGS {
+                if ["a_bank", "b_bank", "a_source", "b_source"].contains(&setting.id) {
+                    assert!(!hits.iter().any(|h| h.t.id() == setting.id));
+                    continue;
+                }
                 assert!(
                     hits.iter().any(|h| h.t.id() == setting.id),
                     "{}",

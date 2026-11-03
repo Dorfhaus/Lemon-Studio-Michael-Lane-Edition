@@ -29,6 +29,7 @@ pub trait Extension: Send + Sync {
     /// Optional complete instrument view. Existing effect editors retain their default view.
     fn render(&self, _canvas: &mut os_ui::Canvas, _model: &dyn view::Model,
         _state: &ViewState, _hint: &str) -> Option<Vec<view::Hit>> { None }
+    fn character(&self, _character:char) -> bool { false }
     fn dragging(&self) -> bool { false }
     fn moved(&self, _x:f32, _y:f32) -> bool { false }
     fn release(&self, _context:Option<&Arc<dyn GuiContext>>) -> bool { false }
@@ -553,6 +554,12 @@ mod win32 {
                 WM_TIMER | WM_CHANGED => {
                     w.poll();
                     0
+                }
+                WM_CHAR => {
+                    if char::from_u32(wp as u32).is_some_and(|ch|w.logic.shared.extension.as_ref().is_some_and(|e|e.character(ch))) {
+                        w.run(vec![Act::Repaint]); return 0;
+                    }
+                    DefWindowProcW(hwnd,msg,wp,lp)
                 }
                 WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_RBUTTONDBLCLK | WM_MBUTTONDOWN => {
                     SetFocus(hwnd);

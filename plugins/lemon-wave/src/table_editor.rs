@@ -12,6 +12,8 @@ use std::sync::{
 };
 
 pub struct TableEditor {
+    workbench: std::sync::Mutex<crate::wavetable_editor::Workbench>,
+    workbench_loaded: std::sync::atomic::AtomicBool,
     hits: std::sync::Mutex<Vec<lemon_small_fx::view::Hit>>,
     browser: std::sync::Mutex<crate::sound_browser::Browser>,
     modulation: crate::modulation_editor::ModEditor,
@@ -23,6 +25,8 @@ impl TableEditor {
     pub fn new(params: Arc<WaveParams>) -> Self {
         Self {
             browser: Default::default(),
+            workbench: Default::default(),
+            workbench_loaded: Default::default(),
             hits: Default::default(),
             modulation: crate::modulation_editor::ModEditor::new(params.clone()),
             params,
@@ -133,6 +137,7 @@ impl Extension for TableEditor {
         state: &lemon_small_fx::view::ViewState,
         hint: &str,
     ) -> Option<Vec<lemon_small_fx::view::Hit>> {
+        crate::design::refresh();
         let selected = self.preset.load(Ordering::Relaxed);
         let hits = crate::instrument_view::paint(
             c,
@@ -143,6 +148,11 @@ impl Extension for TableEditor {
             self.cycles.each_ref().map(|x| x.load(Ordering::Relaxed)),
             (selected < crate::instrument_view::PRESET_NAMES.len()).then_some(selected),
         );
+        if self.params.page.load(Ordering::Relaxed) == 2 {
+            self.workbench.lock().unwrap().paint(c);
+            self.hits.lock().unwrap().clear();
+            return Some(Vec::new());
+        }
         *self.hits.lock().unwrap() = hits.clone();
         self.modulation.observe(&hits, c);
         let browser = self.browser.lock().unwrap();
@@ -153,29 +163,89 @@ impl Extension for TableEditor {
             Some(hits)
         }
     }
+    fn character(&self, c: char) -> bool {
+        self.params.page.load(Ordering::Relaxed) == 2 && self.workbench.lock().unwrap().character(c)
+    }
     fn dragging(&self) -> bool {
-        self.modulation.dragging()
+        self.workbench.lock().unwrap().dragging() || self.modulation.dragging()
     }
     fn moved(&self, x: f32, y: f32) -> bool {
+        if self.workbench.lock().unwrap().moved(x, y) {
+            return true;
+        }
         self.modulation.moved(x, y)
     }
     fn release(&self, c: Option<&Arc<dyn GuiContext>>) -> bool {
+        if self.workbench.lock().unwrap().release() {
+            return true;
+        }
         self.modulation.release(c)
     }
     fn paint(&self, c: &mut Canvas, model: &dyn Model) {
         let _ = self.render(c, model, &Default::default(), "");
     }
     fn click(&self, x: f32, y: f32, context: Option<&Arc<dyn GuiContext>>) -> bool {
+        if crate::instrument_view::page_button(2).contains(x, y) {
+            if !self.workbench_loaded.swap(true, Ordering::Relaxed) {
+                self.workbench.lock().unwrap().load(&self.params, 0);
+            }
+            self.params.page.store(2, Ordering::Relaxed);
+            self.browser.lock().unwrap().close();
+            return true;
+        }
+        if self.params.page.load(Ordering::Relaxed) == 2 {
+            for page in 0..2 {
+                if crate::instrument_view::page_button(page).contains(x, y) {
+                    self.params.page.store(page, Ordering::Relaxed);
+                    return true;
+                }
+            }
+            let mut work = self.workbench.lock().unwrap();
+            if let Some(source) = work.click(x, y, &self.params) {
+                let o = work.oscillator;
+                let mut sources = self.params.sources();
+                sources.samples[o] = None;
+                sources.oscillators[o] = Some(source);
+                self.commit(o, None, sources, context);
+                self.preset.store(usize::MAX, Ordering::Relaxed);
+            }
+            return true;
+        }
+        for o in 0..2 {
+            if self.params.page.load(Ordering::Relaxed) == 0
+                && crate::instrument_view::edit_table_button(o).contains(x, y)
+            {
+                let mut work = self.workbench.lock().unwrap();
+                if !work.dirty {
+                    work.load(&self.params, o);
+                    self.workbench_loaded.store(true, Ordering::Relaxed);
+                } else if work.oscillator != o {
+                    work.status = "Apply or Reload the draft before switching oscillators.".into();
+                }
+                self.params.page.store(2, Ordering::Relaxed);
+                return true;
+            }
+        }
+
         {
             let mut browser = self.browser.lock().unwrap();
             if let Some(o) = browser.oscillator {
-                let inside=browser.menu.as_ref().is_some_and(|m|m.rect().contains(x,y));
+                if browser.menu.as_ref().is_some_and(|m|m.anchor.contains(x,y)) {
+                    browser.close();
+                    return true;
+                }
+                let inside = browser
+                    .menu
+                    .as_ref()
+                    .is_some_and(|m| m.rect().contains(x, y));
                 if let Some(choice) = browser.click(x, y) {
                     use crate::sound_browser::Choice;
                     match &choice {
                         Choice::Category(k) => {
                             match k {
                                 0 | 1 => browser.sounds(o, *k, ""),
+                                6 => browser.categories(o),
+                                7 => browser.user_tables(o),
                                 2 => browser.groups(o),
                                 4 => browser.instrument(o, "Mini-Moog"),
                                 5 => browser.instrument(o, "800DV"),
@@ -227,6 +297,10 @@ impl Extension for TableEditor {
                             bank = Some(i);
                             Ok(())
                         }
+                        Choice::UserTable(path) => crate::table_tools::load(&path).map(|source| {
+                            sources.samples[o] = None;
+                            sources.oscillators[o] = Some(source);
+                        }),
                         Choice::Sample(e) => e
                             .embedded
                             .map(crate::included_library::load)
@@ -250,29 +324,15 @@ impl Extension for TableEditor {
                         }
                     }
                 }
-                if inside{return true;}
+                if inside {
+                    return true;
+                }
             }
         }
         if self.params.page.load(Ordering::Relaxed) == 0 {
             for o in 0..2 {
-                if crate::sound_browser::type_button(o).contains(x, y) {
-                    self.browser.lock().unwrap().categories(o);
-                    return true;
-                }
                 if crate::sound_browser::button(o).contains(x, y) {
-                    let kind = crate::sound_browser::kind(&self.params, o);
-                    let group = crate::sound_browser::group(&self.params, o);
-                    self.browser.lock().unwrap().sounds(o, kind, &group);
-                    return true;
-                }
-                if crate::sound_browser::group_button(o).contains(x, y)
-                    && crate::sound_browser::kind(&self.params, o) == 2
-                {
-                    let group = crate::sound_browser::group(&self.params, o);
-                    self.browser
-                        .lock()
-                        .unwrap()
-                        .instrument(o, group.split(" / ").next().unwrap_or(""));
+                    self.browser.lock().unwrap().categories(o);
                     return true;
                 }
 
@@ -404,4 +464,77 @@ impl Extension for TableEditor {
         }
         false
     }
+}
+
+#[cfg(test)]
+mod user_table_tests {
+    use super::*;
+    #[test]
+    fn user_bank_dropdown_loads_and_missing_file_preserves_sound() {
+        let root = std::env::temp_dir().join(format!(
+            "wave-dropdown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = crate::sound_browser::basic(3);
+        let file = crate::table_tools::save_to(&root, "Test", "User Triangle", &source).unwrap();
+        let params = Arc::new(WaveParams::default());
+        let e = TableEditor::new(params.clone());
+        let r = crate::sound_browser::button(0);
+        e.browser.lock().unwrap().show(
+            0,
+            r,
+            vec![(
+                "Test / User Triangle".into(),
+                crate::sound_browser::Choice::UserTable(file.clone()),
+            )],
+        );
+        e.click(r.x + 10., r.bottom() + 16., None);
+        assert_eq!(
+            params.sources().oscillators[0].as_ref().unwrap().name,
+            "User Triangle"
+        );
+        assert_eq!(
+            params.sources().oscillators[0].as_ref().unwrap().samples,
+            source.samples
+        );
+        std::fs::remove_file(&file).unwrap();
+        e.browser.lock().unwrap().show(
+            0,
+            r,
+            vec![(
+                "Missing".into(),
+                crate::sound_browser::Choice::UserTable(file),
+            )],
+        );
+        e.click(r.x + 10., r.bottom() + 16., None);
+        assert_eq!(
+            params.sources().oscillators[0].as_ref().unwrap().samples,
+            source.samples
+        );
+        assert!(params.status.lock().unwrap().starts_with("Load failed:"));
+        std::fs::remove_dir(root.join("Test")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn dropdown_trigger_click_closes_without_reopening() {
+        let params=Arc::new(WaveParams::default());
+        let editor=TableEditor::new(params.clone());
+        for anchor in [crate::sound_browser::button(0),crate::sound_browser::button(1),Rect::new(450.,18.,268.,32.),Rect::new(142.,324.,70.,16.)] {
+            editor.browser.lock().unwrap().show(0,anchor,vec![("Off".into(),crate::sound_browser::Choice::Param(crate::controls::A_MODE,0))]);
+            assert!(editor.click(anchor.cx(),anchor.cy(),None));
+            assert!(editor.browser.lock().unwrap().menu.is_none());
+        }
+        let anchor=crate::sound_browser::button(0);
+        editor.click(anchor.cx(),anchor.cy(),None);
+        assert!(editor.browser.lock().unwrap().menu.is_some());
+        editor.click(anchor.cx(),anchor.cy(),None);
+        assert!(editor.browser.lock().unwrap().menu.is_none());
+        editor.click(anchor.cx(),anchor.cy(),None);
+        assert!(editor.browser.lock().unwrap().menu.is_some());
+    }
+
 }

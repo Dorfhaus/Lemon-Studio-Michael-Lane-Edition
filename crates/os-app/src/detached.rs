@@ -64,6 +64,7 @@ impl Windows {
         if p.canvas.pixmap.width()!=size.width||p.canvas.pixmap.height()!=size.height||p.canvas.scale!=scale {p.canvas.resize(size.width,size.height,scale);}
         app.state.native_view=Some(p.kind);app.state.display_scale=p.window.scale_factor() as f32;app.mouse=p.mouse;
         set_rack_parent(app,&p.window);app.paint(&mut p.canvas,None);
+        let moved=matches!(event,WindowEvent::Moved(_)|WindowEvent::ScaleFactorChanged{..});
         match event {
             WindowEvent::RedrawRequested=>{
                 p.painted=Instant::now();
@@ -99,6 +100,7 @@ impl Windows {
             WindowEvent::DroppedFile(path)=>{app.state.native_input=Some(p.kind);app.drop_file(path);}
             _=>{}
         }
+        #[cfg(windows)] if p.kind==Win::Mixer && moved {for h in app.plugins.hosted.values(){if let Some(e)=&h.rack_editor{e.refresh();}}}
         app.invalidate();
     }
 }

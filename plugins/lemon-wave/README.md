@@ -1,3 +1,7 @@
+# Current local update: Wavetable Workshop
+
+Same-window drawing, 64 harmonic bars, 1-128 editable/reorderable frames, undo/redo, recording-section extraction, stacked morph preview and named user banks. See [WAVETABLE-WORKSHOP.md](WAVETABLE-WORKSHOP.md). All edits remain drafts until Apply; existing installed sounds and 109 host controls are preserved.
+
 # Current local build: included recordings and inline dropdowns
 
 The installed Windows build embeds 34 Mini-Moog and 226 800DV recordings. Same-editor dropdowns replace the browser panel. Raised controls, recessed displays, frame morph previews and unison Blend visualization cover both pages. See [SOUND-LIBRARY.md](SOUND-LIBRARY.md) for use, build inputs and compatibility. Earlier notes below are historical.

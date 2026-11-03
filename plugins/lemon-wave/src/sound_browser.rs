@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use os_ui::{Canvas, Color, Font, Rect};
+use os_ui::{Canvas, Font, Rect};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -14,6 +14,7 @@ pub struct Entry {
 #[derive(Clone)]
 pub enum Choice {
     Basic(usize),
+    UserTable(std::path::PathBuf),
     Bank(usize),
     Sample(Entry),
     Category(usize),
@@ -41,7 +42,7 @@ pub const BASIC: [&str; 6] = [
     "Pulse 12.5%",
 ];
 pub fn button(o: usize) -> Rect {
-    Rect::new(160. + 410. * o as f32, 112., 242., 25.)
+    Rect::new(151. + 410. * o as f32, 84., 136., 23.)
 }
 pub fn type_button(o: usize) -> Rect {
     Rect::new(28. + 410. * o as f32, 112., 124., 25.)
@@ -131,33 +132,38 @@ impl Browser {
         );
     }
     pub fn categories(&mut self, o: usize) {
-        self.show(
-            o,
-            type_button(o),
-            [
-                (0, "Basic Waves"),
-                (1, "Wavetables"),
-                (4, "Mini-Moog / Included"),
-                (5, "800DV / Included"),
-                (3, "Reference Saw"),
-            ]
-            .iter()
-            .map(|(i, s)| (s.to_string(), Choice::Category(*i)))
-            .collect(),
-        );
+        let mut items: Vec<_> = BASIC.iter().enumerate()
+            .map(|(i, name)| (format!("Basic Waves / {name}"), Choice::Basic(i))).collect();
+        items.extend(["Basic Morph", "Hollow", "Glass", "Vowel"].iter().enumerate()
+            .map(|(i, name)| (format!("Wavetables / {name}"), Choice::Bank(i))));
+        items.push(("User Wavetables >".into(), Choice::Category(7)));
+        items.push(("Recordings / Mini-Moog >".into(), Choice::Category(4)));
+        items.push(("Recordings / 800DV >".into(), Choice::Category(5)));
+        items.push(("Reference / Saw".into(), Choice::Category(3)));
+        self.show(o, button(o), items);
+    }
+    pub fn user_tables(&mut self, o: usize) {
+        let mut items = vec![("< All sounds".into(), Choice::Category(6))];
+        items.extend(crate::table_tools::list().into_iter()
+            .map(|(name, path)| (name, Choice::UserTable(path))));
+        self.show(o, button(o), items);
     }
     pub fn sounds(&mut self, o: usize, kind: usize, group: &str) {
         match kind {
             0 => self.open(o),
-            1 => self.show(
-                o,
-                button(o),
-                ["Basic - Sine / Saw / Square", "Hollow", "Glass", "Vowel"]
+            1 => {
+                let mut items: Vec<_> = ["Basic - Sine / Saw / Square", "Hollow", "Glass", "Vowel"]
                     .iter()
                     .enumerate()
                     .map(|(i, s)| (s.to_string(), Choice::Bank(i)))
-                    .collect(),
-            ),
+                    .collect();
+                items.extend(
+                    crate::table_tools::list()
+                        .into_iter()
+                        .map(|(name, path)| (name, Choice::UserTable(path))),
+                );
+                self.show(o, button(o), items);
+            }
             2 => self.show(
                 o,
                 button(o),
@@ -184,7 +190,7 @@ impl Browser {
         groups.dedup();
         self.show(
             o,
-            group_button(o),
+            button(o),
             groups
                 .into_iter()
                 .map(|g| (g.clone(), Choice::Group(g)))
@@ -197,7 +203,7 @@ impl Browser {
         groups.dedup();
         self.show(
             o,
-            group_button(o),
+            button(o),
             groups
                 .into_iter()
                 .map(|g| (g.clone(), Choice::Group(g)))
@@ -232,22 +238,22 @@ impl Browser {
     pub fn paint(&self, c: &mut Canvas) {
         let Some(m) = &self.menu else { return };
         let r = m.rect();
-        crate::instrument_view::raised(c, r, 6., Color::rgb(0x283541));
-        c.stroke_rrect(r, 6., 1., Color::rgb(0x789286));
-        let f = Font::light(12, 0).natural();
+        crate::instrument_view::raised(c, r, 6., crate::design::color(0x283541));
+        c.stroke_rrect(r, 6., 1., crate::design::color(0x789286));
+        let f = Font::light(crate::design::font_size(12), 0).natural();
         let shown = m.items.iter().skip(m.page * 14).take(14);
         for (i, (label, _)) in shown.enumerate() {
             let row = Rect::new(r.x + 4., r.y + 4. + i as f32 * 26., r.w - 8., 25.);
             c.fill_rect(
                 row,
-                Color::rgb(if i % 2 == 0 { 0x26333e } else { 0x222e38 }),
+                crate::design::color(if i % 2 == 0 { 0x26333e } else { 0x222e38 }),
             );
             c.text_clip(
                 f,
                 row.x + 10.,
                 row.y + 6.,
                 row.w - 20.,
-                Color::rgb(0xe9f0e8),
+                crate::design::color(0xe9f0e8),
                 label,
             );
         }
@@ -256,7 +262,7 @@ impl Browser {
                 f,
                 r.x + 12.,
                 r.y + 12.,
-                Color::rgb(0xe9f0e8),
+                crate::design::color(0xe9f0e8),
                 "No included sounds",
             );
         }
@@ -265,7 +271,7 @@ impl Browser {
             c.text_center(
                 f,
                 Rect::new(r.x, r.y + 4. + n as f32 * 26., r.w, 26.),
-                Color::rgb(0xd5e989),
+                crate::design::color(0xd5e989),
                 &format!(
                     "< Previous          {} / {}          Next >",
                     m.page + 1,

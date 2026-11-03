@@ -32,7 +32,7 @@ for name,source in sources:
     dest=release/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,dest)
     files.append(dict(name=name,sha256=hashlib.sha256(dest.read_bytes()).hexdigest(),size=dest.stat().st_size))
 label=f'{str(v)[:4]}.{str(v)[4:6]}.{str(v)[6:8]}.{int(str(v)[8:])}'
-m=dict(product='lemon-studio-michael-lane-'+a.platform,version=v,label=label,notes='Michael Lane Edition: expanded Lemon Wave sound browser, sample playback and modulation; mixer input timing, auxiliary routing and MPE fixes; safer project saves and recording continuity. Updated feature overview and changelog.',files=files)
+m=dict(product='lemon-studio-michael-lane-'+a.platform,version=v,label=label,notes='Community fixes: visible optional toolbar controls, Shift-drag selection, piano-key focus release, project window recall, and detached mixer redraw. Includes current Lemon Wave improvements.',files=files)
 payload=json.dumps(m,separators=(',',':'),ensure_ascii=True)
 signed=json.dumps(dict(payload=payload,signature=key.sign(payload.encode()).hex()),indent=2)
 (release/'signed.json').write_text(signed)

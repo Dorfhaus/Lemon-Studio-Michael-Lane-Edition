@@ -4,6 +4,20 @@
   "sections": [
     {
       "date": "2026-11-03",
+      "title": "Community bug fixes and project window recall · public build 2026110304",
+      "changes": [
+        "Restored Mode Buttons and Song Position when enabled in the toolbar editor, including the typing-keyboard piano button.",
+        "Shift-dragging playlist clips now selects the new copies instead of leaving the original clips selected.",
+        "Mouse-played piano notes are released when the main window loses focus, preventing a held key after focus changes.",
+        "Projects saved with this build remember the playlist, mixer, piano-roll and channel-rack layout. Windows also restores hosted plugin editor positions and open/closed state after plugins finish loading; matching plugin identities are checked. Existing projects without layout data keep their previous behavior.",
+        "Detached Windows channel-strip editors now receive an explicit redraw after window movement or display-scale changes. The specific Waves multi-monitor report still needs live confirmation.",
+        "Includes the longer channel-strip faders and separated pan, mute/solo, Record and FX controls from build 2026110303.",
+        "Includes the current Lemon Wave wavetable workshop, same-window selectors, tabbed envelope/LFO editing and modulation drag feedback. Public downloads do not bundle personal recorded-synth libraries.",
+        "Available for Windows, Linux x64, Apple-silicon Mac and Intel Mac. Linux is compiled and packaged without runtime/audio testing. Vendor-specific Masterdesk preset behavior remains unverified."
+      ]
+    },
+    {
+      "date": "2026-11-03",
       "title": "Lemon Wave sound browser and audio reliability · public build 2026110302",
       "changes": [
         "Lemon Wave now includes six named basic waves, a visible wavetable browser and My Samples for user-local recorded synth notes. Samples and imported tables are embedded in saved patches. Personal recordings and third-party libraries are not included in public downloads.",

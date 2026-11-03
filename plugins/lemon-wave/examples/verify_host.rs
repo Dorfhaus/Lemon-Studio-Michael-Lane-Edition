@@ -140,7 +140,13 @@ fn verify(lib: Arc<dyn Library>) {
         ],
         oscillators: [Some(source), None],
     };
-    if !lemon_wave::included_library::PACK.is_empty(){sources.samples[1]=Some(lemon_wave::included_library::load(0).unwrap());}
+    if !lemon_wave::included_library::PACK.is_empty() {
+        let sample = lemon_wave::included_library::load(0).unwrap();
+        let mut edited = lemon_wave::table_tools::extract(&sample, (0.1, 0.5), 16).unwrap();
+        lemon_wave::table_tools::harmonic(&mut edited.samples[..1024], 3, 0.2);
+        sources.oscillators[0] = Some(edited);
+        sources.samples[1] = Some(sample);
+    }
     json["fields"][lemon_wave::assets::FIELD] =
         serde_json::Value::String(serde_json::to_string(&sources).unwrap());
     let mut curves = lemon_wave::modulation::Curves::default();

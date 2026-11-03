@@ -74,6 +74,7 @@ impl Editor{
         let mut data=Box::new(Data{inner,port,size:(1,1),offset:0,x:0.,page_width:1.});SetWindowLongPtrW(hwnd,GWLP_USERDATA,(&mut *data as *mut Data) as isize);
         Ok(Self{hwnd,data,owner,scale,rect:[0;4],clip:vec![],profile:Profile::Whole,pages:vec![Page{left:0.,right:1.}],page:0,slide:None,open_height:0,pending_height:None})
     }}
+    pub fn refresh(&self){unsafe{repaint(self.hwnd);}crate::plugin_window::embedded_exposed();}
     pub fn area(&self)->*mut c_void{self.data.inner as _}
     pub fn accept_size(&mut self,size:(u32,u32))->bool{
         if !crate::rack_mixer::vertical_shape(size){return false;}

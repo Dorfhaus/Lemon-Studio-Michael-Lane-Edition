@@ -13,7 +13,7 @@ from private_build import require_public_binary
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', required=True, type=Path)
 parser.add_argument('--key', type=Path, default=Path.home()/'.lemon-studio-release/update-signing-key.pem')
-parser.add_argument('--notes', default='Michael Lane Edition: expanded Lemon Wave sound browser, sample playback and modulation; mixer input timing, auxiliary routing and MPE fixes; safer project saves and recording continuity. Updated feature overview and changelog.')
+parser.add_argument('--notes', default='Community fixes: visible optional toolbar controls, Shift-drag selection, piano-key focus release, project window recall, and detached mixer redraw. Includes current Lemon Wave improvements.')
 args = parser.parse_args()
 out = args.output.resolve()
 if out == root or root in out.parents:

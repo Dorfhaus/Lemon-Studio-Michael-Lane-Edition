@@ -28,6 +28,8 @@ pub struct Tables {
 pub struct WaveParams {
     pub base: Arc<FxParams>,
     pub page: std::sync::atomic::AtomicUsize,
+    pub env_tab: std::sync::atomic::AtomicUsize,
+    pub lfo_tab: std::sync::atomic::AtomicUsize,
     pub curves: RwLock<crate::modulation::Curves>,
     pub telemetry: crate::modulation::Telemetry,
     pub tables: RwLock<Arc<Tables>>,
@@ -36,7 +38,7 @@ pub struct WaveParams {
 }
 impl Default for WaveParams {
     fn default() -> Self {
-        Self { page:Default::default(), curves:RwLock::default(), telemetry:Default::default(), base:Arc::new(FxParams::new(controls::SPEC)), tables:RwLock::new(Arc::default()), retired:Mutex::default(), status:Mutex::new("Choose cycle length, then Import WAV. Imported tables travel with saved projects and presets.".into()) }
+        Self { env_tab:Default::default(), lfo_tab:Default::default(), page:Default::default(), curves:RwLock::default(), telemetry:Default::default(), base:Arc::new(FxParams::new(controls::SPEC)), tables:RwLock::new(Arc::default()), retired:Mutex::default(), status:Mutex::new("Choose cycle length, then Import WAV. Imported tables travel with saved projects and presets.".into()) }
     }
 }
 impl WaveParams {
