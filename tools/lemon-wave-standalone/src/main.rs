@@ -48,6 +48,13 @@ fn main() {
         engine.reset();
         engine.render(&mut left, &mut right);
         assert!(left.iter().chain(right.iter()).all(|v| v.abs() < 1e-6));
+        let mut patch=lemon_wave::dsp::defaults();
+        patch[lemon_wave::controls::RACK_MODE]=1.;
+        for (slot,kind) in [2,4,5].into_iter().enumerate(){let b=lemon_wave::fxrack::base(slot);patch[b]=kind as f32;patch[b+6..b+12].copy_from_slice(&lemon_wave::fxrack::initial(kind));}
+        engine.set(patch);engine.reset();for note in 48..56{engine.on(note,0.5,0,None);}
+        let began=std::time::Instant::now();
+        for _ in 0..12 {engine.render(&mut left,&mut right);assert!(left.iter().chain(right.iter()).all(|v|v.is_finite()));}
+        let rack_ms=began.elapsed().as_millis();assert!(left.iter().any(|v|v.abs()>1e-5));engine.reset();engine.render(&mut left,&mut right);assert!(left.iter().chain(right.iter()).all(|v|v.abs()<1e-6));
         let included = lemon_wave::included_library::entries().len();
         if included > 0 {
             lemon_wave::included_library::load(0)
@@ -56,7 +63,7 @@ fn main() {
                 .unwrap();
         }
         if let Some(path) = args.get(2) {
-            std::fs::write(path,format!("PASS: offline synth note-on, finite non-silent stereo audio, reset clears notes and effect tails; {included} included recordings; first recording decoded. No audio or MIDI device opened.\n")).expect("write self-test");
+            std::fs::write(path,format!("PASS: offline synth note-on, finite non-silent stereo audio, reset clears notes and effect tails; {included} included recordings; first recording decoded. Modular compressor/delay/reverb chain: 8 synthetic notes, 1.024 seconds rendered in {rack_ms} ms; reset cleared the rack. No audio or MIDI device opened.\n")).expect("write self-test");
         }
         return;
     }

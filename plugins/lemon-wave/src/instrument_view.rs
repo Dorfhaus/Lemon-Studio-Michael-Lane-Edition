@@ -675,32 +675,7 @@ pub fn paint(
         u.knob(LFO_AMOUNT,590.,739.,"Direct depth",theme_mod());
         u.select(LFO_TARGET,Rect::new(636.,746.,176.,24.),theme_mod());
     } else {u.label(445.,746.,"Draw in the graph, then drag its handle to a control.",9,theme_dim());}
-    u.panel(Rect::new(836., 454., 328., 334.), "EFFECTS", theme_b(), "");
-    u.label(852., 489., "01   CHORUS", 10, theme_dim());
-    for (j, (k, cap)) in [
-        (CHORUS_RATE, "Rate"),
-        (CHORUS_DEPTH, "Depth"),
-        (CHORUS_MIX, "Mix"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        u.knob(k, 892. + 108. * j as f32, 530., cap, theme_b());
-    }
-    u.c.fill_rect(Rect::new(852., 596., 296., 1.), theme_line());
-    u.label(852., 610., "02   STEREO DELAY", 10, theme_dim());
-    for (j, (k, cap)) in [
-        (DELAY_TIME, "Time"),
-        (DELAY_FEEDBACK, "Feedback"),
-        (DELAY_MIX, "Mix"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        u.knob(k, 892. + 108. * j as f32, 650., cap, theme_b());
-    }
-    u.label(852., 727., "CHORUS → DELAY → OUTPUT", 10, theme_dim());
-    u.label(852., 749., "Mix at 0% keeps the dry signal.", 10, theme_dim());
+    paint_fx_rack(&mut u,params);
     for (_, r, label) in source_buttons(0,params) { paint_source_handle(u.c,r,label,u.hover(r)); }
     let status = params.status.lock().unwrap();
     let footer = if hint.is_empty() {
@@ -728,6 +703,21 @@ mod tests {
         fn text(&self, id: &str) -> String {
             crate::controls::text(SPEC.index(id).unwrap(), self.plain(id) as i32)
         }
+    }
+    #[test]
+    fn modular_rack_scrolled_controls_stay_inside_the_panel_and_clear_each_other() {
+        let mut p=crate::dsp::defaults();p[RACK_MODE]=1.;
+        for (slot,kind) in [4,5,1,2,3,6,7,8,9,10,11,12,13,4,5,1].into_iter().enumerate(){let b=crate::fxrack::base(slot);p[b]=kind as f32;p[b+6..b+12].copy_from_slice(&crate::fxrack::initial(kind));}
+        let m=Patch(p);let params=WaveParams::default();
+        for scale in [1.,1.5]{for scroll in (0..=fx_max_scroll(16)).step_by(46) {
+            params.fx_scroll.store(scroll,std::sync::atomic::Ordering::Relaxed);
+            let mut c=Canvas::new((1180.*scale) as u32,(820.*scale) as u32,scale).unwrap();
+            let hits=paint(&mut c,&m,&Default::default(),"",&params,[5;2],None);
+            let mut rects:Vec<_>=hits.iter().filter(|h|SPEC.index(h.t.id()).is_some_and(|k|k>=RACK_START)).map(|h|h.r).collect();
+            for position in 0..16{for action in 0..6 {let r=fx_button(fx_card(position,scroll),action).intersect(&FX_AREA);if r.w>0.&&r.h>0.{rects.push(r);}}}
+            for (i,a) in rects.iter().enumerate(){assert!(a.x>=FX_AREA.x&&a.y>=FX_AREA.y&&a.right()<=FX_AREA.right()+0.01&&a.bottom()<=FX_AREA.bottom()+0.01);
+                for b in &rects[i+1..]{assert!(a.right().min(b.right())<=a.x.max(b.x)+0.01||a.bottom().min(b.bottom())<=a.y.max(b.y)+0.01,"overlap {a:?} {b:?}");}}
+        }}
     }
     #[test]
     fn reference_view_has_accessible_nonoverlapping_targets_at_both_scales() {
@@ -821,6 +811,50 @@ mod tests {
             }
         }
     }
+}
+
+pub const FX_AREA:Rect=Rect::new(844.,492.,309.,276.);
+pub const FX_ADD:Rect=Rect::new(1058.,459.,94.,23.);
+pub const FX_CARD_HEIGHT:f32=232.;
+pub fn fx_card(position:usize,scroll:usize)->Rect {Rect::new(845.,493.+position as f32*FX_CARD_HEIGHT-scroll as f32,303.,224.)}
+pub fn fx_button(card:Rect,action:usize)->Rect {Rect::new(card.x+140.+action as f32*26.,card.y+6.,22.,20.)}
+pub fn fx_menu_button(kind:usize)->Rect {Rect::new(850.+((kind-1)%2) as f32*151.,499.+((kind-1)/2) as f32*36.,143.,29.)}
+pub fn fx_max_scroll(count:usize)->usize {(count as f32*FX_CARD_HEIGHT-FX_AREA.h).max(0.) as usize}
+struct FxModel(crate::dsp::Patch);
+impl Model for FxModel {
+ fn plain(&self,id:&str)->f32 {self.0[SPEC.index(id).unwrap()]}
+ fn norm(&self,id:&str)->f32 {let k=SPEC.index(id).unwrap();let s=&SETTINGS[k];(self.0[k]-s.range.0 as f32)/(s.range.1-s.range.0) as f32}
+ fn text(&self,id:&str)->String {let k=SPEC.index(id).unwrap();if k>=RACK_START {let b=crate::fxrack::base((k-RACK_START)/RACK_STRIDE);let kind=self.0[b] as usize;let col=k-b;
+  if col==5{return crate::fxrack::modes(kind)[(self.0[k] as usize).min(crate::fxrack::modes(kind).len()-1)].into();}
+  if col>=6{return crate::fxrack::value(kind,col-6,self.0[k]);}
+ }crate::controls::text(k,self.0[k] as i32)}
+}
+fn paint_fx_rack(u:&mut Ui,params:&WaveParams) {
+ use std::sync::atomic::Ordering;
+ u.panel(Rect::new(836.,454.,328.,334.),"EFFECTS",theme_b(),"");
+ raised(u.c,FX_ADD,4.,crate::design::color(0x34463f));u.c.text_center(font(10),FX_ADD,theme_b(),if params.fx_add.load(Ordering::Relaxed){"CLOSE"}else{"+ ADD FX"});
+ if params.fx_add.load(Ordering::Relaxed) {
+  for kind in 1..crate::fxrack::NAMES.len(){let r=fx_menu_button(kind);raised(u.c,r,4.,crate::design::color(if u.hover(r){0x40534e}else{0x293741}));u.c.text_center(font(10),r,theme_ink(),crate::fxrack::NAMES[kind]);}
+  u.label(850.,773.,"Choose a module. Repeated effects are welcome.",8,theme_dim());return;
+ }
+ let p=crate::fxrack::effective(std::array::from_fn(|k|u.m.plain(SETTINGS[k].id)));let slots=crate::fxrack::order(&p);
+ let scroll=params.fx_scroll.load(Ordering::Relaxed).min(fx_max_scroll(slots.len()));params.fx_scroll.store(scroll,Ordering::Relaxed);
+ if slots.is_empty(){u.c.text_center(font(13),Rect::new(854.,559.,285.,28.),theme_ink(),"Build your effects chain");u.c.text_center(font(10),Rect::new(854.,594.,285.,28.),theme_dim(),"Add modules above, then arrange them here.");}
+ let model=FxModel(p);let mut v=Ui{c:u.c,m:&model,st:u.st,hits:Vec::new(),live:u.live};v.c.push_clip(FX_AREA);
+ for (position,slot) in slots.iter().enumerate(){let b=crate::fxrack::base(*slot);let kind=model.0[b] as usize;let r=fx_card(position,scroll);if r.bottom()<FX_AREA.y||r.y>FX_AREA.bottom(){continue;}
+  raised(v.c,r,5.,crate::design::color(0x1a2731));
+  v.c.text_clip(font(10).bold(),r.x+9.,r.y+11.,124.,theme_ink(),&format!("{}  {}",position+1,match kind {10=>"Hyper / Dim",11=>"Freq Shifter",_=>crate::fxrack::NAMES[kind]}));
+  for (a,label) in ["ON","A","B","↑","↓","×"].iter().enumerate(){let button=fx_button(r,a);let on=if a<3 {model.0[b+2+a]>0.5}else{false};raised(v.c,button,3.,crate::design::color(if on{0x3e534c}else{0x293741}));v.c.text_center(font(9),button,if on{theme_b()}else{theme_dim()},if a==0&&!on{"OFF"}else{label});}
+  v.select(b+5,Rect::new(r.x+10.,r.y+34.,if kind==4{140.}else{282.},24.),theme_b());
+  if kind==4 {v.select(b+10,Rect::new(r.x+158.,r.y+34.,134.,24.),theme_b());}
+  let labels=crate::fxrack::captions(kind);
+  for i in 0..6{if kind==4&&i==4 {v.c.text_center(font(9),Rect::new(r.x+112.,r.y+164.,80.,37.),theme_dim(),"Beat sync above");continue;}
+   v.knob(b+6+i,r.x+50.+(i%3) as f32*100.,r.y+94.+(i/3) as f32*82.,labels[i],theme_b());}
+ }
+ v.c.pop_clip();
+ for mut h in v.hits {h.r=h.r.intersect(&FX_AREA);if h.r.w>0.&&h.r.h>0.{u.hits.push(h);}}
+ if fx_max_scroll(slots.len())>0 {let total=slots.len() as f32*FX_CARD_HEIGHT;let h=(FX_AREA.h*FX_AREA.h/total).max(20.);let y=FX_AREA.y+(FX_AREA.h-h)*scroll as f32/fx_max_scroll(slots.len()) as f32;u.c.fill_rrect(Rect::new(1157.,FX_AREA.y,4.,FX_AREA.h),2.,theme_line());u.c.fill_rrect(Rect::new(1157.,y,4.,h),2.,theme_b());}
+ u.label(850.,775.,&format!("{} / 16 modules  ·  Scroll here  ·  ↑↓ reorder",slots.len()),8,theme_dim());
 }
 
 pub fn page_button(page: usize) -> Rect {

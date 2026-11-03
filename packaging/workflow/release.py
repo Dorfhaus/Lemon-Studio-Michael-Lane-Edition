@@ -36,7 +36,7 @@ def sync():
     if git('status','--porcelain'): raise RuntimeError('Commit/reconcile local source changes before syncing. Nothing was stashed, reset or overwritten.')
     run('git','fetch','home','main')
     run('git','merge','--ff-only','home/main')
-    run('git','push','home','HEAD:main')
+    run('git','push','--receive-pack=git -c receive.autogc=false receive-pack','home','HEAD:main')
     if git('rev-parse','HEAD') != git('rev-parse','home/main'): raise RuntimeError('Shared revision mismatch')
 
 def connect(cfg):
@@ -199,7 +199,7 @@ def relay_publish(cfg,plan_path,plan):
     shutil.copy2(receipt,plan_path.parent/'PUBLISHED.json')
     print('Published through the Mac; receipt copied back to this PC.')
 
-def publish(plan_path):
+def _publish(plan_path):
     plan_path=Path(plan_path).resolve(); plan=json.loads(plan_path.read_text());scope=plan['scope']
     entries=plan['files']; paths=[e['path'] for e in entries]
     if len(paths)!=len(set(paths)) or not all(permitted(p,scope) for p in paths): raise RuntimeError('Publication plan exceeds platform scope')
@@ -216,7 +216,18 @@ def publish(plan_path):
     ftp=connect(cfg)
     # Per-platform lock excludes simultaneous publications of the same architecture.
     lock='.publish-'+scope+'.lock'
-    ftp.mkd(lock)
+    PRIVATE.mkdir(parents=True,exist_ok=True)
+    owner_file=PRIVATE/'publisher-id.txt'
+    if not owner_file.exists():owner_file.write_text(uuid.uuid4().hex)
+    owner={'publisher':owner_file.read_text().strip(),'scope':scope}
+    try:ftp.mkd(lock)
+    except ftplib.error_perm:
+        previous=bytearray()
+        try:ftp.retrbinary('RETR '+lock+'/owner.json',previous.extend)
+        except ftplib.error_perm:raise RuntimeError('Another or older publisher holds the upload lock; preserve it and inspect its status')
+        if json.loads(previous)!=owner:raise RuntimeError('Another computer holds the upload lock; do not remove it')
+        # publish() holds this computer's OS lock. Its previous process has exited.
+    ftp.storbinary('STOR '+lock+'/owner.json',io.BytesIO(json.dumps(owner).encode()),1024)
     try:
         for e in sorted(entries,key=lambda x: x['path'].startswith('platforms/') or x['path'].endswith('/stable.json')):
             rel=e['path'];p=plan_path.parent/e['local'];mutable=rel.startswith('platforms/') or rel.endswith('/stable.json') or rel=='index.html'
@@ -259,7 +270,17 @@ def publish(plan_path):
         shutil.copy2(plan_path.parent/'PUBLISHED.json',destination/'PUBLISHED.json')
         print('Published and verified:',BASE)
     finally:
-        ftp.rmd(lock);ftp.quit()
+        try:
+            ftp.delete(lock+'/owner.json');ftp.rmd(lock)
+        finally:ftp.quit()
+
+def publish(plan_path):
+    # OS locks disappear after crashes; a persisted owner token permits safe retry of our own FTP lock.
+    sys.path.insert(0,str(Path(__file__).parent))
+    from checkpoints import exclusive
+    plan=json.loads(Path(plan_path).read_text());scope=plan['scope']
+    if scope not in ('windows-linux','mac-arm64','mac-x86_64','website'):raise RuntimeError('Invalid publication scope')
+    with exclusive(PRIVATE/('publisher-'+scope+'.lock')):_publish(plan_path)
 
 def write_plan(site,out,scope):
     entries=[]
@@ -322,7 +343,7 @@ def build(publish_now):
             p=ROOT/'crates/os-app/src/updates.rs';p.write_text(re.sub(r'pub const VERSION: u64 = \d+;',f'pub const VERSION: u64 = {new};',p.read_text()))
             label=f'{str(new)[:4]}.{str(new)[4:6]}.{str(new)[6:8]}.{int(str(new)[8:])}'
             p=ROOT/'packaging/windows/LemonStudio.nsi';p.write_text(re.sub(r'("DisplayVersion" ")[^"]+',lambda m:m[1]+label,p.read_text()))
-            run('git','add','crates/os-app/src/updates.rs','packaging/windows/LemonStudio.nsi');run('git','commit','-m',f'Prepare release {new}');run('git','push','home','HEAD:main')
+            run('git','add','crates/os-app/src/updates.rs','packaging/windows/LemonStudio.nsi');run('git','commit','-m',f'Prepare release {new}');run('git','push','--receive-pack=git -c receive.autogc=false receive-pack','home','HEAD:main')
         out=Path.home()/'Desktop/Lemon Studio/Lemon Studio Public Download'/str(version())
         if out.exists():raise RuntimeError('Local release folder already exists. Preserve it; resume its publish plan or increment version.')
         out.mkdir(parents=True);plan=build_windows(out,cfg)

@@ -147,6 +147,28 @@ impl App {
 mod tests {
     use super::*;
     #[test]
+    fn forum_save_preserves_disabled_pitch_follow_and_undo() {
+        let mut a=App::new(None);a.state.project=crate::app::test_project();
+        a.plugins.available=crate::plugins::builtin();a.sync_samplers(None);a.params_tick();
+        let row=*a.state.hosted_rows.iter().next().expect("hosted sampler");
+        a.state.project.main_pitch=Some(300);
+        a.state.project.channels[row].pitch_cents=600;
+        crate::rack::run(&mut a,crate::rack::RCmd::PitchFollow(row));
+        let expected=a.state.project.channels[row].clone();
+        assert!(!expected.misc.main_pitch);assert_eq!(expected.misc.pitch_follow_offset,300);
+        let dir=std::env::temp_dir().join(format!("lemon-forum-save-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("pitch.flp");
+        for _ in 0..2 {
+            a.save_to(path.clone());assert!(a.state.message.as_deref().unwrap().starts_with("Saved"),"{:?}",a.state.message);
+            let ch=&a.state.project.channels[row];assert_eq!((ch.misc.main_pitch,ch.misc.pitch_follow_offset,ch.pitch_cents),(false,300,600));
+            let file=os_flp::FlpFile::parse(&std::fs::read(&path).unwrap()).unwrap();let p=os_flp::project::load(&file).unwrap();
+            let ch=&p.channels[row];assert_eq!((ch.misc.main_pitch,ch.misc.pitch_follow_offset,ch.pitch_cents),(false,300,600));
+        }
+        crate::history::undo(&mut a.state);assert!(a.state.project.channels[row].misc.main_pitch);assert_eq!(a.state.project.channels[row].misc.pitch_follow_offset,0);
+        crate::history::redo(&mut a.state);assert!(!a.state.project.channels[row].misc.main_pitch);
+        a.save_to(path);assert!(!a.state.project.channels[row].misc.main_pitch);
+    }
+    #[test]
     fn rack_features_compact_controls_and_filtered_piano_layout() {
         use crate::{app::{Action,Win},knobs::KnobId};
         let mut a=App::new(None);a.state.project=crate::app::test_project();

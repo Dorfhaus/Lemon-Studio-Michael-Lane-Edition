@@ -6,7 +6,7 @@ use winit::{event::{WindowEvent,ElementState,MouseButton,MouseScrollDelta},event
 use crate::{app::{App,Win,Action},layout::{self,MainWin}};
 use os_ui::Canvas;
 #[derive(Default)]
-pub struct Windows { panes:Vec<Pane>, screens:Vec<[i32;4]>, main:Option<crate::app::ViewContext>, changed:bool }
+pub struct Windows { panes:Vec<Pane>, screens:Vec<[i32;4]>, main:Option<crate::app::ViewContext>, changed:bool, layout_generation:u64 }
 struct Pane {
     kind:Win, window:Rc<Window>, surface:softbuffer::Surface<Rc<Window>,Rc<Window>>, canvas:Canvas,
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
@@ -30,11 +30,17 @@ impl Windows {
     pub fn save(&self) {for p in &self.panes {layout::save_native(key(p.kind),p.frame);}}
     pub fn sync(&mut self,app:&mut App,el:&ActiveEventLoop) {
         let screens=crate::screens(el);let changed=screens!=self.screens;self.screens=screens.clone();
+        if self.layout_generation!=app.state.native_layout_generation {
+            self.layout_generation=app.state.native_layout_generation;
+            for p in &mut self.panes {if let Some((_,f))=app.state.native_frames.iter().find(|(w,_)|*w==p.kind){
+                let f=layout::on_screens(*f,&screens);p.window.set_maximized(false);p.window.set_outer_position(PhysicalPosition::new(f.pos.0,f.pos.1));let _=p.window.request_inner_size(PhysicalSize::new(f.size.0,f.size.1));p.window.set_maximized(f.max);p.frame=f;
+            }}
+        }
         self.panes.retain(|p|{let keep=app.state.native_detached.contains(&p.kind)&&app.state.shown(p.kind);if !keep {#[cfg(windows)] if p.kind==Win::Mixer {app.plugins.close_racks();}layout::save_native(key(p.kind),p.frame);}keep});
         let mut created=Vec::new();
         for kind in app.state.native_detached.clone() {
             if !app.state.shown(kind)||self.panes.iter().any(|p|p.kind==kind){continue;}
-            let initial=layout::native_win(key(kind)).unwrap_or(MainWin{pos:(100,100),size:(1100,800),max:false});
+            let initial=app.state.native_frames.iter().find(|(w,_)|*w==kind).map(|(_,f)|*f).or_else(||layout::native_win(key(kind))).unwrap_or(MainWin{pos:(100,100),size:(1100,800),max:false});
             let frame=layout::on_screens(initial,&screens);
             let attrs=Window::default_attributes().with_title(title(kind)).with_inner_size(PhysicalSize::new(frame.size.0,frame.size.1)).with_position(PhysicalPosition::new(frame.pos.0,frame.pos.1)).with_min_inner_size(LogicalSize::new(kind.min_size().0 as f64,kind.min_size().1 as f64)).with_maximized(frame.max).with_visible(false);
             let made=(||->Result<Pane,String>{
@@ -47,6 +53,7 @@ impl Windows {
             match made {Ok(p)=>{created.push(p.window.id());self.panes.push(p);},Err(e)=>{app.state.native_detached.retain(|w|*w!=kind);app.state.message=Some(format!("Could not detach window: {e}"));}}
         }
         for p in &mut self.panes {
+            app.state.native_frames.retain(|(w,_)|*w!=p.kind);app.state.native_frames.push((p.kind,p.frame));
             if changed {
                 let next=layout::on_screens(p.frame,&screens);
                 if next!=p.frame {p.window.set_maximized(false);p.window.set_outer_position(PhysicalPosition::new(next.pos.0,next.pos.1));let _=p.window.request_inner_size(PhysicalSize::new(next.size.0,next.size.1));p.frame=next;}
@@ -68,6 +75,7 @@ impl Windows {
         if matches!(event,WindowEvent::Moved(_)|WindowEvent::Resized(_)) {
             if !p.window.is_maximized() && p.window.is_minimized()!=Some(true) {if let Some((pos,size))=crate::frame_of(&p.window){p.frame.pos=pos;p.frame.size=size;}}
             p.frame.max=p.window.is_maximized();
+            app.state.native_frames.retain(|(w,_)|*w!=p.kind);app.state.native_frames.push((p.kind,p.frame));
         }
         if matches!(event,WindowEvent::CloseRequested) {app.state.hide(p.kind);self.changed=true;return;}
         if matches!(event,WindowEvent::Focused(true)|WindowEvent::MouseInput{state:ElementState::Pressed,..}|WindowEvent::KeyboardInput{..}|WindowEvent::MouseWheel{..}) {if app.state.native_input!=Some(p.kind){self.changed|=app.state.playlist.popup.is_some()||app.state.menu_open.is_some();app.state.playlist.popup=None;app.state.menu_open=None;}app.state.raise(p.kind);app.state.native_input=Some(p.kind);app.auto_close.main_focused=true;}

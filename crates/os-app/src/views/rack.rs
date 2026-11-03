@@ -368,7 +368,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         let follow = Rect::new(px + 20.0, ry + 5.0, 16.0, 17.0);
         ui.hit(follow, Action::RackPitchFollow(i), "Global Pitch Follow: toggle without changing the current pitch");
         ui.c.fill_rrect(follow, 3.0, if ch.misc.main_pitch { t.accent } else { t.button_hi });
-        ui.c.text_center(Font::new(10), follow, t.text, "G");
+        ui.c.text_center(Font::new(10), follow, if ch.misc.main_pitch { Color::rgb(0x000000) } else { Color::rgb(0xffffff) }, "G");
         // Name button (§13): the channel colour fills the face.
         let nhov = ui.hit(nb, Action::ChannelSelect(i), "Click: plugin window, Shift+click: rename, right-click: channel menu");
         let base = ch.color.map_or(t.name_button, |col| rgb(col).mix(t.name_button, NAME_MIX));
@@ -529,7 +529,12 @@ fn title_bar(ui: &mut Ui, s: &State, win: Rect, c: Cols, f: &FrameInfo) {
     ui.c.text(Font::new(8), x + 52.0, y + 3.0, t.text_dim, "Global pitch");
     ui.c.text(Font::new(10), x + 52.0, y + 14.0, t.text, &format!("{:+.2} st", s.project.main_pitch.unwrap_or(0) as f32 / 100.0));
     // Display filter combo (§7, §21).
-    let combo = Rect::span(x + c.name_x - 1.0, x + c.name_x + c.name_w, y + 4.0, y + 27.0);
+    let follow=Rect::new(x+128.,y+5.,16.,20.);
+    let all=crate::rack_controls::all_follow(s);
+    ui.hit(follow,Action::RackPitchFollow(usize::MAX),"Global Pitch Follow for all channels: preserve current pitch");
+    ui.c.fill_rrect(follow,3.,if all {t.accent}else{t.button_hi});
+    ui.c.text_center(Font::new(10),follow,if all {Color::rgb(0)}else{Color::rgb(0xffffff)},"G");
+    let combo = Rect::span(x + 147.0, x + c.name_x + c.name_w, y + 4.0, y + 27.0);
     let chov = ui.hit(combo, Action::RackFilter, "Channel display filter (PgUp/PgDn)");
     if lemon {
         lk::well(ui.c, t, combo, if chov { t.sunken.mix(t.button_hi, 0.5) } else { t.sunken });

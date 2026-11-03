@@ -1615,6 +1615,7 @@ pub fn auto_name(ch: &mut os_model::Channel, path: &std::path::Path) {
 /// keep their root note and stretch (not measured).
 pub fn read_tags(ch: &mut os_model::Channel, path: &std::path::Path) {
     crate::keep_on_disk::keep_long(ch, path);
+    if ch.kind.is_sampler() && crate::browser_preview::auto_trim() {ch.sound.fx.trim=crate::browser_preview::AUTO_TRIM_THRESHOLD;}
     use crate::prefs::{check, READ_ROOT_NOTE, READ_TEMPO};
     let (root, tempo) = (check(&READ_ROOT_NOTE), check(&READ_TEMPO));
     if ch.kind != os_model::ChannelKind::Sampler || !(root || tempo) {
@@ -1681,17 +1682,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     let s = &mut app.state;
     let msg = match c {
         RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
-        RCmd::PitchFollow(r) => {
-            let before = crate::history::Snap::Channel { row:r, ch:s.project.channels.get(r).cloned().map(Box::new) };
-            crate::history::record(s, "Global Pitch Follow", before);
-            let global = i32::from(s.project.main_pitch.unwrap_or(0));
-            if let Some(c) = s.project.channels.get_mut(r) {
-                c.misc.pitch_follow_offset += if c.misc.main_pitch { global } else { -global };
-                c.misc.main_pitch = !c.misc.main_pitch;
-            }
-            s.piano.dirty = true;
-            None
-        }
+        RCmd::PitchFollow(r) => {crate::rack_controls::toggle_follow(app,r);None}
         RCmd::Graph(r) => {
             s.selected_channel = r;
             s.rack.select_only(r);

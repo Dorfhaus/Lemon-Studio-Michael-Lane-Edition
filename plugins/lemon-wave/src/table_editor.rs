@@ -71,6 +71,39 @@ impl TableEditor {
         );
         v.edit_plain(crate::controls::SETTINGS[k].id, value as f32);
     }
+    fn fx_patch(&self)->crate::dsp::Patch {crate::fxrack::effective(std::array::from_fn(|k|self.params.base.v(k) as f32))}
+    fn fx_init(&self,c:Option<&Arc<dyn GuiContext>>) {
+        use crate::controls::*;
+        if self.params.base.v(RACK_MODE)==0 {let p=self.fx_patch();for k in RACK_START..COUNT {self.edit_parameter(k,p[k] as i32,c);}self.edit_parameter(RACK_MODE,1,c);}
+    }
+    fn fx_click(&self,x:f32,y:f32,c:Option<&Arc<dyn GuiContext>>)->bool {
+        use crate::{controls::*,instrument_view::*};
+        if FX_ADD.contains(x,y){self.params.fx_add.fetch_xor(true,Ordering::Relaxed);return true;}
+        if self.params.fx_add.load(Ordering::Relaxed){
+            for kind in 1..crate::fxrack::NAMES.len(){if fx_menu_button(kind).contains(x,y){self.fx_init(c);let p=self.fx_patch();let slots=crate::fxrack::order(&p);
+                if let Some(slot)=(0..RACK_SLOTS).find(|s|p[crate::fxrack::base(*s)]<0.5) {let b=crate::fxrack::base(slot);
+                    for (rank,s) in slots.iter().enumerate(){self.edit_parameter(crate::fxrack::base(*s)+1,rank as i32,c);}
+                    for (i,v) in crate::fxrack::initial(kind).iter().enumerate(){self.edit_parameter(b+6+i,*v as i32,c);}
+                    for (k,v) in [(b+1,slots.len() as i32),(b+2,1),(b+3,1),(b+4,1),(b+5,0),(b,kind as i32)]{self.edit_parameter(k,v,c);}
+                    self.params.fx_scroll.store((slots.len() as f32*FX_CARD_HEIGHT) as usize,Ordering::Relaxed);
+                    self.params.fx_add.store(false,Ordering::Relaxed);
+                }else{self.params.message("The rack has 16 modules. Remove a module to add another.");}return true;
+            }}return FX_AREA.contains(x,y);
+        }
+        if !(FX_AREA.contains(x,y)||Rect::new(1153.,492.,12.,276.).contains(x,y)){return false;}
+        let p=self.fx_patch();let slots=crate::fxrack::order(&p);let scroll=self.params.fx_scroll.load(Ordering::Relaxed).min(fx_max_scroll(slots.len()));
+        if x>=1153. {self.params.fx_scroll.store(((y-FX_AREA.y)/FX_AREA.h*fx_max_scroll(slots.len()) as f32) as usize,Ordering::Relaxed);return true;}
+        for (position,slot) in slots.iter().enumerate(){let r=fx_card(position,scroll);let b=crate::fxrack::base(*slot);
+            for action in 0..6 {if fx_button(r,action).contains(x,y){self.fx_init(c);match action {
+                0..=2=>self.edit_parameter(b+2+action,if p[b+2+action]>0.5{0}else{1},c),
+                3|4=>{let next=if action==3{position.checked_sub(1)}else{(position+1<slots.len()).then_some(position+1)};if let Some(next)=next {
+                    for (rank,s) in slots.iter().enumerate(){let rank=if rank==position{next}else if rank==next{position}else{rank};self.edit_parameter(crate::fxrack::base(*s)+1,rank as i32,c);}
+                }},5=>self.edit_parameter(b,0,c),_=>{}
+            }return true;}}
+        }
+        if self.hits.lock().unwrap().iter().any(|h|h.r.contains(x,y)&&crate::controls::SPEC.index(h.t.id()).is_some_and(|k|k>=RACK_START)){self.fx_init(c);}
+        false
+    }
     fn activate_classic(
         &self,
         o: usize,
@@ -163,6 +196,10 @@ impl Extension for TableEditor {
             Some(hits)
         }
     }
+    fn wheel(&self,x:f32,y:f32,notches:f32)->bool {
+        if self.params.page.load(Ordering::Relaxed)!=0 || !Rect::new(836.,488.,328.,300.).contains(x,y) || self.browser.lock().unwrap().oscillator.is_some(){return false;}
+        if !self.params.fx_add.load(Ordering::Relaxed){let max=crate::instrument_view::fx_max_scroll(crate::fxrack::order(&self.fx_patch()).len());let current=self.params.fx_scroll.load(Ordering::Relaxed) as f32;self.params.fx_scroll.store((current-notches*48.).clamp(0.,max as f32) as usize,Ordering::Relaxed);}true
+    }
     fn character(&self, c: char) -> bool {
         self.params.page.load(Ordering::Relaxed) == 2 && self.workbench.lock().unwrap().character(c)
     }
@@ -211,6 +248,7 @@ impl Extension for TableEditor {
             }
             return true;
         }
+        if self.params.page.load(Ordering::Relaxed)==0 && self.browser.lock().unwrap().oscillator.is_none() && self.fx_click(x,y,context) {return true;}
         for o in 0..2 {
             if self.params.page.load(Ordering::Relaxed) == 0
                 && crate::instrument_view::edit_table_button(o).contains(x, y)
@@ -374,10 +412,13 @@ impl Extension for TableEditor {
         {
             if let Some(k) = crate::controls::SPEC.index(hit.t.id()) {
                 let setting = &crate::controls::SETTINGS[k];
-                let items = (setting.range.0..=setting.range.1)
-                    .map(|v| {
+                let special=if k>=crate::controls::RACK_START {let b=crate::fxrack::base((k-crate::controls::RACK_START)/crate::controls::RACK_STRIDE);let kind=self.params.base.v(b) as usize;
+                    if k==b+5{Some(crate::fxrack::modes(kind))}else if kind==4&&k==b+10{Some(&crate::fxrack::DIVISIONS[..])}else{None}
+                }else{None};
+                let range=if let Some(names)=special {0..=names.len() as i32-1}else{setting.range.0..=setting.range.1};
+                let items = range.map(|v| {
                         (
-                            crate::controls::text(k, v),
+                            special.map(|names|names[v as usize].to_string()).unwrap_or_else(||crate::controls::text(k,v)),
                             crate::sound_browser::Choice::Param(k, v),
                         )
                     })
@@ -518,6 +559,37 @@ mod user_table_tests {
         assert!(params.status.lock().unwrap().starts_with("Load failed:"));
         std::fs::remove_dir(root.join("Test")).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+    #[test]
+    fn modular_rack_add_duplicate_reorder_scroll_remove_and_recall() {
+        use crate::{controls::*,instrument_view::*,fxrack};
+        let params=Arc::new(WaveParams::default());let editor=TableEditor::new(params.clone());
+        for kind in [4,5,4,1,2,3,6,7,8,9,10,11,12,13,1,4] {
+            assert!(editor.click(FX_ADD.cx(),FX_ADD.cy(),None));let r=fx_menu_button(kind);assert!(editor.click(r.cx(),r.cy(),None));
+        }
+        let p=editor.fx_patch();let slots=fxrack::order(&p);assert_eq!(slots.len(),16);assert_eq!(p[fxrack::base(0)],4.);assert_eq!(p[fxrack::base(2)],4.);
+        editor.click(FX_ADD.cx(),FX_ADD.cy(),None);let r=fx_menu_button(5);editor.click(r.cx(),r.cy(),None);assert_eq!(fxrack::order(&editor.fx_patch()).len(),16);editor.click(FX_ADD.cx(),FX_ADD.cy(),None);
+        params.fx_scroll.store(0,Ordering::Relaxed);let r=fx_button(fx_card(0,0),4);editor.click(r.cx(),r.cy(),None);assert_eq!(fxrack::order(&editor.fx_patch())[0],1);
+        let r=fx_button(fx_card(0,0),2);editor.click(r.cx(),r.cy(),None);assert_eq!(params.base.v(fxrack::base(1)+4),0);
+        assert!(editor.wheel(1000.,600.,-100.));assert_eq!(params.fx_scroll.load(Ordering::Relaxed),fx_max_scroll(16));
+        assert!(!editor.wheel(300.,600.,-1.));
+        let scroll=params.fx_scroll.load(Ordering::Relaxed);let r=fx_button(fx_card(15,scroll),5);assert!(FX_AREA.contains(r.cx(),r.cy()));editor.click(r.cx(),r.cy(),None);assert_eq!(fxrack::order(&editor.fx_patch()).len(),15);
+        let values:Vec<_>=(0..COUNT).map(|k|params.base.v(k)).collect();let raw=lemon_small_fx::params::to_fl(SPEC,&values,&params.base.raw_copy());let restored=WaveParams::default();restored.base.set_raw(raw.clone());assert_eq!(restored.base.raw_copy(),raw);
+        assert_eq!(lemon_small_fx::params::setting(SPEC,&raw,fxrack::base(1)+4),0);
+        let mut state=TableEditor::factory_state(0);let hex:String=std::iter::once(1_i32).chain(SETTINGS[..128].iter().map(|s|s.start)).flat_map(i32::to_le_bytes).map(|b|format!("{b:02x}")).collect();state.fields.insert("state".into(),format!("\"{hex}\""));crate::LemonWave::filter_state(&mut state);assert_eq!(state.fields["state"].trim_matches('"').len(),8+COUNT*8);
+    }
+    #[test]
+    fn rack_knobs_drag_and_wheel_scrolls_without_editing_them() {
+        use crate::{controls::*,instrument_view::*,fxrack};
+        use lemon_small_fx::editor::{Logic,Btn,Mods,Act};
+        let params=Arc::new(WaveParams::default());let editor=Arc::new(TableEditor::new(params.clone()));
+        for kind in [4,5]{editor.click(FX_ADD.cx(),FX_ADD.cy(),None);let r=fx_menu_button(kind);editor.click(r.cx(),r.cy(),None);}
+        params.fx_scroll.store(0,Ordering::Relaxed);
+        let shared=Arc::new(lemon_small_fx::Shared{extension:Some(editor.clone()),..Default::default()});
+        let mut logic=Logic::new(SPEC,params.base.clone(),shared,None);let mut c=Canvas::new(1180,820,1.).unwrap();logic.paint(&mut c,&os_plugkit::palette());
+        let k=fxrack::base(0)+7;let h=logic.hits.iter().find(|h|h.t.id()==SETTINGS[k].id).unwrap().r;let before=params.base.v(k);
+        assert!(logic.down(h.cx(),h.cy(),Btn::Left,Mods::default(),false).contains(&Act::Lock));logic.delta(0.,-20.,Mods::default());logic.up(Btn::Left);assert!(params.base.v(k)>before);
+        let value=params.base.v(k);logic.wheel(h.cx(),h.cy(),-1.,Mods::default());assert_eq!(params.base.v(k),value);assert_eq!(params.fx_scroll.load(Ordering::Relaxed),48);
     }
     #[test]
     fn dropdown_trigger_click_closes_without_reopening() {

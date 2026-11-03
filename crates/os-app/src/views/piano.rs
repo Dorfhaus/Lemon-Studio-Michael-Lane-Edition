@@ -469,6 +469,30 @@ fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u
 }
 
 fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
+    if !crate::piano_tools::classic_keyboard() { keyboard_shaped(ui,l,g,lit); return; }
+    let k=l.keys;
+    ui.hit(k,Action::PianoKeys,"Keyboard");ui.c.push_clip(k);
+    // Equal-width chromatic rows, including sharp labels, as in the classic piano roll.
+    for &key in &g.keys {
+        let r=Rect::new(k.x,g.y_of(key),k.w-1.,g.row);
+        if r.bottom()<k.y || r.y>k.bottom(){continue;}
+        let black=is_black(key);let pressed=lit.contains(&key);
+        let (left,right)=if pressed {(ui.t.key_lit_left,ui.t.key_lit)}
+            else if black {(Color::rgb(0x44494e),Color::rgb(0x60666c))}
+            else {(Color::rgb(0xcbd0d5),Color::rgb(0xaeb5bc))};
+        ui.c.fill_rect_gradient(r,left,right,0.);
+        ui.c.fill_rect(Rect::new(r.x,r.bottom()-1.,r.w,1.),Color::rgb(0x656b71));
+        if g.row>=10. {
+            let font=Font::new((g.row-3.).clamp(8.,12.) as u16);
+            let text_y=r.cy()-ui.c.line_height(font)/2.;
+            ui.c.text_right(font,r.right()-4.,text_y,if pressed||!black {Color::rgb(0x20252a)}else{Color::rgb(0xf4f5f6)},&key_name(key));
+        }
+    }
+    ui.c.pop_clip();
+    ui.c.fill_rect(Rect::new(k.right(),k.y,1.,k.h),Color::rgb(0x131718));
+}
+
+fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
     if g.keys.len() < (TOP_KEY+1) as usize {
         ui.c.push_clip(l.keys);
         for &key in &g.keys {

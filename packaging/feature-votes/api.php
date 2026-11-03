@@ -3,6 +3,7 @@
 // Anonymous voting: server-issued identities, atomic unique votes, bounded requests.
 declare(strict_types=1);
 require_once __DIR__.'/forum.php';
+require_once __DIR__.'/feedback.php';
 function reply(int $status, array $data): never {http_response_code($status);echo json_encode($data, JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR);exit;}
 function query(PDO $db,string $sql,array $args=[]): PDOStatement {$s=$db->prepare($sql);$s->execute($args);return $s;}
 function database(string $directory): PDO {
@@ -22,7 +23,7 @@ function database(string $directory): PDO {
     $db->exec('CREATE TABLE IF NOT EXISTS moderation_log(id INTEGER PRIMARY KEY, created INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL)');
     $db->exec('CREATE TABLE IF NOT EXISTS public_comments(id INTEGER PRIMARY KEY, feature INTEGER NOT NULL REFERENCES features(id), body TEXT NOT NULL, created INTEGER NOT NULL, edited INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS comments_feature ON public_comments(feature,id)');
     $db->exec('CREATE TABLE IF NOT EXISTS announcements(id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, published INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, edited INTEGER NOT NULL)');
-    forum_schema($db);
+    forum_schema($db);feedback_schema($db);
     query($db,'INSERT OR IGNORE INTO settings VALUES(?,?)',['secret',bin2hex(random_bytes(32))]);
     foreach (['Track freeze and unfreeze to save CPU','ARA integration for compatible audio editors','Live collaboration on projects'] as $i=>$title) {
         query($db,'INSERT OR IGNORE INTO features(id,title,normalized,created) VALUES(?,?,?,?)',[$i+1,$title,strtolower($title),time()]);
@@ -82,7 +83,8 @@ function handle(PDO $db,array $in,string $ip,string $token): array {
             limit_request($db,'register:'.$peer,3,86400);
             limit_request($db,'used:'.hash('sha256',$c),1,600);
             $token=bin2hex(random_bytes(32));query($db,'INSERT INTO users(id,created) VALUES(?,?)',[hash('sha256',$token),time()]);$result=['token'=>$token];
-        } elseif(str_starts_with($action,'forum_')) {$result=board($db,$user);$result['forum']=forum_handle($db,$in,$user,$peer);}
+        } elseif(str_starts_with($action,'feedback_')) {$result=['feedback'=>feedback_handle($db,$in,$user,$peer)];}
+        elseif(str_starts_with($action,'forum_')) {$result=board($db,$user);$result['forum']=forum_handle($db,$in,$user,$peer);}
         elseif($action==='list') {$result=board($db,$user);}
         elseif($action==='vote') {
             if(!$user){throw new DomainException('Connect before voting.',401);}
@@ -121,11 +123,12 @@ try {
     if(strtolower(explode(';',$_SERVER['CONTENT_TYPE']??'')[0])!=='application/json'){reply(415,['error'=>'JSON required.']);}
     // No cookie authentication or permissive CORS. Cross-site browser requests cannot send authorized JSON.
     if(isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN']!=='https://michaellanemusic.de'){reply(403,['error'=>'Origin not permitted.']);}
-    $raw=file_get_contents('php://input',false,null,0,16385);if(strlen($raw)>16384){reply(413,['error'=>'Request too large.']);}
+    $raw=file_get_contents('php://input',false,null,0,3000001);if(strlen($raw)>3000000){reply(413,['error'=>'Request too large.']);}
     $in=json_decode($raw,true,8,JSON_THROW_ON_ERROR);if(!is_array($in)){reply(400,['error'=>'Invalid request.']);}
     $root=realpath($_SERVER['DOCUMENT_ROOT']);if(!$root){throw new RuntimeException('storage');}
     $directory=dirname($root).'/lemon-feature-votes-private';
     if(str_starts_with($directory.'/',rtrim($root,'/').'/')){throw new RuntimeException('storage');}
+    if(strlen($raw)>16384&&!in_array($in['action']??'', ['feedback_create','feedback_reply'],true)){reply(413,['error'=>'Request too large.']);}
     $db=database($directory);
     $auth=$_SERVER['HTTP_X_LEMON_VOTER']??'';
     reply(200,handle($db,$in,$_SERVER['REMOTE_ADDR']??'unknown',$auth));

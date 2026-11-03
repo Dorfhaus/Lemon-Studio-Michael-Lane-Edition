@@ -134,11 +134,12 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let action_font = Font::new(12);
     let update_w = ui.c.text_width(action_font, "Update").ceil() + 12.0;
     let donate_w = ui.c.text_width(action_font, "Donate").ceil() + 12.0;
+    let feedback_w=ui.c.text_width(action_font,"Report a bug").ceil()+20.;
     let ai_w=48.;
     let window_w = 104.0;
     let show_cpu=crate::settings_file::flag("toolbar_cpu_visible",true);
     let mini_cpu_w = if show_cpu {54.}else{0.};
-    let actions_w = mini_cpu_w + ai_w + update_w + donate_w + 18.0 + 32.0 + window_w;
+    let actions_w = mini_cpu_w + ai_w + update_w + donate_w + feedback_w + 24.0 + 32.0 + window_w;
     let content_width = (width - actions_w).max(100.0);
     s.toolbar_content_width.set(content_width);
     let fit = room(content_width, crate::toolbar::natural_width(l, editing));
@@ -228,6 +229,9 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         ui.hit(donate, Action::Donate, "Donate through Michael Lane's PayPal.me page");
         ui.c.fill_rrect(donate, 3.0, t.sunken);
         ui.c.text_clip(action_font, donate.x + 6.0, donate.y + 5.0, donate.w - 12.0, t.text, "Donate");
+        let report=Rect::new(donate.right()+6.,r.y,feedback_w,r.h);
+        ui.hit(report,Action::FeatureVote(0,30),"Report a bug or send feedback: review technical details before submitting");
+        ui.c.fill_rrect(report,3.,t.accent);ui.c.text_center(action_font,report,t.sunken,"Report a bug");
     }
     // Window controls remain at the far right, outside the customizable panels.
     ui.c.fill_rect(Rect::new(width-window_w-17.,11.,1.,18.),t.toolbar_line);

@@ -146,6 +146,10 @@ pub const OPT_SINGLE_FOLDER: &str = "single_folder";
 pub const OPT_PARAMETERS: &str = "parameters_tab";
 pub const DEFAULT_OPTS: &[&str] = &[OPT_FOLDERS, OPT_TAGS, OPT_INDEX, OPT_REINDEX, OPT_HIDEDRAG, OPT_PREVIEW, OPT_PANEL];
 pub fn saved_opts()->std::collections::HashSet<&'static str> {
+    if crate::prefs::text("browser_preset_drop_v1").as_deref()!=Some("1") {
+        crate::prefs::set_text("browser_option_presets_tab","1");
+        crate::prefs::set_text("browser_preset_drop_v1","1");
+    }
     if crate::prefs::text("browser_full_preview_v2").as_deref()!=Some("1") {
         crate::prefs::set_text("browser_option_preview","1");
         crate::prefs::set_text("browser_full_preview_v2","1");

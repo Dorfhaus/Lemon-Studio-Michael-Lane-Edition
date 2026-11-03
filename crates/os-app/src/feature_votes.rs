@@ -103,6 +103,7 @@ pub fn tick(app:&mut App){
 }
 fn refresh(app:&mut App){let body=if app.state.feature_votes.community_forum{crate::community_forum::request(&app.state)}else{serde_json::json!({"action":"list"})};start(app,body);}
 pub fn act(app:&mut App,id:u64,command:i8){
+ if command==30 {if let Err(e)=crate::feedback::open(){app.state.message=Some(e);}return;}
  if command==6 {if id>2{return;}let v=&mut app.state.feature_votes;v.change_log=id==2;v.community_forum=id==1;v.focus=false;v.forum.focus=0;app.state.browser_scroll=0.;app.state.browser_search.clear();if id!=2 && !app.state.feature_votes.busy{refresh(app);}app.invalidate();return;}
  if command>=10 {crate::community_forum::act(app,id,command);return;}
 
@@ -197,8 +198,8 @@ fn vote_button(ui:&mut Ui,r:Rect,id:u64,dir:i8,count:u64,enabled:bool,selected:b
  ui.c.text(Font::new(14).bold(),r.right()-cw-8.,r.y+6.,if enabled||selected{ui.t.text}else{ui.t.text_dim},&count);
 }
 pub fn paint(ui:&mut Ui,s:&State,r:Rect){
- ui.c.fill_rect(Rect::new(r.x,r.y,r.w,32.),ui.t.s(0x171f23));let w=(r.w-32.)/3.;
- for (id,label) in [(0,"Voting"),(1,"Community\nForum"),(2,"Change Log")] {button(ui,Rect::new(r.x+8.+id as f32*(w+8.),r.y+3.,w,25.),label,Action::FeatureVote(id,6),true,if s.feature_votes.change_log{id==2}else if s.feature_votes.community_forum{id==1}else{id==0},"Switch community section");}
+ ui.c.fill_rect(Rect::new(r.x,r.y,r.w,32.),ui.t.s(0x171f23));let w=(r.w-40.)/4.;
+ for (id,label) in [(0,"Voting"),(1,"Forum"),(2,"Change\nLog"),(3,"Report\nbug")] {button(ui,Rect::new(r.x+8.+id as f32*(w+8.),r.y+3.,w,25.),label,Action::FeatureVote(if id==3{0}else{id},if id==3{30}else{6}),true,if s.feature_votes.change_log{id==2}else if s.feature_votes.community_forum{id==1}else{id==0},"Switch community section");}
  let r=Rect::new(r.x,r.y+32.,r.w,(r.h-32.).max(0.));
  if s.feature_votes.change_log {crate::change_log::paint(ui,s,r);}else if s.feature_votes.community_forum {crate::community_forum::paint(ui,s,r);}else{paint_voting(ui,s,r);}
 }

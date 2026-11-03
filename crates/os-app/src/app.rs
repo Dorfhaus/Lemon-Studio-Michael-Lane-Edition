@@ -922,9 +922,10 @@ pub enum Drag {
     Velocity { last_x: f32, last_y: f32 },
     /// Right-drag in a channel lane deletes its points (a Lemon Studio choice, spec §7b).
     ControlErase { last_x: f32 },
-    Knob { id: crate::knobs::KnobId, y0: f32, v0: f32 },
+    Knob { id: crate::knobs::KnobId, y0: f32, v0: f32, group:Vec<(crate::knobs::KnobId,f32)> },
     /// Left button held on the piano keyboard: each key entered is auditioned (§8).
     PianoKeys { key: i32 },
+    RackPreset { row:usize,m0:(f32,f32),started:bool },
     /// Scroll axes from a start mouse position: value = start + (mouse - m0) × ratio per axis
     /// (ratio < 0 grabs the content, as with the middle button).
     Scroll { m0: (f32, f32), axes: Vec<(Scroll, bool, f32, f32)> },
@@ -1132,6 +1133,8 @@ pub struct State {
     pub native_view: Option<Win>,
     pub native_input: Option<Win>,
     pub native_detached: Vec<Win>,
+    pub native_frames: Vec<(Win,crate::layout::MainWin)>,
+    pub native_layout_generation: u64,
     /// The main window's monitor's own scale (device pixels per logical one, whatever Main GUI scaling says; set at
     /// every window event): General ▸ Display's PPI ruler follows it (`crate::ppi`).
     pub display_scale: f32,
@@ -1580,7 +1583,7 @@ impl App {
                     WinState { rect: Rect::new(480.0, 140.0, 1000.0, 640.0), maxed: true, mini: false },
                 ],
                 screen: (1920.0, 1080.0),
-                native_view: None, native_input: None, native_detached: Vec::new(),
+                native_view: None, native_input: None, native_detached: Vec::new(), native_frames:Vec::new(), native_layout_generation:0,
                 display_scale: 1.0,
                 ui_scale: 1.0,
                 dialogs: Vec::new(),
@@ -1913,6 +1916,7 @@ impl App {
     /// Writes the project to `target`: the size of the file written, None when the save failed. `edit` changes what is
     /// written (not the project), once the project's state is gathered.
     fn write_project(&mut self, target: PathBuf, edit: &mut dyn FnMut(&mut os_model::Project)) -> Option<u64> {
+        self.params_tick();
         if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);return None;}
         if let Err(e)=crate::ara::store(self){self.state.message=Some(format!("Save failed: {e}"));return None;}
         // A file saved over is kept as an "overwritten on" backup (spec: ui/settings-choices.md "Backup files").
@@ -1923,7 +1927,10 @@ impl App {
             if self.state.project.channels.get(row).is_some_and(|c| c.kind.is_sampler()) {
                 let lemon = self.plugins.descriptor(row).is_some_and(|d| d.name == crate::plugins::LEMON_SAMPLER);
                 if let Some(st) = self.plugins.state(row).filter(|_| lemon) {
+                    let follow=self.state.project.channels[row].misc.main_pitch;
                     crate::plugins::store_sampler(&mut self.state.project.channels[row], &st);
+                    // Host-side rack/history edits own this switch; never revert them while saving.
+                    self.state.project.channels[row].misc.main_pitch=follow;
                 }
                 if let Some(p) = self.plugins.sampler_path(row) {
                     // A placeholder path that still names the same file is kept as the project wrote it.
@@ -2716,6 +2723,10 @@ impl App {
         for k in crate::plugin_window::take_keys() {
             use winit::platform::scancode::PhysicalKeyExtScancode;
             if let winit::keyboard::PhysicalKey::Code(code) = winit::keyboard::PhysicalKey::from_scancode(k.scancode) {
+                if k.ctrl && code==winit::keyboard::KeyCode::KeyZ {
+                    if k.pressed {self.undo_key(k.alt);}
+                    continue;
+                }
                 // Space keeps playing / stopping the song (the typing keyboard does not use it).
                 if !self.typing_key(code, k.pressed, k.ctrl, k.alt) && k.pressed && code == winit::keyboard::KeyCode::Space {
                     self.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space), k.ctrl, k.alt);
@@ -5345,6 +5356,12 @@ impl App {
         self.hold_moved(x, y);
         if let Some(d) = self.drag.clone() {
             match d {
+                Drag::RackPreset{row,m0,started}=>{
+                    if started || (x-m0.0).abs()+(y-m0.1).abs()>6. {
+                        self.armed=None;self.drag=Some(Drag::RackPreset{row,m0,started:true});
+                        self.hint=Cow::Borrowed("Drop in the browser to save a plugin preset");self.invalidate();
+                    }
+                }
                 Drag::Browser { item, label, m0, started } => self.browser_drag_move(label, m0, started, item),
                 Drag::Pl(d) => {
                     if let Some(g) = self.pl_grid {
@@ -5655,9 +5672,10 @@ impl App {
                     }
                     self.damage_band(HINT_RECT);
                 }
-                Drag::Knob { id, y0, v0 } => {
-                    self.state.set_knob(id, v0 - (y - y0) * id.drag_rate() * if self.shift && matches!(id,crate::knobs::KnobId::ChanPitch(_) | crate::knobs::KnobId::MasterPitch | crate::knobs::KnobId::Varispeed) {0.1} else {1.0});
-                    self.record_knob(id);
+                Drag::Knob { id, y0, v0, group } => {
+                    crate::rack_controls::apply(&mut self.state,id,v0,v0 - (y - y0) * id.drag_rate() * if self.shift && matches!(id,crate::knobs::KnobId::ChanPitch(_) | crate::knobs::KnobId::MasterPitch | crate::knobs::KnobId::Varispeed) {0.1} else {1.0},&group);
+                    if group.len()>1 {self.damage_win(Win::ChannelRack);}
+                    if group.is_empty(){self.record_knob(id);}else{for &(k,_) in &group {self.record_knob(k);}}
                     self.multilink_knob(crate::typein::Target::Knob(id));
                     self.hint = Cow::Owned(self.state.knob_text(id));
                     match self.hits.iter().rev().find(|h| h.action == Action::Knob(id)).map(|h| h.rect) {
@@ -6099,6 +6117,7 @@ impl App {
             }
         }
         if let Some(a) = action {
+            if let Action::ChannelSelect(row)=a {if !self.shift&&!self.ctrl&&!self.alt {self.drag=Some(Drag::RackPreset{row,m0:self.mouse,started:false});}}
             if self.acts_on_release(&a) {
                 self.armed = Some(a);
             } else {
@@ -6640,6 +6659,14 @@ impl App {
     }
 
     fn release(&mut self) {
+        if let Some(Drag::RackPreset{row,started:true,..})=self.drag {
+            self.drag=None;self.armed=None;self.pressed=None;
+            let (x,y)=self.mouse;
+            if self.state.show_browser && !self.state.browser_auto_hidden && self.state.native_view.is_none() && x>=0. && x<crate::views::browser_w(&self.state) && y>=self.state.work_rect().y {
+                self.state.message=crate::presets::save_channel_drop(self,row);
+            }
+            self.invalidate();return;
+        }
         // A held nudge ends with the button (spec: ui/tempo-tapper.md §6).
         if crate::tapper::nudge_flag().swap(0, std::sync::atomic::Ordering::Relaxed) != 0 {
             self.damage_win(Win::Tapper);
@@ -7316,13 +7343,15 @@ impl App {
             if id == crate::knobs::KnobId::MasterPitch {
                 v = (v * 24.0).round() / 24.0; // wheel steps from the nearest semitone
             }
-            let v = v + dy.signum() * id.notch() * if dy == 0.0 { 0.0 } else { 1.0 };
+            let notch=if ctrl {if let crate::knobs::KnobId::ChanPitch(r)=id {1200. / (200. * self.state.project.channels[r].misc.pitch_range.max(1) as f32)}else{id.notch()}}else{id.notch()};
+            let v = v + dy.signum() * notch * if dy == 0.0 { 0.0 } else { 1.0 };
             if v.clamp(0.0, 1.0) != self.state.knob(id) {
-                crate::history::knob(&mut self.state, id, true);
+                crate::rack_controls::snapshot(&mut self.state, id, true);
             }
             self.smart_begin_host(&Action::Knob(id));
-            self.state.set_knob(id, v);
-            self.record_knob(id);
+            let group=crate::rack_controls::group(&self.state,id);let base=self.state.knob(id);
+            crate::rack_controls::apply(&mut self.state,id,base,v,&group);
+            if group.is_empty(){self.record_knob(id);}else{for &(k,_) in &group{self.record_knob(k);}}
             self.multilink_knob(crate::typein::Target::Knob(id));
             self.hint = Cow::Owned(self.state.knob_text(id));
             return None;
@@ -8583,8 +8612,8 @@ impl App {
                     self.invalidate();
                     return;
                 }
-                crate::history::knob(s, id, false);
-                self.drag = Some(Drag::Knob { id, y0: self.mouse.1, v0: s.knob(id) });
+                crate::rack_controls::snapshot(s, id, false);
+                self.drag = Some(Drag::Knob { id, y0: self.mouse.1, v0: s.knob(id),group:crate::rack_controls::group(s,id) });
                 self.hint = Cow::Owned(s.knob_text(id));
             }
             Action::PianoLaneMenu => s.lane_menu = true,
@@ -8791,6 +8820,7 @@ impl App {
     /// Ctrl+Z (`alt` = Ctrl+Alt+Z) and EDIT's entries: a move in the project's undo history (`crate::history`; spec:
     /// ui/settings-choices.md "Undo history: the four checks (2026-10-16)").
     pub(crate) fn undo_key(&mut self, alt: bool) {
+        self.params_tick();
         let s = &mut self.state;
         if let Some(m) = if alt { crate::history::ctrl_alt_z(s) } else { crate::history::ctrl_z(s) } {
             self.say(m);
@@ -8914,7 +8944,7 @@ impl App {
                 } else if shift {
                     rk::toggle_lock(s, i);
                 } else {
-                    rk::toggle_mute(s, i);
+                    crate::rack_controls::toggle_enabled(s, i);
                 }
             }
             Action::Step(i, k) => self.rack_step(i, k, false),
@@ -18144,6 +18174,8 @@ mod tests {
     #[test]
     fn forum_project_layout_roundtrip_and_legacy() {
         let mut a=App::new(None);a.state.project=test_project();a.state.startup_layout_pending=false;
+        a.state.native_detached=vec![Win::Mixer];
+        a.state.native_frames=vec![(Win::Mixer,crate::layout::MainWin{pos:(-1500,80),size:(1100,700),max:false})];
         a.state.wins[1]=WinState{rect:Rect::new(130.,170.,700.,480.),maxed:false,mini:true};
         a.state.hide(Win::PianoRoll);a.state.rack_pos=(240.,200.);a.state.rack_size=(600.,350.);
         let value=crate::layout::project_snapshot(&a.state,&a.plugins);
@@ -18156,6 +18188,10 @@ mod tests {
         crate::layout::restore_project_layout(&mut b.state);
         assert_eq!(b.state.wins[1].rect,a.state.wins[1].rect);assert!(b.state.wins[1].mini);
         assert_eq!(b.state.rack_pos,a.state.rack_pos);assert!(!b.state.shown(Win::PianoRoll));
+        assert_eq!(b.state.native_detached,a.state.native_detached);assert_eq!(b.state.native_frames,a.state.native_frames);
+        crate::layout::restore(&mut b.state);
+        assert_eq!(b.state.wins[1].rect,a.state.wins[1].rect,"startup settings cannot overwrite the saved project");
+        assert_eq!(b.state.native_frames,a.state.native_frames);
     }
 
     #[test]

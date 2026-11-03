@@ -273,6 +273,8 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // Body and the strip divider.
     // The current strip's body is a shade lighter (measured: 0x26292b vs 0x232527).
     let body = if selected { ui.t.s(0x26292b) } else { ui.t.s(0x232527) };
+    let tint=track.and_then(|m|m.color).map(crate::views::rgb);
+    let body=tint.map_or(body,|c|body.mix(c,0.22));
     let lemon = crate::views::lemon(ui);
     if lemon {
         // Lemon (spec: ui/lemon-design.md §8): each strip is a rounded card on the dark gap colour.
@@ -290,7 +292,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // Header number (insert strips only; the master's "M" sits in the fixed header band).
     if n != 0 {
         let hr = Rect::new(left, ly.y(HEAD_Y0), width, ly.y(HEAD_Y1) - ly.y(HEAD_Y0) + 1.0);
-        ui.c.fill_rect(hr, ui.t.s(0x2b2e30));
+        ui.c.fill_rect(hr, tint.map_or(ui.t.s(0x2b2e30),|c|ui.t.s(0x2b2e30).mix(c,0.35)));
         if selected && lemon {
             lk::lit_in(ui.c, ui.t, Rect::new(hr.x + 3.0, hr.y + 2.0, hr.w - 6.0, hr.h - 4.0), lk::r_btn(t), false);
         } else if selected {

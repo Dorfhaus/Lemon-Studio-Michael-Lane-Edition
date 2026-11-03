@@ -291,8 +291,9 @@ impl State {
 
     /// Knob `id` back to its default, as an undo step.
     pub fn reset_knob(&mut self, id: KnobId) {
-        crate::history::knob(self, id, false);
-        self.set_knob(id, id.default_value());
+        crate::rack_controls::snapshot(self,id,false);
+        let group=crate::rack_controls::group(self,id);let base=self.knob(id);
+        crate::rack_controls::apply(self,id,base,id.default_value(),&group);
     }
 
     /// The hint-bar text of a knob at its current value.
@@ -301,7 +302,7 @@ impl State {
         let bipolar = (n - 0.5) * 2.0;
         match id {
             KnobId::Varispeed => format!("Varispeed: {:+.2} st / {:.1}%", self.project.varispeed_cents as f64 / 100.0, 100.0 * 2f64.powf(self.project.varispeed_cents as f64 / 1200.0)),
-            KnobId::ChanPitch(i) => format!("Channel pitch: {:+.2} st (Shift-drag: fine; double-click: reset)", self.project.channels.get(i).map_or(0, |c| c.pitch_cents) as f64 / 100.0),
+            KnobId::ChanPitch(i) => format!("Channel pitch: {:+.2} st (Ctrl+wheel: octave; Shift-drag: fine; double-click: reset)", self.project.channels.get(i).map_or(0, |c| c.pitch_cents) as f64 / 100.0),
             KnobId::MasterVol => {
                 // The gain is the level curve of stored / 12800 (spec: audio/mixer.md "Main volume").
                 let g = os_dsp::level::curve(n / 0.8);

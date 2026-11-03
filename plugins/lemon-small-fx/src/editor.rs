@@ -29,6 +29,7 @@ pub trait Extension: Send + Sync {
     /// Optional complete instrument view. Existing effect editors retain their default view.
     fn render(&self, _canvas: &mut os_ui::Canvas, _model: &dyn view::Model,
         _state: &ViewState, _hint: &str) -> Option<Vec<view::Hit>> { None }
+    fn wheel(&self, _x:f32, _y:f32, _notches:f32) -> bool { false }
     fn character(&self, _character:char) -> bool { false }
     fn dragging(&self) -> bool { false }
     fn moved(&self, _x:f32, _y:f32) -> bool { false }
@@ -314,6 +315,7 @@ impl Logic {
 
     /// Wheel: one step per notch (1/128 of the range for the settings with many steps).
     pub fn wheel(&mut self, x: f32, y: f32, notches: f32, m: Mods) -> Vec<Act> {
+        if self.drag.is_none() && self.shared.extension.as_ref().is_some_and(|e|e.wheel(x,y,notches)) {return vec![Act::Repaint];}
         let Some((t, _)) = self.hit(x, y).filter(|(t, _)| *t != Target::Logo) else { return vec![] };
         let id = t.id().to_string();
         let (lo, hi) = self.range(&id);

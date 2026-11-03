@@ -4,7 +4,24 @@
   "sections": [
     {
       "date": "2026-11-03",
-      "title": "Community organization, toolbar controls and playback fixes · public build 2026110306",
+      "title": "Feedback inbox, channel controls and piano-roll improvements \u00b7 public build 2026110307",
+      "changes": [
+        "Added a prominent Report a bug button and a dedicated feedback page for bugs, feature requests and questions, with reviewable app/audio details and optional private attachments.",
+        "Added report IDs, reproduction details, affected-user confirmations, followed-report updates, public fix statuses and a maintainer triage inbox.",
+        "Fixed Global Pitch Follow synchronization and saving for sampler channels, with working undo and redo.",
+        "Improved hosted plugin parameter gesture undo and Windows Ctrl+Z forwarding to the host.",
+        "Projects now restore their saved detached-window layout; traditional mixer strip bodies follow their track colors.",
+        "Added saved piano-roll keyboard style selection: FL 11-style labeled rows or the piano-shaped keyboard.",
+        "Channel Rack G buttons now use readable text colors; a header G toggles global pitch follow across instrument channels.",
+        "Selected channel volume, pan and pitch controls move together while preserving relative offsets; on/off and pitch-follow switches support grouped edits and undo. Ctrl+wheel changes channel pitch by an octave within its limits.",
+        "Added channel-name drag-and-drop into the browser to save uniquely named plugin presets, with the preset library tab visible.",
+        "Added an optional Trim toggle for sample previews and new sample imports. It is off by default and preserves original files and existing project clips.",
+        "Lemon Wave adds a scrollable effects rack with up to 16 reorderable modules, 13 processor types and independent A/B oscillator routing."
+      ]
+    },
+    {
+      "date": "2026-11-03",
+      "title": "Community organization, toolbar controls and playback fixes \u00b7 public build 2026110306",
       "changes": [
         "Public build 2026110306: organized Bugs, Fixes, Issues into categories, moved bug reports from voting with votes and comments preserved, and removed completed reports from public view. Replies can be collapsed and expanded.",
         "Simplified the Community voting header. Main menus now group related commands into shorter submenus. The toolbar options button opens toolbar controls directly.",
@@ -20,7 +37,7 @@
     },
     {
       "date": "2026-11-03",
-      "title": "Threaded community replies, browser controls and compact CPU meter · public build 2026110305",
+      "title": "Threaded community replies, browser controls and compact CPU meter \u00b7 public build 2026110305",
       "changes": [
         "Community replies now stay with their original messages, with nested reply spacing, quoted context and a clear composer reply target. Pagination follows the conversation, including replies posted from the owner dashboard.",
         "Individual forum reports can be marked Completed without deleting their messages or closing the whole discussion. Existing discussions and reply links are preserved.",
@@ -34,7 +51,7 @@
     },
     {
       "date": "2026-11-03",
-      "title": "Community bug fixes and project window recall · public build 2026110304",
+      "title": "Community bug fixes and project window recall \u00b7 public build 2026110304",
       "changes": [
         "Restored Mode Buttons and Song Position when enabled in the toolbar editor, including the typing-keyboard piano button.",
         "Shift-dragging playlist clips now selects the new copies instead of leaving the original clips selected.",
@@ -48,11 +65,11 @@
     },
     {
       "date": "2026-11-03",
-      "title": "Lemon Wave sound browser and audio reliability · public build 2026110302",
+      "title": "Lemon Wave sound browser and audio reliability \u00b7 public build 2026110302",
       "changes": [
         "Lemon Wave now includes six named basic waves, a visible wavetable browser and My Samples for user-local recorded synth notes. Samples and imported tables are embedded in saved patches. Personal recordings and third-party libraries are not included in public downloads.",
         "Expanded Wave with four drawable 65-point LFOs, eight modulation routes, four macros, dotted/triplet timing, drag-to-assign modulation and visual modulation feedback. Includes curved AHDSR envelopes, SVF 12/24 filter choices, fourteen factory choices and 109 stable host controls; existing native patches remain supported.",
-        "Fixed live-input timing when a mixer bus also receives audio through a latency-producing effect. Monitoring now follows the receiving track’s delay compensation.",
+        "Fixed live-input timing when a mixer bus also receives audio through a latency-producing effect. Monitoring now follows the receiving track\u2019s delay compensation.",
         "Fixed multi-output instruments combining unavailable outputs into the final mixer insert. Outputs without a valid following track stay unconnected.",
         "MPE seeking now respects Play truncated notes on transport, while pause/resume retains its existing independent-note behavior.",
         "Fixed internal fallback effects retaining old settings after a live engine refresh; unchanged internal effects retain their DSP history.",
@@ -65,7 +82,7 @@
     },
     {
       "date": "2026-11-03",
-      "title": "Lemon Wave, MPE and clip effects · public build 2026110301",
+      "title": "Lemon Wave, MPE and clip effects \u00b7 public build 2026110301",
       "changes": [
         "Lemon Wave is now included directly in Lemon Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.",
         "Built-in instruments and effects are categorized without a plugin scan; Master Assistant is grouped under Utility. Installed copies of built-in Wave are not duplicated.",
@@ -82,7 +99,7 @@
     },
     {
       "date": "2026-11-02",
-      "title": "Master Assistant and Michael Lane Edition · public build 2026110204",
+      "title": "Master Assistant and Michael Lane Edition \u00b7 public build 2026110204",
       "changes": [
         "Published the integrated Lemon Master Assistant: mastering EQ, dynamic EQ, multiband compression, stereo imaging and maximizer, with dedicated master controls and settings saved in projects. The native engine is included in installations and automatic updates.",
         "Added the channel-strip mixer view, hosting original Waves plugin interfaces above analog-style faders, with improved fitting, section-aligned paging and Abbey Road TG12345 paging. Waves is the currently tested focus; third-party plugins are not included.",
@@ -98,7 +115,7 @@
     },
     {
       "date": "2026-11-02",
-      "title": "Lemon Chop, pitch and workflow · public build 2026110203",
+      "title": "Lemon Chop, pitch and workflow \u00b7 public build 2026110203",
       "changes": [
         "Added Lemon Chop, a separate slicing instrument with cue pads, automatic slicing, editable cue regions, pad names/favorites, reverse, pitch/stretch controls and undo/redo.",
         "Integrated optional local stem separation into Chop, with selectable stem mixes and source-region export; saved Chop state reopens with the project.",
@@ -118,7 +135,7 @@
     },
     {
       "date": "2026-11-02",
-      "title": "ARA, community and browser · public build 2026110201",
+      "title": "ARA, community and browser \u00b7 public build 2026110201",
       "changes": [
         "Added source-based ARA 2 editor integration, playback and project archives for compatible audio editors.",
         "Added host-frame resizing for resizable VST3 editors and isolated ARA diagnostics.",
@@ -157,7 +174,7 @@
         "Added traditional mixer layouts, clearer section separators and recovery of plugin title bars.",
         "Simplified mixer view choices, added a browser audition panel and Playlist waveform-detail controls.",
         "Restored Playlist tool buttons and organized working Piano Roll options.",
-        "Public builds 2026110101–2026110106 followed these updates during the day; later mixer/browser changes were included in the 2 November release."
+        "Public builds 2026110101\u20132026110106 followed these updates during the day; later mixer/browser changes were included in the 2 November release."
       ]
     },
     {
@@ -185,7 +202,7 @@
         "Added compact mixer view and kept recording in the selected pattern.",
         "Added Make Unique with undo for chopped audio clips.",
         "Added signed automatic updates for Mac and Linux; older versions need one manual updater-enabled installation.",
-        "Published builds 2026103104 and 2026103105 as the day’s later updates were packaged. Linux was compiled and packaged; Linux runtime/audio testing was not performed."
+        "Published builds 2026103104 and 2026103105 as the day\u2019s later updates were packaged. Linux was compiled and packaged; Linux runtime/audio testing was not performed."
       ]
     },
     {

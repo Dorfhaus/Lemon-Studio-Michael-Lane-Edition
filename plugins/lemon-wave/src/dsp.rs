@@ -259,6 +259,8 @@ struct Voice {
     filter: [Filter; 2],
     recovered_filter: [crate::reference_filter::Oversampled; 2],
     filter_model: usize,
+    lane_filter: [[Filter; 2]; 3],
+    lane_recovered: [[crate::reference_filter::Oversampled; 2]; 3],
 }
 pub struct Engine {
     pub curves: crate::modulation::Curves,
@@ -280,6 +282,9 @@ pub struct Engine {
     head: usize,
     ch_head: usize,
     ch_phase: f32,
+    racks: [crate::effects::Rack; 2],
+    modular: [crate::fxrack::Rack; 2],
+    rack_blend: f32,
     pub tempo: f32,
     ended: Vec<(u8, u8, Option<i32>)>,
     tail: usize,
@@ -310,6 +315,9 @@ impl Engine {
             head: 0,
             ch_head: 0,
             ch_phase: 0.,
+            racks: std::array::from_fn(|_|crate::effects::Rack::new(rate)),
+            modular: std::array::from_fn(|_|crate::fxrack::Rack::new(rate)),
+            rack_blend: 0.,
             tempo: 120.,
             ended: Vec::with_capacity(256),
             tail: 0,
@@ -332,6 +340,9 @@ impl Engine {
         self.head = 0;
         self.ch_head = 0;
         self.ch_phase = 0.;
+        for rack in &mut self.racks {rack.reset();}
+        for rack in &mut self.modular {rack.reset();}
+        self.rack_blend=if self.target[RACK_MODE]>0.5 || crate::effects::needs_lanes(&self.target) {1.} else {0.};
         self.current = self.target;
         self.tail = 0;
         self.ended.clear();
@@ -498,6 +509,9 @@ impl Engine {
         self.voices.iter().any(|v| v.amp.stage != 0) || self.tail > 0
     }
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let modular=self.target[RACK_MODE]>0.5;
+        if modular {for rack in &mut self.modular {rack.prepare(&self.target);}}
+        let modular_tail=modular && (0..RACK_SLOTS).any(|slot|{let b=crate::fxrack::base(slot);self.target[b]>0.&&self.target[b+2]>0.&&self.target[b+11]>0.});
         let smooth = 1. - (-1. / (0.01 * self.rate)).exp();
         for (out_l, out_r) in left.iter_mut().zip(right) {
             for i in 0..COUNT {
@@ -524,6 +538,7 @@ impl Engine {
             let mut live = crate::modulation::Live::default();
             let mut newest = 0;
             let mut output = [0.; 2];
+            let mut lanes = [[0.; 2]; 3];
             let mut sounding = false;
             for (voice_index, v) in self.voices.iter_mut().enumerate() {
                 if v.amp.stage == 0 {
@@ -622,6 +637,7 @@ impl Engine {
                     + if target == 2 { lfo * 2. } else { 0. };
                 let base = 440. * 2.0_f32.powf(pitch / 12.);
                 let mut sig = [0.; 2];
+                let mut oscillator = [[0.; 2]; 3];
                 for o in 0..2 {
                     let b = o * 8;
                     let source = if o == 0 { A_SOURCE } else { B_SOURCE };
@@ -667,8 +683,8 @@ impl Engine {
                         let blend = p[if o == 0 { A_BLEND } else { B_BLEND }] / 1000.;
                         let gain = (1. - mix) * p[b + 2] / 1000. / (count as f32).sqrt()
                             * (blend_weight(count, u, blend) / blend_weight(count, u, 0.75));
-                        sig[0] += s * angle.cos() * gain;
-                        sig[1] += s * angle.sin() * gain;
+                        oscillator[o][0] += s * angle.cos() * gain;
+                        oscillator[o][1] += s * angle.sin() * gain;
                     }
                     if mix > 0.00001 || discrete[source] > 0.5 {
                         let ref_pitch = v.note as f64 - 69.
@@ -696,10 +712,11 @@ impl Engine {
                             amount,
                             (discrete[b + 2] / 1000. + modulation[10 + o]).clamp(0., 1.),
                         );
-                        sig[0] += pair[0] * mix;
-                        sig[1] += pair[1] * mix;
+                        oscillator[o][0] += pair[0] * mix;
+                        oscillator[o][1] += pair[1] * mix;
                     }
                 }
+                for ch in 0..2 {sig[ch]=oscillator[0][ch]+oscillator[1][ch];}
                 v.sub = (v.sub + base * 0.5 / self.rate).fract();
                 let sub = (v.sub * TAU).sin() * p[SUB] / 1000.;
                 self.noise ^= self.noise << 13;
@@ -725,6 +742,8 @@ impl Engine {
                     v.filter_model = model;
                     v.recovered_filter = Default::default();
                     v.filter = Default::default();
+                    v.lane_filter = Default::default();
+                    v.lane_recovered = Default::default();
                 }
                 let coeff = if model > 0 {
                     Some(crate::reference_filter::Coefficients::new(
@@ -738,6 +757,13 @@ impl Engine {
                 } else {
                     None
                 };
+                oscillator[2]=[sub+noise;2];
+                for lane in 0..3 {for ch in 0..2 {
+                    let x=oscillator[lane][ch]*0.3;
+                    let x=if model==0 && p[DRIVE]>0.1 {(x*drive).tanh()/drive.sqrt()} else {x};
+                    let filtered=if let Some(c)=&coeff {v.lane_recovered[lane][ch].tick(x,c)} else {v.lane_filter[lane][ch].tick(x,g,k,discrete[FILTER] as usize)};
+                    lanes[lane][ch]+=filtered*amp*am*(1.+modulation[7]).clamp(0.,2.);
+                }}
                 for ch in 0..2 {
                     let x = (sig[ch] + sub + noise) * 0.3;
                     let x = if model == 0 && p[DRIVE] > 0.1 {
@@ -759,7 +785,7 @@ impl Engine {
             }
             if sounding {
                 self.tail = (self.rate
-                    * if p[DELAY_MIX] > 0.1 {
+                    * if modular_tail || !modular && (p[DELAY_MIX] > 0.1 || p[REVERB_MIX] > 0.1) {
                         90.
                     } else if p[CHORUS_MIX] > 0.1 {
                         0.06
@@ -791,6 +817,14 @@ impl Engine {
             }
             self.head = (self.head + 1) % self.delay[0].len();
             self.ch_head = (self.ch_head + 1) % self.chorus[0].len();
+            // Preserve the original summed filter/chorus/delay sound for existing patches.
+            // Independent assignments or a new effect crossfade into isolated oscillator lanes.
+            let independent=modular || crate::effects::needs_lanes(discrete);
+            self.rack_blend+=((if independent {1.} else {0.})-self.rack_blend)*smooth;
+            if self.rack_blend<0.00001 {self.rack_blend=0.;} else if self.rack_blend>0.99999 {self.rack_blend=1.;}
+            let (a,b)=if modular {(self.modular[0].tick(lanes[0],p,discrete,0,self.tempo),self.modular[1].tick(lanes[1],p,discrete,1,self.tempo))}
+                else {(self.racks[0].tick(lanes[0],p,0),self.racks[1].tick(lanes[1],p,1))};
+            for ch in 0..2 {output[ch]+=(a[ch]+b[ch]+lanes[2][ch]-output[ch])*self.rack_blend;}
             let gain = p[GAIN] / 1000.;
             *out_l = (output[0] * gain).tanh();
             *out_r = (output[1] * gain).tanh();
@@ -818,6 +852,21 @@ fn read_delay(data: &[f32], head: usize, delay: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oscillator_effect_routing_isolates_the_other_audio_lane() {
+        for (row,mix) in [DIST_MIX,OTT_MIX,CHORUS_MIX,DELAY_MIX,REVERB_MIX].into_iter().enumerate() {
+            let render=|assigned:usize| {
+                let mut p=defaults();p[B_LEVEL]=0.;p[SUB]=0.;p[NOISE]=0.;p[FILTER]=0.;p[mix]=800.;p[DELAY_TIME]=0.;
+                for pair in FX_ROUTES {for k in pair {p[k]=0.;}}
+                if assigned<2 {p[FX_ROUTES[row][assigned]]=1.;}
+                let mut e=Engine::new(48000.);e.set(p);e.reset();e.on(60,0.8,0,None);
+                let mut l=vec![0.;8192];let mut r=l.clone();e.render(&mut l,&mut r);l
+            };
+            let dry=render(2);let unassigned=render(1);let wet=render(0);
+            assert_eq!(dry,unassigned,"effect {row} leaked from B into A");
+            assert!(dry.iter().zip(wet).any(|(a,b)|(a-b).abs()>0.0001),"effect {row} missing from A");
+        }
+    }
     #[test]
     fn macros_drawn_lfos_oneshot_and_free_run_drive_real_voice_audio() {
         fn render(

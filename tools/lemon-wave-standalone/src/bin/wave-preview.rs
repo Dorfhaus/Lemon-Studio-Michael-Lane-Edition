@@ -4,7 +4,7 @@ use std::{io::{self,BufRead,Write},sync::{Arc,atomic::Ordering}};
 use lemon_small_fx::editor::{Logic,Extension};
 use serde::Deserialize;
 #[derive(Deserialize)]
-struct Request { design:serde_json::Value, page:usize, output:String, #[serde(default)] values:std::collections::BTreeMap<String,i32> }
+struct Request { design:serde_json::Value, page:usize, output:String, #[serde(default)] fx_scroll:usize, #[serde(default)] fx_add:bool, #[serde(default)] values:std::collections::BTreeMap<String,i32> }
 fn main() {
     let params=Arc::new(lemon_wave::assets::WaveParams::default());
     let editor=Arc::new(lemon_wave::table_editor::TableEditor::new(params.clone()));
@@ -24,6 +24,9 @@ fn main() {
                 lemon_small_fx::params::set_setting(lemon_wave::controls::SPEC,&mut raw,k,(*value).clamp(s.range.0,s.range.1));
             }
             params.base.set_raw(raw);
+            for (id,value) in &request.values {logic.vals.edit_plain(id,*value as f32);}
+            params.fx_scroll.store(request.fx_scroll,Ordering::Relaxed);
+            params.fx_add.store(request.fx_add,Ordering::Relaxed);
             if request.page==2 {let r=lemon_wave::instrument_view::page_button(2);editor.click(r.cx(),r.cy(),None);}
             else {params.page.store(request.page.min(1),Ordering::Relaxed);}
             logic.paint(&mut canvas,&os_plugkit::palette());

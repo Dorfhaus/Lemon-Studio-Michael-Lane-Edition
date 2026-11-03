@@ -19,6 +19,7 @@ pub enum NCmd {
     MenuKey(&'static str,bool,bool,bool),
     Tool(piano::Tool),
     View(&'static str),
+    KeyboardStyle(bool),
     Zoom(f32),
     Lane(usize),
     /// Move starts (and lengths unless `starts_only`) `strength` percent of the way to the snap grid.
@@ -124,13 +125,14 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
         PItem::sub("Snap",crate::piano_snap::snap_menu(s,x,y).items),
         PItem::sub("Note length",crate::piano_snap::lengths_menu(x,y).items),
         PItem::sub("Draw mode",[(piano::Tool::Draw,"Pencil","P"),(piano::Tool::Paint,"Brush","B"),(piano::Tool::Slice,"Slice","C"),(piano::Tool::Select,"Select","E"),(piano::Tool::Delete,"Delete","D"),(piano::Tool::Mute,"Mute","T"),(piano::Tool::Zoom,"Zoom","Z"),(piano::Tool::Playback,"Playback","Y")].into_iter().map(|(tool,label,key)|item(label,NCmd::Tool(tool)).key(key).mark(Mark::Radio(s.piano.tool==tool))).collect()),
-        PItem::sub("View",vec![item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
+        PItem::sub("View",vec![PItem::sub("Keyboard style",vec![item("FL 11 style",NCmd::KeyboardStyle(true)).mark(Mark::Radio(classic_keyboard())),item("Piano-shaped",NCmd::KeyboardStyle(false)).mark(Mark::Radio(!classic_keyboard()))]),item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
         PItem::sub("Helpers",helpers),
         PItem::sub("Time markers",vec![item("Add time marker",NCmd::AddMarker).key("Alt+T")]),
         PItem::sub("Target channel",target_menu(s,x,y).items),
     ];
     Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
 }
+pub fn classic_keyboard()->bool {crate::prefs::text("piano_keyboard_style").as_deref()!=Some("piano")}
 pub fn view_on(key:&str,default:bool)->bool {crate::prefs::text(key).map_or(default,|v|v=="1")}
 pub fn tools_menu(s:&State,x:f32,y:f32)->Popup {
     let mut p=options_menu(s,x,y);
@@ -429,6 +431,7 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
         NCmd::ChannelSolo=>{let row=s.selected_channel;crate::rack::solo(s,row);return None;},
         NCmd::Transfer(row,copy)=>return Some(transfer(s,row,copy)),
         NCmd::Tool(tool)=>{s.piano.tool=tool;s.piano.overlay=None;return None;},
+        NCmd::KeyboardStyle(classic)=>{crate::prefs::set_text("piano_keyboard_style",if classic{"classic"}else{"piano"});app.invalidate();return None;},
         NCmd::View(key)=>{crate::prefs::set_text(key,if view_on(key,true){"0"}else{"1"});return None;},
         NCmd::Zoom(n)=>{zoom_key(app,n);return None;},
         NCmd::Lane(i)=>{s.piano.lane=piano::Lane::ALL[i.min(piano::Lane::ALL.len()-1)];s.piano.event_focus=true;return None;},

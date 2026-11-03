@@ -53,6 +53,8 @@ pub const PROJECT_INFO: &str = "Project info";
 /// What a step changes, as it is on the other side of the step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Snap {
+    ChannelEnabled(usize,bool),
+    PitchFollow(usize,bool,i32),
     AudioWarps(Vec<os_model::AudioWarp>),
     StackLinks(usize,Vec<u16>),
     ClipFxOwners(Vec<u16>),
@@ -387,6 +389,8 @@ impl Snap {
             Snap::StripProfile(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::StripProfile(*t,m.strip[5])),
             Snap::AllEffects(_) => Snap::AllEffects(s.mixer.all_fx_bypassed),
             Snap::Effects(t, _, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::Effects(*t, m.slots_enabled, s.mixer.all_fx_bypassed)),
+            Snap::ChannelEnabled(row,_) => s.project.channels.get(*row).map_or_else(||self.clone(),|c|Snap::ChannelEnabled(*row,c.enabled)),
+            Snap::PitchFollow(row,..) => s.project.channels.get(*row).map_or_else(||self.clone(),|c|Snap::PitchFollow(*row,c.misc.main_pitch,c.misc.pitch_follow_offset)),
             Snap::Param(key, i, _) => crate::params::param_value(s, *key, *i).map_or_else(|| self.clone(), |v| Snap::Param(*key, *i, v)),
             // A channel gone since is left as the step has it (`put` does nothing then).
             Snap::Sample { row, .. } => Snap::sample(s, *row).unwrap_or_else(|| self.clone()),
@@ -469,6 +473,8 @@ impl Snap {
             | Snap::DriveType(..)
             | Snap::AllEffects(..)
             | Snap::Effects(..)
+            | Snap::ChannelEnabled(..)
+            | Snap::PitchFollow(..)
             | Snap::Param(..)
             | Snap::Sample { .. }
             | Snap::Channel { .. }
@@ -523,6 +529,11 @@ impl Snap {
                 if let Some(m) = crate::mixer::track_mut(s, t) {
                     m.volume = v;
                 }
+            }
+            Snap::ChannelEnabled(row,on) => {if let Some(c)=s.project.channels.get_mut(row){c.enabled=on;}},
+            Snap::PitchFollow(row,on,offset) => {
+                if let Some(c)=s.project.channels.get_mut(row){c.misc.main_pitch=on;c.misc.pitch_follow_offset=offset;}
+                if let Some(i)=s.params.lists.get(&row).and_then(|l|l.params.iter().position(|p|p.name=="Affected by the main pitch")){crate::params::set_param_value(s,row,i,f64::from(on));}
             }
             Snap::Param(key, i, v) => {
                 crate::params::set_param_value(s, key, i, v);
@@ -662,7 +673,7 @@ fn put_replaced(s: &mut State, r: Replaced) {
 }
 
 /// The model's value of a knob: the channels' volume and pan as stored (exact), the others as the knob reads them.
-fn knob_value(s: &State, id: KnobId) -> f64 {
+pub(crate) fn knob_value(s: &State, id: KnobId) -> f64 {
     match id {
         KnobId::ChanVol(i) => s.project.channels.get(i).map_or(0.0, |c| c.volume),
         KnobId::ChanPan(i) => s.project.channels.get(i).map_or(0.0, |c| c.pan),
@@ -912,7 +923,7 @@ pub fn fader(s: &mut State, track: u16, wheel: bool) {
 
 /// After Lemon Studio set parameter `index` of plugin instance `key` from `before` to `to` (Type in value, the
 /// parameter menu's Set... and Paste value): a step, "Plugin parameter", unless Undo knob tweaks is off or the value
-/// stays. A plugin editor's own changes make none.
+/// stays. Editor gestures use the same entry, once at the first changed value.
 pub fn param(s: &mut State, key: usize, index: usize, before: Option<f64>, to: f64) {
     let Some(v) = before.filter(|&v| v != to && prefs::check(&prefs::UNDO_KNOB_TWEAKS)) else { return };
     record(s, PLUGIN_PARAMETER, Snap::Param(key, index, v));

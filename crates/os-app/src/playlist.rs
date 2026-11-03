@@ -2349,7 +2349,9 @@ pub fn import_audio_clip(s: &mut State, path: &str, from: u16, tick: u32) -> Res
 /// Add an audio clip channel for a sample file and place it at `tick` on `track` (§9). The channel's colour comes from
 /// `State::clip_colors`.
 pub fn add_audio_clip(s: &mut State, path: &str, track: u16, tick: u32) -> Option<usize> {
-    add_audio_clip_as(s, path, track, tick, "Playlist edit")
+    let i=add_audio_clip_as(s, path, track, tick, "Playlist edit")?;
+    if let Some(window)=crate::browser_preview::import_window(path){let length=((window.1-window.0)/1000.*s.tempo/60.*f64::from(s.project.ppq)).round().clamp(1.,u32::MAX as f64) as u32;let clip=&mut arr_mut(s).clips[i];clip.window=Some(window);clip.length=length;}
+    Some(i)
 }
 
 /// `add_audio_clip` as the undo step `name` (One-click audio recording's "Recorded items").

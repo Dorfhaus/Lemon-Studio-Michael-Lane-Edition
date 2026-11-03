@@ -7,7 +7,7 @@ async function run(fn){if(busy)return;busy=true;document.querySelectorAll('butto
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function button(text,fn,cls){const n=el('button',text,cls);n.type='button';n.onclick=()=>run(fn);return n;}
 function update(data){items=data.items;render();renderAnnouncements(data.announcements||[]);$('activity').replaceChildren();for(const row of data.log){const n=el('div',undefined,'log-row');n.append(el('time',new Date(Number(row.created)*1000).toLocaleString()),el('span',`${row.action} · #${row.target} · ${row.detail}`));$('activity').append(n);}}
-async function load(){update(await request({action:'list'}));$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;await loadOwnerProfile();await reviewForum();}
+async function load(){update(await request({action:'list'}));$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;await loadOwnerProfile();await reviewForum();await loadFeedback();}
 async function change(body,question){if(question&&!confirm(question))return;update(await request(body));notice('Saved. Your change is live.');}
 function commentsFor(i){
  const id=Number(i.id),section=el('details',undefined,'public-comments'),comments=i.comments||[];

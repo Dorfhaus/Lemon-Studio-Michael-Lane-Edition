@@ -5,6 +5,8 @@ pub mod design;
 pub mod assets;
 pub mod controls;
 pub mod dsp;
+mod effects;
+pub mod fxrack;
 pub mod instrument_view;
 pub mod modulation;
 mod modulation_editor;
@@ -77,7 +79,7 @@ impl Plugin for LemonWave {
             let hex = raw.trim_matches('"');
             if hex.starts_with("01000000") && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 let old_count = hex.len().saturating_sub(8) / 8;
-                if (old_count == 44 || old_count == 50 || old_count == 62 || old_count == 72)
+                if (old_count == 44 || old_count == 50 || old_count == 62 || old_count == 72 || old_count == 109 || old_count == 128)
                     && hex.len() == 8 + old_count * 8
                 {
                     let suffix: String = controls::SETTINGS[old_count..]
@@ -330,7 +332,8 @@ mod tests {
             ));
             // Bank/source selection is now handled by the unified asset menu,
             // rather than generic parameter-selector hit targets.
-            for setting in controls::SETTINGS {
+            for (k,setting) in controls::SETTINGS.into_iter().enumerate() {
+                if (38..44).contains(&k) || k>=109 {continue;} // Dynamic rack controls are checked in rack interaction tests.
                 if ["a_bank", "b_bank", "a_source", "b_source"].contains(&setting.id) {
                     assert!(!hits.iter().any(|h| h.t.id() == setting.id));
                     continue;

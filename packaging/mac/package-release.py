@@ -13,7 +13,7 @@ arch = os.environ.get("LEMON_MAC_ARCH",platform.machine())
 actual=subprocess.check_output(["lipo","-archs",str(app/"Contents/MacOS/lemonstudio")],text=True).split()
 if actual != [arch]: raise SystemExit(f"Architecture mismatch: requested {arch}, actual {actual}")
 if arch not in ('arm64','x86_64'): raise SystemExit('Unsupported architecture')
-out = Path.home()/'Desktop/Lemon Studio Mac Public Download'/version/arch
+out = Path(os.environ['LEMON_PACKAGE_OUT']) if os.environ.get('LEMON_PACKAGE_OUT') else Path.home()/'Desktop/Lemon Studio Mac Public Download'/version/arch
 out.mkdir(parents=True, exist_ok=True)
 source = out/f'Lemon-Studio-Source-Mac-{arch}-{version}.zip'
 subprocess.run([sys.executable, str(root/'packaging/export-source.py'), str(source), "--public"], check=True)
@@ -29,8 +29,9 @@ subprocess.run(['hdiutil','create','-volname','Lemon Studio','-srcfolder',str(st
 subprocess.run(['hdiutil','verify',str(dmg)], check=True)
 manifest = {'version':int(version),'label':f'Mac {arch}', 'url':f'mac/{version}/{dmg.name}', 'source':f'mac/{version}/{source.name}', 'sha256':hashlib.sha256(dmg.read_bytes()).hexdigest()}
 (out/f'mac-{arch}.json').write_text(json.dumps(manifest, indent=2))
-with zipfile.ZipFile(out/f'Mac-{arch}-{version}-files.zip','w',zipfile.ZIP_DEFLATED) as z:
-    for p in (dmg, source): z.write(p, f'lemon-studio/mac/{version}/{p.name}')
-with zipfile.ZipFile(out/f'Mac-{arch}-{version}-publish-last.zip','w',zipfile.ZIP_DEFLATED) as z:
-    z.write(out/f'mac-{arch}.json', f'lemon-studio/platforms/mac-{arch}.json')
+if os.environ.get('LEMON_PIPELINE') != '1':
+ with zipfile.ZipFile(out/f'Mac-{arch}-{version}-files.zip','w',zipfile.ZIP_DEFLATED) as z:
+     for p in (dmg, source): z.write(p, f'lemon-studio/mac/{version}/{p.name}')
+ with zipfile.ZipFile(out/f'Mac-{arch}-{version}-publish-last.zip','w',zipfile.ZIP_DEFLATED) as z:
+     z.write(out/f'mac-{arch}.json', f'lemon-studio/platforms/mac-{arch}.json')
 print(f'Ready for publication: {out}\nUpload/extract files first, verify HTTPS downloads, then upload/extract publish-last. See MAC_RELEASE.md.')

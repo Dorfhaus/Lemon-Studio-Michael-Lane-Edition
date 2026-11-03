@@ -67,3 +67,6 @@ Owner participation routes run only behind admin.php's existing authenticated-se
 ## Change Log (2 November 2026)
 
 Voting, Community Forum and Change Log are adjacent native browser sections. The changelog is bundled, searchable and available offline without voter registration. Its public history starts with the Michael Lane edition on 28 October 2026; it does not claim to cover earlier upstream development. Edit packaging/changelog.json for new public changes, then run python packaging/render-changelog.py to update the identical history on the download page. Keep private features out and distinguish development dates from published build milestones. Website deployment is separate from application release publication.
+
+## Structured feedback inbox (3 November 2026)
+The prominent app Report a bug button opens features/feedback.html with reviewable diagnostics in the URL fragment. Reports have dedicated statuses, optional private attachments, affected confirmations and followed-report updates. The owner dashboard now starts with a triage inbox and private JSON export. See FEEDBACK-WORKFLOW.md for assistant review, API contracts, privacy boundaries and source-post import. This is on-demand review tooling, not an autonomous monitor; no email notifications are configured. The existing voting and forum identities, posts and moderation remain intact.

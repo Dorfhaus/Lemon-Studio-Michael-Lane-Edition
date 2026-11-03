@@ -41,9 +41,9 @@ pub fn select(app:&mut App,path:&str) {
     let result=Arc::new(Mutex::new(None));
     app.state.browser_preview=Preview{resume:true,path:Some(path.into()),pending:Some(result.clone()),..Default::default()};
     let path=crate::plugins::resolve_sample(path);
-    let (normal,reversed)=(normalize(),reverse());
+    let (normal,reversed,trim)=(normalize(),reverse(),auto_trim());
     std::thread::spawn(move||{
-        let loaded=os_engine::sample::load_shared(std::path::Path::new(&path)).map(|s|{let s=processed(s,normal,reversed);let peaks=overview(&s);(s,peaks)}).map_err(|e|format!("Cannot preview: {e}"));
+        let loaded=os_engine::sample::load_shared(std::path::Path::new(&path)).map(|s|{let s=processed(s,normal,reversed,trim);let peaks=overview(&s);(s,peaks)}).map_err(|e|format!("Cannot preview: {e}"));
         if let Ok(mut out)=result.lock(){*out=Some(loaded);}
     });
     app.invalidate();
@@ -61,9 +61,10 @@ fn project(path:&str,duration:f64,at:f64,tempo:f64)->os_model::Project {
 
     p
 }
-fn processed(sample:Arc<os_engine::Sample>,normal:bool,reversed:bool)->Arc<os_engine::Sample>{
-    if !normal&&!reversed{return sample;}
+fn processed(sample:Arc<os_engine::Sample>,normal:bool,reversed:bool,trim:bool)->Arc<os_engine::Sample>{
+    if !normal&&!reversed&&!trim{return sample;}
     let mut copy=(*sample).clone();
+    if trim {let (a,b)=trim_bounds(&copy);copy.left=copy.left[a..b].to_vec();copy.right=copy.right[a..b].to_vec();}
     let peak=copy.left.iter().chain(&copy.right).filter(|v|v.is_finite()).fold(0f32,|a,v|a.max(v.abs()));
     let gain=if normal&&peak>1e-9{1./peak}else{1.};
     for side in [&mut copy.left,&mut copy.right]{
@@ -104,6 +105,22 @@ pub fn tick(app:&mut App) {
         if visible(&app.state) {let r=panel_rect(&app.state);app.damage_rect(r);}
     }
 }
+// Roughly -90 dBFS: remove near-silent ends without cutting normal release tails.
+pub const AUTO_TRIM_THRESHOLD:u32=1;
+pub fn auto_trim()->bool {crate::prefs::text("browser_auto_trim").as_deref()==Some("1")}
+fn trim_bounds(s:&os_engine::Sample)->(usize,usize){
+    let n=s.frames().min(s.right.len());
+    let audible=|i:usize| s.left[i].abs().max(s.right[i].abs())>=AUTO_TRIM_THRESHOLD as f32/32768.;
+    let Some(a)=(0..n).find(|&i|audible(i)) else{return (0,n)};
+    let b=(a..n).rfind(|&i|audible(i)).unwrap()+1;(a,b)
+}
+pub fn import_window(path:&str)->Option<(f64,f64)>{
+    if !auto_trim(){return None;}
+    let sample=os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(path))).ok()?;
+    let (a,b)=trim_bounds(&sample);
+    if a==0&&b==sample.frames(){return None;}
+    let ms=1000./f64::from(sample.rate.max(1));Some((a as f64*ms,b as f64*ms))
+}
 pub fn normalize()->bool {crate::prefs::text("browser_preview_normalize").as_deref()==Some("1")}
 pub fn reverse()->bool {crate::prefs::text("browser_preview_reverse").as_deref()==Some("1")}
 pub fn act(app:&mut App,cmd:u8) {
@@ -116,9 +133,9 @@ pub fn act(app:&mut App,cmd:u8) {
             p.position=f64::from(((app.mouse.0-r.x)/r.w).clamp(0.,1.))*p.duration;
             play(app);
         },
-        3|4=>{
-            let key=if cmd==3 {"browser_preview_normalize"}else{"browser_preview_reverse"};
-            let on=if cmd==3 {normalize()}else{reverse()};
+        3|4|5=>{
+            let key=match cmd {3=>"browser_preview_normalize",4=>"browser_preview_reverse",_=>"browser_auto_trim"};
+            let on=match cmd {3=>normalize(),4=>reverse(),_=>auto_trim()};
             crate::prefs::set_text(key,if on {"0"}else{"1"});
             if let Some(path)=app.state.browser_preview.path.clone(){
                 let position=app.state.browser_preview.position;let resume=app.state.browser_preview.playing || (app.state.browser_preview.pending.is_some() && app.state.browser_preview.resume);
@@ -150,11 +167,11 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
         ui.hit(wave,Action::BrowserPreview(2),"Click waveform to preview from here");
     } else {ui.c.text_center(Font::new(11),wave,t.text_dim,if p.pending.is_some(){"Loading audio..."}else{p.error.as_deref().unwrap_or("Audio preview")});}
     for (i,label) in [(0,if p.playing {"Pause"}else{"Play"}),(1,"Stop")] {
-        let b=Rect::new(r.x+8.+i as f32*45.,r.y+80.,40.,23.);
+        let b=Rect::new(r.x+8.+i as f32*36.,r.y+80.,32.,23.);
         let hover=ui.hit(b,Action::BrowserPreview(i),label);
         ui.c.fill_rrect(b,3.,if hover {t.button_hi}else{t.sunken});ui.c.text_center(Font::new(11),b,t.text,label);
     }
-    for (cmd,label,on,x,w,hint) in [(3,"Norm",normalize(),98.,43.,"Auto Normalize: preview only, peak target 0 dBFS"),(4,"Rev",reverse(),146.,36.,"Auto Reverse: preview only")] {
+    for (cmd,label,on,x,w,hint) in [(3,"Norm",normalize(),80.,36.,"Auto Normalize: preview only, peak target 0 dBFS"),(4,"Rev",reverse(),120.,28.,"Auto Reverse: preview only"),(5,"Trim",auto_trim(),152.,42.,"Auto-trim silence: previews and newly added samples; original files unchanged")] {
         let b=Rect::new(r.x+x,r.y+80.,w,23.);
         let hover=ui.hit(b,Action::BrowserPreview(cmd),hint);
         ui.c.fill_rrect(b,3.,if on{t.accent}else if hover{t.button_hi}else{t.sunken});
@@ -165,6 +182,36 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn auto_trim_preview_and_new_imports_preserve_originals(){
+        crate::prefs::set_text("browser_auto_trim","0");assert!(!auto_trim());
+        let path=std::env::temp_dir().join(format!("lemon-auto-trim-{}.wav",std::process::id()));
+        let rate=8000;let mut audio=vec![0.;16000];
+        // Only the right channel sounds; its quiet tail must survive too.
+        for i in 2000..4000 {audio[i*2+1]=if i<3900 {0.2}else{0.0001};}
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),rate,&audio).unwrap();
+        let original=std::fs::read(&path).unwrap();let text=path.to_string_lossy();
+        let sample=os_engine::sample::load_shared(&path).unwrap();
+        assert_eq!(processed(sample.clone(),false,false,false).frames(),8000);
+        let trimmed=processed(sample.clone(),false,false,true);assert_eq!(trimmed.frames(),2000);assert_eq!(trimmed.right[1999],0.0001);
+        assert_eq!(sample.frames(),8000);assert_eq!(trim_bounds(&os_engine::Sample{rate,left:vec![0.;20],right:vec![0.;20]}),(0,20));
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        let old=crate::playlist::add_audio_clip(&mut app.state,&text,0,0).unwrap();
+        let old_clip=crate::playlist::arr_mut(&mut app.state).clips[old].clone();
+        let old_trim=app.state.project.channels[0].sound.fx.trim;
+        act(&mut app,5);assert!(auto_trim());assert_eq!(crate::prefs::text("browser_auto_trim").as_deref(),Some("1"));
+        assert_eq!(app.state.project.channels[0].sound.fx.trim,old_trim);
+        let new=crate::playlist::add_audio_clip(&mut app.state,&text,1,0).unwrap();
+        assert_eq!(crate::playlist::arr_mut(&mut app.state).clips[new].window,Some((250.,500.)));
+        assert_eq!(crate::playlist::arr_mut(&mut app.state).clips[old],old_clip);
+        app.sample_to_channel(text.to_string(),None);assert_eq!(app.state.project.channels[app.state.selected_channel].sound.fx.trim,AUTO_TRIM_THRESHOLD);
+        act(&mut app,5);assert!(!auto_trim());assert!(import_window(&text).is_none());
+        assert_eq!(app.state.project.channels[app.state.selected_channel].sound.fx.trim,AUTO_TRIM_THRESHOLD);
+        assert_eq!(std::fs::read(&path).unwrap(),original);
+        app.state.browser_preview.path=Some(text.to_string());app.state.browser_opts.insert(view::OPT_PANEL);
+        let mut canvas=os_ui::Canvas::new(1280,900,1.).unwrap();app.paint(&mut canvas,None);
+        assert!(app.hits.iter().any(|h|h.action==Action::BrowserPreview(5)));
+        let _=std::fs::remove_file(path);
+    }
     #[test] fn batch2_preview_options_change_audio_without_changing_file_or_import(){
         let path=std::env::temp_dir().join(format!("lemon-preview-options-{}.wav",std::process::id()));
         let rate=8000;let audio:Vec<f32>=(0..rate*2).flat_map(|i|{let v=if i<rate/2{0.1}else{0.};[v,v]}).collect();
@@ -172,7 +219,7 @@ mod tests {
         let original=std::fs::read(&path).unwrap();
         let render=|normal,reversed,at|{
             let p=project(&path.to_string_lossy(),2.,at,120.);
-            let mut lib=os_engine::SampleLibrary::default();lib.insert_buffer(path.to_string_lossy().into_owned(),processed(os_engine::sample::load_shared(&path).unwrap(),normal,reversed));let mut engine=os_engine::Engine::new(&p,&mut lib,rate,os_engine::PlayMode::Song);
+            let mut lib=os_engine::SampleLibrary::default();lib.insert_buffer(path.to_string_lossy().into_owned(),processed(os_engine::sample::load_shared(&path).unwrap(),normal,reversed,false));let mut engine=os_engine::Engine::new(&p,&mut lib,rate,os_engine::PlayMode::Song);
             let mut out=vec![0.;rate as usize*4];engine.process(&mut out);out
         };
         let plain=render(false,false,0.);let normal=render(true,false,0.);let rev=render(false,true,0.);let both=render(true,true,0.);

@@ -86,6 +86,8 @@ pub fn restore(s: &mut State) {
             *placed = true;
         }
     }
+    // A reopened project's layout takes precedence over the last application session.
+    restore_project_layout(s);
 }
 
 /// First-run default only; defer until the main canvas supplies the actual display size.
@@ -298,7 +300,9 @@ pub fn project_snapshot(s:&State,plugins:&crate::plugins::Plugins)->serde_json::
         if let (Some(pos),Some(d))=(pos,plugins.descriptor(key)){editors.push(serde_json::json!({"key":key,"uid":d.uid(),"position":[pos.0,pos.1],"detached":h.window.as_ref().map_or(h.detached,|w|w.detached()),"open":h.window.is_some()}));}
     }
     #[cfg(not(windows))] let _=plugins;
-    serde_json::json!({"version":1,"windows":wins,"rack":[s.rack_pos.0,s.rack_pos.1,s.rack_size.0,s.rack_size.1,s.shown(Win::ChannelRack)],"editors":editors})
+    let detached:Vec<_>=WINS.iter().map(|(w,_)|s.native_detached.contains(w)).collect();
+    let frames:Vec<_>=WINS.iter().map(|(w,_)|s.native_frames.iter().find(|(k,_)|k==w).map(|(_,f)|serde_json::json!([f.pos.0,f.pos.1,f.size.0,f.size.1,f.max]))).collect();
+    serde_json::json!({"version":1,"windows":wins,"rack":[s.rack_pos.0,s.rack_pos.1,s.rack_size.0,s.rack_size.1,s.shown(Win::ChannelRack)],"editors":editors,"detached":detached,"frames":frames})
 }
 pub fn write_project_layout(file:&mut os_flp::FlpFile,value:serde_json::Value){
     file.chunks.retain(|c|c.tag!=PROJECT_LAYOUT_TAG);
@@ -313,6 +317,16 @@ fn project_layout(s:&State)->Option<serde_json::Value>{
 }
 pub fn restore_project_layout(s:&mut State){
     let Some(v)=project_layout(s)else{return};
+    if let Some(flags)=v["detached"].as_array().filter(|a|a.len()==WINS.len()) {
+        s.native_layout_generation=s.native_layout_generation.wrapping_add(1);
+        s.native_detached=WINS.iter().zip(flags).filter(|(_,on)|on.as_bool()==Some(true)).map(|((w,_),_)|*w).collect();
+        s.native_frames.clear();
+        for (i,(w,_)) in WINS.iter().enumerate(){let a=&v["frames"][i];
+            let pos=|n:usize|a[n].as_i64().and_then(|v|i32::try_from(v).ok()).filter(|v|v.unsigned_abs()<100000);
+            let size=|n:usize|a[n].as_u64().filter(|v|*v>0&&*v<=32768).map(|v|v as u32);
+            if let (Some(x),Some(y),Some(width),Some(height))=(pos(0),pos(1),size(2),size(3)){s.native_frames.push((*w,MainWin{pos:(x,y),size:(width,height),max:a[4].as_bool().unwrap_or(false)}));}
+        }
+    }
     let rect=|a:&serde_json::Value|->Option<Rect>{let a=a.as_array()?;let f=|i:usize|a.get(i)?.as_f64().filter(|n|n.is_finite()&&n.abs()<100000.).map(|n|n as f32);let r=Rect::new(f(0)?,f(1)?,f(2)?,f(3)?);(r.w>=100.&&r.h>=50.).then_some(r)};
     for (i,(w,_)) in WINS.iter().enumerate(){let a=&v["windows"][i];if let Some(r)=rect(a){s.wins[w.slot().unwrap()]=WinState{rect:r,maxed:a[4].as_bool().unwrap_or(false),mini:a[5].as_bool().unwrap_or(false)};if a[6].as_bool()==Some(true){s.raise(*w);}else{s.hide(*w);}}}
     if let Some(r)=rect(&v["rack"]){s.rack_pos=(r.x,r.y);s.rack_size=(r.w,r.h);if v["rack"][4].as_bool()==Some(true){s.raise(Win::ChannelRack);}else{s.hide(Win::ChannelRack);}}

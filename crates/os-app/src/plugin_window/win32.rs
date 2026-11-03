@@ -87,6 +87,8 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     if let Ok(mut k) = KEYS.lock() {
                         k.push(KeyMsg { scancode: sc, pressed: !up, ctrl: down(VK_CONTROL), alt: down(VK_MENU) });
                     }
+                    // The host owns project undo; do not also undo inside the native editor.
+                    if sc==0x2c && down(VK_CONTROL) {return 1;}
                 }
             }
         }

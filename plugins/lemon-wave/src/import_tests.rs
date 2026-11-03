@@ -194,7 +194,7 @@ fn import_editor_layout_and_builtin_restore() {
     let r = crate::table_editor::TableEditor::buttons(0)[2];
     logic.down(r.cx(), r.cy(), Btn::Left, Mods::default(), false);
     assert!(params.sources().oscillators[0].is_none());
-    assert!(!extension.click(1099., 719., None));
+    assert!(!extension.click(1000., 782., None));
 }
 
 #[test]

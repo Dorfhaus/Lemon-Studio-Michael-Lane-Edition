@@ -9,10 +9,8 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/lemon-studio-remote-ta
 unset CARGO_BUILD_TARGET
 xcode-select -p >/dev/null
 cd "$ROOT"
-# LAME's autotools build rejects spaces in its source directory as well.
-mkdir -p "$HOME/.cache/lemon-studio-build-sources"
-BUILD_SOURCE="$(mktemp -d "$HOME/.cache/lemon-studio-build-sources/release.XXXXXX")"
-git archive HEAD | tar -x -C "$BUILD_SOURCE"
+# A stable, locked, pipeline-owned worktree preserves Cargo build-script paths.
+BUILD_SOURCE="$(python3 "$ROOT/packaging/workflow/mac-worktree.py" "$ROOT" "${LEMON_MAC_ARCH:-$(uname -m)}")"
 cd "$BUILD_SOURCE"
 export LEMON_RELEASE=1
 : "${LEMON_MASTER_BUNDLE:?Set LEMON_MASTER_BUNDLE to the native Mac engine archive}"
