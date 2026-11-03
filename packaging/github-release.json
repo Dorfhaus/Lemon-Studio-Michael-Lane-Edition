@@ -1,43 +1,42 @@
 {
-  "tag": "v2026.11.03.2",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.03.2 — Wave & audio reliability",
-  "notes": "Complete Lemon Studio Michael Lane Edition DAW release for Windows, Linux x64, Apple-silicon Mac and Intel Mac.\n\nIncludes the expanded Lemon Wave sound browser, named basic waves, user-recorded sample playback, four drawable LFOs, eight modulation routes, four macros, curved AHDSR envelopes and SVF filter choices. Personal recordings and third-party sample libraries are not bundled.\n\nFixes live-input delay alignment on receiving mixer buses, auxiliary outputs folding into the last insert, MPE seeking preferences and internal effect settings on live refresh. Also includes the six project-state, safe-save, ZIP, warp-cleanup and recording-continuity fixes. Master Assistant, Clip Effects, MPE, Lemon Chop and the prior edition features remain included.\n\nThe redesigned download page includes the Michael Lane Edition subtitle, a detailed feature overview and the full searchable Change Log. Matching source archives and SHA256SUMS accompany the complete DAW downloads.\n\n[Features, downloads and full Change Log](https://michaellanemusic.de/lemon-studio/).\n\nMac requires macOS 12 or newer; packages are ad-hoc signed, not notarized. Focused Intel checks passed under Rosetta, not physical Intel hardware. Linux was compiled and packaged; Linux runtime/audio testing was not performed. Physical MPE controllers and every third-party patch remain untested. Existing ARA and FL-plugin compatibility limitations remain.\n\nApplication build source: b73a410ff676b8a9a8aa4f0e98419ebc6f648ab0.",
+  "tag": "v2026.11.03.3",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.03.3 \u2014 mixer faders",
+  "notes": "Channel Strip mixer: longer volume faders with matching finer drag control; pan and mute/solo aligned left; Record and FX moved right; teleport buttons remain visible in shorter windows. Complete DAW packages for Windows, Linux, Apple-silicon Mac and Intel Mac. Includes current Lemon Wave editor refinements. Personal recorded sample libraries are not bundled. The existing Change Log is unchanged for this hotfix. Linux was compiled, not runtime tested. Mac packages are ad-hoc signed.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.03.2.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110302/Lemon-Studio-Windows-Setup-2026.11.03.2.exe",
-      "sha256": "ca2e12bf6db6f9819109f7425043e5011e9052ea2433df07cf6fd5c0b9693aa7"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.03.3.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110303/Lemon-Studio-Windows-Setup-2026.11.03.3.exe",
+      "sha256": "45a975fe5ceef7ecbe3f6418a961a6f268df8c4e7a4f12509cd57933c690f46f"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110302.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110302/Lemon-Studio-Linux-x86_64-2026110302.tar.gz",
-      "sha256": "36fdebe792f5304605f80d0067c493ce12767b4863bcb1ed14bda441e73d007a"
+      "name": "Lemon-Studio-Source-2026110303.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110303/Lemon%20Studio%20Source.zip",
+      "sha256": "b3468ee6a557907860f4c7594b5adb40df969725b562186a8c06d49f50e583d6"
     },
     {
-      "name": "Lemon-Studio-Source-2026110302.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110302/Lemon%20Studio%20Source.zip",
-      "sha256": "b9bedc244230448394eb0cdc36f9c056c7dd28b93dc9c9b6a75c7e35a65c80f7"
+      "name": "Lemon-Studio-Linux-x86_64-2026110303.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110303/Lemon-Studio-Linux-x86_64-2026110303.tar.gz",
+      "sha256": "2f91daaa0ba2c8c8faae8138eb349d386e20a478c7c37792d9958a58722d1782"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110302.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110302/Lemon-Studio-Mac-arm64-2026110302.dmg",
-      "sha256": "466632a28a543a1b76ac9662fcd20ebabf73c23645d59952a980400ebd95901c"
+      "name": "Lemon-Studio-Mac-arm64-2026110303.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110303/Lemon-Studio-Mac-arm64-2026110303.dmg",
+      "sha256": "9953a6df47a04d596aac1511ae6657037da08f668f062064d29d716615183d80"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110302.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110302/Lemon-Studio-Source-Mac-arm64-2026110302.zip",
-      "sha256": "604946eff6131a8ed6b6b776507bfc7766ad3d5f983d5a7e3bd2877ea731143b"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110303.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110303/Lemon-Studio-Source-Mac-arm64-2026110303.zip",
+      "sha256": "41a5ea69e26f68eb63717bc98fd7e7211812f287d4e8668006f404de69d65c65"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110302.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110302/Lemon-Studio-Mac-x86_64-2026110302.dmg",
-      "sha256": "555b1d62ca6a6f2796e577fa5e53227f71fed7a15420491155702e1f52f9281d"
+      "name": "Lemon-Studio-Mac-x86_64-2026110303.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110303/Lemon-Studio-Mac-x86_64-2026110303.dmg",
+      "sha256": "bb5a1677031c033f911a1a0fba094e2f080bc37049262b8136394abbc3b3f110"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110302.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110302/Lemon-Studio-Source-Mac-x86_64-2026110302.zip",
-      "sha256": "4411d4b146fd45132853d3243cc7ae2114d8e232a3362b9a13a49d124ea84fa5"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110303.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110303/Lemon-Studio-Source-Mac-x86_64-2026110303.zip",
+      "sha256": "c386293687748dead91d46c1004dcd94a05f7820efc871e8c5f9ae4624da9454"
     }
-  ],
-  "publication_attempt": 1
+  ]
 }

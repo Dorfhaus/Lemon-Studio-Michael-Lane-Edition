@@ -1,3 +1,19 @@
+# Included sounds and inline controls - 3 November 2026
+
+The current installed Windows build embeds all 260 recordings: 34 Mini-Moog and 226 800DV, labeled by instrument, original patch and recording. Selecting them needs neither E: nor the user-local catalogue. Loaded sounds also travel with saved native patches. These are individually pitched recorded notes, not automatically mapped multisample zones or sustained loops. Root estimates remain adjustable.
+
+Everything stays inside the editor. In each oscillator, the upper-left dropdown selects Basic Waves, Wavetables, Mini-Moog, 800DV or Reference Saw. The adjacent dropdown selects the waveform or recording. Recorded instruments have a patch dropdown below the display. Sine, saw, square, triangle and two pulse widths are direct named choices. Dropdowns close when you select an item or click outside them; longer lists have Previous/Next rows. Filter, warp, LFO, matrix and factory-preset selections use the same inline dropdown treatment. Only explicitly importing a new external file invokes a file picker.
+
+Both pages now use beveled panels, shaded metal knobs with grip edges, raised buttons, recessed waveform screens and consistent oscillator colors. Wavetable Position shows adjacent frame shapes behind the resulting waveform. The UNISON BLEND bars show center (light) versus outer (oscillator color) voice amplitudes and respond to Blend, unison count and routed Blend modulation. They are an explanatory mix display, not a measured output oscilloscope. With one/two voices, center-versus-outer Blend has no distinct groups to rebalance.
+
+Blend now affects basic waves, wavetables and recorded samples as well as Reference Saw. Their previous 75% default balance remains unchanged. Older non-default Classic Blend values, which previously had no audio effect, now affect the sound with three or more voices. Reference Saw retains its existing blend law. Phase/random/bend/position remain wavetable controls; recorded playback follows pitch/unison/detune, envelopes, filters and effects. Sound/root edits restore state and can interrupt held notes; edit between notes.
+
+Build continuity: build.rs embeds Included Library.lwpack from LEMON_WAVE_LIBRARY or the existing Windows LOCALAPPDATA/Lemon Studio/Lemon Wave location. A verified recovery copy is delivered in Desktop/Lemon Studio/Lemon Wave/Build Resources. It is build input only: installed binaries do not read it during sound selection. This optional third-party content is not committed to Git/source archives or newly published online by this task. A source-only build without the pack warns and lacks included recordings; use the pack to reproduce this installed version. Original sample provenance and redistribution rights have not been independently established; this task updates the user's local build, not a public distribution.
+
+Validation: 28 Wave tests and 29 shared-editor tests passed (one existing ignored), including embedded-pack decoding, native sample recall, dropdown selection/dismissal/paging, default-compatible unison weighting and visible layout bounds. Synthetic software-rendered editor previews were inspected; no GUI control, microphone or audio device was used. Final native-host/build verification is recorded in the installation receipt. User live visual/listening acceptance remains.
+
+## Previous recorded-playback details
+
 # Wave sound browser - 3 November 2026
 
 On SYNTH, click BROWSE SOUNDS at the top of oscillator A or B.

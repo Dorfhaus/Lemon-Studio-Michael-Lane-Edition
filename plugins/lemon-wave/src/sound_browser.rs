@@ -5,23 +5,32 @@ use serde::{Deserialize, Serialize};
 pub struct Entry {
     pub group: String,
     pub name: String,
+    #[serde(default)]
     pub path: std::path::PathBuf,
     pub root: f32,
+    #[serde(skip)]
+    pub embedded: Option<usize>,
 }
-#[derive(Default)]
-pub struct Browser {
-    pub oscillator: Option<usize>,
-    kind: usize,
-    group: usize,
-    gpage: usize,
-    page: usize,
-    entries: Vec<Entry>,
-    pub message: String,
-}
+#[derive(Clone)]
 pub enum Choice {
     Basic(usize),
     Bank(usize),
     Sample(Entry),
+    Category(usize),
+    Group(String),
+    Param(usize, i32),
+    Preset(usize),
+}
+#[derive(Default)]
+pub struct Browser {
+    pub oscillator: Option<usize>,
+    pub menu: Option<Menu>,
+    pub message: String,
+}
+pub struct Menu {
+    pub anchor: Rect,
+    pub items: Vec<(String, Choice)>,
+    pub page: usize,
 }
 pub const BASIC: [&str; 6] = [
     "Sine",
@@ -32,22 +41,14 @@ pub const BASIC: [&str; 6] = [
     "Pulse 12.5%",
 ];
 pub fn button(o: usize) -> Rect {
-    Rect::new(214. + 410. * o as f32, 112., 188., 25.)
+    Rect::new(160. + 410. * o as f32, 112., 242., 25.)
 }
-fn tab(i: usize) -> Rect {
-    Rect::new(70. + i as f32 * 220., 146., 208., 34.)
+pub fn type_button(o: usize) -> Rect {
+    Rect::new(28. + 410. * o as f32, 112., 124., 25.)
 }
-fn group_row(i: usize) -> Rect {
-    Rect::new(70., 208. + i as f32 * 34., 280., 30.)
+pub fn group_button(o: usize) -> Rect {
+    Rect::new(214. + 410. * o as f32, 232., 188., 24.)
 }
-fn row(i: usize) -> Rect {
-    Rect::new(370., 208. + i as f32 * 34., 730., 30.)
-}
-const CLOSE: Rect = Rect::new(1000., 98., 100., 30.);
-const GP: Rect = Rect::new(70., 636., 130., 30.);
-const GN: Rect = Rect::new(210., 636., 140., 30.);
-const PREV: Rect = Rect::new(370., 636., 130., 30.);
-const NEXT: Rect = Rect::new(510., 636., 130., 30.);
 pub fn catalogue() -> std::path::PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("HOME"))
@@ -55,170 +56,242 @@ pub fn catalogue() -> std::path::PathBuf {
         .unwrap_or_default()
         .join("Lemon Studio/Lemon Wave/library.json")
 }
-impl Browser {
-    pub fn open(&mut self, o: usize) {
-        self.oscillator = Some(o);
-        self.entries.clear();
-        self.message.clear();
-        match std::fs::read(catalogue()) {
-            Ok(bytes) if bytes.len() <= 4 * 1024 * 1024 => {
-                match serde_json::from_slice::<Vec<Entry>>(&bytes) {
-                    Ok(e) => {
-                        self.entries = e;
-                        self.entries
-                            .sort_by(|a, b| (&a.group, &a.name).cmp(&(&b.group, &b.name)));
-                    }
-                    Err(_) => self.message = "Cannot read My Samples catalogue".into(),
-                }
-            }
-            _ => {
-                self.message =
-                    "My Samples catalogue is empty. Basic Waves and Wavetables are ready.".into()
-            }
-        };
-        self.group = 0;
-        self.gpage = 0;
-        self.page = 0;
+pub fn entries() -> Vec<Entry> {
+    let bundled = crate::included_library::entries();
+    if !bundled.is_empty() {
+        return bundled;
     }
-    fn groups(&self) -> Vec<String> {
-        let mut g: Vec<_> = self.entries.iter().map(|e| e.group.clone()).collect();
-        g.sort();
-        g.dedup();
-        g
+    std::fs::read(catalogue())
+        .ok()
+        .filter(|b| b.len() < 4 * 1024 * 1024)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+pub fn kind(params: &crate::assets::WaveParams, o: usize) -> usize {
+    if params.base.v(if o == 0 {
+        crate::controls::A_SOURCE
+    } else {
+        crate::controls::B_SOURCE
+    }) == 1
+    {
+        return 3;
+    }
+    let t = params.tables.read().unwrap();
+    if t.samples[o].is_some() {
+        2
+    } else if t.oscillators[o]
+        .as_ref()
+        .is_some_and(|t| BASIC.contains(&t.source.name.as_str()))
+    {
+        0
+    } else {
+        1
+    }
+}
+pub fn group(params: &crate::assets::WaveParams, o: usize) -> String {
+    let t = params.tables.read().unwrap();
+    let name = t.samples[o]
+        .as_ref()
+        .map(|s| s.source.name.as_str())
+        .unwrap_or("");
+    entries()
+        .iter()
+        .find(|e| {
+            name == format!("{} / {}", e.group, e.name)
+                || e.path
+                    .file_stem()
+                    .is_some_and(|p| p.to_string_lossy() == name)
+        })
+        .map(|e| e.group.clone())
+        .unwrap_or_else(|| {
+            entries()
+                .first()
+                .map(|e| e.group.clone())
+                .unwrap_or_default()
+        })
+}
+impl Browser {
+    pub fn show(&mut self, o: usize, anchor: Rect, items: Vec<(String, Choice)>) {
+        self.oscillator = Some(o);
+        self.menu = Some(Menu {
+            anchor,
+            items,
+            page: 0,
+        });
+    }
+    pub fn open(&mut self, o: usize) {
+        self.show(
+            o,
+            button(o),
+            BASIC
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.to_string(), Choice::Basic(i)))
+                .collect(),
+        );
+    }
+    pub fn categories(&mut self, o: usize) {
+        self.show(
+            o,
+            type_button(o),
+            [
+                (0, "Basic Waves"),
+                (1, "Wavetables"),
+                (4, "Mini-Moog / Included"),
+                (5, "800DV / Included"),
+                (3, "Reference Saw"),
+            ]
+            .iter()
+            .map(|(i, s)| (s.to_string(), Choice::Category(*i)))
+            .collect(),
+        );
+    }
+    pub fn sounds(&mut self, o: usize, kind: usize, group: &str) {
+        match kind {
+            0 => self.open(o),
+            1 => self.show(
+                o,
+                button(o),
+                ["Basic - Sine / Saw / Square", "Hollow", "Glass", "Vowel"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (s.to_string(), Choice::Bank(i)))
+                    .collect(),
+            ),
+            2 => self.show(
+                o,
+                button(o),
+                entries()
+                    .into_iter()
+                    .filter(|e| e.group == group)
+                    .map(|e| (e.name.clone(), Choice::Sample(e)))
+                    .collect(),
+            ),
+            _ => self.show(
+                o,
+                button(o),
+                vec![("Reference Saw".into(), Choice::Category(3))],
+            ),
+        }
+    }
+    pub fn instrument(&mut self, o: usize, instrument: &str) {
+        let mut groups: Vec<_> = entries()
+            .into_iter()
+            .filter(|e| e.group.starts_with(instrument))
+            .map(|e| e.group)
+            .collect();
+        groups.sort();
+        groups.dedup();
+        self.show(
+            o,
+            group_button(o),
+            groups
+                .into_iter()
+                .map(|g| (g.clone(), Choice::Group(g)))
+                .collect(),
+        );
+    }
+    pub fn groups(&mut self, o: usize) {
+        let mut groups: Vec<_> = entries().into_iter().map(|e| e.group).collect();
+        groups.sort();
+        groups.dedup();
+        self.show(
+            o,
+            group_button(o),
+            groups
+                .into_iter()
+                .map(|g| (g.clone(), Choice::Group(g)))
+                .collect(),
+        );
+    }
+    pub fn close(&mut self) {
+        self.oscillator = None;
+        self.menu = None;
     }
     pub fn click(&mut self, x: f32, y: f32) -> Option<Choice> {
-        if CLOSE.contains(x, y) {
-            self.oscillator = None;
+        let m = self.menu.as_mut()?;
+        let r = m.rect();
+        if !r.contains(x, y) {
+            self.close();
             return None;
         }
-        for i in 0..3 {
-            if tab(i).contains(x, y) {
-                self.kind = i;
-                self.page = 0;
-                return None;
-            }
+        let row = ((y - r.y - 4.) / 26.).floor() as usize;
+        let n = (m.items.len() - m.page * 14).min(14);
+        if row < n {
+            return Some(m.items[m.page * 14 + row].1.clone());
         }
-        let groups = self.groups();
-        let list: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|e| groups.get(self.group) == Some(&e.group))
-            .cloned()
-            .collect();
-        if self.kind == 2 {
-            for i in 0..12 {
-                if group_row(i).contains(x, y) && self.gpage * 12 + i < groups.len() {
-                    self.group = self.gpage * 12 + i;
-                    self.page = 0;
-                    return None;
-                }
-            }
-            if GP.contains(x, y) {
-                self.gpage = self.gpage.saturating_sub(1)
-            }
-            if GN.contains(x, y) && (self.gpage + 1) * 12 < groups.len() {
-                self.gpage += 1
-            }
-            if PREV.contains(x, y) {
-                self.page = self.page.saturating_sub(1)
-            }
-            if NEXT.contains(x, y) && (self.page + 1) * 12 < list.len() {
-                self.page += 1
-            }
-        }
-        for i in 0..12 {
-            if row(i).contains(x, y) {
-                return match self.kind {
-                    0 if i < BASIC.len() => Some(Choice::Basic(i)),
-                    1 if i < 4 => Some(Choice::Bank(i)),
-                    2 => list.get(self.page * 12 + i).cloned().map(Choice::Sample),
-                    _ => None,
-                };
+        if m.items.len() > 14 && row == n {
+            if x < r.cx() {
+                m.page = m.page.saturating_sub(1)
+            } else if (m.page + 1) * 14 < m.items.len() {
+                m.page += 1
             }
         }
         None
     }
     pub fn paint(&self, c: &mut Canvas) {
-        let Some(o) = self.oscillator else { return };
-        let ink = Color::rgb(0xe8edf3);
-        let dim = Color::rgb(0x9ba9ba);
-        let accent = Color::rgb(0xd3ed76);
-        let f = Font::light(13, 0).natural();
-        c.fill_rect(Rect::new(42., 80., 1096., 664.), Color::rgb(0x19212c));
-        c.text(
-            f.bold(),
-            70.,
-            105.,
-            ink,
-            &format!(
-                "SOUND BROWSER  /  OSCILLATOR {}",
-                if o == 0 { "A" } else { "B" }
-            ),
-        );
-        let mut b = |r: Rect, t: &str, selected: bool| {
-            c.fill_rrect(
-                r,
-                4.,
-                if selected {
-                    Color::rgb(0x3b4931)
-                } else {
-                    Color::rgb(0x263242)
-                },
+        let Some(m) = &self.menu else { return };
+        let r = m.rect();
+        crate::instrument_view::raised(c, r, 6., Color::rgb(0x283541));
+        c.stroke_rrect(r, 6., 1., Color::rgb(0x789286));
+        let f = Font::light(12, 0).natural();
+        let shown = m.items.iter().skip(m.page * 14).take(14);
+        for (i, (label, _)) in shown.enumerate() {
+            let row = Rect::new(r.x + 4., r.y + 4. + i as f32 * 26., r.w - 8., 25.);
+            c.fill_rect(
+                row,
+                Color::rgb(if i % 2 == 0 { 0x26333e } else { 0x222e38 }),
             );
             c.text_clip(
                 f,
-                r.x + 9.,
-                r.y + 8.,
-                r.w - 18.,
-                if selected { accent } else { ink },
-                t,
+                row.x + 10.,
+                row.y + 6.,
+                row.w - 20.,
+                Color::rgb(0xe9f0e8),
+                label,
             );
-        };
-        b(CLOSE, "Close", false);
-        for (i, t) in ["Basic Waves", "Wavetables", "My Samples"]
-            .iter()
-            .enumerate()
-        {
-            b(tab(i), t, self.kind == i)
         }
-        if self.kind == 2 {
-            let groups = self.groups();
-            for (i, g) in groups.iter().skip(self.gpage * 12).take(12).enumerate() {
-                b(group_row(i), g, self.group == self.gpage * 12 + i)
-            }
-            let list: Vec<_> = self
-                .entries
-                .iter()
-                .filter(|e| groups.get(self.group) == Some(&e.group))
-                .collect();
-            for (i, e) in list.iter().skip(self.page * 12).take(12).enumerate() {
-                b(
-                    row(i),
-                    &format!("{}   |   estimated root {:.1}", e.name, e.root),
-                    false,
-                )
-            }
-            b(GP, "< Groups", false);
-            b(GN, "Groups >", false);
-            b(PREV, "< Sounds", false);
-            b(NEXT, "Sounds >", false);
+        if m.items.is_empty() {
+            c.text(
+                f,
+                r.x + 12.,
+                r.y + 12.,
+                Color::rgb(0xe9f0e8),
+                "No included sounds",
+            );
+        }
+        if m.items.len() > 14 {
+            let n = (m.items.len() - m.page * 14).min(14);
+            c.text_center(
+                f,
+                Rect::new(r.x, r.y + 4. + n as f32 * 26., r.w, 26.),
+                Color::rgb(0xd5e989),
+                &format!(
+                    "< Previous          {} / {}          Next >",
+                    m.page + 1,
+                    m.items.len().div_ceil(14)
+                ),
+            );
+        }
+    }
+}
+impl Menu {
+    pub fn rect(&self) -> Rect {
+        let n = self
+            .items
+            .len()
+            .saturating_sub(self.page * 14)
+            .min(14)
+            .max(1);
+        let h = 8. + 26. * (n + usize::from(self.items.len() > 14)) as f32;
+        let w = self.anchor.w.max(240.).min(390.);
+        let x = self.anchor.x.min(1170. - w).max(10.);
+        let y = if self.anchor.bottom() + h < 810. {
+            self.anchor.bottom() + 3.
         } else {
-            let labels: &[&str] = if self.kind == 0 {
-                &BASIC
-            } else {
-                &[
-                    "Basic - Sine / Saw / Square morph",
-                    "Hollow - odd harmonics",
-                    "Glass - bright harmonics",
-                    "Vowel - formant sweep",
-                ]
-            };
-            for (i, t) in labels.iter().enumerate() {
-                b(row(i), t, false)
-            }
-        }
-        c.text(f,70.,690.,dim,if self.kind==2{"Recorded notes: play once, follow keyboard pitch. Root pitch is estimated; adjust it on Synth."}else{"Select a sound to load it. Wavetable Position morphs frames; Import WAV loads your own tables."});
-        c.text_clip(f, 70., 716., 1020., dim, &self.message);
+            (self.anchor.y - h - 3.).max(8.)
+        };
+        Rect::new(x, y, w, h)
     }
 }
 pub fn basic(index: usize) -> crate::wavetable::Source {
@@ -259,45 +332,36 @@ pub fn basic(index: usize) -> crate::wavetable::Source {
     }
 }
 pub fn root_button(o: usize, i: usize) -> Rect {
-    Rect::new(220. + 410. * o as f32 + i as f32 * 45., 232., 42., 24.)
+    Rect::new(28. + 410. * o as f32 + i as f32 * 94., 418., 90., 20.)
 }
 
 #[cfg(test)]
-mod tests {
+mod dropdown_tests {
     use super::*;
     #[test]
-    fn browser_bounds_paging_and_preview() {
+    fn dropdown_bounds_paging_and_dismiss() {
         let mut b = Browser::default();
-        b.open(0);
-        for scale in [1., 1.5] {
-            for kind in 0..3 {
-                b.kind = kind;
-                let mut c = Canvas::new(1180, 820, scale).unwrap();
-                b.paint(&mut c);
-                if let Ok(dir) = std::env::var("LEMON_WAVE_PREVIEW") {
-                    std::fs::create_dir_all(&dir).unwrap();
-                    c.pixmap
-                        .save_png(format!("{dir}/browser-{kind}-{scale}.png"))
-                        .unwrap();
-                }
-            }
-        }
-        let mut rects = vec![CLOSE, GP, GN, PREV, NEXT];
-        rects.extend((0..3).map(tab));
-        rects.extend((0..12).map(group_row));
-        rects.extend((0..12).map(row));
-        for (i, a) in rects.iter().enumerate() {
-            assert!(a.right() < 1180. && a.bottom() < 820.);
-            for b in &rects[i + 1..] {
-                assert!(
-                    a.right().min(b.right()) <= a.x.max(b.x)
-                        || a.bottom().min(b.bottom()) <= a.y.max(b.y)
-                );
-            }
-        }
-        b.kind = 0;
-        assert!(matches!(b.click(500., 223.), Some(Choice::Basic(0))));
-        b.kind = 1;
-        assert!(matches!(b.click(500., 223.), Some(Choice::Bank(0))));
+        b.show(
+            0,
+            Rect::new(1000., 760., 100., 24.),
+            (0..38)
+                .map(|i| (format!("Patch {i}"), Choice::Bank(i)))
+                .collect(),
+        );
+        let r = b.menu.as_ref().unwrap().rect();
+        assert!(r.right() <= 1170. && r.bottom() < 810. && r.y >= 8.);
+        assert!(matches!(
+            b.click(r.x + 10., r.y + 16.),
+            Some(Choice::Bank(0))
+        ));
+        b.click(r.right() - 10., r.y + 4. + 14. * 26. + 10.);
+        assert_eq!(b.menu.as_ref().unwrap().page, 1);
+        let r = b.menu.as_ref().unwrap().rect();
+        assert!(matches!(
+            b.click(r.x + 10., r.y + 16.),
+            Some(Choice::Bank(14))
+        ));
+        b.click(1., 1.);
+        assert!(b.menu.is_none());
     }
 }

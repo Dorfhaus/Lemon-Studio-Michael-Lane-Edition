@@ -241,9 +241,11 @@ fn sound_browser_basic_choices_activate_and_save() {
     let params = Arc::new(WaveParams::default());
     let editor = crate::table_editor::TableEditor::new(params.clone());
     for i in 0..6 {
-        let r = crate::sound_browser::button(0);
+        let r = crate::sound_browser::type_button(0);
         assert!(editor.click(r.cx(), r.cy(), None));
-        assert!(editor.click(500., 223. + i as f32 * 34., None));
+        assert!(editor.click(r.x + 20., r.bottom() + 16., None));
+        let r = crate::sound_browser::button(0);
+        assert!(editor.click(r.x + 20., r.bottom() + 16. + i as f32 * 26., None));
         let s = params.sources();
         assert_eq!(
             s.oscillators[0].as_ref().unwrap().name,
@@ -259,4 +261,47 @@ fn sound_browser_basic_choices_activate_and_save() {
             crate::sound_browser::BASIC[i]
         );
     }
+}
+
+#[test]
+fn blend_affects_classic_unison_and_single_voice_is_unchanged() {
+    let render = |count: f32, blend: f32| {
+        let mut e = dsp::Engine::new(48000.);
+        let mut p = dsp::defaults();
+        p[crate::controls::A_UNISON] = count;
+        p[crate::controls::A_BLEND] = blend;
+        e.set(p);
+        e.reset();
+        e.on(60, 0.8, 0, None);
+        let mut l = vec![0.; 4096];
+        let mut r = l.clone();
+        e.render(&mut l, &mut r);
+        l
+    };
+    assert_eq!(render(1., 0.), render(1., 1000.));
+    let a = render(5., 0.);
+    let b = render(5., 1000.);
+    assert!(a.iter().zip(&b).any(|(a, b)| (a - b).abs() > 0.001));
+    assert!(a.iter().chain(&b).all(|x| x.is_finite()));
+}
+
+#[test]
+fn included_moog_dropdown_stays_in_editor_and_generic_selectors_work(){
+ use lemon_small_fx::editor::{Extension,Logic,Btn,Mods};
+ let params=Arc::new(WaveParams::default());let editor=Arc::new(crate::table_editor::TableEditor::new(params.clone()));let shared=Arc::new(lemon_small_fx::Shared{extension:Some(editor.clone()),..Default::default()});let mut logic=Logic::new(crate::controls::SPEC,params.base.clone(),shared,None);
+ let mut canvas=os_ui::Canvas::new(1180,820,1.).unwrap();logic.paint(&mut canvas,&os_plugkit::palette());
+ // A parameter selector opens in-place, then commits the chosen value through existing host gestures.
+ let selector=logic.hits.iter().find(|h|h.t.id()==crate::controls::SETTINGS[crate::controls::FILTER].id).unwrap().r;
+ logic.down(selector.cx(),selector.cy(),Btn::Left,Mods::default(),false);
+ editor.click(selector.x+15.,selector.bottom()+16.+2.*26.,None);assert_eq!(params.base.v(crate::controls::FILTER),2);
+ if crate::included_library::PACK.is_empty(){return;}
+ let r=crate::sound_browser::type_button(0);editor.click(r.cx(),r.cy(),None);editor.click(r.x+15.,r.bottom()+16.+2.*26.,None);
+ let r=crate::sound_browser::group_button(0);editor.click(r.x+15.,r.bottom()+16.,None);
+ let r=crate::sound_browser::button(0);editor.click(r.x+15.,r.bottom()+16.,None);
+ assert!(params.sources().samples[0].as_ref().unwrap().name.starts_with("Mini-Moog /"));
+ logic.paint(&mut canvas,&os_plugkit::palette());
+ if let Ok(dir)=std::env::var("LEMON_WAVE_PREVIEW"){canvas.pixmap.save_png(format!("{dir}/included-moog.png")).unwrap();}
+ editor.click(r.cx(),r.cy(),None);logic.paint(&mut canvas,&os_plugkit::palette());assert!(logic.hits.is_empty());
+ if let Ok(dir)=std::env::var("LEMON_WAVE_PREVIEW"){canvas.pixmap.save_png(format!("{dir}/inline-samples-dropdown.png")).unwrap();}
+ editor.click(1170.,790.,None);logic.paint(&mut canvas,&os_plugkit::palette());assert!(!logic.hits.is_empty());
 }

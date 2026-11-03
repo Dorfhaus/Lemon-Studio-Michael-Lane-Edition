@@ -8,13 +8,12 @@ fn font(size: u16) -> Font {
     Font::light(size + 1, 0).natural()
 }
 pub(crate) const BG: Color = Color::rgb(0x101319);
-const PANEL: Color = Color::rgb(0x1b2029);
-const WELL: Color = Color::rgb(0x11161e);
+const PANEL: Color = Color::rgb(0x25303a);
 const LINE: Color = Color::rgb(0x303a49);
 const INK: Color = Color::rgb(0xe8edf3);
 const DIM: Color = Color::rgb(0x8d9baa);
-const A: Color = Color::rgb(0xd3ed76);
-const B: Color = Color::rgb(0x68d7df);
+const A: Color = Color::rgb(0xe3df8b);
+const B: Color = Color::rgb(0x73dacc);
 const MOD: Color = Color::rgb(0xbda4fb);
 pub const PRESET_PREV: Rect = Rect::new(414., 18., 30., 32.);
 pub const PRESET_NEXT: Rect = Rect::new(724., 18., 30., 32.);
@@ -43,6 +42,31 @@ pub fn table_buttons(o: usize) -> [Rect; 3] {
         Rect::new(x + 257., 418., 117., 20.),
     ]
 }
+pub fn raised(c: &mut Canvas, r: Rect, radius: f32, base: Color) {
+    c.fill_rrect(
+        Rect::new(r.x + 1., r.y + 3., r.w, r.h),
+        radius,
+        Color::rgb(0x080c10).with_alpha(180),
+    );
+    c.fill_rect_gradient(r, base.shade(0.10), base.shade(-0.10), radius);
+    c.stroke_rrect(r.inset(0.5), radius, 1., base.shade(0.22));
+    c.polyline(
+        &[(r.x + radius, r.y + 1.5), (r.right() - radius, r.y + 1.5)],
+        1.,
+        Color::rgb(0xc4d4dd).with_alpha(35),
+    );
+}
+pub fn dropdown(c: &mut Canvas, r: Rect, label: &str, color: Color, hot: bool) {
+    raised(c, r, 4., Color::rgb(if hot { 0x354450 } else { 0x24313b }));
+    c.text_clip(font(10), r.x + 9., r.y + 7., r.w - 29., color, label);
+    let x = r.right() - 13.;
+    let y = r.cy();
+    c.polyline(
+        &[(x - 3., y - 1.5), (x, y + 1.5), (x + 3., y - 1.5)],
+        1.5,
+        color,
+    );
+}
 struct Ui<'a> {
     live: crate::modulation::Live,
     c: &'a mut Canvas,
@@ -65,7 +89,26 @@ impl Ui<'_> {
         );
     }
     fn panel(&mut self, r: Rect, title: &str, accent: Color, subtitle: &str) {
-        self.c.fill_rrect(r, 9., PANEL);
+        raised(self.c, r, 8., PANEL);
+        self.c.fill_rect_gradient(
+            Rect::new(r.x + 2., r.y + 2., r.w - 4., 32.),
+            Color::rgb(0x34414b),
+            Color::rgb(0x26323c),
+            7.,
+        );
+        self.c.polyline(
+            &[(r.x + 12., r.y + 33.), (r.right() - 12., r.y + 33.)],
+            1.,
+            Color::rgb(0x090f14),
+        );
+        for sx in [r.x + 8., r.right() - 8.] {
+            self.c.fill_circle(sx, r.y + 8., 2., Color::rgb(0x11171d));
+            self.c.polyline(
+                &[(sx - 1., r.y + 8.), (sx + 1., r.y + 8.)],
+                0.7,
+                Color::rgb(0x61717c),
+            );
+        }
         self.c
             .fill_rrect(Rect::new(r.x + 12., r.y + 13., 3., 15.), 1.5, accent);
         self.label(r.x + 24., r.y + 12., title, 12, INK);
@@ -94,6 +137,8 @@ impl Ui<'_> {
         };
         self.c.polyline(&arc(0., 1., 20.), 2.5, LINE);
         let zero = if SETTINGS[k].range.0 < 0 { 0.5 } else { 0. };
+        self.c
+            .polyline(&arc(zero, n, 20.), 6., color.with_alpha(25));
         self.c.polyline(&arc(zero, n, 20.), 2.5, color);
         if let Some(target) = mod_target(k) {
             let routed = ROUTES.iter().any(|slot| {
@@ -129,11 +174,35 @@ impl Ui<'_> {
             }
         }
 
-        self.c.fill_rrect(
-            Rect::new(x - 15., y - 15., 30., 30.),
-            15.,
-            Color::rgb(if hot { 0x394452 } else { 0x2a3340 }),
+        self.c
+            .fill_circle(x + 1., y + 3., 17., Color::rgb(0x05090c));
+        self.c.fill_rect_gradient(
+            Rect::new(x - 17., y - 17., 34., 34.),
+            Color::rgb(0x697985),
+            Color::rgb(0x17212b),
+            17.,
         );
+        self.c
+            .stroke_circle(x, y, 16., 1., Color::rgb(0x83939c).with_alpha(90));
+        for j in 0..24 {
+            let a = j as f32 * std::f32::consts::TAU / 24.;
+            self.c.polyline(
+                &[
+                    (x + 14.8 * a.cos(), y + 14.8 * a.sin()),
+                    (x + 16.2 * a.cos(), y + 16.2 * a.sin()),
+                ],
+                0.7,
+                Color::rgb(0x0b1118),
+            );
+        }
+        self.c.fill_rect_gradient(
+            Rect::new(x - 13.5, y - 13.5, 27., 27.),
+            Color::rgb(if hot { 0x526572 } else { 0x3c4b57 }),
+            Color::rgb(0x17232d),
+            13.5,
+        );
+        self.c
+            .stroke_circle(x, y, 13., 0.7, Color::rgb(0x71848d).with_alpha(100));
         let a = (135. + 270. * n).to_radians();
         self.c.polyline(
             &[
@@ -165,34 +234,18 @@ impl Ui<'_> {
     }
     fn select(&mut self, k: usize, r: Rect, color: Color) {
         let id = SETTINGS[k].id;
-        let v = self.m.plain(id).round() as i32;
-        let (lo, hi) = SETTINGS[k].range;
-        self.c.fill_rrect(r, 4., WELL);
-        let left = Rect::new(r.x, r.y, 19., r.h);
-        let right = Rect::new(r.right() - 19., r.y, 19., r.h);
-        self.c.text_center(font(12), left, DIM, "‹");
-        self.c.text_center(font(12), right, DIM, "›");
-        self.c.text_center(
-            font(11),
-            Rect::new(r.x + 19., r.y, r.w - 38., r.h),
-            color,
-            &self.m.text(id),
-        );
+        dropdown(self.c, r, &self.m.text(id), color, self.hover(r));
         self.hit(
-            left,
-            Target::Choice(id.into(), if v <= lo { hi } else { v - 1 }),
-        );
-        self.hit(
-            right,
-            Target::Choice(id.into(), if v >= hi { lo } else { v + 1 }),
-        );
-        self.hit(
-            Rect::new(r.x + 19., r.y, r.w - 38., r.h),
-            Target::Knob(id.into()),
+            r,
+            Target::Choice(id.into(), self.m.plain(id).round() as i32),
         );
     }
     fn grid(&mut self, r: Rect) {
-        self.c.fill_rrect(r, 5., WELL);
+        self.c.fill_rrect(r, 5., Color::rgb(0x50616b));
+        self.c
+            .fill_rect_gradient(r.inset(1.), Color::rgb(0x080e14), Color::rgb(0x15232c), 4.);
+        self.c
+            .stroke_rrect(r.inset(1.5), 4., 1., Color::rgb(0x020609));
         for i in 1..8 {
             let x = r.x + r.w * i as f32 / 8.;
             self.c
@@ -283,13 +336,34 @@ pub fn paint(
     };
     u.c.begin_frame(None);
     u.c.clear(BG);
-    u.c.fill_rect(Rect::new(0., 0., 1180., 66.), Color::rgb(0x1b212b));
+    u.c.fill_rect_gradient(
+        Rect::new(0., 0., 1180., 66.),
+        Color::rgb(0x3a4851),
+        Color::rgb(0x17212a),
+        0.,
+    );
+    u.c.fill_rect(Rect::new(0., 65., 1180., 1.), Color::rgb(0x6b796f));
+    for y in (68..820).step_by(4) {
+        u.c.fill_rect(
+            Rect::new(0., y as f32, 1180., 1.),
+            Color::rgb(0x8da19f).with_alpha(5),
+        );
+    }
     u.label(23., 17., "LEMON", 12, A);
     u.label(23., 32., "WAVE", 23, INK);
     let page = params.page.load(std::sync::atomic::Ordering::Relaxed);
     for (i, label) in ["SYNTH", "MODULATION"].iter().enumerate() {
         let r = page_button(i);
-        u.c.fill_rrect(r, 4., if page == i { LINE } else { WELL });
+        raised(
+            u.c,
+            r,
+            4.,
+            if page == i {
+                Color::rgb(0x4c5943)
+            } else {
+                Color::rgb(0x27343f)
+            },
+        );
         u.c.text_center(font(11), r, if page == i { A } else { DIM }, label);
     }
 
@@ -301,11 +375,15 @@ pub fn paint(
         (PRESET_NEXT, "›"),
         (PRESET_INIT, "Init"),
     ] {
-        u.c.fill_rrect(r, 5., if u.hover(r) { LINE } else { WELL });
+        raised(
+            u.c,
+            r,
+            5.,
+            Color::rgb(if u.hover(r) { 0x43525c } else { 0x2e3b46 }),
+        );
         u.c.text_center(font(13), r, INK, t);
     }
-    u.c.fill_rrect(Rect::new(450., 18., 268., 32.), 5., WELL);
-    u.c.text_center(font(12), Rect::new(450., 18., 268., 32.), INK, title);
+    dropdown(u.c, Rect::new(450., 18., 268., 32.), title, INK, false);
     u.select(ENV_ENGINE, Rect::new(850., 14., 210., 27.), MOD);
     u.label(878., 45., "ENVELOPES 1 + 2 / NEXT NOTE", 9, DIM);
     u.label(1080., 27., "LEMON STUDIO", 9, DIM);
@@ -330,13 +408,63 @@ pub fn paint(
             color,
             "",
         );
-        u.select(source, Rect::new(x + 12., 112., 174., 25.), color);
-        let browse = crate::sound_browser::button(o);
-        u.c.fill_rrect(browse, 4., Color::rgb(0x39472d));
-        u.c.text_center(font(11), browse, INK, "BROWSE SOUNDS ...");
         let reference = m.plain(SETTINGS[source].id) > 0.5;
         let table = &tables.oscillators[o];
         let sample = &tables.samples[o];
+        let kind = if reference {
+            3
+        } else if sample.is_some() {
+            2
+        } else if table
+            .as_ref()
+            .is_some_and(|t| crate::sound_browser::BASIC.contains(&t.source.name.as_str()))
+        {
+            0
+        } else {
+            1
+        };
+        let kind_label = if kind == 2 {
+            if sample
+                .as_ref()
+                .unwrap()
+                .source
+                .name
+                .starts_with("Mini-Moog")
+            {
+                "Mini-Moog"
+            } else if sample.as_ref().unwrap().source.name.starts_with("800DV") {
+                "800DV"
+            } else {
+                "Samples"
+            }
+        } else {
+            ["Basic Waves", "Wavetables", "Samples", "Reference Saw"][kind]
+        };
+        let typ = crate::sound_browser::type_button(o);
+        dropdown(u.c, typ, kind_label, color, u.hover(typ));
+        u.hit(
+            typ,
+            Target::Choice(
+                SETTINGS[source].id.into(),
+                m.plain(SETTINGS[source].id) as i32,
+            ),
+        );
+        let label = if reference {
+            "Reference Saw".to_string()
+        } else if let Some(s) = sample {
+            s.source
+                .name
+                .rsplit(" / ")
+                .next()
+                .unwrap_or(&s.source.name)
+                .to_string()
+        } else if let Some(t) = table {
+            t.source.name.clone()
+        } else {
+            crate::controls::text(base, m.plain(SETTINGS[base].id) as i32)
+        };
+        let browse = crate::sound_browser::button(o);
+        dropdown(u.c, browse, &label, INK, u.hover(browse));
         let r = Rect::new(x + 12., 146., 374., 78.);
         u.grid(r);
         let position = m.plain(SETTINGS[base + 1].id) / 1000.;
@@ -367,9 +495,31 @@ pub fn paint(
                         .map(|t| t.sample(position, q.fract(), 20., 48000.))
                         .unwrap_or_else(|| crate::dsp::preview(bank, position, q.fract()))
                 };
-                (r.x + 7. + i as f32, r.cy() - y.clamp(-1., 1.) * 29.)
+                (r.x + 7. + i as f32, r.y + 37. - y.clamp(-1., 1.) * 18.)
             })
             .collect();
+        // Adjacent frame shapes behind the result make Position's morph readable.
+        if !reference && sample.is_none() {
+            let frames = table.as_ref().map(|t| t.source.frames()).unwrap_or(5);
+            if frames > 1 {
+                let frame = position * (frames - 1) as f32;
+                let lo = frame.floor() / (frames - 1) as f32;
+                let hi = (frame.ceil() / (frames - 1) as f32).min(1.);
+                for (pos, alpha) in [(lo, 65), (hi, 105)] {
+                    let trace: Vec<_> = (0..360)
+                        .map(|i| {
+                            let phase = i as f32 / 359.;
+                            let y = table
+                                .as_ref()
+                                .map(|t| t.sample(pos, phase, 20., 48000.))
+                                .unwrap_or_else(|| crate::dsp::preview(bank, pos, phase));
+                            (r.x + 7. + i as f32, r.y + 37. - y.clamp(-1., 1.) * 18.)
+                        })
+                        .collect();
+                    u.c.polyline(&trace, 1., color.with_alpha(alpha));
+                }
+            }
+        }
         u.c.polyline(&points, 4., color.with_alpha(25));
         u.c.polyline(&points, 1.5, color);
         let name = if let Some(s) = sample.as_ref().filter(|_| !reference) {
@@ -385,17 +535,96 @@ pub fn paint(
                 })
         };
         u.c.text_clip(font(9), r.x + 7., r.y + 4., r.w - 14., DIM, &name);
-        u.select(source + 1, Rect::new(x + 12., 232., 174., 24.), color);
-        if sample.is_some() && !reference {
-            for (i, label) in ["-12", "-1", "+1", "+12"].iter().enumerate() {
-                let r = crate::sound_browser::root_button(o, i);
-                u.c.fill_rrect(r, 3., WELL);
-                u.c.text_center(font(10), r, INK, label);
-            }
+        let count = (m.plain(SETTINGS[base + 4].id) as usize).clamp(1, 7);
+        let blend = (m.plain(SETTINGS[phase + 2].id) / 1000.
+            + if u.live.active {
+                u.live.amounts[19 + o]
+            } else {
+                0.
+            })
+        .clamp(0., 1.);
+        u.c.fill_rect(
+            Rect::new(r.x + 3., r.bottom() - 21., r.w - 6., 18.),
+            Color::rgb(0x0a141c),
+        );
+        u.c.text(
+            font(8),
+            r.x + 7.,
+            r.bottom() - 16.,
+            DIM,
+            if count > 2 {
+                "UNISON BLEND"
+            } else {
+                "UNISON VOICES"
+            },
+        );
+        let weights: Vec<_> = (0..count)
+            .map(|i| {
+                let w = crate::dsp::blend_weight(count, i, blend);
+                if reference {
+                    w
+                } else {
+                    w / crate::dsp::blend_weight(count, i, 0.75)
+                }
+            })
+            .collect();
+        let peak = weights.iter().copied().fold(1.0_f32, f32::max);
+        for (i, w) in weights.iter().enumerate() {
+            let x = r.x + 114. + i as f32 * 25.;
+            let h = (*w / peak * 13.).max(1.);
+            let central = if count % 2 == 1 {
+                i == count / 2
+            } else {
+                i == count / 2 || i + 1 == count / 2
+            };
+            u.c.fill_rect_gradient(
+                Rect::new(x, r.bottom() - 5. - h, 15., h),
+                if central { INK } else { color },
+                color.with_alpha(75),
+                2.,
+            );
+        }
+        u.c.text(
+            font(8),
+            r.right() - 61.,
+            r.bottom() - 16.,
+            DIM,
+            &format!("{} VOICES", count),
+        );
+
+        if let Some(s) = sample.as_ref().filter(|_| !reference) {
+            raised(
+                u.c,
+                Rect::new(x + 12., 232., 174., 24.),
+                4.,
+                Color::rgb(0x21303a),
+            );
+            u.c.text_center(
+                font(10),
+                Rect::new(x + 12., 232., 174., 24.),
+                DIM,
+                &format!("ROOT {:.1} / ONE SHOT", s.source.root),
+            );
+        } else {
+            u.select(source + 1, Rect::new(x + 12., 232., 174., 24.), color);
+        }
+        if let Some(sample) = sample.as_ref().filter(|_| !reference) {
+            let group = sample
+                .source
+                .name
+                .rsplit_once(" / ")
+                .map(|(g, _)| g)
+                .unwrap_or("Select instrument / patch");
+            dropdown(
+                u.c,
+                crate::sound_browser::group_button(o),
+                group,
+                color,
+                false,
+            );
         } else {
             u.select(base, Rect::new(x + 198., 232., 188., 24.), DIM);
         }
-
         for (j, (k, cap)) in [
             (base + 1, "Position"),
             (base + 2, "Level"),
@@ -421,14 +650,25 @@ pub fn paint(
         {
             u.knob(k, x + 42. + 78. * j as f32, 356., cap, color);
         }
-        let labels = [
-            "Import WAV".to_string(),
-            format!("Cycle {}", crate::wavetable::CYCLES[cycles[o]]),
-            "Built-in".into(),
-        ];
-        for (r, label) in table_buttons(o).into_iter().zip(labels) {
-            u.c.fill_rrect(r, 4., if u.hover(r) { LINE } else { WELL });
-            u.c.text_center(font(10), r, DIM, &label);
+        if sample.is_some() && !reference {
+            for (i, label) in ["Root -12", "Root -1", "Root +1", "Root +12"]
+                .iter()
+                .enumerate()
+            {
+                let r = crate::sound_browser::root_button(o, i);
+                raised(u.c, r, 3., Color::rgb(0x2b3843));
+                u.c.text_center(font(9), r, DIM, label);
+            }
+        } else {
+            let labels = [
+                "Import table".to_string(),
+                format!("Cycle {}", crate::wavetable::CYCLES[cycles[o]]),
+                "Reset table".into(),
+            ];
+            for (r, label) in table_buttons(o).into_iter().zip(labels) {
+                raised(u.c, r, 3., Color::rgb(0x2b3843));
+                u.c.text_center(font(9), r, DIM, &label);
+            }
         }
     }
     drop(tables);
@@ -513,7 +753,7 @@ pub fn paint(
                 124.,
                 20.,
             );
-            u.c.fill_rrect(r, 3., WELL);
+            raised(u.c, r, 3., Color::rgb(0x293741));
             let color = if m.plain("env_engine") > 0.5 {
                 color
             } else {
@@ -597,7 +837,7 @@ pub fn paint(
     u.label(852., 749., "Mix at 0% keeps the dry signal.", 10, DIM);
     u.panel(Rect::new(16., 696., 808., 92.), "DRAG SOURCE", MOD, "");
     for (source, r, label) in source_buttons(0) {
-        u.c.fill_rrect(r, 3., WELL);
+        raised(u.c, r, 3., Color::rgb(0x293741));
         u.c.text_center(font(9), r, MOD, label);
         let _ = source;
     }
@@ -606,7 +846,7 @@ pub fn paint(
         u.label(220., y + 5., "→", 12, DIM);
         u.select(slot + 1, Rect::new(246., y, 216., 24.), INK);
         let r = Rect::new(476., y, 334., 24.);
-        u.c.fill_rrect(r, 4., WELL);
+        raised(u.c, r, 4., Color::rgb(0x293741));
         let v = m.plain(SETTINGS[slot + 2].id) / 1000.;
         let center = r.x + 160.;
         u.c.fill_rect(
@@ -845,7 +1085,7 @@ fn paint_modulation(u: &mut Ui, params: &WaveParams) {
             .enumerate()
         {
             let r = shape_button(i, j);
-            u.c.fill_rrect(r, 3., WELL);
+            raised(u.c, r, 3., Color::rgb(0x293741));
             u.c.text_center(font(9), r, DIM, label);
         }
         if i == 0 {
@@ -866,7 +1106,7 @@ fn paint_modulation(u: &mut Ui, params: &WaveParams) {
         u.select(slot, Rect::new(48., y, 178., 24.), MOD);
         u.select(slot + 1, Rect::new(238., y, 278., 24.), INK);
         let r = Rect::new(528., y, 250., 24.);
-        u.c.fill_rrect(r, 4., WELL);
+        raised(u.c, r, 4., Color::rgb(0x293741));
         let v = u.m.plain(SETTINGS[slot + 2].id) / 1000.;
         u.c.text_center(font(11), r, MOD, &format!("Depth {:+.1}%", v * 100.));
         u.c.fill_rect(
@@ -880,7 +1120,7 @@ fn paint_modulation(u: &mut Ui, params: &WaveParams) {
         );
         u.hit(r, Target::Knob(SETTINGS[slot + 2].id.into()));
         let r = clear_route(i);
-        u.c.fill_rrect(r, 3., WELL);
+        raised(u.c, r, 3., Color::rgb(0x293741));
         u.c.text_center(font(12), r, DIM, "×");
     }
     u.panel(Rect::new(836., 476., 328., 312.), "MACROS", A, "");
@@ -894,7 +1134,7 @@ fn paint_modulation(u: &mut Ui, params: &WaveParams) {
         );
     }
     for (_, r, label) in source_buttons(1) {
-        u.c.fill_rrect(r, 3., WELL);
+        raised(u.c, r, 3., Color::rgb(0x293741));
         u.c.text_center(font(10), r, MOD, label);
     }
     u.label(20.,800.,"Draw a shape • Drag a source onto a synth knob (hover SYNTH while dragging) • Drag Depth to adjust",10,DIM);

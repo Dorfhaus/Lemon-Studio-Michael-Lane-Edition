@@ -14,6 +14,7 @@ mod reference_voice;
 pub mod table_editor;
 pub mod wavetable;
 pub mod sample;
+pub mod included_library;
 mod sound_browser;
 use lemon_small_fx::Shared;
 #[cfg(test)]

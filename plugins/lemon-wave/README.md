@@ -1,3 +1,7 @@
+# Current local build: included recordings and inline dropdowns
+
+The installed Windows build embeds 34 Mini-Moog and 226 800DV recordings. Same-editor dropdowns replace the browser panel. Raised controls, recessed displays, frame morph previews and unison Blend visualization cover both pages. See [SOUND-LIBRARY.md](SOUND-LIBRARY.md) for use, build inputs and compatibility. Earlier notes below are historical.
+
 # Current local update: Sound Browser
 
 Six named standard waves, visible wavetable selection, and a grouped local recorded-synth library. See [SOUND-LIBRARY.md](SOUND-LIBRARY.md). Still 109 stable host controls; custom sounds and root pitch are stored as patch assets.

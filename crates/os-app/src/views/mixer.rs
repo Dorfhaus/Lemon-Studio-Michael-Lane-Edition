@@ -34,7 +34,7 @@ pub fn channel_offset(s:&State,n:u16)->f32{
 pub fn fader_per_px(s: &State,track:u16) -> f64 {
     let r=super::frame_rects(s,Win::Mixer,s.win_rect(Win::Mixer)).0;
     if mx::traditional(s) {return 1.0 / (440.0 * f64::from(traditional::scale(r)));}
-    if s.mixer.layout==crate::rack_mixer::VIEW&&track!=0 {let ly=Ly::for_state(r,s);return 1. / f64::from((r.bottom()-105.-(ly.y(PAN_Y)+32.)).max(1.));}
+    if s.mixer.layout==crate::rack_mixer::VIEW&&track!=0 {let ly=Ly::for_state(r,s);return 1. / f64::from((r.bottom()-78.-(ly.y(LED_Y)+12.)).max(1.));}
     FADER_PER_PX / f64::from(if s.mixer.layout==crate::rack_mixer::VIEW{scale(r)*STRIP_FADER_COMPRESSION}else{fader_scale(r)})
 }
 /// Shorter channel-strip fader travel: 0.8 is unity, zero lands at reference y=970.
@@ -84,7 +84,7 @@ const REF_TOP: f32 = 83.0;
 /// Height of the parts that do not scale: header, head-panel controls and the bottom controls.
 const FIXED_H: f32 = 218.0;
 const FADER_COMPRESSION: f32 = 0.88;
-const STRIP_FADER_COMPRESSION:f32=0.35;
+const STRIP_FADER_COMPRESSION:f32=0.55;
 
 /// How much the mixer's stretchy parts (meter, level scale, fader) are scaled at window `r`:
 /// 1 at the measured height; the rest of the strip keeps its size.
@@ -435,7 +435,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let selected = s.selected_mixer == n;
     let also = !selected && mx::is_selected(s, n);
     let kx=left+width/2.;
-    let (mx,sx)=if vertical {(kx+14.,kx-7.)}else{(kx+10.,kx-10.)};
+    let (mx,sx)=if vertical {(kx+1.,kx-27.)}else{(kx+10.,kx-10.)};
     let _ = f;
 
     // Body and the strip divider.
@@ -533,7 +533,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     if n!=0 && !standard {knobs_switch(ui,s,n,Rect::new(left+7.,ly.y(LED_Y)-14.,18.,44.));}
     }
     let standard=n!=0 && track.is_some_and(|m|m.channel_layout==0);
-    let control_x=if vertical {mx}else if n==0 {kx}else{kx+6.};
+    let control_x=if vertical {sx}else if n==0 {kx}else{kx+6.};
     let enabled = track.is_none_or(|m| m.enabled);
     ui.hit(Rect::new(control_x - 7.0, ly.y(LED_Y) - 7.0, 14.0, 14.0), Action::Mix(MHit::Led(n)), "Mute / solo");
     if console {analog::lamp(ui,control_x,ly.y(LED_Y),enabled,Color::rgb(0xb7d98b),4.);}else{led(ui, control_x, ly.y(LED_Y), enabled);}
@@ -545,8 +545,11 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // They keep their size and spacing below the fader's top at any mixer height (FL's short mixer stacks them the
     // same way), so they are placed from the fader's top, not scaled with it.
     let (pol, swp) = (track.is_some_and(|m| m.polarity), track.is_some_and(|m| m.swap));
-    let top = if vertical {ly.y(PAN_Y)+32.}else{ly.y(TRACK_Y0)};
-    let (sep_y, swap_y, ring_y) = (top + SEP_Y - TRACK_Y0, top + SWAP_Y - TRACK_Y0, top + RING_Y - TRACK_Y0+if console {4.}else{0.});
+    let top = if vertical {ly.y(LED_Y)+12.}else{ly.y(TRACK_Y0)};
+    let (sep_y, swap_y, ring_y) = if vertical {
+        let polarity_y=ly.y(PAN_Y)+30.;
+        (polarity_y,polarity_y+20.,polarity_y+44.)
+    }else{(top + SEP_Y - TRACK_Y0, top + SWAP_Y - TRACK_Y0, top + RING_Y - TRACK_Y0+if console {4.}else{0.})};
     let pr = Rect::new(sx - 8.0, sep_y - 8.0, 16.0, 16.0);
     let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity");
     if console {analog::signal_switch(ui,pr,pol,hp,false);} else {
@@ -574,11 +577,11 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     }else{mixer_knob(ui, sx, ring_y, 6.0, 9.5, s.knob(sep), Some(true));}
 
     // Fader: track, gain marks, handle (green on the selected strip, with the track lit below it).
-    let track_y1 = bottom - 105.;
+    let track_y1 = bottom - if vertical {78.}else{105.};
     if vertical {
         // A compact, visibly segmented stereo meter beside the fader, including
         // dim unlit LEDs so silence never looks like an unexplained black box.
-        let r=Rect::new(kx+31.,top,8.,(track_y1-top).max(1.));
+        let r=Rect::new(mx+14.,top,8.,(bottom-100.-top).max(1.));
         ui.live(Live::Meter,r.outset(2.));
         ui.c.stroke_rrect(r.outset(1.),1.,1.,Color::rgb(0x687166));
         let db=s.mixer.meters.get(usize::from(n)).map_or([meters::SILENT;2],|m|m.db);
@@ -621,19 +624,23 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let hov = ui.hit(Rect::new(mx - 9.0, top - if vertical {13.}else{5.}, 18.0, track_y1 - top + if vertical {26.}else{10.}), Action::Fader(n), mx::level_text("Volume", f64::from(v)));
     if console {analog::fader(ui,mx,hy,selected,hov);}else{fader_handle(ui, mx, hy, selected, hov);}
 
-    // Record arm and FX share the fader centerline; navigation stays on the left.
+    // The strip deck keeps recording/FX on the right, clear of the long fader and routing controls.
     let master = n == 0;
     let by = bottom;
     let fx_on = !s.mixer.all_fx_bypassed && track.is_none_or(|m| m.slots_enabled);
-    let fx_button = Rect::new(mx - 15.0, by - if vertical {67.}else{79.}, 30.0, 17.0);
+    let button_x=if vertical {kx+28.}else{mx};
+    let button_w=if vertical {24.}else{30.};
+    let fx_button = Rect::new(button_x-button_w/2., by - if vertical {67.}else{79.}, button_w, 17.0);
     let fx_hover = ui.hit(fx_button, Action::Mix(MHit::Effects(n)), if fx_on { "Effects enabled — click to bypass this channel's plugins" } else { "Effects bypassed — click to enable this channel's plugins" });
     ui.c.fill_rrect(fx_button, 3.0, if fx_on { ui.t.a(0x465d49) } else { ui.t.s(0x272d30) });
     ui.c.stroke_rrect(fx_button, 3.0, 1.0, if fx_hover { ui.t.accent } else { ui.t.s(0x64776a) });
     if console {analog::button(ui,fx_button,fx_on,fx_hover,Color::rgb(0x90ae75));}
     ui.c.text_center(Font::new(11), fx_button, if fx_on { ui.t.tx(0xe4efd8) } else { ui.t.text_dim }, "FX");
     // One aligned navigation column, visually separate from record arm and FX.
+    let navigation_top=ring_y+22.;
+    let navigation_step=((by-40.-navigation_top)/4.).clamp(13.,16.);
     for (i, section) in mx::Section::ALL.into_iter().enumerate() {
-        let b = Rect::new(if vertical {kx-39.}else{left+8.}, by - 150.0 - if master { 30.0 } else { 0.0 } + i as f32 * 16.0, if vertical {20.}else{22.}, 12.0);
+        let b = Rect::new(if vertical {sx-10.}else{left+8.}, if vertical {navigation_top+i as f32*navigation_step}else{by-150.-if master {30.}else{0.}+i as f32*16.}, if vertical {20.}else{22.}, 12.0);
         let target = section.target(s);
         let hover = if let Some(dst) = target {
             ui.hit(b, Action::Mix(MHit::Jump(n, section)), format!("Scroll to {}: {} (keeps current channel selected)", section.label(), mx::name(s,dst)))
@@ -659,12 +666,12 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     }
     if !master {
     let armed=s.mixer.recording.armed.contains(&n);
-    let record = Rect::new(mx - 15.0, by - if vertical {88.}else{98.}, 30.0, 17.0);
+    let record = Rect::new(button_x-button_w/2., by - if vertical {88.}else{98.}, button_w, 17.0);
     let rec_hover = ui.hit(record, Action::Mix(MHit::Disk(n)), if armed { "Disarm disk recording" } else { "Arm disk recording (select an input to arm automatically)" });
     ui.c.fill_rrect(record, 3.0, if armed { ui.t.h(0x8f292e) } else { ui.t.s(0x2b3337) });
     ui.c.stroke_rrect(record, 3.0, 1.0, if rec_hover || armed { ui.t.h(0xff6969) } else { ui.t.s(0x667278) });
     if console {analog::button(ui,record,armed,rec_hover,Color::rgb(0xbd6053));}
-    ui.c.fill_circle(mx, record.cy(), 4.5, if armed { ui.t.h(0xff6868) } else { ui.t.h(0xb85858) });
+    ui.c.fill_circle(record.cx(), record.cy(), 4.5, if armed { ui.t.h(0xff6868) } else { ui.t.h(0xb85858) });
 
     }
 

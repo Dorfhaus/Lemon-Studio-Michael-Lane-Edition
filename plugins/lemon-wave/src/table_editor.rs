@@ -12,6 +12,7 @@ use std::sync::{
 };
 
 pub struct TableEditor {
+    hits: std::sync::Mutex<Vec<lemon_small_fx::view::Hit>>,
     browser: std::sync::Mutex<crate::sound_browser::Browser>,
     modulation: crate::modulation_editor::ModEditor,
     pub params: Arc<WaveParams>,
@@ -22,6 +23,7 @@ impl TableEditor {
     pub fn new(params: Arc<WaveParams>) -> Self {
         Self {
             browser: Default::default(),
+            hits: Default::default(),
             modulation: crate::modulation_editor::ModEditor::new(params.clone()),
             params,
             cycles: [AtomicUsize::new(5), AtomicUsize::new(5)],
@@ -56,6 +58,14 @@ impl TableEditor {
             serde_json::from_slice(&body[8..]).expect("bundled factory state");
         crate::LemonWave::filter_state(&mut state);
         state
+    }
+    fn edit_parameter(&self, k: usize, value: i32, context: Option<&Arc<dyn GuiContext>>) {
+        let mut v = os_plugkit::vals::Vals::new(
+            &*self.params.base,
+            self.params.base.live.clone(),
+            context.cloned(),
+        );
+        v.edit_plain(crate::controls::SETTINGS[k].id, value as f32);
     }
     fn activate_classic(
         &self,
@@ -133,6 +143,7 @@ impl Extension for TableEditor {
             self.cycles.each_ref().map(|x| x.load(Ordering::Relaxed)),
             (selected < crate::instrument_view::PRESET_NAMES.len()).then_some(selected),
         );
+        *self.hits.lock().unwrap() = hits.clone();
         self.modulation.observe(&hits, c);
         let browser = self.browser.lock().unwrap();
         if browser.oscillator.is_some() {
@@ -158,8 +169,50 @@ impl Extension for TableEditor {
         {
             let mut browser = self.browser.lock().unwrap();
             if let Some(o) = browser.oscillator {
+                let inside=browser.menu.as_ref().is_some_and(|m|m.rect().contains(x,y));
                 if let Some(choice) = browser.click(x, y) {
                     use crate::sound_browser::Choice;
+                    match &choice {
+                        Choice::Category(k) => {
+                            match k {
+                                0 | 1 => browser.sounds(o, *k, ""),
+                                2 => browser.groups(o),
+                                4 => browser.instrument(o, "Mini-Moog"),
+                                5 => browser.instrument(o, "800DV"),
+                                _ => {
+                                    self.edit_parameter(
+                                        if o == 0 {
+                                            crate::controls::A_SOURCE
+                                        } else {
+                                            crate::controls::B_SOURCE
+                                        },
+                                        1,
+                                        context,
+                                    );
+                                    browser.close();
+                                }
+                            }
+                            return true;
+                        }
+                        Choice::Group(g) => {
+                            browser.sounds(o, 2, g);
+                            return true;
+                        }
+                        Choice::Param(k, v) => {
+                            self.edit_parameter(*k, *v, context);
+                            browser.close();
+                            return true;
+                        }
+                        Choice::Preset(i) => {
+                            if let Some(c) = context {
+                                c.set_state(Self::factory_state(*i));
+                                self.preset.store(*i, Ordering::Relaxed);
+                            }
+                            browser.close();
+                            return true;
+                        }
+                        _ => {}
+                    }
                     let mut sources = self.params.sources();
                     let mut bank = None;
                     let result = match choice {
@@ -174,17 +227,21 @@ impl Extension for TableEditor {
                             bank = Some(i);
                             Ok(())
                         }
-                        Choice::Sample(e) => {
-                            crate::sample::Sample::import(&e.path, e.root).map(|sample| {
+                        Choice::Sample(e) => e
+                            .embedded
+                            .map(crate::included_library::load)
+                            .unwrap_or_else(|| crate::sample::Sample::import(&e.path, e.root))
+                            .map(|sample| {
                                 sources.samples[o] = Some(sample);
                                 sources.oscillators[o] = None;
-                            })
-                        }
+                            }),
+                        _ => unreachable!(),
                     };
                     match result {
                         Ok(()) => {
                             self.commit(o, bank, sources, context);
-                            browser.oscillator = None;
+                            self.preset.store(usize::MAX, Ordering::Relaxed);
+                            browser.close();
                             self.params.message("Sound loaded and embedded in this patch. Recorded samples play once; Root adjusts tuning.");
                         }
                         Err(e) => {
@@ -193,17 +250,36 @@ impl Extension for TableEditor {
                         }
                     }
                 }
-                return true;
+                if inside{return true;}
             }
         }
         if self.params.page.load(Ordering::Relaxed) == 0 {
             for o in 0..2 {
-                if crate::sound_browser::button(o).contains(x, y) {
-                    self.browser.lock().unwrap().open(o);
+                if crate::sound_browser::type_button(o).contains(x, y) {
+                    self.browser.lock().unwrap().categories(o);
                     return true;
                 }
+                if crate::sound_browser::button(o).contains(x, y) {
+                    let kind = crate::sound_browser::kind(&self.params, o);
+                    let group = crate::sound_browser::group(&self.params, o);
+                    self.browser.lock().unwrap().sounds(o, kind, &group);
+                    return true;
+                }
+                if crate::sound_browser::group_button(o).contains(x, y)
+                    && crate::sound_browser::kind(&self.params, o) == 2
+                {
+                    let group = crate::sound_browser::group(&self.params, o);
+                    self.browser
+                        .lock()
+                        .unwrap()
+                        .instrument(o, group.split(" / ").next().unwrap_or(""));
+                    return true;
+                }
+
                 for (i, delta) in [-12., -1., 1., 12.].iter().enumerate() {
-                    if crate::sound_browser::root_button(o, i).contains(x, y) {
+                    if crate::sound_browser::kind(&self.params, o) == 2
+                        && crate::sound_browser::root_button(o, i).contains(x, y)
+                    {
                         let mut sources = self.params.sources();
                         if let Some(sample) = &mut sources.samples[o] {
                             sample.root = (sample.root + delta).clamp(0., 127.);
@@ -212,6 +288,42 @@ impl Extension for TableEditor {
                         }
                     }
                 }
+            }
+        }
+        if Rect::new(450., 18., 268., 32.).contains(x, y) {
+            self.browser.lock().unwrap().show(
+                0,
+                Rect::new(450., 18., 268., 32.),
+                crate::instrument_view::PRESET_NAMES
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.to_string(), crate::sound_browser::Choice::Preset(i)))
+                    .collect(),
+            );
+            return true;
+        }
+        if let Some(hit) = self
+            .hits
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|h| {
+                h.r.contains(x, y) && matches!(h.t, lemon_small_fx::view::Target::Choice(_, _))
+            })
+            .cloned()
+        {
+            if let Some(k) = crate::controls::SPEC.index(hit.t.id()) {
+                let setting = &crate::controls::SETTINGS[k];
+                let items = (setting.range.0..=setting.range.1)
+                    .map(|v| {
+                        (
+                            crate::controls::text(k, v),
+                            crate::sound_browser::Choice::Param(k, v),
+                        )
+                    })
+                    .collect();
+                self.browser.lock().unwrap().show(0, hit.r, items);
+                return true;
             }
         }
         if self.modulation.click(x, y, context) {

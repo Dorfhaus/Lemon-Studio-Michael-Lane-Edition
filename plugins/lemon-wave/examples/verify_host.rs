@@ -126,7 +126,7 @@ fn verify(lib: Arc<dyn Library>) {
             .map(|i| (std::f32::consts::TAU * i as f32 / 1024.).sin() * 0.7)
             .collect(),
     };
-    let sources = lemon_wave::assets::Sources {
+    let mut sources = lemon_wave::assets::Sources {
         samples: [
             None,
             Some(lemon_wave::sample::Sample {
@@ -140,6 +140,7 @@ fn verify(lib: Arc<dyn Library>) {
         ],
         oscillators: [Some(source), None],
     };
+    if !lemon_wave::included_library::PACK.is_empty(){sources.samples[1]=Some(lemon_wave::included_library::load(0).unwrap());}
     json["fields"][lemon_wave::assets::FIELD] =
         serde_json::Value::String(serde_json::to_string(&sources).unwrap());
     let mut curves = lemon_wave::modulation::Curves::default();

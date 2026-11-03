@@ -209,8 +209,18 @@ mod tests {
             let hit=|a|app.hits.iter().find(|h|h.action==a).unwrap().rect;
             let fader=hit(Action::Fader(1));let pan=hit(Action::Knob(crate::knobs::KnobId::MixPan(1)));
             let rec=hit(Action::Mix(mixer::MHit::Disk(1)));let fx=hit(Action::Mix(mixer::MHit::Effects(1)));
-            assert!(fader.y>=pan.bottom()+4.);assert!(rec.y>=fader.bottom()+4.);assert!(fx.y>=rec.bottom()+4.);
+            let led=hit(Action::Mix(mixer::MHit::Led(1)));
+            let polarity=hit(Action::Mix(mixer::MHit::Polarity(1)));
+            let swap=hit(Action::Mix(mixer::MHit::Swap(1)));
+            assert!(pan.right()+3.<=fader.x && led.cx()==pan.cx());
+            assert!(led.bottom()+2.<=pan.y && pan.bottom()+4.<=polarity.y && polarity.bottom()+3.<=swap.y);
+            assert!(rec.x>=fader.right()+4. && fx.x==rec.x && fx.y>=rec.bottom()+4.);
+            assert!(fader.h-26.>=100.,"long fader remains usable at short mixer heights");
+            assert!(fader.bottom()+4.<=app.state.win_rect(Win::Mixer).bottom()-61.,"full-down handle clears routing controls");
             assert!(hit(Action::Mix(mixer::MHit::Led(1))).y>=pane.rect.bottom()+39.);
+            let navigation:Vec<_>=app.hits.iter().filter(|h|h.rect.w==20. && h.rect.h==12. && h.rect.x==pan.cx()-10. && h.rect.y>pan.bottom()).collect();
+            assert_eq!(navigation.len(),5);
+            assert!(navigation.iter().all(|h|h.rect.bottom()<=app.state.win_rect(Win::Mixer).bottom()-26.),"teleport buttons clear the bottom scrollbar");
             let rate=crate::views::mixer::fader_per_px(&app.state,1);assert!((rate*(fader.h-26.) as f64-1.).abs()<0.0001);
             if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){c.pixmap.save_png(std::path::PathBuf::from(dir).join(format!("analog-strip-{width}.png"))).unwrap();}
             if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){

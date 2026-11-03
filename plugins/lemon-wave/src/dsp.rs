@@ -12,6 +12,26 @@ pub fn defaults() -> Patch {
     std::array::from_fn(|i| SETTINGS[i].start as f32)
 }
 
+/// Relative center/outer amplitudes used by both the visualizer and classic unison.
+/// At the existing 75% default, classic voice gains remain exactly unchanged.
+pub fn blend_weight(count: usize, voice: usize, blend: f32) -> f32 {
+    if count <= 1 {
+        return 1.;
+    }
+    if count == 2 {
+        return 0.707946;
+    }
+    let b = blend.clamp(0., 1.).powi(2);
+    let center = 0.99785 - 0.55366 * b;
+    let outer = (-0.73764 * b + 1.2841) * b + 0.044372;
+    if count % 2 == 1 && voice == count / 2 {
+        center * 0.95794576
+    } else if count % 2 == 0 && (voice == count / 2 || voice + 1 == count / 2) {
+        center
+    } else {
+        outer
+    }
+}
 fn harmonic(bank: usize, frame: usize, n: usize) -> f32 {
     let t = frame as f32 / 4.;
     let h = n as f32;
@@ -631,7 +651,9 @@ impl Engine {
                         let pan = (p[b + 6] / 100. + modulation[6] + offset * p[SPREAD] / 1000.)
                             .clamp(-1., 1.);
                         let angle = (pan + 1.) * PI / 4.;
-                        let gain = (1. - mix) * p[b + 2] / 1000. / (count as f32).sqrt();
+                        let blend = p[if o == 0 { A_BLEND } else { B_BLEND }] / 1000.;
+                        let gain = (1. - mix) * p[b + 2] / 1000. / (count as f32).sqrt()
+                            * (blend_weight(count, u, blend) / blend_weight(count, u, 0.75));
                         sig[0] += s * angle.cos() * gain;
                         sig[1] += s * angle.sin() * gain;
                     }
