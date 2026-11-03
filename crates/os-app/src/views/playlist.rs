@@ -332,7 +332,7 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
         grid,
         ruler: ruler_rect(s, grid),
         lane: (!pl::markers(s).is_empty()).then(|| Rect::new(grid.x, overview.y + 41.0, grid.w, MARKER_H)),
-        heads: Rect::new(grid.x - 110.0, grid.y, 98.0, grid.h),
+        heads: Rect::new(super::frame_rects(s, Win::Playlist, s.win_rect(Win::Playlist)).0.x + 2.0, grid.y, 98.0, grid.h),
         vbar: Rect::new(grid.right(), overview.y, 4.0 + bar_sizes().1, grid.bottom() - overview.y),
         overview,
     }

@@ -21,12 +21,14 @@ fn lines(ui:&mut Ui,s:&State,width:f32)->Vec<(String,bool)> {
  };
  add(&history().intro,false);
  let query=s.browser_search.trim().to_lowercase();let mut found=false;
+ let mut days=std::collections::BTreeMap::<&str,Vec<&str>>::new();
  for section in &history().sections {
-  let title=format!("{} · {}",section.date,section.title);
-  let all=query.is_empty()||title.to_lowercase().contains(&query);
-  let changes:Vec<_>=section.changes.iter().filter(|c|all||c.to_lowercase().contains(&query)).collect();
-  if changes.is_empty(){continue;}found=true;
-  add(&title,true);
+  let changes=days.entry(section.date.get(..10).unwrap_or(&section.date)).or_default();
+  for change in &section.changes {if !changes.contains(&change.as_str()){changes.push(change);}}
+ }
+ for (date,changes) in days.iter().rev() {
+  let changes:Vec<_>=changes.iter().filter(|c|query.is_empty()||date.contains(&query)||c.to_lowercase().contains(&query)).collect();
+  if changes.is_empty(){continue;}found=true;add(date,true);
   for change in changes {add(&format!("• {change}"),false);}
  }
  if !found {add("No changes match your search.",false);}

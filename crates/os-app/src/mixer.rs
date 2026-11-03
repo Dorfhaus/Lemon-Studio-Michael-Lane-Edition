@@ -1657,6 +1657,7 @@ fn paste_channel(app:&mut App,n:u16)->Option<String> {
     if let Err(e)=crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins){return Some(e);}
     let old=channel_copy(&app.state,n)?;
     c.track.index=n;c.track.origin=old.track.origin;
+    c.track.runtime_id=MixerTrack::new(n).runtime_id;
     crate::history::record(&mut app.state,"Paste mixer channel",crate::history::Snap::MixerChannel(Box::new(old)));
     put_channel(&mut app.state,c);
     app.mixer_tick();app.sync_effects();app.sync_wrapped();app.sync_native();

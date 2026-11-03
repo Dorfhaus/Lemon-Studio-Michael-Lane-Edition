@@ -623,11 +623,8 @@ impl Shell {
     /// Ticks the app, asks for a frame when one is due and sets the next wake-up: from `about_to_wait`, or from a
     /// watchdog wake while a modal loop holds up winit's (`held`, see `stall`).
     fn prepare_main(&mut self) {
-        if self.app.state.native_view.take().is_some() {
+        if self.detached.restore_main(&mut self.app) {
             self.app.mouse=self.main_mouse;
-            if let Some(w)=&self.window {self.app.state.display_scale=w.scale_factor() as f32;}
-            if let Some(c)=&mut self.canvas {self.app.paint(c,None);}
-            self.app.invalidate();
         }
     }
 
@@ -901,10 +898,10 @@ impl ApplicationHandler for Shell {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if self.detached.owns(_id) {if self.app.state.native_view.is_none(){self.main_mouse=self.app.mouse;}self.detached.event(&mut self.app,el,_id,event);self.pending=true;return;}
+        if self.detached.owns(_id) {if self.app.state.native_view.is_none(){self.main_mouse=self.app.mouse;}self.detached.event(&mut self.app,el,_id,event);self.prepare_main();self.pending|=self.app.has_damage();return;}
         self.prepare_main();
         if matches!(event,WindowEvent::MouseInput{state:ElementState::Pressed,..}|WindowEvent::KeyboardInput{..}|WindowEvent::Focused(true)) {
-            if self.app.state.native_input.take().is_some() {self.app.state.playlist.popup=None;self.app.state.menu_open=None;if let Some(c)=&mut self.canvas {self.app.paint(c,None);}self.app.invalidate();}
+            if self.app.state.native_input.take().is_some() {let popup=self.app.state.playlist.popup.is_some()||self.app.state.menu_open.is_some();self.app.state.playlist.popup=None;self.app.state.menu_open=None;if popup {self.app.invalidate();}}
         }
         let Some(window) = self.window.clone() else { return };
         let scale = ui_scale(&window) as f32;

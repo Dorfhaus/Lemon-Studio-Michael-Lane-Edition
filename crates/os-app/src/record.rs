@@ -91,14 +91,11 @@ impl Opt {
 
 /// The button's hint: what the filter records (spec §2 The button).
 pub fn hint() -> String {
-    if Opt::Audio.on(){return "Record audio (R) - choose a mixer input, then press Play".into();}
-    if Opt::Smart.on(){return "Record automatically: MIDI notes or automation clips (R)".into();}
-    let what = match (Opt::Notes.on(), Opt::Automation.on()) {
-        (true, true) => "notes, automation",
-        (true, false) => "notes",
-        (false, true) => "automation",
-        (false, false) => "nothing",
-    };
+    let mut active = Vec::new();
+    if Opt::Audio.on() { active.push("audio"); }
+    if Opt::Notes.on() { active.push("notes"); }
+    if Opt::Automation.on() { active.push("automation"); }
+    let what = if active.is_empty() { "nothing".into() } else { active.join(", ") };
     format!("Record ({what}) (R) - right-click for options")
 }
 
@@ -553,6 +550,7 @@ impl App {
             return;
         }
         let Some(channel) = target else { return };
+        if let Some(row)=self.state.project.channels.iter().position(|c|c.index==channel) {crate::rack::focus_channel(&mut self.state,row);}
         let song = self.transport.song();
         let start = self.transport.tick();
         self.open_take(song);

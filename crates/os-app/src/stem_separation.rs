@@ -755,6 +755,7 @@ mod tests {
         assert!(pl::clip_menu(&a.state, i, 0., 0.)
             .items
             .iter()
+            .flat_map(|x| std::iter::once(x).chain(x.children.iter()))
             .any(|x| x.label == "Stem separation..." && x.cmd == pl::Cmd::SeparateStems(i)));
         let before = a.state.project.clone();
         a.dialog_done(

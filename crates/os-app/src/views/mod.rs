@@ -244,9 +244,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
         ui.part(Seg::Toolbar, Rect::new(0.0, 0.0, w, band_h(s)), |ui| ui.scaled(scale, |ui, k| toolbar::paint(ui, s, f, w / k)));
     }
     // The floating hint bar, over every window (spec: ui/toolbar-menu.md §4).
-    if s.toolbar.hint_bar && s.native_view.is_none() {
-        toolbar::paint_hint_bar(ui, s, f);
-    }
+    // Hints live only in the top toolbar; there is no floating duplicate.
     let overlays = ui.hit_count();
     if s.native_view != s.native_input {return overlays;}
     crate::plugin_downloads::paint_tooltip(ui, s);

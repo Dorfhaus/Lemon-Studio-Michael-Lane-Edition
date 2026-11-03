@@ -1344,6 +1344,8 @@ pub struct RackStrip {
 
 #[derive(Debug, Clone)]
 pub struct MixerTrack {
+    /// In-memory identity, preserved across edits/reordering; never serialized.
+    pub runtime_id: u64,
     pub clip_fx:bool,
     pub rack_strip: Option<RackStrip>,
     /// 0 = Master.
@@ -1408,8 +1410,9 @@ pub struct MixerTrack {
 
 impl PartialEq for MixerTrack {
     fn eq(&self, o: &Self) -> bool {
-        // Every field but `origin`, named so that a new field is not left out.
+        // Runtime identity and file origin are not musical settings.
         let MixerTrack {
+            runtime_id: _,
             clip_fx,
             rack_strip,
             index,
@@ -1489,7 +1492,9 @@ impl MixerTrack {
 
     /// A default track: unnamed, enabled, unity volume, centred, empty slots, routed to the master (except the master).
     pub fn new(index: u16) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         MixerTrack {
+            runtime_id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             clip_fx: false,
             rack_strip: None,
             index,

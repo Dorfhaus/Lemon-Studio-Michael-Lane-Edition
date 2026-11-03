@@ -185,6 +185,16 @@ pub const NOTE_MOD_X: &str = "Filter frequency (modulation X)";
 /// The same for a note's mod Y.
 pub const NOTE_MOD_Y: &str = "Filter bandwidth (modulation Y)";
 
+/// ARA editor requests, drained by the main thread after releasing the plugin lock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlaybackRequest {
+    Start,
+    Stop,
+    /// Source-document seconds, not arrangement seconds.
+    Seek(f64),
+    Cycle(Option<(f64, f64)>),
+}
+
 /// A plugin instance, whatever its format.
 ///
 /// Main-thread calls (everything except the `Instrument` / `HostedEffect` methods) come from the UI thread only.
@@ -284,6 +294,7 @@ pub trait Plugin: Instrument + HostedEffect + Send {
     }
     /// Non-parameter document edits (for example ARA); consumed on the UI thread.
     fn take_state_changed(&mut self) -> bool { false }
+    fn take_playback_requests(&mut self) -> Vec<PlaybackRequest> { Vec::new() }
     /// Parameter changes the plugin made by itself since the last call (its editor), oldest first.
     fn take_param_events(&mut self) -> Vec<ParamEvent> {
         Vec::new()

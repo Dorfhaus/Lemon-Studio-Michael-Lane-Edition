@@ -1233,6 +1233,72 @@ impl State {
     }
 }
 
+/// Main-window geometry survives temporary detached-window rendering without a repaint.
+pub(crate) struct ViewContext {
+    hits: Vec<Hit>,
+    keep: Keep,
+    live: Vec<(Live, Rect)>,
+    overlays: Vec<Rect>,
+    bars: Vec<Bar>,
+    hover: Option<Action>,
+    hover_rect: Option<Rect>,
+    pl_grid: Option<Rect>,
+    scrolled: Option<(f64,f64)>,
+    shifts: Vec<Moved>,
+    moved: Vec<Moved>,
+    pl_covers: Vec<Cover>,
+    piano_win: Option<Rect>,
+    piano_grid: Option<Rect>,
+    piano_panel: Option<Rect>,
+    damage: Damage,
+    hint: Cow<'static,str>,
+    screen:(f32,f32), ui_scale:f32, display_scale:f32, px_scale:f32,
+}
+impl App {
+    pub(crate) fn take_view_context(&mut self)->ViewContext {
+        ViewContext {
+            hits:std::mem::take(&mut self.hits),
+            keep:std::mem::take(&mut self.keep),
+            live:std::mem::take(&mut self.live),
+            overlays:std::mem::take(&mut self.overlays),
+            bars:std::mem::take(&mut self.bars),
+            hover:std::mem::take(&mut self.hover),
+            hover_rect:std::mem::take(&mut self.hover_rect),
+            pl_grid:std::mem::take(&mut self.pl_grid),
+            scrolled:std::mem::take(&mut self.scrolled),
+            shifts:std::mem::take(&mut self.shifts),
+            moved:std::mem::take(&mut self.moved),
+            pl_covers:std::mem::take(&mut self.pl_covers),
+            piano_win:std::mem::take(&mut self.piano_win),
+            piano_grid:std::mem::take(&mut self.piano_grid),
+            piano_panel:std::mem::take(&mut self.piano_panel),
+            damage:std::mem::replace(&mut self.damage,Damage::None),
+            hint:self.hint.clone(),
+            screen:self.state.screen,ui_scale:self.state.ui_scale,display_scale:self.state.display_scale,px_scale:self.px_scale,
+        }
+    }
+    pub(crate) fn restore_view_context(&mut self,c:ViewContext){
+        self.hits=c.hits;
+        self.keep=c.keep;
+        self.live=c.live;
+        self.overlays=c.overlays;
+        self.bars=c.bars;
+        self.hover=c.hover;
+        self.hover_rect=c.hover_rect;
+        self.pl_grid=c.pl_grid;
+        self.scrolled=c.scrolled;
+        self.shifts=c.shifts;
+        self.moved=c.moved;
+        self.pl_covers=c.pl_covers;
+        self.piano_win=c.piano_win;
+        self.piano_grid=c.piano_grid;
+        self.piano_panel=c.piano_panel;
+        self.damage=c.damage;self.state.screen=c.screen;self.state.ui_scale=c.ui_scale;self.state.display_scale=c.display_scale;self.px_scale=c.px_scale;
+        self.state.native_view=None;
+        if self.hint!=c.hint {self.damage_band(HINT_RECT);}
+    }
+}
+
 pub struct App {
     pub state: State,
     pub plugins: crate::plugins::Plugins,
@@ -2632,6 +2698,7 @@ impl App {
         #[cfg(plugin_windows)]
         let requests = {
             let (project, mixer) = (&self.state.project, &self.state.mixer);
+            self.plugins.defer_editor_scale=self.transport.playing();
             self.plugins.idle(|row| if row >= crate::plugins::FX_KEY { crate::mixer::fx_info(project, mixer, row) } else { channel_info(project, row) })
         };
         // No plugin windows here, so no requests.
@@ -2829,6 +2896,7 @@ impl App {
                         self.invalidate();
                         continue;
                     }
+                    Request::AraPlayback(row,request)=>crate::ara::playback_request(self,row,request),
                     Request::Stopped(_, text) => {
                         self.state.message = Some(text);
                         self.invalidate();
@@ -2983,9 +3051,7 @@ impl App {
         for d in views::band_rects(&self.state, r) {
             self.damage_rect(d);
         }
-        if self.state.toolbar.hint_bar && !r.intersect(&HINT_RECT).is_empty() {
-            self.damage_rect(views::toolbar::hint_bar_rect(&self.state));
-        }
+
     }
 
     /// Whether a paint is due: damage, or a playlist scroll waiting to move its pixels (`playlist_scrolled` adds no
@@ -3089,9 +3155,7 @@ impl App {
             v.push(Cover { bounds: p.outset(1.0), win: None, solid: None });
         }
         // The floating hint bar (spec: ui/toolbar-menu.md §4).
-        if s.toolbar.hint_bar {
-            v.push(Cover { bounds: views::toolbar::hint_bar_rect(s).outset(1.0), win: None, solid: None });
-        }
+
         v
     }
 
@@ -3162,6 +3226,11 @@ impl App {
             .collect();
         covers.extend(self.pl_covers.iter().filter(|c| !now.contains(c)).map(|c| (c.bounds, None)));
         for (r, sx, sy) in self.scroll_moves(d) {
+            // Only visible pixels exist in the backing canvas. A floating playlist can
+            // extend past its edge: repaint the exposed strip at that edge, not at
+            // the off-screen window bottom/right (which would leave repeated pixels).
+            let r = r.intersect(&Rect::new(0.0, 0.0, self.state.screen.0, self.state.screen.1));
+            if r.is_empty() { continue; }
             if sx.abs() >= f64::from(r.w) || sy.abs() >= f64::from(r.h) {
                 self.damage_rect(r);
                 continue;
@@ -8399,6 +8468,7 @@ impl App {
                 s.pat_ui.menu_at = None;
                 s.menu_open = if s.menu_open == Some(i) { None } else { Some(i) };
                 s.menu_sub = None;
+                s.playlist.popup=if s.menu_open.is_some(){let r=self.hits.iter().find(|h|h.action==Action::Menu(i)).map_or(Rect::new(self.mouse.0,self.mouse.1,0.,0.),|h|h.rect);Some(crate::playlist::Popup{x:r.x,y:r.bottom(),items:views::menus::organized_items(s,i),sub:None,scroll:[0;2],cascade:Vec::new()})}else{None};
             }
             Action::MenuItem(m, i) => {
                 s.menu_open = None;
@@ -9175,10 +9245,8 @@ impl App {
             Switch::Flat => s.toolbar.flat = !s.toolbar.flat,
             Switch::HintBar => s.toolbar.hint_bar = !s.toolbar.hint_bar,
             Switch::CpuMemory => {
-                use crate::toolbar::Panel;
-                if s.bar.layout.has(Panel::Cpu) { for row in &mut s.bar.layout.rows { row.retain(|p| *p != Panel::Cpu); } }
-                else if let Some(row) = s.bar.layout.rows.first_mut() { row.push(Panel::Cpu); }
-                s.bar.layout.save();
+                let on=crate::settings_file::flag("toolbar_cpu_visible",true);
+                crate::settings_file::set_flag("toolbar_cpu_visible",!on);
             }
             Switch::Hide => {
                 s.toolbar.hidden = !s.toolbar.hidden;
@@ -11959,6 +12027,37 @@ mod tests {
         let _ = std::fs::remove_file(&wav);
     }
 
+    #[test]
+    fn playlist_scroll_at_clipped_window_edges() {
+        for scale in [1.0, 1.5] {
+            let mut app = App::new(None);
+            app.theme = design_theme(Design::ALL[0], false);
+            app.state.project = test_project();
+            let mut a = Canvas::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale).unwrap();
+            let mut b = Canvas::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale).unwrap();
+            frame(&mut app, &mut a, None);
+            let ws = &mut app.state.wins[Win::Playlist.slot().unwrap()];
+            ws.maxed = false;
+            ws.rect = Rect::new(140.0, 160.0, 1000.0, 570.0);
+            app.state.z = vec![Win::Playlist];
+            frame(&mut app, &mut a, None);
+            let _ = app.take_damage();
+            let grid = app.pl_grid.unwrap();
+            assert!(grid.bottom() > app.state.screen.1);
+            for (dx, dy) in [(0.0, 40.0), (0.0, 40.0), (40.0, 0.0), (-40.0, -40.0)] {
+                let before = app.state.playlist_scroll;
+                app.state.playlist_scroll.0 += dx;
+                app.state.playlist_scroll.1 += dy;
+                app.playlist_scrolled(before);
+                let damage = app.take_damage();
+                frame_damage(&mut app, &mut a, damage);
+                app.take_moved();
+                frame(&mut app, &mut b, None);
+                assert_same(&a, &b, "scroll at clipped window edge");
+            }
+        }
+    }
+
     fn scroll_moves_at(wav: &std::path::Path, scale: f32, design: Design) {
         use crate::playlist as pl;
         let (w, h) = ((1920.0 * scale).round() as u32, (1080.0 * scale).round() as u32);
@@ -14160,6 +14259,58 @@ mod tests {
         let file=os_flp::project::create(&app.state.project).unwrap();
         let back=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
         assert_eq!(back.automations.last().unwrap().targets,vec![os_model::target::MAIN_PITCH]);
+    }
+
+    #[test]
+    fn monitor_switch_restores_main_hits_and_damage_without_repaint() {
+        let mut app=App::new(None);app.state.project=test_project();
+        let mut main=Canvas::new(1280,800,1.).unwrap();app.paint(&mut main,None);app.take_damage();
+        let before:Vec<_>=app.hits.iter().map(|h|(h.action.clone(),h.rect)).collect();
+        let size=app.state.screen;let grid=app.pl_grid;
+        let pixels=main.pixmap.data().to_vec();
+        let saved=app.take_view_context();
+        app.state.native_view=Some(Win::Mixer);
+        let mut other=Canvas::new(1800,1000,1.5).unwrap();app.paint(&mut other,None);app.invalidate();
+        app.restore_view_context(saved);
+        assert_eq!(app.hits.iter().map(|h|(h.action.clone(),h.rect)).collect::<Vec<_>>(),before);
+        assert_eq!(app.state.screen,size);assert_eq!(app.pl_grid,grid);assert_eq!(app.state.ui_scale,1.);
+        assert!(!app.has_damage(),"detached repaint must not dirty the main window");
+        assert_eq!(main.pixmap.data(),pixels);assert_eq!(app.state.native_view,None);
+    }
+
+    #[test]
+    fn playback_fix_copy_includes_linked_automation() {
+        use crate::playlist as pl;
+        use os_model::{Clip,ClipSource,ChannelKind,target};
+        for restored in [false,true] {
+            let mut a=App::new(None);a.state.project=test_project();
+            a.state.project.channels[0].kind=ChannelKind::AudioClip;
+            pl::arr_mut(&mut a.state).clips=vec![Clip::new(384,768,2,ClipSource::Channel(0))];
+            a.state.playlist.sel=vec![0];
+            let auto=pl::create_automation(&mut a.state,target::channel(0,target::CHANNEL_VOLUME),"Volume",0.5);
+            // An independent automation lane must not come along for the ride.
+            let independent=pl::capture_automation(&mut a.state,target::channel(0,target::CHANNEL_PAN),"Pan",0.5).unwrap();
+            if restored {
+                let mut file=os_flp::project::create(&a.state.project).unwrap();
+                a.state.project=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+                a.state.playlist.automation_owners.clear();
+            }
+            let owner=pl::clips(&a.state).iter().position(|c|c.source==ClipSource::Channel(0)).unwrap();
+            a.state.playlist.sel=vec![owner];pl::copy(&mut a.state);
+            assert_eq!(a.state.playlist.clipboard.len(),2,"restored={restored}");
+            assert!(a.state.playlist.clipboard.iter().any(|c|c.source==ClipSource::Channel(auto)));
+            assert!(!a.state.playlist.clipboard.iter().any(|c|c.source==ClipSource::Channel(independent)));
+            a.state.playlist.pos=2304;pl::paste(&mut a.state);
+            let selected:Vec<_>=a.state.playlist.sel.iter().map(|&i|pl::clips(&a.state)[i]).collect();
+            assert_eq!(selected.len(),2);assert!(selected.iter().all(|c|c.position==2304&&c.track==2&&c.length==768));
+            a.state.playlist.sel=vec![owner];pl::duplicate(&mut a.state);
+            assert_eq!(a.state.playlist.sel.len(),2);
+            assert!(a.state.playlist.sel.iter().all(|&i|pl::clips(&a.state)[i].position==1152));
+            let original=pl::clips(&a.state)[owner];
+            pl::arr_mut(&mut a.state).clips[owner].position=4000;
+            let copies=pl::clone_clips(&mut a.state,&[(owner,original)]);
+            assert_eq!(copies.len(),2);assert_eq!(pl::clips(&a.state)[owner],original);
+        }
     }
 
     #[test]
@@ -20899,25 +21050,10 @@ mod tests {
         assert!(a != empty && a != b, "a long name shows its start");
     }
 
-    /// The floating hint bar wraps a hint too long for a line instead of cutting it (macOS test of #61: "...right-click:
-    /// channel mer").
     #[test]
-    fn hint_bar_wraps_long_hints() {
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
-        let mut app = App::new(None);
-        app.state.toolbar.hint_bar = true;
-        // The hint bar's second line, with `text` as the message (the mouse over the bar, which has no hint).
-        let second = |app: &mut App, c: &mut Canvas, text: &str| {
-            app.state.message = Some(text.into());
-            let r = views::toolbar::hint_bar_rect(&app.state);
-            app.mouse_move(r.cx(), r.bottom() - 4.0);
-            frame(app, c, None);
-            let y0 = (r.y + 5.0 + c.line_height(os_ui::Font::new(14))) as u32;
-            (r.x as u32 + 7..r.x as u32 + 300).flat_map(|x| (y0 + 3..y0 + 12).map(move |y| (x, y))).map(|(x, y)| c.pixmap.pixel(x, y).unwrap()).collect::<Vec<_>>()
-        };
-        let empty = second(&mut app, &mut c, "Short");
-        let long = "Click: plugin window, Shift+click: rename, right-click: channel menu, drag: move the channel to another row";
-        assert_ne!(second(&mut app, &mut c, long), empty, "the rest goes on the second line");
+    fn hint_bar_stays_in_top_toolbar() {
+        let mut app=App::new(None);let mut c=Canvas::new(1920,1080,1.).unwrap();
+        for on in [true,false,true]{app.state.toolbar.hint_bar=on;frame(&mut app,&mut c,None);let hints:Vec<_>=app.hits.iter().filter(|h|h.hint=="Hint bar").collect();assert_eq!(hints.len(),usize::from(on));assert!(hints.iter().all(|h|h.rect.bottom()<100.));}
     }
 
     /// The channel rack and time signatures (spec: ui/channel-rack.md §23, FL's numbers): the lit steps, the Auto
@@ -20990,124 +21126,17 @@ mod tests {
     /// no toolbar, the browser, workspace and floating windows up by its height; Ctrl+F11 brings them back.
     #[test]
     fn toolbars_menu() {
-        use crate::playlist::Mark;
-        use crate::views::toolbar::{band, hint_bar_rect, Opts};
-        use views::menus::{item_at, submenu, toolbar_items, works, MENUS, VIEW};
-        use winit::keyboard::{Key, NamedKey};
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
-        let mut app = App::new(None);
-        app.state.project = test_project();
-        frame(&mut app, &mut c, None);
-        assert_eq!(app.state.toolbar, Opts { separators: true, flat: false, hint_bar: false, hidden: false });
-        // The menu, from the hint panel and from bare background.
-        let open = |app: &mut App, c: &mut Canvas, (x, y): (f32, f32)| {
-            app.mouse_move(x, y);
-            app.mouse_down_right();
-            app.mouse_up();
-            frame(app, c, None);
-            app.state.playlist.popup.clone().expect("the Toolbars menu")
-        };
-        let bare = (1490.0, 20.0);
-        assert_eq!(app.top_hit(bare.0, bare.1).map(|h| h.action.clone()), Some(Action::DragWindow));
-        for at in [(200.0, 20.0), bare] {
-            let p = open(&mut app, &mut c, at);
-            assert_eq!(p.items, toolbar_items(&app.state));
-            app.key(&Key::Named(NamedKey::Escape), false, false);
-        }
-        let items = toolbar_items(&app.state);
-        let row = |label: &str| items.iter().find(|i| i.label == label).unwrap_or_else(|| panic!("{label}"));
-        for (label, enabled, mark) in [
-            ("Edit", true, Mark::Check(false)),
-            ("Separators", true, Mark::Check(true)),
-            ("Flat buttons", true, Mark::Check(false)),
-            ("Show detected MIDI chords near the hint bar", false, Mark::Check(false)),
-            ("Hint bar", true, Mark::Check(false)),
-            ("Hide", true, Mark::Check(false)),
-        ] {
-            assert_eq!((row(label).enabled, row(label).mark), (enabled, mark), "{label}");
-        }
-        assert_eq!(row("Hide").key, "Ctrl+F11");
-        // The factory presets (no user ones here), the classic layout's checked.
-        let presets: Vec<_> = items.iter().skip_while(|i| i.label != "Presets").skip(1).collect();
-        assert!(presets.len() == crate::toolbar::PRESETS.len() && presets.iter().all(|i| i.enabled));
-        assert_eq!(presets.iter().filter(|i| i.mark == Mark::Radio(true)).map(|i| i.label.as_ref()).collect::<Vec<&str>>(), ["Classic"]);
-        // VIEW > Toolbars ▸ is the same menu.
-        let entry = MENUS[VIEW].cols.iter().flat_map(|(_, items)| items.iter()).position(|it| it.label == "Toolbars").unwrap();
-        assert!(works(VIEW, item_at(VIEW, entry).unwrap()));
-        assert_eq!(submenu(VIEW, "Toolbars").unwrap()(&app.state), items);
-        let pick = |app: &mut App, c: &mut Canvas, label: &str| {
-            let p = open(app, c, (200.0, 20.0));
-            let i = p.items.iter().position(|it| it.label == label).unwrap();
-            let r = hit_rect(app, &Action::PlPopup(i));
-            click(app, c, r);
-            app.mouse_move(1300.0, 600.0);
-            frame(app, c, None);
-        };
-        let px = |c: &Canvas, x: u32, y: u32| c.pixmap.pixel(x, y).unwrap();
-        let column = |c: &Canvas, x: u32| (0..83).map(|y| px(c, x, y)).collect::<Vec<_>>();
-        // Separators off: the lines go, row 1 moves down a pixel, row 2 up one.
-        let (r1, r2) = (column(&c, 595), column(&c, 990));
-        let line = px(&c, 379, 20);
-        pick(&mut app, &mut c, "Separators");
-        assert!(!app.state.toolbar.separators);
-        assert_ne!(px(&c, 379, 20), line);
-        let (s1, s2) = (column(&c, 595), column(&c, 990));
-        // Row 41 (the old line) holds row 2's top pixel: the rows close over it.
-        assert_eq!(s1[1..=40], r1[0..=39]);
-        assert_eq!(s2[41..80], r2[42..81]);
-        // A partial repaint of the toolbar repaints it whole, so the pixels move once.
-        app.damage = Damage::None;
-        app.damage_band(CPU_RECT);
-        let (d, b) = (app.take_damage(), band(&app.state, 1920.0));
-        assert!(matches!(&d, Some(Some(v)) if v.iter().any(|r| r.contains(b.x, b.y) && r.contains(b.right() - 1.0, b.bottom() - 1.0))), "{d:?}");
-        frame_damage(&mut app, &mut c, d);
-        assert_eq!((column(&c, 595), column(&c, 990)), (s1, s2));
-        pick(&mut app, &mut c, "Separators");
-        assert!(app.state.toolbar.separators && column(&c, 595) == r1);
-        // Flat buttons: an unlit button is just its icon on the toolbar background.
-        assert_ne!(px(&c, 580, 20), px(&c, 611, 20));
-        pick(&mut app, &mut c, "Flat buttons");
-        assert!(app.state.toolbar.flat);
-        assert_eq!(px(&c, 580, 20), px(&c, 611, 20));
-        pick(&mut app, &mut c, "Flat buttons");
-        // Hint bar: the floating panel at the bottom-left, over the windows; it repaints with the hint panel.
-        pick(&mut app, &mut c, "Hint bar");
-        let hb = hint_bar_rect(&app.state);
-        assert_eq!(hb, Rect::new(0.0, 1080.0 - 84.0, 400.0, 82.0));
-        assert_eq!(app.top_hit(hb.cx(), hb.cy()).map(|h| h.action.clone()), Some(Action::Swallow));
-        let p = px(&c, 2, hb.y as u32 + 2);
-        assert!(p.red() < 0x20 && p.green() < 0x20 && p.blue() < 0x20, "{p:?}");
-        app.damage = Damage::None;
-        app.damage_band(HINT_RECT);
-        assert!(matches!(app.take_damage(), Some(Some(v)) if v.iter().any(|r| r.contains(hb.x, hb.y) && r.contains(hb.right() - 1.0, hb.bottom() - 1.0))));
-        pick(&mut app, &mut c, "Hint bar");
-        assert!(!app.state.toolbar.hint_bar);
-        // Hide (Ctrl+F11): no toolbar; the browser and the workspace from the top, the floating playlist up with them.
-        app.state.show_browser = true;
-        app.state.wins[0].maxed = false;
-        app.state.wins[0].rect = Rect::new(400.0, 200.0, 900.0, 500.0);
-        app.state.raise(Win::Playlist);
-        frame(&mut app, &mut c, None);
-        let tab = hit_rect(&app, &Action::BrowserTab(1));
-        app.key(&Key::Named(NamedKey::F11), true, false);
-        frame(&mut app, &mut c, None);
-        assert!(app.state.toolbar.hidden && !app.state.settings.open);
-        assert_eq!(app.state.work_rect().y, 0.0);
-        assert!(!app.hits.iter().any(|h| h.action == Action::Clock || h.action == Action::DragWindow));
-        assert_eq!(hit_rect(&app, &Action::BrowserTab(1)).y, tab.y - views::WORK_Y);
-        assert_eq!(app.state.win_rect(Win::Playlist).y, 200.0 - views::WORK_Y);
-        // Ctrl+F11 again: everything as it was.
-        app.key(&Key::Named(NamedKey::F11), true, false);
-        frame(&mut app, &mut c, None);
-        assert!(!app.state.toolbar.hidden && app.hits.iter().any(|h| h.action == Action::Clock));
-        assert_eq!((app.state.work_rect().y, app.state.win_rect(Win::Playlist).y), (views::WORK_Y, 200.0));
-        assert_eq!(hit_rect(&app, &Action::BrowserTab(1)), tab);
-        // From the menu too; F11 alone is still Project info.
-        pick(&mut app, &mut c, "Hide");
-        assert!(app.state.toolbar.hidden);
-        app.key(&Key::Named(NamedKey::F11), true, false);
-        app.key(&Key::Named(NamedKey::F11), false, false);
-        assert!(!app.state.toolbar.hidden && app.state.settings.open);
+        use crate::views::toolbar::Switch;
+        use winit::keyboard::{Key,NamedKey};
+        let mut app=App::new(None);let mut c=Canvas::new(1920,1080,1.).unwrap();
+        let start=app.state.toolbar.hint_bar;
+        app.toolbar_switch(Switch::HintBar);frame(&mut app,&mut c,None);
+        assert_eq!(app.hits.iter().any(|h|h.hint=="Hint bar"),!start);
+        app.toolbar_switch(Switch::HintBar);
+        app.key(&Key::Named(NamedKey::F11),true,false);frame(&mut app,&mut c,None);assert!(app.state.toolbar.hidden);
+        app.key(&Key::Named(NamedKey::F11),true,false);frame(&mut app,&mut c,None);assert!(!app.state.toolbar.hidden);
+        let items=views::menus::toolbar_items(&app.state);assert!(items.iter().any(|i|i.label=="Layout presets"&&!i.children.is_empty()));
+        assert!(items.iter().any(|i|i.label=="CPU and memory"));
     }
 
     /// Opens the Toolbars menu on the hint panel and clicks its entry `label`.

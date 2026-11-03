@@ -688,6 +688,7 @@ fn handed_on(level: f32) -> i64 {
 }
 
 struct MixTrack {
+    runtime_id: u64,
     /// Fader (0..16000, 12800 = unity), pan (-6400..6400) and stereo separation (-64..64, positive merges) as stored;
     /// automation rewrites them, then the matrix (spec: audio/mixer.md).
     vol: i32,
@@ -832,6 +833,7 @@ impl MixTrack {
     fn unity() -> MixTrack {
         let unity = [[1.0, 0.0], [0.0, 1.0]];
         MixTrack {
+            runtime_id: 0,
             vol: 12800,
             pan: 0,
             sep: 0,
@@ -1409,6 +1411,7 @@ impl Engine {
                             .collect()
                     };
                     let mut t = MixTrack {
+                        runtime_id: m.runtime_id,
                         vol: (m.volume.unwrap_or(0.8) * 16000.0).round() as i32,
                         pan: (m.pan.unwrap_or(0.0) * 6400.0).round() as i32,
                         sep: (m.stereo_separation.unwrap_or(0.0) * 64.0).round() as i32,
@@ -1805,6 +1808,11 @@ impl Engine {
 
     /// Ticks hosted plugins missed since the last call (each one still busy elsewhere after the tick's wait), heard as
     /// a gap on its channel or mixer track.
+    /// Total plugin-wait allowance per tick, bounded by the feeder's queued audio.
+    pub fn set_plugin_wait_budget(&mut self, budget: Duration) {
+        self.busy_wait = budget.min(Duration::from_millis(20));
+    }
+
     pub fn take_missed(&mut self) -> u64 {
         std::mem::take(&mut self.missed)
     }
@@ -2568,8 +2576,16 @@ impl Engine {
         // The main volume glides from where it was.
         self.main_glide = old.main_glide;
         self.exporting = old.exporting;
-        if self.rate == old.rate && self.tracks.len() == old.tracks.len() {
-            for (new, o) in self.tracks.iter_mut().zip(&mut old.tracks) {
+        let new_ids: Vec<_> = self.tracks.iter().map(|t|t.runtime_id).collect();
+        if self.rate == old.rate {
+            // Track numbers move during insertion/removal. Match surviving tracks by
+            // identity so a new track never inherits its neighbour's filter/delay history.
+            let old_ids: Vec<_> = old.tracks.iter().map(|t|t.runtime_id).collect();
+            for (index, new) in self.tracks.iter_mut().enumerate() {
+                let previous = if new.runtime_id == 0 {old.tracks.get(index).filter(|t|t.runtime_id==0).map(|_|index)}
+                    else {old_ids.iter().position(|id|*id==new.runtime_id)};
+                let Some(previous)=previous else {continue};
+                let o=&mut old.tracks[previous];
                 new.gains = o.gains;
                 new.vu = o.vu;
                 new.strip.inherit(&o.strip);
@@ -2579,10 +2595,11 @@ impl Engine {
                 new.pad = std::mem::take(&mut o.pad);
                 new.input_pad = std::mem::take(&mut o.input_pad);
                 // Sends and slot mix levels glide on from where they were.
-                if new.routes.len() == o.routes.len() && new.routes.iter().zip(&o.routes).all(|(a, b)| a.dest == b.dest) {
-                    for (a, b) in new.routes.iter_mut().zip(&mut o.routes) {
-                        a.glide = b.glide;
-                        a.pad = std::mem::take(&mut b.pad);
+                for a in &mut new.routes {
+                    let dest_id=new_ids.get(a.dest).copied();
+                    if let Some(b)=o.routes.iter_mut().find(|b|old_ids.get(b.dest).copied()==dest_id && dest_id.is_some()) {
+                        a.glide=b.glide;
+                        a.pad=std::mem::take(&mut b.pad);
                     }
                 }
                 // Own effects keep their state (delay lines, envelopes) when the slot layout is unchanged; the new
@@ -7568,6 +7585,36 @@ mod tests {
         p.channels[0].mixer_track = 1;
         p.mixer = (0..3).map(os_model::MixerTrack::new).collect();
         p
+    }
+
+    #[test]
+    fn playback_fix_mixer_layout_keeps_dsp_history() {
+        fn render(edit: u8) -> Vec<f32> {
+            let mut p=insert_project();
+            p.patterns[0].notes[0].length=3840;
+            p.mixer[1].strip[1]=50000;p.mixer[1].strip[4]=50000;
+            let mut lib=SampleLibrary::default();
+            let mut old=Engine::new(&p,&mut lib,48000,PlayMode::Pattern(1));
+            old.process(&mut vec![0.;48000]);
+            match edit {
+                1=>p.mixer.push(os_model::MixerTrack::new(3)),
+                2=>{p.mixer.insert(1,os_model::MixerTrack::new(1));p.channels[0].mixer_track=2;},
+                3=>{p.mixer.remove(2);},
+                4=>{p.mixer.swap(1,2);p.channels[0].mixer_track=2;},
+                _=>{}
+            }
+            for (i,t) in p.mixer.iter_mut().enumerate(){t.index=i as u16;}
+            let mut next=Engine::new(&p,&mut lib,48000,PlayMode::Pattern(1));
+            next.continue_from(&mut old);
+            let mut out=vec![0.;4800];next.process(&mut out);out
+        }
+        let control=render(0);
+        assert!(control.iter().any(|x|x.abs()>0.001));
+        for edit in 1..=4 {
+            let changed=render(edit);
+            let diff=control.iter().zip(changed).fold(0f32,|p,(a,b)|p.max((a-b).abs()));
+            assert!(diff<1e-7,"layout edit {edit} changed audio by {diff}");
+        }
     }
 
     fn render_with(p: &Project, fx: bool) -> Vec<f32> {

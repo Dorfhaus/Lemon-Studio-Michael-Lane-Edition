@@ -168,10 +168,10 @@ impl Panel {
 
     /// Its width when it does not grow.
     pub fn width(self) -> f32 {
-        match self {Panel::Hint=>return 247.0,Panel::Recording=>return 168.0,_=>{}}
+        match self {Panel::Hint=>return 156.0,Panel::Recording=>return 168.0,_=>{}}
         if matches!(self, Panel::Monitor | Panel::Cpu | Panel::Tools) { return 0.0; }
         if self == Panel::Utilities {
-            return if crate::settings_file::flag("declutter_toolbar", false) { 39.0 } else { 72.0 };
+            return 72.0;
         }
         if crate::settings_file::flag("declutter_toolbar", false) {
             match self { Panel::Utilities => return 72.0, Panel::Tools => return 35.0, _ => {} }
@@ -184,7 +184,7 @@ impl Panel {
     pub fn first_end(self) -> f32 {
         match self {
             Panel::Caption => 63.0,
-            Panel::Hint => 312.0,
+            Panel::Hint => 221.0,
             Panel::Transport => 570.0,
             Panel::Recording => 610.0,
             Panel::Time => 873.0,

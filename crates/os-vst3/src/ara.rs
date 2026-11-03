@@ -152,7 +152,42 @@ struct Host {
     audio: ARAAudioAccessControllerInterface,
     archiving: ARAArchivingControllerInterface,
     updates: ARAModelUpdateControllerInterface,
+    playback: ARAPlaybackControllerInterface,
+    playback_requests: Mutex<Vec<os_host::PlaybackRequest>>,
+    cycle: Mutex<(Option<(f64,f64)>,bool)>,
 }
+// Queue host commands rather than reentering the app while the plugin mutex is held.
+fn enqueue_playback(h: ARAPlaybackControllerHostRef, request: os_host::PlaybackRequest) {
+    if h.is_null() {return;}
+    let host=unsafe {&*h.cast::<Host>()};
+    if let Ok(mut queue)=host.playback_requests.lock() {
+        if queue.len()==32 {queue.remove(0);}
+        queue.push(request);
+    }
+}
+unsafe extern "C" fn playback_start(h: ARAPlaybackControllerHostRef) {enqueue_playback(h,os_host::PlaybackRequest::Start);}
+unsafe extern "C" fn playback_stop(h: ARAPlaybackControllerHostRef) {enqueue_playback(h,os_host::PlaybackRequest::Stop);}
+unsafe extern "C" fn playback_seek(h: ARAPlaybackControllerHostRef, seconds:f64) {
+    if seconds.is_finite() {enqueue_playback(h,os_host::PlaybackRequest::Seek(seconds));}
+}
+unsafe extern "C" fn playback_cycle(h: ARAPlaybackControllerHostRef, start:f64, duration:f64) {
+    if h.is_null()||!start.is_finite()||!duration.is_finite()||duration<=0.||!(start+duration).is_finite(){return;}
+    if let Ok(mut cycle)=(&*h.cast::<Host>()).cycle.lock(){
+        cycle.0=Some((start,start+duration));
+        if cycle.1 {enqueue_playback(h,os_host::PlaybackRequest::Cycle(cycle.0));}
+    }
+}
+unsafe extern "C" fn playback_cycle_enable(h: ARAPlaybackControllerHostRef, enable:ARABool) {
+    if h.is_null(){return;}
+    if let Ok(mut cycle)=(&*h.cast::<Host>()).cycle.lock(){
+        cycle.1=enable!=0;
+        enqueue_playback(h,os_host::PlaybackRequest::Cycle(if cycle.1 {cycle.0}else{None}));
+    }
+}
+fn playback_interface()->ARAPlaybackControllerInterface {
+    ARAPlaybackControllerInterface{structSize:size_of::<ARAPlaybackControllerInterface>(),requestStartPlayback:Some(playback_start),requestStopPlayback:Some(playback_stop),requestSetPlaybackPosition:Some(playback_seek),requestSetCycleRange:Some(playback_cycle),requestEnableCycle:Some(playback_cycle_enable)}
+}
+
 struct Reader {
     sample: Arc<os_engine::sample::Sample>,
     double: bool,
@@ -361,6 +396,9 @@ impl Document {
                         .unwrap_or_else(|| text(factory.api.documentArchiveID)),
                 )
                 .map_err(|_| "Invalid archive ID")?,
+                playback: playback_interface(),
+                playback_requests: Mutex::new(Vec::new()),
+                cycle: Mutex::new((None,false)),
                 failed: AtomicBool::new(false),
                 changed: AtomicBool::new(false),
                 audio: ARAAudioAccessControllerInterface {
@@ -396,6 +434,8 @@ impl Document {
                 archivingControllerInterface: &host.archiving,
                 modelUpdateControllerHostRef: h.cast(),
                 modelUpdateControllerInterface: &host.updates,
+                playbackControllerHostRef: h.cast(),
+                playbackControllerInterface: &host.playback,
                 ..Default::default()
             });
             let props = ARADocumentProperties {
@@ -593,6 +633,9 @@ impl Document {
         }
         self.extension = Some(ext);
         Ok(())
+    }
+    pub fn take_playback_requests(&self)->Vec<os_host::PlaybackRequest> {
+        self.host.playback_requests.lock().map(|mut q|std::mem::take(&mut *q)).unwrap_or_default()
     }
     pub fn poll(&self) {
         unsafe {
@@ -860,7 +903,20 @@ mod tests {
             audio: Default::default(),
             archiving: Default::default(),
             updates: Default::default(),
+            playback: playback_interface(),
+            playback_requests: Mutex::new(Vec::new()),
+            cycle: Mutex::new((None,false)),
         })
+    }
+    #[test]
+    fn ara_playback_callbacks_queue_valid_commands() {
+        let mut host=host();let h=(&mut *host as *mut Host).cast();
+        unsafe {
+            playback_start(h);playback_seek(h,1.25);playback_seek(h,f64::NAN);
+            playback_cycle(h,0.5,2.);playback_cycle_enable(h,1);playback_stop(h);playback_cycle_enable(h,0);
+        }
+        use os_host::PlaybackRequest::*;
+        assert_eq!(*host.playback_requests.lock().unwrap(),vec![Start,Seek(1.25),Cycle(Some((0.5,2.5))),Stop,Cycle(None)]);
     }
     #[test]
     fn ara_callback_readers_stereo_bounds_and_lifetime() {

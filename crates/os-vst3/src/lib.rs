@@ -693,8 +693,8 @@ impl Plugin {
         self.start_processing();
         let mut at=0;
         while at<left.len(){let n=(left.len()-at).min(self.max_frames as usize);
-            let pos=frame+at as u64;let beats=pos as f64/rate as f64*2.;
-            self.set_context(Some(os_engine::TransportInfo{playing:true,tempo:120.,frame:pos,beats,bar_start:(beats/4.).floor()*4.,bar:(beats/4.) as i32,numerator:4,denominator:4,looping:None}));
+            let pos=frame+at as u64;
+            self.set_context(Some(ara_render_context(self.song,pos,rate)));
             self.process_chunk(&mut left[at..at+n],&mut right[at..at+n],None,None);at+=n;
         }Ok(())
     }
@@ -1488,6 +1488,7 @@ impl os_host::Plugin for Plugin {
         true
     }
 
+    fn take_playback_requests(&mut self)->Vec<os_host::PlaybackRequest> {self.ara.as_ref().map(|d|d.take_playback_requests()).unwrap_or_default()}
     fn take_state_changed(&mut self)->bool {self.ara.as_ref().is_some_and(|d|d.take_changed())}
 
     fn take_param_events(&mut self) -> Vec<os_host::ParamEvent> {
@@ -1765,4 +1766,31 @@ impl Plugin {
    }}
   };self.mpe_queue.push(Event{bus_index:0,sample_offset:offset as i32,ppq_position:0.,flags:0,type_,event});
  }
+}
+
+/// ARA documents use source-relative sample positions. Keep that coordinate system
+/// while preserving the real host tempo, signature and transport state.
+fn ara_render_context(host: Option<os_engine::TransportInfo>, frame:u64, rate:u32)->os_engine::TransportInfo {
+    let fallback=os_engine::TransportInfo{playing:false,tempo:120.,frame:0,beats:0.,bar_start:0.,bar:0,numerator:4,denominator:4,looping:None};
+    let mut context=host.unwrap_or(fallback);
+    let tempo=if context.tempo.is_finite()&&context.tempo>0. {context.tempo}else{120.};
+    let beats=frame as f64/f64::from(rate.max(1))*tempo/60.;
+    let bar_len=f64::from(context.numerator.max(1))*4./f64::from(context.denominator.max(1));
+    context.frame=frame;context.tempo=tempo;context.beats=beats;
+    context.bar=(beats/bar_len).floor() as i32;context.bar_start=f64::from(context.bar)*bar_len;
+    // Project cycle positions are not source-relative document positions.
+    context.looping=None;
+    context
+}
+
+#[cfg(test)]
+mod ara_timing_tests {
+    #[test] fn ara_uses_host_tempo_signature_and_stopped_state() {
+        let host=os_engine::TransportInfo{playing:true,tempo:90.,frame:999999,beats:99.,bar_start:98.,bar:28,numerator:7,denominator:8,looping:Some((10.,20.))};
+        let a=super::ara_render_context(Some(host),48000*3,48000);
+        assert_eq!((a.tempo,a.numerator,a.denominator,a.frame),(90.,7,8,144000));
+        assert_eq!((a.beats,a.bar_start,a.bar),(4.5,3.5,1));assert!(a.playing);assert_eq!(a.looping,None);
+        assert!(!super::ara_render_context(Some(os_engine::TransportInfo{playing:false,..host}),0,48000).playing);
+        assert!(!super::ara_render_context(None,0,48000).playing);
+    }
 }

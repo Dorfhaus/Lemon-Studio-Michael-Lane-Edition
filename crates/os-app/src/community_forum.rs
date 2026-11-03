@@ -11,16 +11,18 @@ pub struct Post {pub id:u64,pub thread:u64,pub parent:Option<u64>,#[serde(defaul
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
 pub struct Profile {pub name:String,pub avatar:String}
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
-pub struct Page {#[serde(default)]pub profile:Profile,pub threads:Vec<Topic>,pub posts:Vec<Post>,pub topic:Option<Topic>,pub total:u64,pub offset:u64}
+pub struct Category {pub id:u64,pub name:String,pub posts:u64}
+#[derive(Clone,Debug,Default,Serialize,Deserialize)]
+pub struct Page {#[serde(default)]pub category:u64,#[serde(default)]pub categories:Vec<Category>,#[serde(default)]pub profile:Profile,pub threads:Vec<Topic>,pub posts:Vec<Post>,pub topic:Option<Topic>,pub total:u64,pub offset:u64}
 #[derive(Clone,Debug,Default)]
-pub struct View {pub editing_profile:bool,pub name:crate::dialog::Field,pub avatar:String,pub avatar_job:Option<std::sync::Arc<std::sync::Mutex<Option<Result<String,String>>>>>,pub page:Page,pub new_thread:bool,pub title:crate::dialog::Field,pub body:crate::dialog::Field,pub focus:u8,pub reply:Option<u64>,pub height:std::cell::Cell<f32>}
+pub struct View {pub collapsed:std::collections::HashSet<u64>,pub editing_profile:bool,pub name:crate::dialog::Field,pub avatar:String,pub avatar_job:Option<std::sync::Arc<std::sync::Mutex<Option<Result<String,String>>>>>,pub page:Page,pub new_thread:bool,pub title:crate::dialog::Field,pub body:crate::dialog::Field,pub focus:u8,pub reply:Option<u64>,pub height:std::cell::Cell<f32>}
 fn valid_avatar(s:&str)->bool {s.is_empty()||(s.len()==6144&&s.bytes().all(|b|b.is_ascii_hexdigit()))}
 pub fn valid(p:&Page)->bool {
  let safe=|s:&str,max:usize|s.chars().count()<=max&&!s.chars().any(|c|c.is_control()&&c!='\n'&&c!='\t');
  let topic=|t:&Topic|t.id>0&&t.locked<=1&&safe(&t.title,100)&&safe(&t.author,32)&&safe(&t.member,32)&&valid_avatar(&t.avatar);
- safe(&p.profile.name,32)&&valid_avatar(&p.profile.avatar)&&p.threads.len()<=20&&p.posts.len()<=20&&p.offset<=1000000&&p.threads.iter().all(topic)&&p.topic.as_ref().is_none_or(topic)&&p.posts.iter().all(|p|p.id>0&&p.completed<=1&&p.depth<=1000&&safe(&p.parent_author,32)&&safe(&p.parent_body,800)&&safe(&p.body,800)&&safe(&p.author,32)&&safe(&p.member,32)&&valid_avatar(&p.avatar)&&(-1..=1).contains(&p.mine))
+ p.category<=9&&p.categories.len()<=9&&p.categories.iter().all(|c|c.id>0&&c.id<=9&&safe(&c.name,40))&&safe(&p.profile.name,32)&&valid_avatar(&p.profile.avatar)&&p.threads.len()<=20&&p.posts.len()<=20&&p.offset<=1000000&&p.threads.iter().all(topic)&&p.topic.as_ref().is_none_or(topic)&&p.posts.iter().all(|p|p.id>0&&p.completed<=1&&p.depth<=1000&&safe(&p.parent_author,32)&&safe(&p.parent_body,800)&&safe(&p.body,800)&&safe(&p.author,32)&&safe(&p.member,32)&&valid_avatar(&p.avatar)&&(-1..=1).contains(&p.mine))
 }
-pub fn request(s:&State)->serde_json::Value {let p=&s.feature_votes.forum.page;serde_json::json!({"action":"forum_list","thread":p.topic.as_ref().map_or(0,|t|t.id),"offset":p.offset})}
+pub fn request(s:&State)->serde_json::Value {let p=&s.feature_votes.forum.page;serde_json::json!({"action":"forum_list","thread":p.topic.as_ref().map_or(0,|t|t.id),"offset":p.offset,"category":p.category})}
 pub fn accept(v:&mut crate::feature_votes::View,page:Page,submitted:bool) {
  v.forum.page=page;
  if submitted {v.forum.new_thread=false;v.forum.body.set("");v.forum.title.set("");v.forum.reply=None;v.forum.focus=0;}
@@ -41,16 +43,16 @@ pub fn act(app:&mut App,id:u64,cmd:i8) {
     let title=f.title.text.trim();if !(4..=100).contains(&title.chars().count()){app.state.feature_votes.status="Use 4–100 characters for your thread title.".into();app.invalidate();return;}
     serde_json::json!({"action":"forum_create","title":title,"body":body})
    }else{let Some(t)=&f.page.topic else{return;};if t.locked!=0{return;}
-    serde_json::json!({"action":"forum_reply","thread":t.id,"parent":f.reply,"body":body})};
+    serde_json::json!({"action":"forum_reply","thread":t.id,"parent":f.reply,"body":body,"category":f.page.category})};
    crate::feature_votes::start(app,payload);
   },
   16=>{if f.page.posts.iter().any(|p|p.id==id){f.reply=Some(id);f.focus=2;app.state.browser_scroll=0.;app.invalidate();}},
   17|18=>{if !app.state.feature_votes.online{return;}let Some(t)=&f.page.topic else{return;};if t.locked!=0{return;}
    let Some(post)=f.page.posts.iter().find(|p|p.id==id) else{return;};let value=if cmd==17{1}else{-1};
-   let payload=serde_json::json!({"action":"forum_react","thread":t.id,"offset":f.page.offset,"post":id,"value":if post.mine==value{0}else{value}});crate::feature_votes::start(app,payload);
+   let payload=serde_json::json!({"action":"forum_react","thread":t.id,"offset":f.page.offset,"category":f.page.category,"post":id,"value":if post.mine==value{0}else{value}});crate::feature_votes::start(app,payload);
   },
   19|20=>{let offset=if cmd==19{f.page.offset.saturating_sub(20)}else{f.page.offset+20};if offset>=f.page.total&&offset!=0{return;}
-   let payload=serde_json::json!({"action":"forum_list","thread":f.page.topic.as_ref().map_or(0,|t|t.id),"offset":offset});app.state.browser_scroll=0.;crate::feature_votes::start(app,payload);
+   let payload=serde_json::json!({"action":"forum_list","thread":f.page.topic.as_ref().map_or(0,|t|t.id),"offset":offset,"category":f.page.category});app.state.browser_scroll=0.;crate::feature_votes::start(app,payload);
   },
   21=>{f.reply=None;app.invalidate();},
   22=>{f.editing_profile=true;f.name.set(&f.page.profile.name);f.avatar=f.page.profile.avatar.clone();f.focus=3;app.state.browser_scroll=0.;app.invalidate();},
@@ -60,6 +62,8 @@ pub fn act(app:&mut App,id:u64,cmd:i8) {
    let name=f.name.text.trim();if !(2..=32).contains(&name.chars().count()){app.state.feature_votes.status="Use 2–32 characters for your display name.".into();app.invalidate();return;}
    let body=serde_json::json!({"action":"forum_profile","name":name,"avatar":f.avatar,"thread":f.page.topic.as_ref().map_or(0,|t|t.id),"offset":f.page.offset});crate::feature_votes::start(app,body);
   },
+  27=>{if !f.collapsed.remove(&id){f.collapsed.insert(id);}app.invalidate();},
+  28=>{let thread=f.page.topic.as_ref().map_or(0,|t|t.id);f.reply=None;f.focus=0;app.state.browser_scroll=0.;crate::feature_votes::start(app,serde_json::json!({"action":"forum_list","thread":thread,"category":id}));},
   _=>{}
  }
 }
@@ -114,18 +118,24 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
   button(ui,Rect::new(x,r.y+256.,w,28.),"Save profile",Action::FeatureVote(0,25),enabled&&f.avatar_job.is_none(),true,"Save your public profile");
   f.height.set(0.);ui.c.pop_clip();return;
  }
+ let categories=p.topic.as_ref().is_some_and(|t|t.title=="Bugs, Fixes, Issues")&&!p.categories.is_empty();
  if f.new_thread {
   input(ui,Rect::new(x,r.y+110.,w,32.),&f.title,f.focus==1,"Thread title (4–100 characters)",13);
  }else if let Some(t)=&p.topic {text(ui,Rect::new(x,r.y+108.,w,39.),&t.title,14);}
  else {text(ui,Rect::new(x,r.y+111.,w,45.),"A space for the Lemon community. Posts are public; keep personal information private.",12);}
- if f.new_thread||p.topic.as_ref().is_some_and(|t|t.locked==0) {
+ if f.new_thread||(p.topic.as_ref().is_some_and(|t|t.locked==0)&&(!categories||p.category!=0)) {
   input(ui,Rect::new(x,r.y+152.,w,52.),&f.body,f.focus==2,"Write a message (up to 800 characters)",14);
   let context=if let Some(id)=f.reply {f.page.posts.iter().find(|p|p.id==id).map(|p|format!("Replying to {} · #{}",p.author,id)).unwrap_or_else(||format!("Replying to message #{id}"))}else if f.new_thread{"New discussion".into()}else{"Replying to this discussion".into()};
   ui.c.text_clip(Font::new(11).bold(),x,r.y+238.,w,ui.t.h(0xb5d98b),&context);
   let label=if f.new_thread{"Post thread"}else{"Post reply"};
   button(ui,Rect::new(x,r.y+210.,w*0.52,26.),label,Action::FeatureVote(0,15),enabled,true,"Publish your message · Ctrl+Enter");
   if let Some(id)=f.reply{button(ui,Rect::new(x+w*0.55,r.y+210.,w*0.45,26.),&format!("To #{id} ×"),Action::FeatureVote(0,21),true,false,"Cancel reply target");}
- } else if p.topic.is_some(){ui.c.text(Font::new(12),x,r.y+161.,ui.t.text_dim,"Thread closed · messages remain readable");}
+ } else if p.topic.is_some()&&!categories{ui.c.text(Font::new(12),x,r.y+161.,ui.t.text_dim,"Thread closed · messages remain readable");}
+ if categories&&!f.new_thread {
+  button(ui,Rect::new(x,r.y+112.,w,28.),"Bugs, Fixes, Issues · Categories",Action::FeatureVote(0,28),!v.busy,false,"Browse issue categories");
+  if p.category==0{text(ui,Rect::new(x,r.y+154.,w,65.),"Choose a category to report an issue or reply to an existing report. General discussions stay in Threads.",12);}
+  else if let Some(c)=p.categories.iter().find(|c|c.id==p.category){ui.c.text_clip(Font::new(11),x,r.y+250.,w,ui.t.text_dim,&c.name);}
+ }
  if !f.new_thread {
   button(ui,Rect::new(x,r.y+271.,64.,23.),"Previous",Action::FeatureVote(0,19),!v.busy&&p.offset>0,false,"Previous page");
   button(ui,Rect::new(x+w-64.,r.y+271.,64.,23.),"Next",Action::FeatureVote(0,20),!v.busy&&p.offset+20<p.total,false,"Next page");
@@ -133,13 +143,18 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
   ui.c.text_center(Font::new(10),Rect::new(x+66.,r.y+271.,(w-132.).max(0.),23.),ui.t.text_dim,&label);
  }
  let list=Rect::new(x,r.y+TOP,w,(r.h-TOP).max(0.));ui.c.push_clip(list);
- let posts:Vec<_>=p.posts.iter().map(|post|{
+ let mut hidden_depth=None;
+ let posts:Vec<_>=p.posts.iter().filter(|post|{if hidden_depth.is_some_and(|d|post.depth>d){return false;}hidden_depth=None;if f.collapsed.contains(&post.id){hidden_depth=Some(post.depth);}true}).map(|post|{
   let indent=post.depth.min(2) as f32*10.;
   (post,comment_lines(ui,&post.body,w-indent-24.))
  }).collect();
- let height=if f.new_thread{0.}else if p.topic.is_some(){posts.iter().map(|(post,lines)|76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.}).sum()}else{p.threads.len() as f32*104.};f.height.set(height);
+ let height=if categories&&p.category==0&&!f.new_thread{p.categories.len() as f32*66.}else if f.new_thread{0.}else if p.topic.is_some(){posts.iter().map(|(post,lines)|if f.collapsed.contains(&post.id){48.}else{76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.}}).sum()}else{p.threads.len() as f32*104.};f.height.set(height);
  let scroll=s.browser_scroll.min((height-list.h).max(0.));let mut offset=0.;
- if !f.new_thread&&p.topic.is_none() {
+ if categories&&p.category==0&&!f.new_thread {
+  for c in &p.categories {let y=list.y+offset-scroll;offset+=66.;if y+66.<=list.y||y>=list.bottom(){continue;}
+   button(ui,Rect::new(x,y,w,56.),&format!("{} · {}",c.name,c.posts),Action::FeatureVote(c.id,28),!v.busy&&y>=list.y&&y+56.<=list.bottom(),false,"Open category and report or discuss an issue");
+  }
+ }else if !f.new_thread&&p.topic.is_none() {
   if p.threads.is_empty(){text(ui,Rect::new(x+8.,list.y+12.,w-16.,52.),"No discussions yet. Start the first thread.",13);}
   for t in &p.threads {
    let y=list.y+offset-scroll;offset+=104.;if y+104.<=list.y||y>=list.bottom(){continue;}
@@ -151,13 +166,15 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
  }else if !f.new_thread {
   for (post,lines) in posts {
    let indent=post.depth.min(2) as f32*10.;let x=x+indent;let w=w-indent;
-   let height=76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.};let y=list.y+offset-scroll;offset+=height;if y+height<=list.y||y>=list.bottom(){continue;}
+   let collapsed=f.collapsed.contains(&post.id);let height=if collapsed{48.}else{76.+lines.len() as f32*16.+if post.parent.is_some(){48.}else{0.}};let y=list.y+offset-scroll;offset+=height;if y+height<=list.y||y>=list.bottom(){continue;}
    ui.c.fill_rrect(Rect::new(x,y,w,height-8.),7.,ui.t.s(0x273236));
    ui.hit(Rect::new(x,y.max(list.y),w,((y+height-8.).min(list.bottom())-y.max(list.y)).max(0.)),Action::BrowserList,format!("{} · {} · message #{}{}",post.author,post.member,post.id,post.parent.map(|n|format!(" · reply to #{n}")).unwrap_or_default()));
    let date=chrono::DateTime::from_timestamp(post.created,0).map(|d|d.format("%d %b %H:%M UTC").to_string()).unwrap_or_default();
    avatar(ui,Rect::new(x+8.,y+7.,28.,28.),&post.avatar,&post.author);
-   ui.c.text_clip(Font::new(10).bold(),x+43.,y+9.,w-53.,ui.t.h(0xb5d98b),&format!("{} · #{}{}",post.author,post.id,if post.completed!=0{" · Completed"}else{""}));
-   ui.c.text_clip(Font::new(9),x+43.,y+24.,w-53.,ui.t.text_dim,&format!("{} · {date}{}",post.member,post.parent.map(|n|format!(" · reply to #{n}")).unwrap_or_default()));
+   ui.c.text_clip(Font::new(10).bold(),x+43.,y+9.,w-85.,ui.t.h(0xb5d98b),&format!("{} · #{}{}",post.author,post.id,if post.completed!=0{" · Completed"}else{""}));
+   ui.c.text_clip(Font::new(9),x+43.,y+24.,w-85.,ui.t.text_dim,&format!("{} · {date}{}",post.member,post.parent.map(|n|format!(" · reply to #{n}")).unwrap_or_default()));
+   button(ui,Rect::new(x+w-34.,y+8.,26.,24.),if collapsed{"+"}else{"−"},Action::FeatureVote(post.id,27),y+8.>=list.y&&y+32.<=list.bottom(),false,"Collapse or expand this message and its replies");
+   if collapsed{continue;}
    let mut cy=y+41.;
    if let Some(parent)=post.parent {
     ui.c.fill_rect(Rect::new(x+8.,cy,2.,40.),ui.t.h(0x8caa78));
@@ -205,6 +222,9 @@ pub fn tick(app:&mut App) {
   act(&mut app,7,16);assert_eq!(app.state.feature_votes.forum.reply,Some(7));assert_eq!(app.state.feature_votes.forum.focus,2);
   let before=app.state.project.clone();assert!(crate::feature_votes::key(&mut app,&winit::keyboard::Key::Character("Hello everyone".into()),false,false));assert_eq!(app.state.project,before);assert_eq!(app.state.feature_votes.forum.body.text,"Hello everyone");assert!(!app.typing_key(winit::keyboard::KeyCode::KeyA,true,false,false));
   for (w,h) in [(1000,600),(1280,900)]{let mut canvas=os_ui::Canvas::new(w,h,1.).unwrap();app.state.browser_scroll=0.;app.paint(&mut canvas,None);assert!(app.hits.iter().any(|h|h.action==Action::FeatureVote(0,6)));assert!(app.hits.iter().any(|h|h.action==Action::FeatureVote(1,6)));app.state.browser_scroll=max_scroll(&app.state);app.paint(&mut canvas,None);assert!(app.hits.iter().filter(|h|matches!(h.action,Action::FeatureVote(_,16..=18))).all(|hit|hit.rect.bottom()<=h as f32-28.));if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){canvas.pixmap.save_png(std::path::PathBuf::from(dir).join(format!("forum-{h}.png"))).unwrap();}}
+  act(&mut app,7,27);assert!(app.state.feature_votes.forum.collapsed.contains(&7));
+  let mut c=os_ui::Canvas::new(1280,900,1.).unwrap();app.state.browser_scroll=0.;app.paint(&mut c,None);assert_eq!(app.state.feature_votes.forum.height.get(),48.);assert!(!app.hits.iter().any(|h|matches!(h.action,Action::FeatureVote(8,16..=18))));
+  act(&mut app,7,27);app.paint(&mut c,None);assert!(app.state.feature_votes.forum.height.get()>48.);
   act(&mut app,0,22);assert!(app.state.feature_votes.forum.editing_profile);assert_eq!(app.state.feature_votes.forum.focus,3);
   if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){let mut canvas=os_ui::Canvas::new(1000,600,1.).unwrap();app.paint(&mut canvas,None);canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("forum-profile.png")).unwrap();}
   let picture=std::env::temp_dir().join(format!("lemon-avatar-{}.png",std::process::id()));let mut pix=tiny_skia::Pixmap::new(64,32).unwrap();pix.fill(tiny_skia::Color::from_rgba8(120,50,30,255));pix.save_png(&picture).unwrap();choose_avatar(&mut app,picture.clone());let start=std::time::Instant::now();while app.state.feature_votes.forum.avatar_job.is_some(){tick(&mut app);assert!(start.elapsed().as_secs()<5);std::thread::sleep(std::time::Duration::from_millis(5));}assert_eq!(app.state.feature_votes.forum.avatar.len(),6144);assert!(valid_avatar(&app.state.feature_votes.forum.avatar));std::fs::remove_file(picture).unwrap();

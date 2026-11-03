@@ -261,9 +261,60 @@ pub fn reconcile(app: &mut App) {
     app.state.piano.dirty = true;
 }
 
+/// A source document may appear more than once: use the selected occurrence,
+/// then the playing occurrence, then the first one. Never route requests to another channel.
+pub fn playback_request(app:&mut App,row:usize,request:os_host::PlaybackRequest) {
+    use os_host::PlaybackRequest as R;
+    let Some(channel)=app.state.project.channels.get(row).filter(|c|is(c)) else {return};
+    let matches=|c:&&os_model::Clip| c.source==ClipSource::Channel(channel.index)&&!c.muted;
+    let all=pl::clips(&app.state);
+    let at=if app.transport.playing()&&app.transport.song(){app.transport.tick().max(0.) as u32}else{app.state.playlist.pos};
+    let selected=app.state.playlist.sel.iter().filter_map(|&i|all.get(i)).find(matches);
+    let Some(clip)=selected.or_else(||all.iter().filter(matches).find(|c|c.position<=at&&at<c.end())).or_else(||all.iter().find(matches)).copied() else {return};
+    let tempo=app.state.project.tick_tempo(app.state.tempo);
+    let tick=|seconds| source_tick(&clip,seconds,app.state.project.ppq,tempo);
+    // Resolve before mutating app to avoid holding references across a restart.
+    let seek=if let R::Seek(seconds)=request {tick(seconds)} else {None};
+    let cycle=if let R::Cycle(Some((a,b)))=request {tick(a).zip(tick(b)).filter(|(a,b)|b>a)}else{None};
+    match request {
+        R::Start=>{
+            app.state.song_mode=true;
+            if !app.transport.playing()||!app.transport.song(){
+                let pos=app.state.playlist.pos.clamp(clip.position,clip.end().saturating_sub(1));
+                app.play_song_from(pos);
+            }else if app.transport.paused(){app.transport.resume();}
+        }
+        R::Stop=>app.act(crate::app::Action::Stop),
+        R::Seek(_)=>if let Some(t)=seek {app.state.song_mode=true;app.set_song_pos(t,true);},
+        R::Cycle(range)=>{
+            if range.is_none()||cycle.is_some(){
+                app.state.song_mode=true;app.state.playlist.range=cycle;
+                if app.transport.playing()&&!app.transport.paused(){app.play_song_from(cycle.map_or(at,|r|r.0));}
+            }
+        }
+    }
+    app.invalidate();
+}
+fn source_tick(clip:&os_model::Clip,seconds:f64,ppq:u16,tempo:f64)->Option<u32> {
+    if !seconds.is_finite()||!tempo.is_finite()||tempo<=0. {return None;}
+    let start=clip.window.map_or(0.,|w|w.0.max(0.)/1000.);
+    let position=f64::from(clip.position)+(seconds-start)*tempo/60.*f64::from(ppq.max(1));
+    Some(position.round().clamp(f64::from(clip.position),f64::from(clip.end())) as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn playback_fix_ara_seek_maps_trimmed_source_to_occurrence() {
+        let mut clip=os_model::Clip::new(960,384,2,ClipSource::Channel(0));
+        clip.window=Some((2000.,4000.));
+        assert_eq!(source_tick(&clip,2.,96,90.),Some(960));
+        assert_eq!(source_tick(&clip,3.,96,90.),Some(1104));
+        assert_eq!(source_tick(&clip,-10.,96,90.),Some(960));
+        assert_eq!(source_tick(&clip,100.,96,90.),Some(1344));
+        assert_eq!(source_tick(&clip,f64::NAN,96,90.),None);
+    }
     /// Runs only against an explicitly supplied installed plugin, with synthetic audio and no editor/device.
     #[test]
     #[ignore = "requires LEMON_ARA_TEST_PLUGIN; no GUI or audio device is opened"]

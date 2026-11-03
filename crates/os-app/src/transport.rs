@@ -1082,6 +1082,9 @@ impl Feeder {
         let t0 = Instant::now();
         let mut frames = 0u64;
         while self.queue.queued() < want && self.queue.has_room() {
+            // The device has already consumed its block. The remaining queue is
+            // our deadline; reserve 2 ms for rendering instead of a fixed wait.
+            e.set_plugin_wait_budget(plugin_wait_budget(self.queue.queued()/2,self.rate));
             match e.next_tick() {
                 None => {
                     self.queue.ended.store(true, Ordering::Release);
@@ -3323,5 +3326,22 @@ mod tests {
         let mut app=crate::app::App::new(None);app.state.piano.dirty=false;
         crate::patterns::select(&mut app.state,3);assert!(app.state.piano.dirty);
         assert_eq!(crate::rack::play_project(&app.state).current_pattern,Some(3));
+    }
+}
+
+// Spend only already-buffered audio on waiting for a busy editor. Keep rendering
+// headroom and cap the wait in Engine so an unresponsive plugin cannot hang playback.
+fn plugin_wait_budget(queued_frames:u64,rate:u32)->Duration {
+    if queued_frames==0 {return Duration::from_millis(2);}
+    let spare=queued_frames.saturating_sub(u64::from(rate/500));
+    Duration::from_secs_f64(spare as f64/f64::from(rate.max(1)))
+}
+#[cfg(test)] mod playback_budget_tests {
+    #[test] fn playback_fix_wait_respects_audio_remaining_in_queue() {
+        use std::time::Duration as D;
+        assert_eq!(super::plugin_wait_budget(48,48000),D::ZERO);
+        assert_eq!(super::plugin_wait_budget(480,48000),D::from_millis(8));
+        assert_eq!(super::plugin_wait_budget(960,48000),D::from_millis(18));
+        assert_eq!(super::plugin_wait_budget(0,48000),D::from_millis(2));
     }
 }

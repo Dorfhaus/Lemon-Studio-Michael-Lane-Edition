@@ -4,6 +4,22 @@
   "sections": [
     {
       "date": "2026-11-03",
+      "title": "Community organization, toolbar controls and playback fixes · public build 2026110306",
+      "changes": [
+        "Public build 2026110306: organized Bugs, Fixes, Issues into categories, moved bug reports from voting with votes and comments preserved, and removed completed reports from public view. Replies can be collapsed and expanded.",
+        "Simplified the Community voting header. Main menus now group related commands into shorter submenus. The toolbar options button opens toolbar controls directly.",
+        "The compact Hint Bar sits after Project Info and its toggle hides that same field. CPU and Memory now hides or shows the compact CPU display next to AI. Removed the duplicate bottom-left hint panel.",
+        "Change Log entries are grouped by calendar date, combining updates released on the same day while preserving the recorded history.",
+        "Fixed playlist scroll repaint corruption when the playlist extends beyond the visible workspace. Audio and MIDI notes can be recorded together into separate destinations.",
+        "Cleaned up Channel Rack and clip menus, with automatic Audio and Automation groups for recorded/imported clips.",
+        "Mixer insert, delete and reorder operations preserve existing processing state. Copies of sample clips keep their linked inline automation.",
+        "Improved ARA transport, tempo, time-signature and playback-state notifications. Reduced plugin-lock contention and made audio wait budgets account for queued audio.",
+        "Reduced redundant window painting when switching monitors. Windows hosted-plugin DPI editor reopening waits until playback stops; detached pointer updates are coalesced.",
+        "Available for Windows, Linux x64, Apple-silicon Mac and Intel Mac, including the current built-in Lemon Wave. Linux is compiled and packaged without runtime/audio testing. Exact device-specific crackling, vendor ARA behavior, Masterdesk presets and Tahoe updater reports remain open pending reproduction."
+      ]
+    },
+    {
+      "date": "2026-11-03",
       "title": "Threaded community replies, browser controls and compact CPU meter · public build 2026110305",
       "changes": [
         "Community replies now stay with their original messages, with nested reply spacing, quoted context and a clear composer reply target. Pagination follows the conversation, including replies posted from the owner dashboard.",

@@ -160,6 +160,7 @@ impl Hosted {
 /// What a plugin window asks of the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    AraPlayback(usize,os_host::PlaybackRequest),
     BrowseSample(usize),
     Close(usize),
     ToggleOn(usize),
@@ -234,6 +235,8 @@ pub fn fx_of(key: usize) -> Option<(u16, u8)> {
 
 #[derive(Default)]
 pub struct Plugins {
+    pub defer_editor_scale:bool,
+    pending_scales:BTreeMap<usize,f32>,
     pub edit_revision: u64,
     #[cfg(test)] pub state_fail: std::collections::BTreeSet<usize>,
     pub available: Vec<Available>,
@@ -580,6 +583,7 @@ impl Plugins {
 
     /// Removes the instance under `key` (closing its window first).
     pub fn drop_key(&mut self, key: usize) {
+        self.pending_scales.remove(&key);
         #[cfg(plugin_windows)]
         self.close_window(key);
         self.hosted.remove(&key);
@@ -873,6 +877,7 @@ impl Plugins {
 
     /// Closes every window and drops every instance (a new or opened project).
     pub fn clear(&mut self) {
+        self.pending_scales.clear();
         #[cfg(plugin_windows)]
         for row in self.hosted.keys().copied().collect::<Vec<_>>() {
             self.close_window(row);
@@ -1008,7 +1013,7 @@ impl Plugins {
         self.scale = scale;
         #[cfg(any(windows, target_os = "macos"))]
         for row in self.docked() {
-            self.rescale_window(row, scale);
+            self.pending_scales.insert(row,scale);
         }
     }
 
@@ -1020,7 +1025,7 @@ impl Plugins {
         if w.scale() == scale {
             return;
         }
-        let Ok(mut p) = plugin.lock() else { return };
+        let Ok(mut p) = plugin.try_lock() else { self.pending_scales.insert(row,scale);return };
         let page = link.as_ref().map(|l| l.page_now());
         p.close_editor();
         w.set_scale(scale);
@@ -1039,6 +1044,7 @@ impl Plugins {
 
     #[cfg(plugin_windows)]
     pub(crate) fn close_window(&mut self, row: usize) {
+        self.pending_scales.remove(&row);
         #[cfg(windows)] self.close_rack(row);
         if let Some(h) = self.hosted.get_mut(&row) {
             h.pending_editor_resize = None;
@@ -1168,6 +1174,8 @@ impl Plugins {
         for (&row, h) in &mut self.hosted {
             let look = h.due(h.seen);
             let mut menu: Option<(os_host::Menu, (i32, i32))> = None;
+            #[cfg(plugin_windows)] let mut editor_layout = None;
+            #[cfg(windows)] let mut embedded_size = None;
             if let Some(mut p) = look.and_then(|_| h.plugin.try_lock().ok()) {
                 h.seen = look.unwrap_or(h.seen);
                 // A crash stopped it (spec: plugins/plugin-formats.md, "Crash containment"): said once, window closed.
@@ -1177,8 +1185,10 @@ impl Plugins {
                     close.push(row);
                 }
                 p.idle();
-                #[cfg(windows)] if let (Some(e),Some(size))=(&mut h.rack_editor,p.editor_size()){
-                    if !e.accept_size(size){p.close_editor();h.rack_editor=None;h.rack_error=Some("This plugin reported an invalid editor size.".into());}else{e.animate();}
+                out.extend(p.take_playback_requests().into_iter().map(|request|Request::AraPlayback(row,request)));
+                #[cfg(windows)] if let (Some(_),Some(size))=(&h.rack_editor,p.editor_size()){
+                    if !crate::rack_mixer::vertical_shape(size){p.close_editor();h.rack_editor=None;h.rack_error=Some("This plugin reported an invalid editor size.".into());}
+                    else {embedded_size=Some(size);}
                 }
                 // A menu the plugin asked to pop up over its editor: at its point on the screen, or closed at once
                 // without a window to show it over (spec: plugins/vst3-hosting.md §9).
@@ -1200,17 +1210,21 @@ impl Plugins {
                 if let (Some(w), false, Some((ew, eh))) = (&h.window, h.linked(), p.editor_size()) {
                     let k = w.scale();
                     crate::rack_mixer::observe_editor(p.desc(),(ew,eh),k);
-                    w.set_resizable(p.editor_resizable().then_some((1.0, 1.0)));
+                    let resizable=p.editor_resizable().then_some((1.0, 1.0));
                     let (ew, eh) = h.pending_editor_resize.take()
                         .and_then(|(width, height)| p.resize_editor(
                             (width as f32 * k).round() as u32,
                             (height as f32 * k).round() as u32))
                         .unwrap_or((ew, eh));
-                    w.set_editor_size((ew as f32 / k, eh as f32 / k));
+                    editor_layout=Some((resizable,(ew as f32 / k, eh as f32 / k)));
                 }
             }
+            // Native window moves/repaints may block in the OS. Do them after
+            // releasing the audio plugin instance, not inside its processing lock.
+            #[cfg(windows)] if let Some(e)=&mut h.rack_editor {if let Some(size)=embedded_size {e.accept_size(size);}e.animate();}
             #[cfg(plugin_windows)]
             if let Some(w) = &h.window {
+                if let Some((resizable,size))=editor_layout {w.set_resizable(resizable);w.set_editor_size(size);}
                 if let Some(i) = info(row) {
                     w.set_info(i);
                 }
@@ -1298,7 +1312,11 @@ impl Plugins {
         }
         #[cfg(any(windows, target_os = "macos"))]
         for (row, k) in rescale {
-            self.rescale_window(row, k);
+            self.pending_scales.insert(row,k);
+        }
+        #[cfg(any(windows, target_os = "macos"))]
+        if !self.defer_editor_scale {
+            for (row,k) in std::mem::take(&mut self.pending_scales){self.rescale_window(row,k);}
         }
         #[cfg(target_os = "linux")]
         crate::plugin_window::paint_dirty();
@@ -4149,5 +4167,15 @@ mod chop_drop_tests {
         while std::time::Instant::now()<until {std::thread::sleep(std::time::Duration::from_millis(40));let mut i=instrument.lock().unwrap();i.note_on(0,127,1.);let(mut l,mut r)=([0.;512],[0.;512]);i.process(48000,&mut l,&mut r);peak=l.iter().fold(peak,|a,b|a.max(b.abs()));if peak>0.01{break;}}
         assert!(peak>0.01,"dropped source is decoded and audible, not just saved as a path");
         app.plugins.clear();drop(instrument);let _=std::fs::remove_file(file);let _=std::fs::remove_file(second);let _=std::fs::remove_dir(dir);
+    }
+}
+
+#[cfg(all(test,any(windows,target_os="macos")))] mod monitor_scale_tests {
+    #[test] fn monitor_switch_defers_and_coalesces_editor_reopens() {
+        let mut p=super::Plugins::default();p.defer_editor_scale=true;
+        p.pending_scales.insert(0,1.5);p.pending_scales.insert(0,2.);
+        p.idle(|_|None);assert_eq!(p.pending_scales.get(&0),Some(&2.));
+        p.defer_editor_scale=false;p.idle(|_|None);assert!(p.pending_scales.is_empty());
+        p.pending_scales.insert(0,1.5);p.drop_key(0);assert!(p.pending_scales.is_empty());
     }
 }

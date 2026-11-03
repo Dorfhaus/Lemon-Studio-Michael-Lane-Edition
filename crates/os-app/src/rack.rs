@@ -248,7 +248,7 @@ impl Default for RackUi {
     fn default() -> Self {
         RackUi {
             sel: BTreeSet::from([0]),
-            filter: Filter::All,
+            filter: Filter::Unsorted,
             groups: Vec::new(),
             zipped: BTreeSet::new(),
             locked: BTreeSet::new(),
@@ -604,8 +604,54 @@ pub fn join_group(s: &mut State, r: usize, name: &str) {
             at
         }
     };
+    for group in &mut rack.groups {group.members.remove(&r);}
     rack.groups[g].members.insert(r);
     rack.filter = Filter::Group(g);
+    autosize(s);
+}
+
+/// Assign only ungrouped clip channels. Existing custom groups and channel order stay intact.
+pub(crate) fn organize_clips(s: &mut State) {
+    for (kind, name) in [(ChannelKind::AudioClip, "Audio"), (ChannelKind::Automation, "Automation")] {
+        let rows: Vec<_> = s.project.channels.iter().enumerate()
+            .filter(|(r,c)| c.kind == kind && !s.rack.groups.iter().any(|g|g.members.contains(r)))
+            .map(|(r,_)|r).collect();
+        if rows.is_empty() { continue; }
+        let g = s.rack.groups.iter().position(|g|g.name == name).unwrap_or_else(|| {
+            s.rack.groups.push(Group{name:name.into(),members:BTreeSet::new()});
+            s.rack.groups.len()-1
+        });
+        s.rack.groups[g].members.extend(rows);
+    }
+}
+
+pub(crate) fn focus_channel(s: &mut State, row: usize) {
+    organize_clips(s);
+    if !crate::settings_file::flag("rack_auto_filter",true) || in_filter(s,row) { return; }
+    s.rack.filter = s.rack.groups.iter().position(|g|g.members.contains(&row)).map_or(Filter::Unsorted,Filter::Group);
+    s.rack_scroll=0.;
+    autosize(s);
+}
+
+pub(crate) fn focus_source(s: &mut State, source: os_model::ClipSource) {
+    match source {
+        os_model::ClipSource::Channel(ch) => {
+            if let Some(row)=s.project.channels.iter().position(|c|c.index==ch) {focus_channel(s,row);}
+        }
+        os_model::ClipSource::Pattern(n) => {
+            let channel=s.project.pattern(n).and_then(|p|p.notes.first()).map(|n|n.channel);
+            let row=channel.and_then(|ch|s.project.channels.iter().position(|c|c.index==ch)).unwrap_or(s.selected_channel);
+            if row<s.project.channels.len() {focus_channel(s,row);}
+        }
+    }
+}
+
+/// New instruments follow the selected custom group, never an audio/automation group.
+pub(crate) fn added_instrument(s: &mut State, row: usize) {
+    if let Filter::Group(g)=s.rack.filter {
+        if let Some(g)=s.rack.groups.get_mut(g).filter(|g|g.name!="Audio"&&g.name!="Automation") { g.members.insert(row); }
+    }
+    focus_channel(s,row);
     autosize(s);
 }
 
@@ -780,6 +826,7 @@ pub fn auto_height(s: &State) -> Option<f32> {
 
 /// Apply Auto resize after the shown rows changed.
 pub fn autosize(s: &mut State) {
+    organize_clips(s);
     if let Some(h) = auto_height(s) {
         s.rack_size.1 = h.max(crate::views::rack::MIN_H);
     }
@@ -1104,6 +1151,7 @@ pub fn box_accept(s: &mut State, b: RBox, text: &str) {
         }
         RBox::GroupSel | RBox::NewGroup if !text.is_empty() => {
             let members = if b == RBox::GroupSel { s.rack.sel.clone() } else { BTreeSet::new() };
+            for group in &mut s.rack.groups {group.members.retain(|r|!members.contains(r));}
             s.rack.groups.push(Group { name: text.to_string(), members });
             s.rack.filter = Filter::Group(s.rack.groups.len() - 1);
             autosize(s);
@@ -1166,6 +1214,7 @@ pub enum RCmd {
     AssignFree(usize),
     // Display filter (§21).
     SetFilter(Filter),
+    AutoFilter,
     AddGroup,
     DeleteGroup,
     RenameGroup,
@@ -1209,12 +1258,12 @@ fn it(label: impl Into<std::borrow::Cow<'static, str>>, c: RCmd) -> PItem {
     PItem::new(label, Cmd::Rack(c))
 }
 
-/// A menu option that is not available yet: greyed out, showing its default tick.
+/// Options menu (title ▸, §17).
+/// An unavailable option retains its default tick in the advanced controls menu.
 fn opt(s: &State, label: &'static str) -> PItem {
     PItem::not_yet(label).mark(Mark::Check(s.rack.opts.contains(label)))
 }
 
-/// Options menu (title ▸, §17).
 pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
     let r = &s.rack;
     let none = r.sel.is_empty();
@@ -1226,75 +1275,53 @@ pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
     width.push(PItem::sep());
     width.push(it("Size to fit", RCmd::SizeToFit));
     let items = vec![
-        PItem::sub("Add one", add_one_items(s)),
-        PItem::sub("Consolidate selected channel / Bounce to Audio", vec![it("Bounce including mixer effects", RCmd::BounceWet(s.selected_channel)),it("Consolidate (keep mixer live)", RCmd::Consolidate(s.selected_channel))]),
-        PItem::not_yet("Loop starter").mark(Mark::Check(false)),
-        it("Purge unused audio clips", RCmd::Purge),
-        PItem::head("Channels"),
-        it("Select unused channels", RCmd::SelectUnused),
-        off(it("Clone selected", RCmd::CloneSel).key("Alt+C"), none),
-        off(it("Delete selected...", RCmd::DeleteSel).key("Alt+Del"), none),
-        PItem::not_yet("Create layer with selected channels"),
+        PItem::sub("Add instrument", add_one_items(s)),
+        PItem::sub("Edit channels", vec![
+            it("Select unused channels", RCmd::SelectUnused),
+            off(it("Clone selected", RCmd::CloneSel).key("Alt+C"), none),
+            off(it("Delete selected...", RCmd::DeleteSel).key("Alt+Del"), none),
+            off(it("Mute selected", RCmd::MuteSel(true)), none),
+            off(it("Unmute selected", RCmd::MuteSel(false)), none),
+            off(it("Transpose selected...", RCmd::TransposeSel), none),
+            PItem::sub("Color selected", vec![it("Gradient...", RCmd::ColorGradient).key("Shift+Alt+C"),it("Random", RCmd::ColorRandom).key("Ctrl+Alt+C")]),
+        ]),
+        PItem::sub("Organize", vec![
+            off(it("Group selected...", RCmd::GroupSel).key("Alt+G"), none),
+            PItem::sub("Display filter", filter_menu(s,x,y).items),
+            it("Auto switch display filter",RCmd::AutoFilter).mark(Mark::Check(crate::settings_file::flag("rack_auto_filter",true))),
+            PItem::sep(),
+            off(it("Move selected up", RCmd::MoveSel(-1)).key("Alt+Up"), none),
+            off(it("Move selected down", RCmd::MoveSel(1)).key("Alt+Down"), none),
+            PItem::sub("Sort by",vec![it("Color",RCmd::Sort(SortBy::Color)),it("Name",RCmd::Sort(SortBy::Name)),it("Track number",RCmd::Sort(SortBy::Track)),it("Type",RCmd::Sort(SortBy::Type))]),
+            it("Purge unused audio clips",RCmd::Purge),
+        ]),
+        PItem::sub("Mixer routing",vec![
+            off(it("Assign selected to free mixer track(s)",RCmd::AssignFreeSel).key("Ctrl+L"),none),
+            off(it("Select mixer tracks for the selected channels",RCmd::SelectMixerTracks),none),
+        ]),
+        PItem::sub("Audio tools",vec![
+            it("Bounce including mixer effects",RCmd::BounceWet(s.selected_channel)),
+            it("Consolidate (keep mixer live)",RCmd::Consolidate(s.selected_channel)),
+            PItem::sub(crate::views::menus::DECLICK_LABEL,declick_items(s)),
+            PItem::sub(crate::views::menus::CLIPS_ALL_LABEL,stretch_items(true)),
+            PItem::sub(crate::views::menus::CLIPS_SEL_LABEL,stretch_items(false)),
+        ]),
         PItem::sep(),
-        off(it("Move selected up", RCmd::MoveSel(-1)).key("Alt+Up"), none),
-        off(it("Move selected down", RCmd::MoveSel(1)).key("Alt+Down"), none),
-        PItem::sub(
-            "Sort by",
-            vec![it("Color", RCmd::Sort(SortBy::Color)), it("Name", RCmd::Sort(SortBy::Name)), it("Track number", RCmd::Sort(SortBy::Track)), it("Type", RCmd::Sort(SortBy::Type))],
-        ),
-        PItem::sep(),
-        off(it("Group selected...", RCmd::GroupSel).key("Alt+G"), none),
-        PItem::sub(
-            "Color selected",
-            vec![it("Gradient...", RCmd::ColorGradient).key("Shift+Alt+C"), it("Random", RCmd::ColorRandom).key("Ctrl+Alt+C"), PItem::not_yet("All...")],
-        ),
-        off(it("Mute selected", RCmd::MuteSel(true)), none),
-        off(it("Unmute selected", RCmd::MuteSel(false)), none),
-        off(it("Transpose selected...", RCmd::TransposeSel), none),
-        PItem::sub("Set swing mix for selected", ["0%", "25%", "50%", "75%", "100%", "Custom..."].into_iter().map(PItem::not_yet).collect()),
-        PItem::sub("Set truncate swing notes for selected", vec![PItem::not_yet("Turn on"), PItem::not_yet("Turn off")]),
-        PItem::not_yet("Burn selected loops to pattern"),
-        off(it("Assign selected to free mixer track(s)", RCmd::AssignFreeSel).key("Ctrl+L"), none),
-        off(it("Select mixer tracks for the selected channels", RCmd::SelectMixerTracks), none),
-        PItem::sub(crate::views::menus::DECLICK_LABEL, declick_items(s)),
-        PItem::sep(),
-        off(it("Zip selected", RCmd::ZipSel).key("Alt+Z"), none),
-        it("Unzip all", RCmd::UnzipAll).key("Alt+U"),
-        PItem::sep(),
-        PItem::not_yet("Restretch all").key("Ctrl+Alt+R"),
-        PItem::head("Options"),
-        PItem::sub(
-            "Group playlist tracks created by Loop starter",
-            vec![PItem::not_yet("Don't group tracks"), PItem::not_yet("Group tracks"), PItem::not_yet("Always create a track for the pattern clip")],
-        ),
-        PItem::sub(
-            "Auto resize",
-            vec![
-                it("Off", RCmd::AutoResize(AutoResize::Off)).mark(Mark::Radio(r.auto_resize == AutoResize::Off)),
-                it("Minimum height", RCmd::AutoResize(AutoResize::Min)).mark(Mark::Radio(r.auto_resize == AutoResize::Min)),
-                it("Maximum height", RCmd::AutoResize(AutoResize::Max)).mark(Mark::Radio(r.auto_resize == AutoResize::Max)),
-                PItem::sep(),
-                it("Resize now", RCmd::ResizeNow),
-            ],
-        ),
-        opt(s, "Auto switch display filter"),
-        PItem::sub("Channel button width", width),
-        PItem::sub(
-            "Channel name alignment",
-            vec![it("Left", RCmd::AlignLeft(true)).mark(Mark::Radio(r.align_left)), it("Center", RCmd::AlignLeft(false)).mark(Mark::Radio(!r.align_left))],
-        ),
-        it("Colorful channel controls", RCmd::Colorful).mark(Mark::Check(r.colorful)),
-        opt(s, "Focus selected channel on playback"),
-        opt(s, "Mute removed steps"),
-        it("Show mixer track selectors", RCmd::ShowMixer).key("Alt+M").mark(Mark::Check(r.show_mixer)),
-        opt(s, "Show complete piano roll preview"),
-        opt(s, "Show a mute button on the piano roll preview"),
-        opt(s, "Detached"),
-        PItem::head("Switch"),
-        PItem::not_yet("Switch smart disable for all plugins"),
-        PItem::sub(crate::views::menus::CLIPS_ALL_LABEL, stretch_items(true)),
-        PItem::sub(crate::views::menus::CLIPS_SEL_LABEL, stretch_items(false)),
-        PItem::sub(crate::views::menus::EDITORS_LABEL, editor_items()),
+        PItem::sub("View",vec![
+            off(it("Zip selected",RCmd::ZipSel).key("Alt+Z"),none),
+            it("Unzip all",RCmd::UnzipAll).key("Alt+U"),
+            it("Show mixer track selectors",RCmd::ShowMixer).key("Alt+M").mark(Mark::Check(r.show_mixer)),
+            PItem::sub("Auto resize",vec![
+                it("Off",RCmd::AutoResize(AutoResize::Off)).mark(Mark::Radio(r.auto_resize==AutoResize::Off)),
+                it("Minimum height",RCmd::AutoResize(AutoResize::Min)).mark(Mark::Radio(r.auto_resize==AutoResize::Min)),
+                it("Maximum height",RCmd::AutoResize(AutoResize::Max)).mark(Mark::Radio(r.auto_resize==AutoResize::Max)),
+                it("Resize now",RCmd::ResizeNow),
+            ]),
+            PItem::sub("Channel button width",width),
+            PItem::sub("Channel name alignment",vec![it("Left",RCmd::AlignLeft(true)).mark(Mark::Radio(r.align_left)),it("Center",RCmd::AlignLeft(false)).mark(Mark::Radio(!r.align_left))]),
+            it("Colorful channel controls",RCmd::Colorful).mark(Mark::Check(r.colorful)),
+            PItem::sub(crate::views::menus::EDITORS_LABEL,editor_items()),
+        ]),
     ];
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
@@ -1436,6 +1463,11 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         it("Rotate left", RCmd::Rotate(r, -1)).key("Shift+Ctrl+Left"),
         it("Rotate right", RCmd::Rotate(r, 1)).key("Shift+Ctrl+Right"),
     ]);
+    if let Some(at)=items.iter().position(|p|p.col) {
+        let mut editing=items.split_off(at);
+        editing.drain(..2);
+        items.push(PItem::sub("Pattern editing",editing));
+    }
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
@@ -1768,6 +1800,11 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
                 s.selected_mixer = t;
                 s.raise(Win::Mixer);
             }
+            None
+        }
+        RCmd::AutoFilter => {
+            let on=crate::settings_file::flag("rack_auto_filter",true);
+            crate::settings_file::set_flag("rack_auto_filter",!on);
             None
         }
         RCmd::SetFilter(f) => {
@@ -2222,6 +2259,7 @@ pub fn from_model(s: &mut State) {
         rack.groups.push(Group { name: name.clone(), members });
     }
     rack.filter = match p.current_group.map(|g| g as usize) {
+        None if p.groups.is_empty() => Filter::Unsorted,
         None => Filter::All,
         Some(g) => match file_to_ui.get(g) {
             Some(Some(u)) => Filter::Group(*u),
@@ -2246,10 +2284,12 @@ pub fn from_model(s: &mut State) {
         None => 0,
     };
     rack.loop_mode = !loops.is_empty() && off.is_none();
+    organize_clips(s);
 }
 
 /// Writes the rack state into the project before a save (the inverse of [`from_model`]).
 pub fn to_model(s: &mut State) {
+    organize_clips(s);
     let rack = &s.rack;
     let p = &mut s.project;
     // Groups in file order: the user groups, with "Unsorted" where the file had it (else last, like FL's Alt+G).
@@ -2302,6 +2342,56 @@ mod tests {
     /// Ctrl+C / Ctrl+X / Ctrl+V with the rack in front (§11, §20): copy takes the selected channels' steps, a row each;
     /// paste puts the first row into the first selected channel and the next rows into the rows below it, whatever else
     /// is selected; cut copies and clears. Each change is one undo step.
+    #[test]
+    fn automatic_clip_groups_preserve_custom_groups_and_roundtrip() {
+        let mut app=App::new(None);let s=&mut app.state;
+        s.project=crate::app::test_project();
+        s.project.channels[1].kind=ChannelKind::AudioClip;
+        s.project.channels[2].kind=ChannelKind::Automation;
+        s.rack.groups=vec![Group{name:"My drums".into(),members:[0].into()}];
+        s.rack.filter=Filter::Group(0);
+        organize_clips(s);
+        assert_eq!(s.rack.filter,Filter::Group(0));
+        assert!(s.rack.groups[0].members.contains(&0));
+        assert!(s.rack.groups.iter().any(|g|g.name=="Audio"&&g.members.contains(&1)));
+        assert!(s.rack.groups.iter().any(|g|g.name=="Automation"&&g.members.contains(&2)));
+        focus_channel(s,1);assert_eq!(shown(s),vec![1]);
+        focus_channel(s,0);assert_eq!(s.rack.filter,Filter::Group(0));
+        crate::settings_file::set_flag("rack_auto_filter",false);
+        focus_channel(s,1);assert_eq!(s.rack.filter,Filter::Group(0));
+        s.rack.sel=[1].into();box_accept(s,RBox::GroupSel,"Vocals");
+        assert!(!s.rack.groups.iter().find(|g|g.name=="Audio").unwrap().members.contains(&1));
+        to_model(s);let groups=s.project.groups.clone();let channels=s.project.channels.clone();
+        from_model(s);to_model(s);
+        assert_eq!(s.project.groups,groups);
+        assert_eq!(s.project.channels,channels);
+        assert_eq!(shown(s),vec![1]);
+        s.rack.filter=Filter::Unsorted;
+        assert!(!shown(s).contains(&1)&&!shown(s).contains(&2));
+    }
+
+    #[test]
+    fn compact_rack_and_clip_menus_keep_working_commands() {
+        fn contains(items:&[PItem],cmd:&Cmd)->bool {items.iter().any(|p|&p.cmd==cmd||contains(&p.children,cmd))}
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        let menu=options_menu(&app.state,0.,0.);
+        assert!(menu.items.len()<=10);
+        for cmd in [RCmd::GroupSel,RCmd::Purge,RCmd::SelectUnused,RCmd::AutoFilter,RCmd::Sort(SortBy::Type),RCmd::ZipSel] {
+            assert!(contains(&menu.items,&Cmd::Rack(cmd)));
+        }
+        app.state.project.channels[0].kind=ChannelKind::AudioClip;
+        let ch=app.state.project.channels[0].index;
+        crate::playlist::arr_mut(&mut app.state).clips=vec![os_model::Clip::new(0,384,0,os_model::ClipSource::Channel(ch))];
+        let clip=crate::playlist::clip_menu(&app.state,0,0.,0.);
+        assert!(clip.items.len()<=16);
+        for cmd in [Cmd::ClipEffects(0),Cmd::ClipRoute(0),Cmd::SeparateStems(0),Cmd::AraMenu(0),Cmd::Warp(0),Cmd::ClipDelete(0)] {
+            assert!(contains(&clip.items,&cmd));
+        }
+        let channel=channel_menu(&app.state,0,0.,0.);
+        assert!(!channel.items.iter().any(|p|p.col));
+        assert!(contains(&channel.items,&Cmd::Rack(RCmd::Copy(0))));
+    }
+
     #[test]
     fn clipboard_keys_copy_cut_and_paste_steps() {
         use winit::keyboard::Key;

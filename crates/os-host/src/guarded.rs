@@ -275,6 +275,7 @@ impl<P: Plugin> Plugin for Guarded<P> {
         self.run(false, |p| p.set_param(id, value))
     }
     fn take_state_changed(&mut self) -> bool { self.run(false, |p|p.take_state_changed()) }
+    fn take_playback_requests(&mut self)->Vec<crate::PlaybackRequest> {self.run(Vec::new(),|p|p.take_playback_requests())}
     fn take_param_events(&mut self) -> Vec<ParamEvent> {
         self.run(Vec::new(), |p| p.take_param_events())
     }
@@ -454,6 +455,7 @@ mod tests {
     }
 
     impl Plugin for SelfStopping {
+        fn take_playback_requests(&mut self)->Vec<crate::PlaybackRequest> {vec![crate::PlaybackRequest::Seek(1.25)]}
         fn desc(&self) -> &Descriptor {
             &self.desc
         }
@@ -506,6 +508,7 @@ mod tests {
         assert!(g.channel_levels(ChannelLevels { volume: 0.5, pan: -0.3, ..ChannelLevels::default() }));
         assert_eq!(g.save_state(), Some(vec![5, 7]));
         assert_eq!(g.stopped(), None);
+        assert_eq!(g.take_playback_requests(),vec![crate::PlaybackRequest::Seek(1.25)]);
         g.idle();
         assert_eq!(g.stopped(), Some(0x0EED_FADE));
     }

@@ -7,7 +7,7 @@ use os_ui::{Rect,Font};
 use crate::app::{App,State,Ui,Action};
 pub const TAB:usize=6;
 pub const ROW_H:f32=204.;
-pub const HEADER:f32=240.;
+pub const HEADER:f32=188.;
 const URL:&str="https://michaellanemusic.de/lemon-studio/features/api.php";
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Comment {pub id:u64,pub body:String,pub created:i64,#[serde(default)]pub edited:i64}
@@ -207,20 +207,16 @@ fn paint_voting(ui:&mut Ui,s:&State,r:Rect){
  ui.c.fill_rect(r,t.s(0x171f23));ui.hit(r,Action::BrowserList,"Feature voting");ui.c.push_clip(r);
  // Compact editorial header, with connection details available on hover.
  ui.c.text(Font::new(10).bold(),x,r.y+9.,t.h(0xb5d98b),"LEMON COMMUNITY");
- ui.c.text(Font::new(24).bold(),x,r.y+25.,t.text,"What's next?");
- let routine=v.status.starts_with("Live votes")||v.status.starts_with("Starter ideas")||v.status.starts_with("Connecting")||v.status.starts_with("Offline / unavailable");
- let subtitle=if v.status=="Suggestion added." {"Thanks! Your idea is on the board."}else if !routine {&v.status}else if v.online {"Your ideas. A better Lemon Studio."}else{"Saved ideas. Reconnect to vote."};
- ui.c.text_clip(Font::new(12),x,r.y+55.,w,if routine{t.text_dim}else{t.h(0xe4b583)},subtitle);
- let status=Rect::new(x,r.y+77.,w-77.,21.);
+ let status=Rect::new(x,r.y+25.,w-77.,21.);
  ui.c.fill_rrect(status,10.,t.s(0x263330));
  let color=if v.online {t.h(0xa7d994)}else{t.h(0xe4b583)};
  ui.c.fill_circle(status.x+9.,status.cy(),2.5,color);
  ui.c.text(Font::new(10).bold(),status.x+17.,status.y+4.,color,if v.busy{"CONNECTING"}else if v.online{"LIVE BOARD"}else{"OFFLINE"});
  ui.hit(status,Action::BrowserList,v.status.clone());
- button(ui,Rect::new(x+w-68.,r.y+77.,68.,21.),"Refresh",Action::FeatureVote(0,0),!v.busy,false,"Refresh shared votes");
- let composer=Rect::new(x,r.y+109.,w,69.);ui.c.fill_rrect(composer,7.,t.s(0x243034));
+ button(ui,Rect::new(x+w-68.,r.y+25.,68.,21.),"Refresh",Action::FeatureVote(0,0),!v.busy,false,"Refresh shared votes");
+ let composer=Rect::new(x,r.y+57.,w,69.);ui.c.fill_rrect(composer,7.,t.s(0x243034));
  ui.c.stroke_rrect(composer,7.,1.,t.s(0x364447));
- let field=Rect::new(x+6.,r.y+115.,w-12.,25.);
+ let field=Rect::new(x+6.,r.y+63.,w-12.,25.);
  ui.c.fill_rrect(field,4.,t.s(0x172125));
  if v.focus {ui.c.stroke_rrect(field,4.,1.,t.h(0xb5d98b));}
  ui.hit(field,Action::FeatureVote(0,3),"Suggest a feature in 8–120 characters. Enter submits; Escape leaves the field.");
@@ -231,9 +227,9 @@ fn paint_voting(ui:&mut Ui,s:&State,r:Rect){
  ui.c.text(Font::new(13),field.x+5.-offset,field.y+4.,if v.draft.text.is_empty(){t.text_dim}else{t.text},value);
  if v.focus {let cx=field.x+5.+caret-offset;ui.c.line(cx,field.y+4.,cx,field.bottom()-4.,1.,t.text);}
  ui.c.pop_clip();
- button(ui,Rect::new(x+6.,r.y+146.,w-12.,25.),if v.online{"+  Share your idea"}else{"Connect to share an idea"},Action::FeatureVote(0,2),v.online&&!v.busy,true,"Submit a public suggestion. No personal information or links.");
- ui.c.text(Font::new(10).bold(),x,r.y+189.,t.text_dim,if v.board.announcements.is_empty(){"COMMUNITY IDEAS"}else{"ANNOUNCEMENTS & IDEAS"});
- let filtered=items(s);let count=filtered.len().to_string();let cw=ui.c.text_width(Font::new(11),&count);ui.c.text(Font::new(11),x+w-cw,r.y+188.,t.text_dim,&count);
+ button(ui,Rect::new(x+6.,r.y+94.,w-12.,25.),if v.online{"+  Share your idea"}else{"Connect to share an idea"},Action::FeatureVote(0,2),v.online&&!v.busy,true,"Submit a public suggestion. No personal information or links.");
+ ui.c.text(Font::new(10).bold(),x,r.y+137.,t.text_dim,if v.board.announcements.is_empty(){"COMMUNITY IDEAS"}else{"ANNOUNCEMENTS & IDEAS"});
+ let filtered=items(s);let count=filtered.len().to_string();let cw=ui.c.text_width(Font::new(11),&count);ui.c.text(Font::new(11),x+w-cw,r.y+136.,t.text_dim,&count);
  let list=Rect::new(x,r.y+HEADER-32.,w,(r.h-HEADER+32.).max(0.));ui.c.push_clip(list);
  let display=rows(s);
  let expanded=display.iter().filter_map(|(_,i)|*i).find(|i|Some(i.id)==v.expanded);

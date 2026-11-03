@@ -62,5 +62,21 @@ try{
  $public=forum_page($db,'',$ot);checkf($public['posts'][0]['author']==='Michael'&&$public['posts'][0]['avatar']===''&&$public['posts'][1]['member']==='Administrator','historical owner profile update');
  denyf(fn()=>$call(['action'=>'owner_forum_profile','name'=>'Impersonator','avatar'=>'']),400);
  $spoof=$call(['action'=>'forum_create','title'=>'Ordinary member identity','body'=>'No admin privilege','user'=>FORUM_OWNER]);checkf($spoof['posts'][0]['member']!=='Administrator','client cannot choose owner actor');
+ // Category migration preserves nested replies, authors and reactions; public callers cannot moderate.
+ forum_moderate($db,['action'=>'forum_rename_thread','id'=>$ot,'title'=>'Bugs, Fixes, Issues','value'=>true]);
+ forum_moderate($db,['action'=>'forum_organize_post','id'=>$pid,'thread'=>$ot,'category'=>1,'value'=>true]);
+ $organized=forum_page($db,$user,$ot,0,false,1);checkf($organized['total']===4,'whole reply tree moved');
+ checkf($organized['posts'][0]['id']===$pid&&$organized['posts'][2]['id']===$lateId&&$organized['posts'][3]['depth']===2,'reply identity and nesting preserved');
+ checkf(count($organized['categories'])===9&&$organized['category']===1,'category navigation');
+ denyf(fn()=>$call(['action'=>'forum_organize_post','id'=>$pid,'thread'=>$ot,'category'=>2,'value'=>true]),400);
+ denyf(fn()=>$call(['action'=>'forum_list','thread'=>$ot,'category'=>99]),400);
+ query($db,'DELETE FROM limits');
+ $catReply=$call(['action'=>'forum_reply','thread'=>$ot,'parent'=>$pid,'category'=>2,'body'=>'Category inherited from report']);checkf($catReply['category']===1&&$catReply['total']===5,'reply inherits category');
+ query($db,'INSERT INTO features(title,normalized,created,author) VALUES(?,?,?,?)',['Playback fixture','playback fixture',time(),$user]);$fid=(int)$db->lastInsertId();
+ query($db,'INSERT INTO votes VALUES(?,?,?)',[$user,$fid,1]);query($db,'INSERT INTO public_comments(feature,body,created,edited) VALUES(?,?,?,?)',[$fid,'Existing owner context',time(),time()]);
+ for($i=0;$i<2;$i++){forum_moderate($db,['action'=>'forum_import_bug','id'=>$fid,'thread'=>$ot,'category'=>2,'value'=>true]);}
+ $imported=forum_page($db,$user,$ot,0,false,2);checkf($imported['total']===2&&$imported['posts'][0]['up']===1&&$imported['posts'][1]['parent']===$imported['posts'][0]['id'],'idempotent import keeps votes and comments');
+ checkf((int)query($db,'SELECT hidden FROM features WHERE id=?',[$fid])->fetchColumn()===1,'migrated voting duplicate hidden');
+ $routed=$call(['action'=>'forum_create','title'=>'Playback glitch','body'=>'One bug area']);checkf($routed['topic']['id']===$ot&&$routed['category']===8,'bug discussions routed to central area');
  echo json_encode(['ok'=>true,'checks'=>['threads','replies','cross-thread isolation','reactions','profile and avatar','moderation','blocks','pagination','rate limits','bounds','owner profile and participation','owner impersonation rejected']]);
 }finally{$db=null;foreach(glob($dir.'/*')?:[] as $p){unlink($p);}if(is_dir($dir)){rmdir($dir);}}

@@ -308,6 +308,8 @@ def build_windows(out,cfg):
     return write_plan(site,out,'windows-linux')
 
 def build(publish_now):
+    # Public packages never inherit a local user's optional recorded-synth library.
+    os.environ['LEMON_WAVE_LIBRARY']=''
     cfg=read_config();shared_folder();sync()
     if publish_now:
         check_connection() # Fail before a long build if publishing is not configured.

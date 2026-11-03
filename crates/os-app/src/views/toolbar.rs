@@ -41,7 +41,7 @@ pub struct Opts {
     pub separators: bool,
     /// Square buttons without face and edges (§3).
     pub flat: bool,
-    /// The floating hint bar at the window's bottom-left (§4).
+    /// The compact hint field after Project Info.
     pub hint_bar: bool,
     /// Toolbar and menu bar hidden, the browser and workspace up to the window's top (§5).
     pub hidden: bool,
@@ -49,7 +49,7 @@ pub struct Opts {
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { separators: true, flat: false, hint_bar: false, hidden: false }
+        Opts { separators: true, flat: false, hint_bar: true, hidden: false }
     }
 }
 
@@ -62,7 +62,7 @@ impl Opts {
         Opts {
             separators: flag("toolbar_separators", d.separators),
             flat: flag("toolbar_flat_buttons", d.flat),
-            hint_bar: flag("toolbar_hint_bar", d.hint_bar),
+            hint_bar: flag("toolbar_inline_hint", d.hint_bar),
             hidden: false,
         }
     }
@@ -72,7 +72,7 @@ impl Opts {
         use crate::settings_file::set_flag;
         set_flag("toolbar_separators", self.separators);
         set_flag("toolbar_flat_buttons", self.flat);
-        set_flag("toolbar_hint_bar", self.hint_bar);
+        set_flag("toolbar_inline_hint", self.hint_bar);
     }
 }
 
@@ -94,42 +94,6 @@ pub fn band(s: &State, width: f32) -> Rect {
     Rect::new(0.0, 0.0, width, s.bar.layout.height())
 }
 
-/// The floating hint bar: 400 x 82 at the window's left edge, its bottom 2 px above the window's (§4).
-pub fn hint_bar_rect(s: &State) -> Rect {
-    Rect::new(0.0, s.screen.1 - 84.0, 400.0, 82.0)
-}
-
-/// The floating hint bar (§4): a near-black panel with the hint at its top left and a round grip at its right, over
-/// every window. Clicks on it go nowhere. A hint too long for a line wraps, as many lines as the panel holds (long
-/// hints were not measured on FL; the panel is tall enough for several lines: Lemon Studio's choice).
-pub fn paint_hint_bar(ui: &mut Ui, s: &State, f: &FrameInfo) {
-    let t = ui.t;
-    let r = hint_bar_rect(s);
-    ui.hit(r, Action::Swallow, "");
-    let (edge, mid) = (t.s(0x141618), t.s(0x111213));
-    let half = (r.h / 2.0).round();
-    ui.c.fill_rect_gradient(Rect::new(r.x, r.y, r.w, half), edge, mid, 0.0);
-    ui.c.fill_rect_gradient(Rect::new(r.x, r.y + half, r.w, r.h - half), mid, edge, 0.0);
-    let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or("") };
-    let font = Font::new(14);
-    let (w, lh) = (r.w - 50.0, ui.c.line_height(font));
-    let chars: Vec<char> = hint.chars().collect();
-    let mut y = r.y + 5.0;
-    for (start, n) in super::settings::wrap(ui, font, hint, w) {
-        if y + lh > r.bottom() - 4.0 {
-            break;
-        }
-        let line: String = chars[start..start + n].iter().collect();
-        ui.c.text_clip(font, r.x + 7.0, y, w, t.text, line.trim_end());
-        y += lh;
-    }
-    let (cx, cy) = (r.right() - 22.0, r.cy());
-    ui.c.fill_circle(cx, cy, 11.0, t.s(0x24272a));
-    for (dx, dy) in [(-3.0, -3.0), (3.0, -3.0), (-3.0, 3.0), (3.0, 3.0)] {
-        ui.c.fill_circle(cx + dx, cy + dy, 1.3, t.s(0x5c6164));
-    }
-}
-
 fn btn(x: f32, y: f32) -> Rect {
     Rect::new(x, y, 30.0, 33.0)
 }
@@ -146,7 +110,16 @@ struct Ctx<'a> {
 
 pub(super) fn visible_layout(s:&State)->crate::toolbar::Layout {
     let mut layout=s.bar.layout.clone();
-    if !s.bar.editing {for row in &mut layout.rows {row.retain(|p|*p!=Panel::Caption);}}
+    if !s.bar.editing {
+        for row in &mut layout.rows {row.retain(|p|!matches!(p,Panel::Caption|Panel::Hint|Panel::Cpu));
+            if row.contains(&Panel::Utilities)&&row.contains(&Panel::Windows){row.retain(|p|*p!=Panel::Utilities);let at=row.iter().position(|p|*p==Panel::Windows).unwrap();row.insert(at,Panel::Utilities);}
+        }
+        if s.toolbar.hint_bar {
+            let row=layout.rows.iter_mut().find(|row|row.contains(&Panel::Utilities));
+            if let Some(row)=row {let at=row.iter().position(|p|*p==Panel::Utilities).unwrap()+1;row.insert(at,Panel::Hint);}
+            else if let Some(row)=layout.rows.first_mut(){row.push(Panel::Hint);}
+        }
+    }
     layout
 }
 
@@ -163,7 +136,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let donate_w = ui.c.text_width(action_font, "Donate").ceil() + 12.0;
     let ai_w=48.;
     let window_w = 104.0;
-    let mini_cpu_w = 54.;
+    let show_cpu=crate::settings_file::flag("toolbar_cpu_visible",true);
+    let mini_cpu_w = if show_cpu {54.}else{0.};
     let actions_w = mini_cpu_w + ai_w + update_w + donate_w + 18.0 + 32.0 + window_w;
     let content_width = (width - actions_w).max(100.0);
     s.toolbar_content_width.set(content_width);
@@ -197,7 +171,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     for row in 0..rows {
         for p in placed.iter().filter(|p| p.row == row) {
             let a = p.at();
-            let shows = if p.panel.repeats() { p.x + p.w <= fit } else { a.x(p.panel.first_end()) <= fit };
+            let shows = if p.panel==Panel::Hint {p.x+64.<=fit} else if p.panel.repeats() { p.x + p.w <= fit } else { a.x(p.panel.first_end()) <= fit };
             if !shows {
                 break;
             }
@@ -230,14 +204,15 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
 
     {
         let cr=Rect::new(width-actions_w+2.,8.,48.,24.);
-        ui.c.fill_rrect(cr,3.,t.sunken);
+        if show_cpu {ui.c.fill_rrect(cr,3.,t.sunken);
         ui.hit(cr,Action::CpuPanel,s.cpu.hint());
         let load=s.cpu.now.load;
         let ink=if load>=100{t.meter_clip}else if load>=75{t.meter_high}else{t.text_dim};
         ui.c.text_center(Font::new(10),Rect::new(cr.x,cr.y+2.,cr.w,15.),ink,&format!("CPU {}%",load.min(999)));
         ui.c.fill_rect(Rect::new(cr.x+4.,cr.bottom()-5.,40.,2.),t.toolbar_line);
         ui.c.fill_rect(Rect::new(cr.x+4.,cr.bottom()-5.,40.*(load as f32/100.).min(1.),2.),ink);
-        let ai=Rect::new(cr.right()+6.,8.,ai_w,24.);
+        }
+        let ai=Rect::new(width-actions_w+2.+mini_cpu_w,8.,ai_w,24.);
         let hover=ui.hit(ai,Action::Ai,if !s.ai.enabled {"AI control is off — connect an assistant"}else if s.ai.client.is_empty(){"AI control enabled — waiting for an approved assistant"}else{"AI assistant connected — manage or disconnect"});
         ui.c.fill_rrect(ai,3.,if hover{t.button_hi}else{t.sunken});
         let chip=Rect::new(ai.x+6.,ai.y+7.,10.,10.);let ink=if s.ai.enabled{t.accent}else{t.text_dim};
@@ -271,8 +246,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let mid = (h / 2.0).floor();
     if fit.is_finite() {
         let r = Rect::new(content_width - MORE_W, 0.0, MORE_W, h);
-        ui.hit(r, Action::Menu(menus::VIEW), MORE_HINT);
-        os_ui::kit::triangle(ui.c, r.cx(), mid, 5.0, os_ui::kit::Dir::Right, t.glyph);
+        ui.hit(r, Action::MenuSub(menus::VIEW,11), "Toolbar options · some controls are hidden at this width");
+        ui.c.text_center(Font::new(14),r,t.glyph,"…");
         return;
     }
     if !l.logo {
@@ -349,7 +324,8 @@ fn caption(ui: &mut Ui, c: &Ctx) {
 /// Two-line hints; project/template names belong in the project title, not here.
 fn hint_panel(ui: &mut Ui, c: &Ctx) {
     let (t, a, s, f) = (ui.t, c.a, c.s, c.f);
-    let hp = a.span(72.0, 312.0, 4.0, 36.0);
+    let mut hp = a.span(72.0, 72.0+Panel::Hint.width()-7., 4.0, 36.0);
+    hp.w=hp.w.min((c.fit-hp.x-2.).max(0.));
     sunken(ui, hp, t.sunken);
     ui.hit(hp, Action::DragWindow, "Hint bar");
     let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or("") };
@@ -717,7 +693,7 @@ fn utilities(ui: &mut Ui, c: &Ctx) -> bool {
         (Icon::SaveRender, "Export audio... (Ctrl+R)"),
         (Icon::Info, "Project info (F11)"),
     ];
-    for (i, (icon, hint)) in utils.into_iter().filter(|(icon, _)| *icon == Icon::SaveRender || (*icon == Icon::Info && !crate::settings_file::flag("declutter_toolbar", false))).enumerate() {
+    for (i, (icon, hint)) in utils.into_iter().filter(|(icon, _)| *icon == Icon::SaveRender || *icon == Icon::Info).enumerate() {
         let r = a.r(btn(1209.0 + 33.0 * i as f32, 4.0));
         if r.right() > c.fit {
             return false;

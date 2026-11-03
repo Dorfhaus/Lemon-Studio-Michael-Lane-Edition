@@ -210,6 +210,7 @@ pub enum Mark {
 /// Commands of the playlist's popup menus (§10).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
+    MainMenu(usize, usize),
     Warp(usize),
     WaveDetail(u8),
     CompTrack(u16),
@@ -1501,6 +1502,21 @@ pub fn with_groups(s: &State, mut idx: Vec<usize>) -> Vec<usize> {
     idx
 }
 
+/// Copy linked or restored inline clip automation with its owner; unrelated track/global
+/// automation remains independent. Each linked clip is included at most once.
+fn with_linked_automation(s: &State, mut idx: Vec<usize>) -> Vec<usize> {
+    let owners: Vec<_> = idx.iter().filter_map(|&i|clips(s).get(i)).copied()
+        .filter(|c|source_kind(s,c.source)!=PickKind::Automation).collect();
+    for (i,a) in clips(s).iter().enumerate() {
+        let ClipSource::Channel(ch)=a.source else {continue};
+        let owner=s.playlist.automation_owners.get(&ch).copied().unwrap_or(a.track);
+        if s.project.automation(ch).is_some() && owners.iter().any(|c|c.track==owner && a.position>=c.position && a.end()<=c.end()) && !idx.contains(&i) {
+            idx.push(i);
+        }
+    }
+    idx
+}
+
 /// Shift+G: put the selected clips (and the groups they belong to) into one new group. Returns how many.
 pub fn group_clips(s: &mut State) -> usize {
     let idx = with_groups(s, s.playlist.sel.clone());
@@ -1569,13 +1585,16 @@ fn regroup_copies(s: &mut State, from: usize) {
 /// they were and the copies are added after every clip, grouped copies in groups of their own as a Shift+drag's are.
 /// Returns the copies.
 pub fn clone_clips(s: &mut State, orig: &[(usize, Clip)]) -> Vec<(usize, Clip)> {
-    let arr = arr_mut(s);
-    for &(i, o) in orig {
-        if let Some(c) = arr.clips.get_mut(i) {
-            c.position = o.position;
-            c.track = o.track;
-        }
+    // Restore the held move before finding its inline automation at the original location.
+    for &(i,o) in orig {
+        if let Some(c)=arr_mut(s).clips.get_mut(i){c.position=o.position;c.track=o.track;}
     }
+    let mut orig=orig.to_vec();
+    for i in with_linked_automation(s,orig.iter().map(|v|v.0).collect()) {
+        if !orig.iter().any(|v|v.0==i) {orig.push((i,clips(s)[i]));}
+    }
+    let orig=&orig;
+    let arr = arr_mut(s);
     let first = arr.clips.len();
     for &(_, o) in orig {
         let mut cp = o;
@@ -1793,7 +1812,7 @@ pub fn resize_left(s: &mut State, i: usize, orig: &Clip, dt: i64) {
 
 /// Ctrl+B: duplicate the selection (or all clips) right after itself, or by the time selection's length.
 pub fn duplicate(s: &mut State) {
-    let idx = targets(s);
+    let idx = with_linked_automation(s,targets(s));
     let cs: Vec<Clip> = idx.iter().filter_map(|&i| clips(s).get(i).copied()).collect();
     let (Some(a), Some(b)) = (cs.iter().map(|c| c.position).min(), cs.iter().map(Clip::end).max()) else { return };
     let span = match s.playlist.range {
@@ -1822,7 +1841,7 @@ pub fn duplicate(s: &mut State) {
 }
 
 pub fn copy(s: &mut State) {
-    let idx = if s.playlist.sel.is_empty() { Vec::new() } else { s.playlist.sel.clone() };
+    let idx = with_linked_automation(s,with_groups(s,s.playlist.sel.clone()));
     s.playlist.clipboard = idx.iter().filter_map(|&i| clips(s).get(i).copied()).collect();
 }
 
@@ -2135,7 +2154,7 @@ fn snapshot_unique(s: &mut State) {
 
 /// First track at or below `from` with no clips overlapping `[a, b)`.
 pub fn free_track(s: &State, from: u16, a: u32, b: u32) -> u16 {
-    (from..TRACKS).find(|&t| !clips(s).iter().any(|c| c.track == t && c.position < b && c.end() > a)).unwrap_or(from)
+    (from..TRACKS).find(|&t| !s.mixer.recording.live.iter().any(|d| d.row == t) && !clips(s).iter().any(|c| c.track == t && c.position < b && c.end() > a)).unwrap_or(from)
 }
 
 /// The track below the last one that has clips.
@@ -2153,7 +2172,7 @@ pub fn create_automation(s: &mut State, tgt: u32, name: &str, value: f64) -> u16
 
 /// Capture uses a completely empty row, never a linked overlay or an occupied row.
 pub fn capture_automation(s: &mut State,tgt:u32,name:&str,value:f64)->Option<u16> {
-    let track=(0..TRACKS).find(|&t| !clips(s).iter().any(|c|c.track==t))?;
+    let track=(0..TRACKS).find(|&t| !s.mixer.recording.live.iter().any(|d| d.row == t) && !clips(s).iter().any(|c|c.track==t))?;
     Some(create_automation_on(s,tgt,name,value,Some(track)))
 }
 
@@ -2212,6 +2231,7 @@ fn create_automation_on(s:&mut State,tgt:u32,name:&str,value:f64,free:Option<u16
         crate::init::put(s, tgt, init);
     }
     s.piano.dirty = true;
+    crate::rack::organize_clips(s);
     index
 }
 
@@ -2362,6 +2382,7 @@ pub fn add_audio_clip_as(s: &mut State, path: &str, track: u16, tick: u32, name:
     s.playlist.picker = PickKind::Audio;
     let i = place(s, track, tick);
     s.playlist.sel = vec![i];
+    crate::rack::autosize(s);
     Some(i)
 }
 
@@ -2655,58 +2676,52 @@ pub fn snap_menu(s: &State, x: f32, y: f32) -> Popup {
 }
 
 pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
-    let c = clips(s)[i];
-    let head = match source_kind(s, c.source) {
-        PickKind::Pattern => "Pattern clip",
-        PickKind::Audio => "Audio clip",
-        PickKind::Automation => "Automation clip",
-    };
-    let mut items = vec![
-        PItem::head(head),
-        PItem::new("Preview", Cmd::ClipPreview(i)),
-        PItem::sep(),
-        PItem::new("Muted", Cmd::ClipMute(i)).mark(Mark::Check(c.muted)),
-        PItem::sep(),
-        PItem::new("Rename...", Cmd::ClipRename(i)),
-        PItem::new("Random color", Cmd::ClipRandomColor(i)),
+    let c=clips(s)[i];
+    let kind=source_kind(s,c.source);
+    let mut items=vec![
+        PItem::head(match kind {PickKind::Pattern=>"Pattern clip",PickKind::Audio=>"Audio clip",PickKind::Automation=>"Automation clip"}),
+        PItem::new("Preview",Cmd::ClipPreview(i)),
+        PItem::new("Muted",Cmd::ClipMute(i)).mark(Mark::Check(c.muted)),
+        PItem::new("Rename...",Cmd::ClipRename(i)),
+        PItem::new("Random color",Cmd::ClipRandomColor(i)),
         PItem::sep(),
     ];
-    if matches!(c.source,ClipSource::Pattern(_)) {items.push(PItem::new("Reset pattern stretch",Cmd::ResetPatternStretch(i)));}
-    if source_kind(s, c.source) == PickKind::Audio {
-        items.push(PItem::new("Clip Effects...",Cmd::ClipEffects(i)));
-        if crate::comping::parent(s, c.track).is_some() {
-            items.push(PItem::new("Use entire take in comp", Cmd::CompUse(i, false)));
-            let item = PItem::new("Use selected time range in comp", Cmd::CompUse(i, true));
-            items.push(if s.playlist.range.is_some() { item } else { item.off() });
-            items.push(PItem::sep());
+    match kind {
+        PickKind::Audio => {
+            items.push(PItem::new("Clip effects...",Cmd::ClipEffects(i)));
+            items.push(PItem::new("Send to mixer track...",Cmd::ClipRoute(i)));
+            use crate::loop_fit::Fit;
+            let mut fitting=vec![
+                PItem::new("Make it fit",Cmd::FitLoop(i,Fit::Auto)),
+                PItem::new("Warp markers...",Cmd::Warp(i)),
+                PItem::new("Half length (double time)",Cmd::FitLoop(i,Fit::Half)),
+                PItem::new("Double length (half time)",Cmd::FitLoop(i,Fit::Double)),
+            ];
+            for n in [1,2,4,8,16] {fitting.push(PItem::new(format!("Fit to {n} bar(s)"),Cmd::FitLoop(i,Fit::Bars(n))));}
+            fitting.extend([
+                PItem::new("Reset to original duration",Cmd::FitLoop(i,Fit::Reset)),
+                PItem::sep(),
+                PItem::new("Stretch clip edges",Cmd::FitLoop(i,Fit::Edges)).mark(Mark::Radio(s.playlist.stretch)),
+                PItem::new("Trim clip edges",Cmd::FitLoop(i,Fit::Trim)).mark(Mark::Radio(!s.playlist.stretch)),
+            ]);
+            items.push(PItem::sub("Time / stretching",fitting));
+            items.push(PItem::sub("Audio processing",vec![PItem::new("Edit with ARA...",Cmd::AraMenu(i)),PItem::new("Stem separation...",Cmd::SeparateStems(i))]));
+            if crate::comping::parent(s,c.track).is_some() {
+                let range=PItem::new("Use selected time range in comp",Cmd::CompUse(i,true));
+                items.push(PItem::sub("Comping",vec![PItem::new("Use entire take in comp",Cmd::CompUse(i,false)),if s.playlist.range.is_some(){range}else{range.off()}]));
+            }
         }
-        items.push(PItem::new("Send to mixer track...", Cmd::ClipRoute(i)));
-        items.push(PItem::new("Edit with ARA...", Cmd::AraMenu(i)));
-        items.push(PItem::new("Stem separation...", Cmd::SeparateStems(i)));
-        use crate::loop_fit::Fit;
-        items.push(PItem::new("Make it fit", Cmd::FitLoop(i, Fit::Auto)));
-        items.push(PItem::new("Warp markers...",Cmd::Warp(i)));
-        let mut fitting = vec![
-            PItem::new("Half length (double time)", Cmd::FitLoop(i, Fit::Half)),
-            PItem::new("Double length (half time)", Cmd::FitLoop(i, Fit::Double)),
-            PItem::sep(),
-        ];
-        for n in [1,2,4,8,16] { fitting.push(PItem::new(format!("Fit to {n} bar(s)"), Cmd::FitLoop(i, Fit::Bars(n)))); }
-        fitting.push(PItem::new("Reset to original duration", Cmd::FitLoop(i, Fit::Reset)));
-        items.push(PItem::sub("Stretch / fit options", fitting));
-        items.push(PItem::new("Stretch clip edges", Cmd::FitLoop(i, Fit::Edges)).mark(Mark::Radio(s.playlist.stretch)));
-        items.push(PItem::new("Trim clip edges", Cmd::FitLoop(i, Fit::Trim)).mark(Mark::Radio(!s.playlist.stretch)));
-        items.push(PItem::sep());
+        PickKind::Pattern => {
+            items.push(PItem::new("Edit pattern",Cmd::ClipEditSource(i)));
+            items.push(PItem::new("Reset pattern stretch",Cmd::ResetPatternStretch(i)));
+        }
+        PickKind::Automation => {}
     }
-    if let ClipSource::Pattern(_) = c.source {
-        items.push(PItem::new("Edit pattern", Cmd::ClipEditSource(i)));
-    }
-    if matches!(source_kind(s,c.source),PickKind::Pattern|PickKind::Audio) {
-        items.push(PItem::new("Make Unique", Cmd::ClipUnique(i)));
-    }
-    items.push(PItem::new("Select all similar clips", Cmd::ClipSelectSimilar(i)));
-    items.push(PItem::new("Delete", Cmd::ClipDelete(i)));
-    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
+    if matches!(kind,PickKind::Pattern|PickKind::Audio) {items.push(PItem::new("Make Unique",Cmd::ClipUnique(i)));}
+    items.push(PItem::new("Select all similar clips",Cmd::ClipSelectSimilar(i)));
+    items.push(PItem::sep());
+    items.push(PItem::new("Delete",Cmd::ClipDelete(i)));
+    Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
 }
 
 /// The commands of a picker item's menu (§10a).
@@ -3371,6 +3386,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 snapshot(s);
                 let c = clips(s)[i];
                 // Clicking a clip makes its source current (§3).
+                crate::rack::focus_source(s,c.source);
                 s.playlist.source = Some(c.source);
                 if let ClipSource::Pattern(n) = c.source {
                     s.pattern = n;
@@ -3390,6 +3406,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 let r = g.clip_rect(&c);
                 let e = edge(r, x);
                 if app.shift && e == 0 {
+                    group=with_linked_automation(s,group);
                     // Shift+drag copies: the copies move, the originals stay.
                     let arr = arr_mut(s);
                     let first = arr.clips.len();
@@ -4165,6 +4182,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             app.invalidate();
             return None;
         }
+        Cmd::MainMenu(m,i) => {app.state.menu_open=None;app.state.menu_sub=None;app.act(crate::views::menus::pick(m,i));return None;}
         Cmd::Toolbar(sw) => {
             app.toolbar_switch(sw);
             return None;
@@ -4326,7 +4344,6 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             use crate::record::Opt;
             if matches!(o,Opt::Notes|Opt::Automation|Opt::Audio) {
                 crate::settings_file::set_flag("rec_filter_explicit",true);
-                if o.on() {for other in [Opt::Notes,Opt::Automation,Opt::Audio] {if other!=o {crate::mixer_recording::flag(other,false);}}}
                 if ![Opt::Notes,Opt::Automation,Opt::Audio].iter().any(|o|o.on()) {
                     crate::mixer_recording::flag(Opt::Notes,true);crate::settings_file::set_flag("rec_filter_explicit",false);
                 }
@@ -4435,6 +4452,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::CompUse(i, range) => Some(crate::comping::choose(s, i, range)),
         Cmd::Control(c) => { crate::playlist_controls::run(s, c); None }
         Cmd::ChooseSource(src) => {
+            crate::rack::focus_source(s,src);
             s.playlist.source = Some(src);
             s.playlist.picker = source_kind(s, src);
             s.playlist.lock_len = None;
@@ -4442,7 +4460,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             crate::playlist_tools::select(s, PlTool::Paint);
             None
         }
-        Cmd::PopupBack(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
+        Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {
             crate::playlist_tools::select(s, t);
