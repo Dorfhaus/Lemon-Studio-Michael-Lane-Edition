@@ -1639,7 +1639,7 @@ fn copy_channel(app:&mut App,n:u16)->Option<String> {
     app.params_tick();
     app.store_builtin_states();
     let mut project=app.state.project.clone();
-    crate::project_plugins::store_hosted(&mut project,&app.plugins);
+    if let Err(e)=crate::project_plugins::store_hosted(&mut project,&app.plugins){return Some(e);}
     let mut copied=channel_copy(&app.state,n)?;
     copied.track=project.mixer.iter().find(|t|t.index==n)?.clone();
     app.state.mixer.clipboard=Some(copied);
@@ -1654,7 +1654,7 @@ fn paste_channel(app:&mut App,n:u16)->Option<String> {
         return Some("Cannot paste this routing here: it would create a feedback loop".into());
     }
     app.mixer_tick();app.store_builtin_states();
-    crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins);
+    if let Err(e)=crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins){return Some(e);}
     let old=channel_copy(&app.state,n)?;
     c.track.index=n;c.track.origin=old.track.origin;
     crate::history::record(&mut app.state,"Paste mixer channel",crate::history::Snap::MixerChannel(Box::new(old)));

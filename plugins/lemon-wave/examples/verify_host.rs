@@ -61,6 +61,27 @@ fn verify(lib: Arc<dyn Library>) {
     assert!(p.set_param(mode, 0.9));
     assert!(p.set_param(amount, 0.65));
     for (name, value) in [
+        ("Envelope Engine", 1.),
+        ("Amp Hold", 0.3),
+        ("Amp Attack Curve", 0.7),
+        ("Amp Decay Curve", 0.65),
+        ("Amp Release Curve", 0.7),
+        ("Env 2 Hold", 0.2),
+        ("Env 2 Decay Curve", 0.8),
+        ("Filter Model", 1.),
+        ("Filter", 1. / 3.),
+        ("LFO 1 Shape Engine", 1.),
+        ("LFO 2 Sync", 6. / 8.),
+        ("LFO 2 Division", 1.),
+        ("LFO 3 Trigger", 1.),
+        ("LFO 4 Trigger", 0.5),
+        ("Mod 3 Source", 5. / 12.),
+        ("Mod 3 Target", 6. / 20.),
+        ("Mod 3 Amount", 0.8),
+        ("Mod 4 Source", 8. / 12.),
+        ("Mod 4 Target", 1. / 20.),
+        ("Mod 4 Amount", 0.65),
+        ("Macro 1", 0.6),
         ("A Phase", 0.25),
         ("A Blend", 0.5),
         ("Mod 1 Source", 0.75),
@@ -106,10 +127,33 @@ fn verify(lib: Arc<dyn Library>) {
             .collect(),
     };
     let sources = lemon_wave::assets::Sources {
+        samples: [
+            None,
+            Some(lemon_wave::sample::Sample {
+                name: "Synthetic recorded note".into(),
+                rate: 48000,
+                root: 60.,
+                samples: (0..48000)
+                    .map(|i| (std::f32::consts::TAU * 261.6256 * i as f32 / 48000.).sin() * 0.4)
+                    .collect(),
+            }),
+        ],
         oscillators: [Some(source), None],
     };
     json["fields"][lemon_wave::assets::FIELD] =
         serde_json::Value::String(serde_json::to_string(&sources).unwrap());
+    let mut curves = lemon_wave::modulation::Curves::default();
+    curves.draw(1, (0., 1.), (1., -1.));
+    json["fields"][lemon_wave::modulation::FIELD] = serde_json::Value::String(curves.encode());
+    for (id, value) in [
+        ("b_level", 500),
+        ("mod3_source", 5),
+        ("mod3_target", 7),
+        ("mod3_amount", 900),
+        ("lfo2_sync", 5),
+    ] {
+        json["params"][id] = serde_json::json!({"i32":value});
+    }
     let mut imported = serde_json::to_vec(&json).unwrap();
     if desc.id == "org.lemonstudio.lemon-wave" {
         let mut clap = (imported.len() as u64).to_le_bytes().to_vec();
@@ -170,7 +214,7 @@ fn verify(lib: Arc<dyn Library>) {
         start.elapsed().as_secs_f32()
     );
     println!(
-        "{}: descriptor, 62 controls / reference-source audio recall, state restore, MIDI offset, release/reset, embedded-table audio recall and built-in restore PASS",
+        "{}: descriptor, 109 controls / reference-source audio recall, state restore, MIDI offset, release/reset, embedded-table audio recall and built-in restore PASS",
         desc.uid()
     );
 }

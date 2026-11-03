@@ -234,6 +234,8 @@ pub fn fx_of(key: usize) -> Option<(u16, u8)> {
 
 #[derive(Default)]
 pub struct Plugins {
+    pub edit_revision: u64,
+    #[cfg(test)] pub state_fail: std::collections::BTreeSet<usize>,
     pub available: Vec<Available>,
     /// Effect plugins found (offered for mixer slots).
     pub effects: Vec<Available>,
@@ -661,6 +663,7 @@ impl Plugins {
 
     /// The saved state of the instance under `key`, in its format's own bytes.
     pub fn state(&self, key: usize) -> Option<Vec<u8>> {
+        #[cfg(test)] if self.state_fail.contains(&key){return None;}
         self.hosted.get(&key)?.plugin.lock().ok()?.save_state()
     }
 
@@ -677,6 +680,7 @@ impl Plugins {
     pub fn mark_edited(&mut self, key: usize) {
         if let Some(h) = self.hosted.get_mut(&key) {
             h.stand_in = false;
+            self.edit_revision = self.edit_revision.wrapping_add(1);
         }
     }
 
@@ -4085,7 +4089,7 @@ mod chop_integration_tests {
         let inst=p.hosted[&0].plugin.clone();let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);let mut peak=0f32;
         while std::time::Instant::now()<deadline {std::thread::sleep(std::time::Duration::from_millis(40));let mut i=inst.lock().unwrap();i.note_on(0,36,1.);let(mut l,mut r)=(vec![0.;512],vec![0.;512]);i.process(48000,&mut l,&mut r);peak=l.iter().fold(peak,|a,b|a.max(b.abs()));if peak>0.01{break;}}
         assert!(peak>0.01,"MIDI pad reaches host audio");let saved=p.state(0).unwrap();let json:serde_json::Value=serde_json::from_slice(&saved[8..]).unwrap();let restored:Document=serde_json::from_str(json["fields"]["chop-document"].as_str().unwrap()).unwrap();assert_eq!(restored,doc);
-        let mut project=crate::app::test_project();project.channels[0].kind=os_model::ChannelKind::Plugin;crate::project_plugins::store_hosted(&mut project,&p);assert!(crate::project_plugins::wrapped_channel(&project.channels[0]).is_some());
+        let mut project=crate::app::test_project();project.channels[0].kind=os_model::ChannelKind::Plugin;crate::project_plugins::store_hosted(&mut project,&p).unwrap();assert!(crate::project_plugins::wrapped_channel(&project.channels[0]).is_some());
         let project_file=file.with_extension("flp");let mut app=crate::app::App::new(None);app.state.project=project;app.state.file=None;app.state.path=None;app.plugins=p;app.state.hosted_rows.push(0);app.save_to(project_file.clone());
         let mut reopened=crate::app::App::new(None);reopened.plugins.available=builtin();reopened.open(project_file.clone());reopened.sync_wrapped();assert!(reopened.plugins.hosted.contains_key(&0),"Chop reopens from the saved project");
         let state=reopened.plugins.state(0).unwrap();let restored:serde_json::Value=serde_json::from_slice(&state[8..]).unwrap();let restored:Document=serde_json::from_str(restored["fields"]["chop-document"].as_str().unwrap()).unwrap();assert_eq!(restored,doc);

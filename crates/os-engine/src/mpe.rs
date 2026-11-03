@@ -326,6 +326,9 @@ struct Voice {
 }
 #[derive(Clone)]
 pub struct Playback {
+    /// Restart notes spanning a seek only when the transport requests note chasing.
+    pub chase_notes: bool,
+    pub(crate) resume_tick: Option<u64>,
     pub config: os_model::mpe::Config,
     pub pitch_offset: f32,
     pub notes: Vec<Scheduled>,
@@ -341,6 +344,8 @@ impl Playback {
     pub fn new(config: os_model::mpe::Config, mut notes: Vec<Scheduled>) -> Self {
         notes.sort_by_key(|n| n.start);
         Self {
+            chase_notes: true,
+            resume_tick: None,
             config: config.valid(),
             pitch_offset: 0.,
             notes,
@@ -353,6 +358,7 @@ impl Playback {
             pending: vec![],
         }
     }
+    pub fn with_chase(mut self, on: bool) -> Self { self.chase_notes = on; self }
     pub fn adopt(&mut self, old: &mut Self) {
         if self.config != old.config {
             self.pending.extend(old.shutdown());
@@ -362,6 +368,7 @@ impl Playback {
         self.live_up = old.live_up;
         self.pedal = old.pedal;
         self.last = old.last;
+        self.resume_tick = old.resume_tick.take();
         self.setup = old.setup;
         for voice in old.voices.drain(..) {
             let oldnote = &old.notes[voice.note];
@@ -426,6 +433,7 @@ impl Playback {
         v
     }
     pub fn released(&mut self) {
+        self.resume_tick = if self.voices.is_empty() { None } else { self.last.map(|t| t.saturating_add(1)) };
         self.voices.clear();
         self.live = [false; 16];
         self.live_up = [false; 16];
@@ -515,6 +523,7 @@ impl Playback {
                 i += 1;
             }
         }
+        let resume = self.resume_tick.take() == Some(tick);
         let seeking = self.last.is_none() || self.last.is_some_and(|last| tick != last + 1);
         let first = if seeking {
             0
@@ -526,7 +535,7 @@ impl Playback {
             let n = &self.notes[i];
             if n.start > tick
                 || n.end <= tick
-                || (!seeking && n.start != tick)
+                || (n.start < tick && (!seeking || !(self.chase_notes || resume)))
                 || self.voices.iter().any(|v| v.note == i)
             {
                 continue;

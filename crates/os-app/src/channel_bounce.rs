@@ -80,7 +80,7 @@ impl App {
             Ok((p,job,song,end))=>{
                 if let Err(e)=std::fs::create_dir_all(&job.folder){self.state.message=Some(e.to_string());return;}
                 let mut source=self.state.project.clone();
-                crate::project_plugins::store_hosted(&mut source,&self.plugins);
+                if let Err(e)=crate::project_plugins::store_hosted(&mut source,&self.plugins){self.state.message=Some(format!("Cannot preserve original source: {e}"));return;}
                 // Permanent recovery copy, including every original MIDI pattern and plugin state.
                 let backup=job.folder.join(format!("{} - Source.flp",job.name));
                 let saved=os_flp::project::create(&source).map_err(|e|e.to_string()).and_then(|f|f.to_bytes().map_err(|e|e.to_string())).and_then(|b|std::fs::write(&backup,b).map_err(|e|e.to_string()));

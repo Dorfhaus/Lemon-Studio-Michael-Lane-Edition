@@ -23,6 +23,8 @@ mod audio_cfg;
 mod auto_close;
 mod autoscroll;
 mod backup;
+mod safe_save;
+#[cfg(test)] mod audit_fixes;
 #[cfg(test)]
 mod audio_bench;
 #[cfg(test)]

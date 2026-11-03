@@ -52,7 +52,7 @@ pub fn run(app: &mut App, dst: u16) -> Option<String> {
     };
     // Capture live settings before recording an undo step for the two changed mixer channels.
     app.store_builtin_states();
-    crate::project_plugins::store_hosted(&mut app.state.project, &app.plugins);
+    if let Err(e)=crate::project_plugins::store_hosted(&mut app.state.project, &app.plugins){return Some(e);}
     let before = crate::history::Snap::Several(
         [src, dst]
             .into_iter()

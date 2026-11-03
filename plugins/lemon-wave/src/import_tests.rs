@@ -108,6 +108,7 @@ fn frames_mips_and_embedded_recall_without_original_file() {
     let params = WaveParams::default();
     params
         .replace(Sources {
+            samples: Default::default(),
             oscillators: [Some(source.clone()), Some(source)],
         })
         .unwrap();
@@ -164,6 +165,7 @@ fn import_editor_layout_and_builtin_restore() {
     .unwrap();
     params
         .replace(Sources {
+            samples: Default::default(),
             oscillators: [Some(source), None],
         })
         .unwrap();
@@ -193,4 +195,68 @@ fn import_editor_layout_and_builtin_restore() {
     logic.down(r.cx(), r.cy(), Btn::Left, Mods::default(), false);
     assert!(params.sources().oscillators[0].is_none());
     assert!(!extension.click(1099., 719., None));
+}
+
+#[test]
+fn recorded_samples_decode_embed_clear_and_render_consistently() {
+    use crate::sample::Sample;
+    let bytes = wav(16, 1, false, &sine(48000, 440));
+    let sample = Sample::decode(&bytes, "A4 recorded".into(), 69.).unwrap();
+    assert_eq!(sample.rate, 48000);
+    for n in [0, 8, 36, bytes.len() - 1] {
+        assert!(Sample::decode(&bytes[..n], "bad".into(), 60.).is_err());
+    }
+    let params = WaveParams::default();
+    params
+        .replace(Sources {
+            samples: [Some(sample), None],
+            ..Default::default()
+        })
+        .unwrap();
+    let fields = params.serialize_fields();
+    let restored = WaveParams::default();
+    restored.deserialize_fields(&fields);
+    let run = |block: usize| {
+        let mut e = dsp::Engine::new(48000.);
+        e.custom = restored.tables.read().unwrap().clone();
+        e.on(69, 0.8, 0, None);
+        let mut l = vec![0.; 8192];
+        let mut r = l.clone();
+        for (a, b) in l.chunks_mut(block).zip(r.chunks_mut(block)) {
+            e.render(a, b);
+        }
+        l
+    };
+    let a = run(1);
+    assert_eq!(a, run(127));
+    assert!(a.iter().any(|x| x.abs() > 0.001));
+    assert!(a.iter().all(|x| x.is_finite()));
+    restored.deserialize_fields(&Default::default());
+    assert!(restored.sources().samples[0].is_none());
+}
+
+#[test]
+fn sound_browser_basic_choices_activate_and_save() {
+    use lemon_small_fx::editor::Extension;
+    let params = Arc::new(WaveParams::default());
+    let editor = crate::table_editor::TableEditor::new(params.clone());
+    for i in 0..6 {
+        let r = crate::sound_browser::button(0);
+        assert!(editor.click(r.cx(), r.cy(), None));
+        assert!(editor.click(500., 223. + i as f32 * 34., None));
+        let s = params.sources();
+        assert_eq!(
+            s.oscillators[0].as_ref().unwrap().name,
+            crate::sound_browser::BASIC[i]
+        );
+        assert!(s.samples[0].is_none());
+        assert_eq!(params.base.v(crate::controls::A_SOURCE), 0);
+        let state = params.serialize_fields();
+        let restored = WaveParams::default();
+        restored.deserialize_fields(&state);
+        assert_eq!(
+            restored.sources().oscillators[0].as_ref().unwrap().name,
+            crate::sound_browser::BASIC[i]
+        );
+    }
 }

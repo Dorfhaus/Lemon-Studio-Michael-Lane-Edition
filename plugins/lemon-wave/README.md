@@ -1,3 +1,21 @@
+# Current local update: Sound Browser
+
+Six named standard waves, visible wavetable selection, and a grouped local recorded-synth library. See [SOUND-LIBRARY.md](SOUND-LIBRARY.md). Still 109 stable host controls; custom sounds and root pitch are stored as patch assets.
+
+# Current local development: four drawable LFOs, eight routes, four macros
+
+109 parameters and fourteen factory choices. See [MODULATION.md](MODULATION.md) for the new controls, workflow and verification limits.
+
+# Previous envelope/filter development update — 3 November 2026
+
+Lemon Wave now has 72 parameters, eleven factory choices in its dedicated editor, selectable curved AHDSR envelopes and six reconstructed nonlinear SVF paths. Choose **Curved AHDSR** at the top (takes effect on the next note), then drag Hold / Attack curve / Decay curve / Release curve in either envelope panel. Curve 50% is linear; sustain is squared in this mode. Attack/decay/release retain Lemon's existing 1 ms–10 s time controls; Hold spans 0–32 s. Curves/durations latch at stage entry; continuously retiming an active stage is not implemented. New presets: Velvet Pluck, Held Bloom, Resonant Band.
+
+Filter / Mix combines Low/Band/High pass with Classic, SVF 12 or SVF 24. New SVF paths include nonlinear drive, resonance compensation and 2x internal processing. Lemon's voice routing, input gain, interpolation and output processing remain its own; these are not full Serum filter/audio equivalence. See research/envelope-filter.md for the evidence and limits.
+
+Existing 44-, 50- and 62-parameter native patches migrate with Classic envelope/filter defaults. Three captured old patches render bit-identically. The original oscillator controls and IDs remain intact. The host app itself is not rebuilt by this plugin update.
+
+The historical stage notes below describe earlier checkpoints. Current runtime evidence supersedes their initial static-only investigation status.
+
 # Lemon Wave
 
 An original wavetable instrument for Lemon Studio, developed in stages at Michael's request. The first stage is a Windows CLAP/VST3 instrument, not a complete Serum clone. No Serum code, factory tables, presets or artwork are included.
@@ -35,7 +53,7 @@ Package `lemon_wave.dll` as `Lemon Wave.clap` and as `Lemon Wave.vst3/Contents/x
 ## Next stages (not implemented)
 
 1. Continue wavetable editing: frame editing/drawing, spectral editing, table export, higher-quality warp/oversampling, phase/randomization controls. WAV import and embedded tables are implemented above.
-2. Drag-and-drop modulation matrix, multiple editable LFOs/envelopes, macros, MPE/aftertouch/velocity routing, modulation visualization, mono/legato/glide.
+2. Additional expression sources, editable envelope points, mono/legato/glide. Drawable LFOs, macros, drag/drop routing and modulation displays are now implemented; see MODULATION.md.
 3. Expanded filter/routing and reorderable effects rack: EQ, distortion modes, compression, reverb, phaser/flanger, delay synchronization and additional chorus modes.
 4. Serum 2-style broader synthesis options: third oscillator, sample/multisample, granular and spectral engines; arpeggiation/sequencing; larger preset browser and sound library.
 5. Listening, spectral/aliasing tests, CPU profiling, automation stress and user-guided interaction refinement. Mac/Linux builds require their own verification.
@@ -45,3 +63,7 @@ Package `lemon_wave.dll` as `Lemon Wave.clap` and as `Lemon Wave.vst3/Contents/x
 Installed target: Xfer Serum 2.1.5, native Windows x64 VST3, 19,236,864 bytes. SHA-256 `33369e196ae66d05d20485f3c5e800707dc34a5ad89c27959250d60387b2ea55`. Version and classes are observed in `Contents/Resources/moduleinfo.json`. REA 6.8.0/Ghidra 12.1.4 performs static inspection only; it has not run Serum or established audio equivalence. The initial cold import exceeded 330 seconds. Evidence/results from the extended attempt are recorded in the project handoff and Desktop research folder.
 
 Xfer's official feature description establishes that Serum 2 includes wavetable, multisample, sample, granular and spectral modes: https://xferrecords.com/web-manual/serum-2/exploring-sound-design-in-serum . Its routing documentation describes three oscillator sources plus sub/noise and two filters: https://xferrecords.com/web-manual/serum-2/routing-an-oscillator-or-filter . These are published behavior descriptions, not proof of recovered internal algorithms. Lemon Wave's DSP is an independent implementation; remaining parity claims are unknown.
+
+## November modulation upgrade
+
+109 controls, four drawable LFOs, eight routes, four macros and live voice displays. Fourteen embedded factory choices. See MODULATION.md. Earlier stage descriptions are historical.

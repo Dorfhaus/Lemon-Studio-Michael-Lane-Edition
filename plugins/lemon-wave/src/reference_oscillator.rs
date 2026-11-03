@@ -182,7 +182,7 @@ impl Warp {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Decimator {
     state: [[f32; 4]; 4],
 }
@@ -270,6 +270,17 @@ impl Oscillator {
         self.decimator = Decimator::default();
     }
     pub fn tick(&mut self, frequency: f64, warp: Warp, amount: f32, gains: [f32; 2]) -> f32 {
+        let pair = self.tick_pair(frequency, warp, amount, gains);
+        self.decimator.tick(pair)
+    }
+    /// Oversampled output for a voice-level filter/envelope chain before decimation.
+    pub fn tick_pair(
+        &mut self,
+        frequency: f64,
+        warp: Warp,
+        amount: f32,
+        gains: [f32; 2],
+    ) -> [f32; 2] {
         let increment = (frequency * self.reciprocal).clamp(f64::MIN_POSITIVE, 1.);
         let new = self.table.level(increment);
         if self.level == usize::MAX {
@@ -299,7 +310,7 @@ impl Oscillator {
                 self.phase -= 1.;
             }
         }
-        self.decimator.tick(pair)
+        pair
     }
 }
 

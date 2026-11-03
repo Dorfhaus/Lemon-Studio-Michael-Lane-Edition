@@ -344,7 +344,7 @@ impl Engine {
             if ch.instrument.0.is_some() {
                 let d = self.pdc.chan_delay.get(c).copied().unwrap_or(0);
                 ins[ch.insert].chan = ins[ch.insert].chan.max(d);
-                for port in 0..self.pdc.aux_pad[c].len() {let t=(ch.insert+port+1).min(n-1);ins[t].chan=ins[t].chan.max(d);}
+                for port in 0..self.pdc.aux_pad[c].len() {let t=ch.insert+port+1;if t<n {ins[t].chan=ins[t].chan.max(d);}}
             }
         }
         let l = lateness(&ins, &self.order, self.rate);
@@ -354,6 +354,7 @@ impl Engine {
         for (t, m) in self.tracks.iter_mut().enumerate() {
             // What the engine plays into the track itself (sampler voices, the metronome) reports no delay.
             m.pad.set_len(l.channel_pad(t, 0));
+            m.input_pad.set_len(l.channel_pad(t, 0));
             for r in &mut m.routes {
                 r.pad.set_len(l.send_pad(t, r.dest));
             }
@@ -409,7 +410,7 @@ impl Engine {
             if let Some(p) = self.pdc.chan_pad.get_mut(c) {
                 p.set_len(len);
             }
-            for (port,p) in self.pdc.aux_pad[c].iter_mut().enumerate() {p.set_len(l.channel_pad((ch.insert+port+1).min(n-1),self.pdc.chan_delay[c]));}
+            for (port,p) in self.pdc.aux_pad[c].iter_mut().enumerate() {let t=ch.insert+port+1;p.set_len(if t<n {l.channel_pad(t,self.pdc.chan_delay[c])}else{0});}
         }
         self.pdc.reach = (0..n).map(|t| l.leaving[t].max(l.arriving[t]) + l.extra[t]).max().unwrap_or(0).max(0) as u64;
         if self.pdc.fresh {

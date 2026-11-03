@@ -372,7 +372,7 @@ impl App {
                 l.seen = look;
             }
             let sampler = key < crate::plugins::FX_KEY && p.desc().name == crate::plugins::LEMON_SAMPLER;
-            if p.take_state_changed(){ara_changes.push((key,p.save_state()));}
+            if p.take_state_changed(){edited.push(key);if self.state.project.channels.get(key).is_some_and(crate::ara::is){ara_changes.push((key,p.save_state()));}}
             let pending=ui.capture_pending.remove(&key);
             for e in p.take_param_events() {
                 if let (true, os_host::ParamEvent::Value(id, v)) = (sampler, &e) {

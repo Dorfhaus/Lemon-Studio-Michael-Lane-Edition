@@ -117,6 +117,10 @@ struct Env {
     value: f32,
     stage: u8,
     release_step: f32,
+    elapsed: f32,
+    reference: bool,
+    recovered: crate::reference_envelope::Envelope,
+    settings: crate::reference_envelope::Settings,
 }
 impl Env {
     fn start(&mut self) {
@@ -126,12 +130,32 @@ impl Env {
         };
     }
     fn off(&mut self, r: f32, rate: f32) {
+        if self.reference {
+            self.settings.release = r as f64;
+            if self.stage != 4 {
+                self.elapsed = 0.;
+            }
+            self.recovered.off(&self.settings, rate);
+            self.stage = self.recovered.stage;
+            return;
+        }
         if self.stage != 0 && self.stage != 4 {
             self.stage = 4;
+            self.elapsed = 0.;
             self.release_step = self.value / (r * rate).max(1.);
         }
     }
     fn tick(&mut self, a: f32, d: f32, s: f32, rate: f32) -> f32 {
+        let before = self.stage;
+        self.elapsed += 1. / rate;
+        if self.reference {
+            self.value = self.recovered.tick(&self.settings, rate);
+            self.stage = self.recovered.stage;
+            if before != self.stage {
+                self.elapsed = 0.;
+            }
+            return self.value;
+        }
         match self.stage {
             1 => {
                 self.value += 1. / (a * rate).max(1.);
@@ -156,6 +180,9 @@ impl Env {
                 }
             }
             _ => {}
+        }
+        if before != self.stage {
+            self.elapsed = 0.;
         }
         self.value
     }
@@ -190,13 +217,20 @@ struct Voice {
     velocity: f32,
     tune: f32,
     phase: [[f32; 7]; 2],
+    sample_cursor: [[f64; 7]; 2],
     sub: f32,
     lfo: f32,
+    lfo_extra: [f32; 3],
     amp: Env,
     env: Env,
     filter: [Filter; 2],
+    recovered_filter: [crate::reference_filter::Oversampled; 2],
+    filter_model: usize,
 }
 pub struct Engine {
+    pub curves: crate::modulation::Curves,
+    pub live: crate::modulation::Live,
+    free_phase: [f32; 4],
     reference: Vec<crate::reference_voice::ReferenceVoice>,
     pub custom: Arc<crate::assets::Tables>,
     tables: Arc<Tables>,
@@ -222,6 +256,9 @@ impl Engine {
         static TABLES: OnceLock<Arc<Tables>> = OnceLock::new();
         let reference_table = Arc::new(crate::reference_oscillator::Table::init_saw());
         Self {
+            curves: Default::default(),
+            live: Default::default(),
+            free_phase: [0.; 4],
             custom: Arc::default(),
             reference: (0..VOICES)
                 .map(|_| crate::reference_voice::ReferenceVoice::new(reference_table.clone(), rate))
@@ -247,6 +284,8 @@ impl Engine {
     }
     pub fn reset(&mut self) {
         self.voices.fill(Voice::default());
+        self.free_phase = [0.; 4];
+        self.live = Default::default();
         for voice in &mut self.reference {
             voice.reset(
                 [self.target[A_LEVEL] / 1000., self.target[B_LEVEL] / 1000.],
@@ -314,6 +353,18 @@ impl Engine {
         }
         v.amp.start();
         v.env.start();
+        if self.target[ENV_ENGINE] > 0.5 {
+            for (envelope, base, hold) in [
+                (&mut v.amp, ATTACK, AMP_HOLD),
+                (&mut v.env, ENV_ATTACK, ENV_HOLD),
+            ] {
+                envelope.reference = true;
+                envelope.settings = envelope_settings(&self.target, base, hold);
+                envelope
+                    .recovered
+                    .start(&envelope.settings, self.rate, false);
+            }
+        }
         let mut phases = [[0.; 7]; 2];
         // Separate deterministic per-note generator: squared amount law is measured,
         // but this sequence is our own and is not claimed to be Serum's RNG.
@@ -430,14 +481,15 @@ impl Engine {
             let decay = seconds(p[DECAY]);
             let ea = seconds(p[ENV_ATTACK]);
             let ed = seconds(p[ENV_DECAY]);
-            let sync = discrete[LFO_SYNC] as usize;
-            let hz = if sync == 0 {
-                lfo_hz(p[LFO_RATE])
-            } else {
-                self.tempo.clamp(20., 400.)
-                    / 60.
-                    / [16., 8., 4., 2., 1., 0.5, 0.25, 0.125][sync - 1]
-            };
+            let rates: [f32; 4] = std::array::from_fn(|i| {
+                let c = LFO_CONTROLS[i];
+                let mut timing = *p;
+                timing[c[1]] = discrete[c[1]];
+                timing[c[3]] = discrete[c[3]];
+                crate::modulation::rate(&timing, i, self.tempo)
+            });
+            let mut live = crate::modulation::Live::default();
+            let mut newest = 0;
             let mut output = [0.; 2];
             let mut sounding = false;
             for (voice_index, v) in self.voices.iter_mut().enumerate() {
@@ -445,36 +497,90 @@ impl Engine {
                     continue;
                 }
                 sounding = true;
+                if v.amp.reference {
+                    v.amp.settings = envelope_settings(p, ATTACK, AMP_HOLD);
+                }
+                if v.env.reference {
+                    v.env.settings = envelope_settings(p, ENV_ATTACK, ENV_HOLD);
+                }
                 let amp = v.amp.tick(attack, decay, p[SUSTAIN] / 1000., self.rate) * v.velocity;
                 let env = v.env.tick(ea, ed, p[ENV_SUSTAIN] / 1000., self.rate);
                 if v.amp.stage == 0 && self.ended.len() < 256 {
                     self.ended.push((v.note, v.channel, v.id));
                 }
-                let raw_lfo = match discrete[LFO_SHAPE] as usize {
-                    1 => 1. - 4. * (v.lfo - 0.5).abs(),
-                    2 => v.lfo * 2. - 1.,
-                    3 => {
-                        if v.lfo < 0.5 {
-                            1.
-                        } else {
-                            -1.
-                        }
+                let mut phases = [v.lfo, v.lfo_extra[0], v.lfo_extra[1], v.lfo_extra[2]];
+                for i in 0..4 {
+                    if discrete[LFO_CONTROLS[i][2]] as usize == 1 {
+                        phases[i] = self.free_phase[i];
                     }
-                    _ => (v.lfo * TAU).sin(),
+                }
+                let raw_lfo = if discrete[LFO_DRAW] > 0.5 {
+                    self.curves.sample(0, phases[0])
+                } else {
+                    match discrete[LFO_SHAPE] as usize {
+                        1 => 1. - 4. * (phases[0] - 0.5).abs(),
+                        2 => phases[0] * 2. - 1.,
+                        3 => {
+                            if phases[0] < 0.5 {
+                                1.
+                            } else {
+                                -1.
+                            }
+                        }
+                        _ => (phases[0] * TAU).sin(),
+                    }
                 };
                 let lfo = raw_lfo * p[LFO_AMOUNT] / 1000.;
-                let mut modulation = [0_f32; 8];
-                for slot in [MOD1_SOURCE, MOD2_SOURCE] {
-                    let value = match discrete[slot] as usize {
-                        1 => raw_lfo,
-                        2 => env,
-                        3 => v.velocity,
-                        4 => (v.note as f32 - 60.) / 60.,
-                        _ => 0.,
-                    };
-                    modulation[(discrete[slot + 1] as usize).min(7)] += value * p[slot + 2] / 1000.;
+                let sources = [
+                    0.,
+                    raw_lfo,
+                    env,
+                    v.velocity,
+                    (v.note as f32 - 60.) / 60.,
+                    self.curves.sample(1, phases[1]),
+                    self.curves.sample(2, phases[2]),
+                    self.curves.sample(3, phases[3]),
+                    p[MACRO1] / 1000.,
+                    p[MACRO2] / 1000.,
+                    p[MACRO3] / 1000.,
+                    p[MACRO4] / 1000.,
+                    v.amp.value,
+                ];
+                let mut modulation = [0_f32; 21];
+                for slot in ROUTES {
+                    modulation[(discrete[slot + 1] as usize).min(20)] +=
+                        sources[(discrete[slot] as usize).min(12)] * p[slot + 2] / 1000.;
                 }
-                v.lfo = (v.lfo + hz / self.rate).fract();
+                v.lfo = crate::modulation::advance(
+                    v.lfo,
+                    rates[0] / self.rate,
+                    discrete[LFO1_MODE] as usize,
+                );
+                for i in 0..3 {
+                    v.lfo_extra[i] = crate::modulation::advance(
+                        v.lfo_extra[i],
+                        rates[i + 1] / self.rate,
+                        discrete[LFO_CONTROLS[i + 1][2]] as usize,
+                    );
+                }
+                if v.age >= newest {
+                    newest = v.age;
+                    live = crate::modulation::Live {
+                        phases,
+                        sources,
+                        amounts: modulation,
+                        env_elapsed: [v.amp.elapsed, v.env.elapsed],
+                        env_stage: [v.amp.stage, v.env.stage],
+                        active: v.amp.stage != 0,
+                    };
+                }
+                let mut voice_params = *p;
+                for (i, k) in EXTRA_TARGETS.iter().enumerate() {
+                    let s = &SETTINGS[*k];
+                    voice_params[*k] = (p[*k] + modulation[8 + i] * (s.range.1 - s.range.0) as f32)
+                        .clamp(s.range.0 as f32, s.range.1 as f32);
+                }
+                let p = &voice_params;
                 let target = discrete[LFO_TARGET] as usize;
                 let pitch = v.note as f32 - 69.
                     + v.tune
@@ -511,7 +617,9 @@ impl Engine {
                         };
                         let max_slope = 0.5 / pivot.min(1. - pivot);
                         let s = if freq < self.rate * 0.45 {
-                            if let Some(table) = &self.custom.oscillators[o] {
+                            if let Some(sample) = &self.custom.samples[o] {
+                                sample.tick(&mut v.sample_cursor[o][u], freq, self.rate)
+                            } else if let Some(table) = &self.custom.oscillators[o] {
                                 table.sample(pos, warped, freq * max_slope, self.rate)
                             } else {
                                 self.tables
@@ -551,7 +659,7 @@ impl Engine {
                             p[b + 6] / 200. + 0.5 + modulation[6] * 0.5,
                             crate::reference_oscillator::Warp::from_reference_id(mode).unwrap(),
                             amount,
-                            discrete[b + 2] / 1000.,
+                            (discrete[b + 2] / 1000. + modulation[10 + o]).clamp(0., 1.),
                         );
                         sig[0] += pair[0] * mix;
                         sig[1] += pair[1] * mix;
@@ -577,18 +685,42 @@ impl Engine {
                 } else {
                     1.
                 };
+                let model = discrete[FILTER_MODEL] as usize;
+                if v.filter_model != model {
+                    v.filter_model = model;
+                    v.recovered_filter = Default::default();
+                    v.filter = Default::default();
+                }
+                let coeff = if model > 0 {
+                    Some(crate::reference_filter::Coefficients::new(
+                        self.rate * 2.,
+                        cutoff(cv).min(self.rate * 0.42) as f64,
+                        (p[RESONANCE] / 1000.) as f64,
+                        p[DRIVE] / 1000.,
+                        discrete[FILTER] as usize,
+                        if model == 2 { 4 } else { 2 },
+                    ))
+                } else {
+                    None
+                };
                 for ch in 0..2 {
                     let x = (sig[ch] + sub + noise) * 0.3;
-                    let x = if p[DRIVE] > 0.1 {
+                    let x = if model == 0 && p[DRIVE] > 0.1 {
                         (x * drive).tanh() / drive.sqrt()
                     } else {
                         x
                     };
-                    output[ch] += v.filter[ch].tick(x, g, k, discrete[FILTER] as usize)
-                        * amp
-                        * am
-                        * (1. + modulation[7]).clamp(0., 2.);
+                    let filtered = if let Some(c) = &coeff {
+                        v.recovered_filter[ch].tick(x, c)
+                    } else {
+                        v.filter[ch].tick(x, g, k, discrete[FILTER] as usize)
+                    };
+                    output[ch] += filtered * amp * am * (1. + modulation[7]).clamp(0., 2.);
                 }
+            }
+            self.live = live;
+            for i in 0..4 {
+                self.free_phase[i] = (self.free_phase[i] + rates[i] / self.rate).fract();
             }
             if sounding {
                 self.tail = (self.rate
@@ -630,6 +762,16 @@ impl Engine {
         }
     }
 }
+fn envelope_settings(p: &Patch, base: usize, hold: usize) -> crate::reference_envelope::Settings {
+    crate::reference_envelope::Settings {
+        attack: seconds(p[base]) as f64,
+        hold: hold_seconds(p[hold]) as f64,
+        decay: seconds(p[base + 1]) as f64,
+        sustain: (p[base + 2] / 1000.).powi(2),
+        release: seconds(p[base + 3]) as f64,
+        curves: std::array::from_fn(|i| p[hold + 1 + i] as f64 / 1000.),
+    }
+}
 fn read_delay(data: &[f32], head: usize, delay: f32) -> f32 {
     let at = (head as f32 - delay.clamp(1., data.len() as f32 - 2.)).rem_euclid(data.len() as f32);
     // f32 rem_euclid can round a tiny negative position up to exactly len.
@@ -641,6 +783,113 @@ fn read_delay(data: &[f32], head: usize, delay: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn macros_drawn_lfos_oneshot_and_free_run_drive_real_voice_audio() {
+        fn render(
+            p: Patch,
+            note: u8,
+            curves: crate::modulation::Curves,
+            block: usize,
+        ) -> (Vec<f32>, crate::modulation::Live) {
+            let mut e = Engine::new(48000.);
+            e.curves = curves;
+            e.set(p);
+            e.reset();
+            e.on(note, 0.8, 0, None);
+            let mut l = vec![0.; 24000];
+            let mut r = l.clone();
+            for (l, r) in l.chunks_mut(block).zip(r.chunks_mut(block)) {
+                e.render(l, r);
+            }
+            assert!(l.iter().chain(&r).all(|x| x.is_finite() && x.abs() <= 1.));
+            (l, e.live)
+        }
+        let mut p = defaults();
+        p[A_SOURCE] = 1.;
+        p[FILTER] = 0.;
+        p[SUSTAIN] = 1000.;
+        let curves = crate::modulation::Curves::default();
+        let base = render(p, 60, curves, 127).0;
+        p[MOD3_SOURCE] = 8.;
+        p[MOD3_TARGET] = 0.;
+        p[MOD3_AMOUNT] = 1000.;
+        p[MACRO1] = 1000.;
+        let transposed = render(p, 60, curves, 127).0;
+        p[MOD3_SOURCE] = 0.;
+        assert_eq!(transposed, render(p, 72, curves, 127).0);
+        for (lfo, source) in [1, 5, 6, 7].into_iter().enumerate() {
+            p[MOD3_SOURCE] = source as f32;
+            p[MOD3_TARGET] = 7.;
+            p[MOD3_AMOUNT] = 800.;
+            p[LFO_DRAW] = 1.;
+            let c = LFO_CONTROLS[lfo];
+            p[c[1]] = 6.;
+            p[c[2]] = 2.;
+            let mut curves = curves;
+            curves.samples[lfo] = std::array::from_fn(|i| 1. - i as f32 / 32.);
+            let a = render(p, 60, curves, 127);
+            assert_ne!(base, a.0);
+            assert_eq!(a.0, render(p, 60, curves, 1).0);
+            assert_eq!(a.1.phases[lfo], 1.);
+            assert_eq!(a.1.sources[source], -1.);
+        }
+        let mut e = Engine::new(48000.);
+        p[LFO2_MODE] = 1.;
+        p[LFO2_SYNC] = 5.;
+        e.set(p);
+        e.reset();
+        e.render(&mut vec![0.; 6000], &mut vec![0.; 6000]);
+        e.on(60, 1., 0, None);
+        e.render(&mut [0.], &mut [0.]);
+        assert!((e.live.phases[1] - 0.25).abs() < 0.001);
+    }
+    #[test]
+    fn curved_voices_release_with_pedal_and_are_block_invariant() {
+        fn run(block: usize) -> (Vec<f32>, Vec<(u8, u8, Option<i32>)>) {
+            let mut e = Engine::new(48000.);
+            let mut p = defaults();
+            p[ENV_ENGINE] = 1.;
+            p[FILTER_MODEL] = 2.;
+            p[FILTER] = 1.;
+            p[A_SOURCE] = 1.;
+            p[AMP_HOLD] = 300.;
+            p[AMP_ATK_CURVE] = 750.;
+            p[ENV_DEC_CURVE] = 750.;
+            p[AMP_REL_CURVE] = 250.;
+            p[RELEASE] = 250.;
+            p[ENV_AMOUNT] = 500.;
+            e.set(p);
+            e.reset();
+            e.on(60, 0.8, 0, Some(12));
+            e.sustain(0, true);
+            e.off(60, 0, Some(12));
+            let mut out = Vec::new();
+            for phase in 0..2 {
+                if phase == 1 {
+                    e.sustain(0, false);
+                }
+                let mut l = vec![0.; 12000];
+                let mut r = l.clone();
+                for (l, r) in l.chunks_mut(block).zip(r.chunks_mut(block)) {
+                    e.render(l, r);
+                }
+                out.extend(l);
+                if phase == 0 {
+                    assert!(e.active());
+                } else {
+                    assert!(!e.active());
+                }
+            }
+            let ended = e.take_ended().collect();
+            (out, ended)
+        }
+        let a = run(1);
+        assert_eq!(a, run(127));
+        assert_eq!(a.1, vec![(60, 0, Some(12))]);
+        assert!(a.0.iter().any(|x| x.abs() > 0.001));
+        assert!(a.0.iter().all(|x| x.is_finite()));
+        assert!(a.0[23900..].iter().all(|x| *x == 0.));
+    }
     #[test]
     fn phase_blend_and_two_routes_change_real_audio_without_breaking_blocks() {
         fn render(p: Patch, note: u8, block: usize) -> (Vec<f32>, Vec<f32>) {

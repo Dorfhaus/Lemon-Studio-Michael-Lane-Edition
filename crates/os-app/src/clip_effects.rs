@@ -162,10 +162,10 @@ pub fn validate(p: &os_model::Project) -> Result<(), String> {
     }
 }
 
-fn store(app: &mut App) {
+fn store(app: &mut App) -> Result<(),String> {
     app.mixer_tick();
     app.store_builtin_states();
-    crate::project_plugins::store_hosted(&mut app.state.project, &app.plugins);
+    crate::project_plugins::store_hosted(&mut app.state.project, &app.plugins)
 }
 fn fork(s: &mut State, l: Location, dst: u16) -> Result<u16, String> {
     let ClipSource::Channel(id) = clip(&s.project, l).ok_or("Clip no longer exists")?.source else {
@@ -253,7 +253,7 @@ pub fn normalize(app: &mut App) -> Result<(), String> {
             return Err("Bounce this ARA clip before copying Clip Effects".into());
         }
     }
-    store(app);
+    store(app)?;
     for (l, dst) in copies.into_iter().zip(available) {
         fork(&mut app.state, l, dst)?;
     }
@@ -314,7 +314,7 @@ pub fn open(app: &mut App, index: usize) -> Result<(), String> {
     {
         return Err("Channel limit reached".into());
     }
-    store(app);
+    store(app)?;
     let s = &mut app.state;
     history::record(
         s,
@@ -341,6 +341,7 @@ pub fn add(app: &mut App, id: u16, slot: u8, index: usize) -> Option<String> {
     {
         return Some("Choose an empty clip effect slot".into());
     }
+    if let Err(e)=store(app){return Some(e);}
     snapshot(app, t, "Add clip effect");
     let old = app.state.selected_mixer;
     app.state.selected_mixer = t;
@@ -349,7 +350,6 @@ pub fn add(app: &mut App, id: u16, slot: u8, index: usize) -> Option<String> {
     result
 }
 fn snapshot(app: &mut App, t: u16, name: &'static str) {
-    store(app);
     if let Some(c) = mixer::channel_copy(&app.state, t) {
         let targets = Snap::ClipFxTargets(
             app.state.project.automations.clone(),
@@ -407,6 +407,7 @@ pub fn command(app: &mut App, c: Command) {
         app.state.dialogs.pop();
         return;
     };
+    if matches!(c,Command::Remove(_)|Command::Move(..)|Command::Toggle(_)|Command::Bypass|Command::Copy|Command::Paste) {if let Err(e)=store(app){app.state.message=Some(e);return;}}
     let old = app.state.selected_mixer;
     app.state.selected_mixer = t;
     match c {
@@ -478,7 +479,7 @@ pub fn command(app: &mut App, c: Command) {
             app.state.piano.dirty = true;
         }
         Command::Copy => {
-            store(app);
+
             app.state.clip_fx_clipboard = mixer::track(&app.state, t).cloned();
             app.state.message = Some("Copied clip effects".into());
         }

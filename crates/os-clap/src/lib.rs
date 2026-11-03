@@ -35,7 +35,7 @@ use clap_sys::ext::params::{
     CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID, CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED,
 };
 use clap_sys::ext::render::{clap_plugin_render, CLAP_EXT_RENDER, CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
-use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::state::{clap_plugin_state, clap_host_state, CLAP_EXT_STATE};
 use clap_sys::ext::voice_info::{clap_host_voice_info, clap_plugin_voice_info, clap_voice_info, CLAP_EXT_VOICE_INFO};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
@@ -263,6 +263,7 @@ struct HostData {
     /// Raised with every request below and when the audio thread leaves work for the UI thread.
     attention: Arc<os_host::Attention>,
     callback: AtomicBool,
+    state_dirty: AtomicBool,
     restart: AtomicBool,
     /// The plugin asked for a parameter flush (`clap_host_params.request_flush`): an edit from its editor waits in its
     /// output queue and only takes effect when the host flushes (or processes). The host's waker
@@ -299,6 +300,7 @@ unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: *const c_ch
         return ptr::null();
     }
     let id = unsafe { CStr::from_ptr(id) };
+    if id == CLAP_EXT_STATE {return &HOST_STATE as *const clap_host_state as *const c_void;}
     if id == CLAP_EXT_PARAMS {
         return &HOST_PARAMS as *const clap_host_params as *const c_void;
     }
@@ -458,6 +460,8 @@ unsafe extern "C" fn host_gui_show_hide(_host: *const clap_host) -> bool {
     false
 }
 unsafe extern "C" fn host_gui_closed(_host: *const clap_host, _was_destroyed: bool) {}
+static HOST_STATE: clap_host_state = clap_host_state {mark_dirty:Some(host_state_dirty)};
+unsafe extern "C" fn host_state_dirty(host:*const clap_host){unsafe{(*((*host).host_data as *const HostData)).state_dirty.store(true,Ordering::Release);attend(host);}}
 static HOST_PARAMS: clap_host_params =
     clap_host_params { rescan: Some(host_params_rescan), clear: Some(host_params_clear), request_flush: Some(host_params_request_flush) };
 /// The plugin's voice count changed (a patch with another polyphony): the voice list's limit is read again on the UI
@@ -781,6 +785,7 @@ impl Plugin {
         let host_data = Box::new(HostData {
             attention: Arc::default(),
             callback: AtomicBool::new(false),
+            state_dirty: AtomicBool::new(false),
             restart: AtomicBool::new(false),
             flush: AtomicBool::new(false),
             rescan: AtomicU32::new(0),
@@ -1709,6 +1714,7 @@ impl os_host::Plugin for Plugin {
         Plugin::close_editor(self)
     }
 
+    fn take_state_changed(&mut self)->bool {self.host_data.state_dirty.swap(false,Ordering::AcqRel)}
     fn save_state(&self) -> Option<Vec<u8>> {
         Plugin::save_state(self)
     }
@@ -2955,4 +2961,8 @@ mod tests {
         assert!(both.len() > at(576) && both[both.len() - 100..].iter().all(|v| v.abs() < 1e-6), "silent after the second clip");
         let _ = std::fs::remove_file(&wav);
     }
+}
+
+#[cfg(test)]mod audit_state_tests {use super::*;
+ #[test]fn audit_clap_state_dirty_is_delivered_once(){let lib=unsafe{Library::from_entry(&lemon_sampler::LINKED_CLAP_ENTRY as *const _ as *const c_void,Path::new("Lemon Sampler.clap"))}.unwrap();let mut p=Plugin::new(&lib,&lib.plugins[0].id).unwrap();os_host::Plugin::take_state_changed(&mut p);let ext=unsafe{host_get_extension(&*p._host,CLAP_EXT_STATE.as_ptr())} as *const clap_host_state;assert!(!ext.is_null());unsafe{((*ext).mark_dirty.unwrap())(&*p._host)};assert!(os_host::Plugin::take_state_changed(&mut p));assert!(!os_host::Plugin::take_state_changed(&mut p));}
 }

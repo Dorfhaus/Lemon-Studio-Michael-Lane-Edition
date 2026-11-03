@@ -61,7 +61,7 @@ pub fn menu(s:&State,n:u16)->Vec<PItem>{
 pub fn slot(s:&State,n:u16)->Option<u8>{Some(mixer::track(s,n)?.rack_strip.as_ref()?.slot)}
 pub fn detach(s:&mut State,n:u16,k:u8){if slot(s,n)!=Some(k){return;}s.mixer.rack_pages.remove(&n);s.mixer.rack_min_height.remove(&n);if let Some(m)=mixer::track_mut(s,n){if let Some(h)=m.rack_strip.take(){m.strip_bypassed=h.native_bypassed;m.slot_on[10]=h.eq_on;m.slot_on[k as usize]=false;}}s.piano.dirty=true;}
 fn bind(s:&mut State,n:u16,k:u8){s.mixer.rack_auto_width.remove(&n);s.mixer.rack_min_height.remove(&n);s.mixer.rack_pages.remove(&n);if let Some(old)=slot(s,n){detach(s,n,old);}if let Some(m)=mixer::track_mut(s,n){m.rack_strip=Some(RackStrip{slot:k,native_bypassed:m.strip_bypassed,eq_on:m.slot_on[10]});m.strip_bypassed=true;m.slot_on[10]=false;m.slot_on[k as usize]=true;m.slot_mix[k as usize]=1.;}s.piano.dirty=true;}
-fn save(app:&mut App,tracks:&[u16])->Vec<mixer::ChannelCopy>{app.store_builtin_states();crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins);tracks.iter().filter_map(|n|mixer::channel_copy(&app.state,*n)).collect()}
+fn save(app:&mut App,tracks:&[u16])->Result<Vec<mixer::ChannelCopy>,String>{app.store_builtin_states();crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins)?;Ok(tracks.iter().filter_map(|n|mixer::channel_copy(&app.state,*n)).collect())}
 fn record(app:&mut App,old:Vec<mixer::ChannelCopy>){crate::history::record(&mut app.state,"Channel strip mixer",crate::history::Snap::RackStrips(old));}
 #[cfg(windows)]
 fn validate(app:&mut App,t:u16,k:u8)->Result<(),String>{
@@ -79,7 +79,7 @@ fn choose(app:&mut App,n:u16,index:usize,all:bool,state:Option<Vec<u8>>)->Result
     let tracks:Vec<u16>=if all {(1..=mixer::inserts(&app.state)).filter(|t|state.is_none()||*t!=n).collect()}else{vec![n]};
     let mut dest=Vec::new();for t in &tracks {let m=mixer::track(&app.state,*t).ok_or("The destination mixer channel no longer exists.")?;let Some(k)=(0..64).find(|k|*k!=10&&m.slots[*k].is_none())else{return Err(format!("{} has no empty effect slot. No channels changed.",mixer::name(&app.state,*t)))};dest.push((*t,k as u8));}
     if dest.is_empty(){return Err("No other insert channels to fill.".into());}
-    let old=save(app,&tracks);let mut made=Vec::new();
+    let old=save(app,&tracks)?;let mut made=Vec::new();
     for &(t,k) in &dest {if let Err(e)=app.plugins.create_rack_effect(t,k,index,state.as_deref()){for (t,k) in made{app.plugins.drop_key(crate::plugins::fx_key(t,k));}return Err(format!("Could not load {}: {e}. Existing channels preserved.",desc.name));}made.push((t,k));
         #[cfg(windows)] if let Err(e)=validate(app,t,k){for (t,k) in made{app.plugins.drop_key(crate::plugins::fx_key(t,k));}return Err(e);}
     }
@@ -107,8 +107,8 @@ pub fn run(app:&mut App,c:Command)->Option<String>{
         Command::Page(..)=>None,
         Command::Choose(n,i,all)=>{let result=choose(app,n,i,all,None);report(app,n,result)},
         Command::CopyAll(n)=>{let k=slot(&app.state,n)?;let key=crate::plugins::fx_key(n,k);let d=app.plugins.descriptor(key)?;let i=app.plugins.effects.iter().position(|a|a.desc.id==d.id&&a.desc.format==d.format)?;if let Some(h)=app.plugins.hosted.get(&key){if let Ok(mut p)=h.plugin.lock(){p.idle();}}let Some(state)=app.plugins.state(key)else{return Some("The rack could not save its settings; nothing was copied.".into())};let result=choose(app,n,i,true,Some(state));report(app,n,result)},
-        Command::Existing(n,k)=>{if k==10{return None;}app.sync_effects();app.sync_wrapped();if !app.plugins.hosted.contains_key(&crate::plugins::fx_key(n,k)){return Some("Wait for that effect to load first.".into());}let old=save(app,&[n]);if !eligible_slot(&app.state,n,k){return Some("Choose a single vertical channel strip.".into());}#[cfg(windows)] if let Err(e)=validate(app,n,k){return Some(e);}record(app,old);#[cfg(plugin_windows)] app.plugins.close_window(crate::plugins::fx_key(n,k));bind(&mut app.state,n,k);mixer::set_layout(&mut app.state,VIEW);None},
-        Command::Remove(n)=>{let k=slot(&app.state,n)?;let old=save(app,&[n]);record(app,old);detach(&mut app.state,n,k);None},
+        Command::Existing(n,k)=>{if k==10{return None;}app.sync_effects();app.sync_wrapped();if !app.plugins.hosted.contains_key(&crate::plugins::fx_key(n,k)){return Some("Wait for that effect to load first.".into());}let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};if !eligible_slot(&app.state,n,k){return Some("Choose a single vertical channel strip.".into());}#[cfg(windows)] if let Err(e)=validate(app,n,k){return Some(e);}record(app,old);#[cfg(plugin_windows)] app.plugins.close_window(crate::plugins::fx_key(n,k));bind(&mut app.state,n,k);mixer::set_layout(&mut app.state,VIEW);None},
+        Command::Remove(n)=>{let k=slot(&app.state,n)?;let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};record(app,old);detach(&mut app.state,n,k);None},
         Command::Retry(n)=>{#[cfg(windows)]if let Some(k)=slot(&app.state,n){app.plugins.close_window(crate::plugins::fx_key(n,k));}None},
         Command::Width(w)=>{let width=f32::from(w.clamp(96,192));app.state.mixer_scroll*=width/app.state.mixer.rack_width;app.state.mixer.rack_width=width;None},
         Command::Menu(_)=>None,
@@ -265,7 +265,7 @@ mod tests {
         let key=crate::plugins::fx_key(1,0);let id={let p=app.plugins.hosted[&key].plugin.lock().unwrap();(0..p.param_count()).filter_map(|i|p.param_info(i)).find(|p|p.name=="Main level").unwrap().id};
         {let mut p=app.plugins.hosted[&key].plugin.lock().unwrap();p.set_param(id,0.7);p.idle();}
         let message=run(&mut app,Command::CopyAll(1)).unwrap();assert!(message.contains("1 independent"),"{message}");let k2=crate::plugins::fx_key(2,slot(&app.state,2).unwrap());assert!(!std::sync::Arc::ptr_eq(&app.plugins.hosted[&key].plugin,&app.plugins.hosted[&k2].plugin));assert!((app.plugins.hosted[&k2].plugin.lock().unwrap().param_value(id).unwrap()-0.7).abs()<1e-5);assert!(slot(&app.state,0).is_none());
-        crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins);let file=os_flp::project::create(&app.state.project).unwrap();let back=os_flp::project::load(&file).unwrap();assert_eq!(back.mixer[1].rack_strip,app.state.project.mixer[1].rack_strip);
+        crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins).unwrap();let file=os_flp::project::create(&app.state.project).unwrap();let back=os_flp::project::load(&file).unwrap();assert_eq!(back.mixer[1].rack_strip,app.state.project.mixer[1].rack_strip);
         let (mut reopened,_)=setup();reopened.plugins.effects=crate::plugins::builtin_effects();reopened.state.project=back;reopened.sync_wrapped();assert!((reopened.plugins.hosted[&key].plugin.lock().unwrap().param_value(id).unwrap()-0.7).abs()<1e-5);
         run(&mut app,Command::Remove(1));assert!(slot(&app.state,1).is_none());assert_eq!(app.state.project.mixer[1].strip_bypassed,native.strip_bypassed);assert_eq!(app.state.project.mixer[1].slot_on[10],native.slot_on[10]);crate::history::undo(&mut app.state);assert_eq!(slot(&app.state,1),Some(0));
     }

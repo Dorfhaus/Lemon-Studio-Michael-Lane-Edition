@@ -29,6 +29,9 @@ pub trait Extension: Send + Sync {
     /// Optional complete instrument view. Existing effect editors retain their default view.
     fn render(&self, _canvas: &mut os_ui::Canvas, _model: &dyn view::Model,
         _state: &ViewState, _hint: &str) -> Option<Vec<view::Hit>> { None }
+    fn dragging(&self) -> bool { false }
+    fn moved(&self, _x:f32, _y:f32) -> bool { false }
+    fn release(&self, _context:Option<&Arc<dyn GuiContext>>) -> bool { false }
     fn paint(&self, canvas: &mut os_ui::Canvas, model: &dyn view::Model);
     fn click(&self, x: f32, y: f32, context: Option<&Arc<dyn GuiContext>>) -> bool;
 }
@@ -203,7 +206,7 @@ impl Logic {
     }
 
     pub fn dragging(&self) -> bool {
-        self.drag.is_some()
+        self.drag.is_some() || self.shared.extension.as_ref().is_some_and(|e|e.dragging())
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<(Target, os_ui::Rect)> {
@@ -285,6 +288,7 @@ impl Logic {
     }
 
     pub fn up(&mut self, _btn: Btn) -> Vec<Act> {
+        if self.shared.extension.as_ref().is_some_and(|e|e.release(self.context.as_ref())) {return vec![Act::Repaint];}
         let Some(d) = self.drag.take() else { return vec![] };
         self.vals.end(&d.id);
         self.view.pressed = None;
@@ -293,6 +297,7 @@ impl Logic {
 
     pub fn moved(&mut self, x: f32, y: f32, _m: Mods) -> Vec<Act> {
         self.view.mouse = Some((x, y));
+        if self.shared.extension.as_ref().is_some_and(|e|e.moved(x,y)) {return vec![Act::Repaint];}
         if self.drag.is_none() {
             let t = self.hit(x, y).map(|h| h.0);
             self.hint = self.hint_for(t.as_ref());

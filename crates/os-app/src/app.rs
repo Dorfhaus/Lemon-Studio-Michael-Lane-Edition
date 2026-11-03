@@ -1388,7 +1388,7 @@ pub struct App {
     /// `device::opens` when the hosted plugins last followed the output device's rate (`follow_device`).
     device_opens: u64,
     /// The project and tempo as last opened, saved or created: anything else has unsaved changes.
-    pub(crate) saved: (Project, f64),
+    pub(crate) saved: (Project, f64, u64),
     /// The Autosave timer and the last backup (spec: ui/settings-choices.md "Backup files").
     pub(crate) backup: crate::backup::Backup,
 }
@@ -1609,7 +1609,7 @@ impl App {
             track_render: None,
             channel_bounce: None,
             device_opens: 0,
-            saved: (Project::default(), 0.0),
+            saved: (Project::default(), 0.0, 0),
             backup: Default::default(),
         };
         // The snap settings are program settings, kept in the user folder (spec: ui/global-snap.md §6).
@@ -1733,6 +1733,7 @@ impl App {
 
     /// Saves the project to its file, or asks where (a project without one); then `next`, once it is saved.
     fn save_then(&mut self, next: Option<crate::dialog::Next>) {
+        self.params_tick();
         let Some(path) = self.state.path.clone() else { return self.save_dialog(next) };
         self.save_to(path);
         if let Some(n) = next {
@@ -1846,7 +1847,7 @@ impl App {
         if let Err(e)=crate::clip_effects::normalize(self){self.state.message=Some(e);return None;}
         if let Err(e)=crate::ara::store(self){self.state.message=Some(format!("Save failed: {e}"));return None;}
         // A file saved over is kept as an "overwritten on" backup (spec: ui/settings-choices.md "Backup files").
-        crate::backup::keep_overwritten(&target, crate::data_folder::backup_folder(&self.state, Some(&target)));
+        if let Err(e) = crate::backup::keep_overwritten(&target, crate::data_folder::backup_folder(&self.state, Some(&target))) { self.state.message=Some(format!("Save failed: backup could not be written: {e}")); return None; }
         // Sampler channels keep their sample and settings in Lemon Sampler: copy them to the channel so the FLP stores
         // them.
         for row in self.state.hosted_rows.clone() {
@@ -1891,7 +1892,7 @@ impl App {
                 s.project.arrangements.push(os_flp::project::default_arrangement());
             }
             let mut first = s.project.clone();
-            crate::project_plugins::store_hosted(&mut first, &self.plugins);
+            if let Err(e)=crate::project_plugins::store_hosted(&mut first, &self.plugins){s.message=Some(format!("Save failed: {e}"));return None;}
             match os_flp::project::create(&first) {
                 Ok(f) => f,
                 Err(e) => {
@@ -1910,13 +1911,13 @@ impl App {
         let mut proj = s.project.clone();
         crate::project_info::stamp(s, &mut proj);
         crate::data_folder::stamp(s, &mut proj);
-        crate::project_plugins::store_hosted(&mut proj, &self.plugins);
+        if let Err(e)=crate::project_plugins::store_hosted(&mut proj, &self.plugins){s.message=Some(format!("Save failed: {e}"));return None;}
         edit(&mut proj);
         // Added mixer tracks are written before the hidden last track (spec: flp/events/mixer.md "Adding tracks").
         let result = os_flp::project::apply(&proj, &mut file)
             .map_err(|e| e.to_string())
             .and_then(|()| file.to_bytes().map_err(|e| e.to_string()))
-            .and_then(|b| std::fs::write(&target, &b).map(|()| b.len() as u64).map_err(|e| e.to_string()));
+            .and_then(|b| crate::safe_save::write(&target, &b).map(|()| b.len() as u64).map_err(|e| e.to_string()));
         s.message = Some(match &result {
             Ok(_) if lost.is_empty() => format!("Saved {}", target.display()),
             Ok(_) => format!("Saved {} (not stored yet: {})", target.display(), lost.join(", ")),
@@ -1969,13 +1970,12 @@ impl App {
 
     /// The project as it is now counts as saved (opened, saved, new).
     pub(crate) fn mark_saved(&mut self) {
-        self.saved = (self.state.project.clone(), self.state.tempo);
+        self.saved = (self.state.project.clone(), self.state.tempo, self.plugins.edit_revision);
     }
 
-    /// Whether the project changed since it was last opened, saved or created. Settings kept inside hosted plugins are
-    /// not compared.
+    /// Whether project data, tempo or reported hosted-plugin edits changed since the last save.
     pub fn unsaved(&self) -> bool {
-        self.plugins.hosted.values().any(|h|h.ara_dirty) || self.saved.0 != self.state.project || self.saved.1 != self.state.tempo
+        self.saved.2 != self.plugins.edit_revision || self.plugins.hosted.values().any(|h|h.ara_dirty) || self.saved.0 != self.state.project || self.saved.1 != self.state.tempo
     }
 
     /// The system asks the window to close (its close shortcut, a taskbar or dock). The dialog-like windows drawn
@@ -2009,6 +2009,7 @@ impl App {
     /// Before the project is replaced or the app closes (`doing`: "closing", ...): with unsaved changes, asks to save
     /// them (spec: ui/dialogs.md §1f), and `next` follows once they are saved or not wanted; otherwise right away.
     pub fn ask_discard(&mut self, doing: &str, next: crate::dialog::Next) {
+        self.params_tick();
         use crate::dialog::{spans, Answer, Kind, Msg, Then};
         #[cfg(test)]
         let quiet = !crate::dialog::fake::is_live();

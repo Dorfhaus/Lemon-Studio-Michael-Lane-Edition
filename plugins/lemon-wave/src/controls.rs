@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Original Lemon Wave controls. No Serum code, tables, skins or presets.
+//! Lemon Wave controls; appended models preserve existing parameter identities.
 use lemon_small_fx::{Card, Control, Mark, Setting, Sound, Spec};
 use os_ui::Rect;
 pub const A_BANK: usize = 0;
@@ -64,7 +64,54 @@ pub const MOD1_AMOUNT: usize = 58;
 pub const MOD2_SOURCE: usize = 59;
 pub const MOD2_TARGET: usize = 60;
 pub const MOD2_AMOUNT: usize = 61;
-pub const COUNT: usize = 62;
+pub const ENV_ENGINE: usize = 62;
+pub const AMP_HOLD: usize = 63;
+pub const AMP_ATK_CURVE: usize = 64;
+pub const AMP_DEC_CURVE: usize = 65;
+pub const AMP_REL_CURVE: usize = 66;
+pub const ENV_HOLD: usize = 67;
+pub const ENV_ATK_CURVE: usize = 68;
+pub const ENV_DEC_CURVE: usize = 69;
+pub const ENV_REL_CURVE: usize = 70;
+pub const FILTER_MODEL: usize = 71;
+pub const MOD3_SOURCE: usize = 72;
+pub const MOD3_TARGET: usize = 73;
+pub const MOD3_AMOUNT: usize = 74;
+pub const MOD4_SOURCE: usize = 75;
+pub const MOD4_TARGET: usize = 76;
+pub const MOD4_AMOUNT: usize = 77;
+pub const MOD5_SOURCE: usize = 78;
+pub const MOD5_TARGET: usize = 79;
+pub const MOD5_AMOUNT: usize = 80;
+pub const MOD6_SOURCE: usize = 81;
+pub const MOD6_TARGET: usize = 82;
+pub const MOD6_AMOUNT: usize = 83;
+pub const MOD7_SOURCE: usize = 84;
+pub const MOD7_TARGET: usize = 85;
+pub const MOD7_AMOUNT: usize = 86;
+pub const MOD8_SOURCE: usize = 87;
+pub const MOD8_TARGET: usize = 88;
+pub const MOD8_AMOUNT: usize = 89;
+pub const MACRO1: usize = 90;
+pub const MACRO2: usize = 91;
+pub const MACRO3: usize = 92;
+pub const MACRO4: usize = 93;
+pub const LFO_DRAW: usize = 94;
+pub const LFO1_MODE: usize = 95;
+pub const LFO1_STYLE: usize = 96;
+pub const LFO2_RATE: usize = 97;
+pub const LFO2_SYNC: usize = 98;
+pub const LFO2_MODE: usize = 99;
+pub const LFO2_STYLE: usize = 100;
+pub const LFO3_RATE: usize = 101;
+pub const LFO3_SYNC: usize = 102;
+pub const LFO3_MODE: usize = 103;
+pub const LFO3_STYLE: usize = 104;
+pub const LFO4_RATE: usize = 105;
+pub const LFO4_SYNC: usize = 106;
+pub const LFO4_MODE: usize = 107;
+pub const LFO4_STYLE: usize = 108;
+pub const COUNT: usize = 109;
 pub const MOD_SOURCES: [&str; 5] = ["Off", "LFO 1", "Envelope 2", "Velocity", "Key track"];
 pub const MOD_TARGETS: [&str; 8] = [
     "Pitch",
@@ -76,6 +123,76 @@ pub const MOD_TARGETS: [&str; 8] = [
     "Pan",
     "Amplitude",
 ];
+pub const ROUTES: [usize; 8] = [
+    MOD1_SOURCE,
+    MOD2_SOURCE,
+    MOD3_SOURCE,
+    MOD4_SOURCE,
+    MOD5_SOURCE,
+    MOD6_SOURCE,
+    MOD7_SOURCE,
+    MOD8_SOURCE,
+];
+pub const ALL_MOD_SOURCES: [&str; 13] = [
+    "Off",
+    "LFO 1",
+    "Envelope 2",
+    "Velocity",
+    "Key track",
+    "LFO 2",
+    "LFO 3",
+    "LFO 4",
+    "Macro 1",
+    "Macro 2",
+    "Macro 3",
+    "Macro 4",
+    "Envelope 1",
+];
+pub const ALL_MOD_TARGETS: [&str; 21] = [
+    "Pitch",
+    "Filter cutoff",
+    "A warp",
+    "B warp",
+    "A position",
+    "B position",
+    "Pan",
+    "Amplitude",
+    "Resonance",
+    "Drive",
+    "A level",
+    "B level",
+    "Sub level",
+    "Noise level",
+    "Stereo width",
+    "A tune",
+    "B tune",
+    "A detune",
+    "B detune",
+    "A blend",
+    "B blend",
+];
+pub const EXTRA_TARGETS: [usize; 13] = [
+    RESONANCE, DRIVE, A_LEVEL, B_LEVEL, SUB, NOISE, SPREAD, A_TUNE, B_TUNE, A_DETUNE, B_DETUNE,
+    A_BLEND, B_BLEND,
+];
+pub const LFO_CONTROLS: [[usize; 4]; 4] = [
+    [LFO_RATE, LFO_SYNC, LFO1_MODE, LFO1_STYLE],
+    [LFO2_RATE, LFO2_SYNC, LFO2_MODE, LFO2_STYLE],
+    [LFO3_RATE, LFO3_SYNC, LFO3_MODE, LFO3_STYLE],
+    [LFO4_RATE, LFO4_SYNC, LFO4_MODE, LFO4_STYLE],
+];
+pub fn mod_target(k: usize) -> Option<usize> {
+    match k {
+        CUTOFF => Some(1),
+        A_AMOUNT => Some(2),
+        B_AMOUNT => Some(3),
+        A_POSITION => Some(4),
+        B_POSITION => Some(5),
+        A_PAN | B_PAN => Some(6),
+        GAIN => Some(7),
+        _ => EXTRA_TARGETS.iter().position(|x| *x == k).map(|i| i + 8),
+    }
+}
 pub const WARP_IDS: [u32; 11] = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15];
 pub const WARP_NAMES: [&str; 11] = [
     "Off", "Bend +", "Bend -", "Bend +/-", "PWM", "Asym +", "Asym -", "Asym +/-", "Flip", "Mirror",
@@ -516,6 +633,335 @@ pub const SETTINGS: [Setting; COUNT] = [
         start: 0,
         magnet: None,
     },
+    Setting {
+        id: "env_engine",
+        name: "Envelope Engine",
+        range: (0, 1),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "amp_hold",
+        name: "Amp Hold",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "amp_atk_curve",
+        name: "Amp Attack Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "amp_dec_curve",
+        name: "Amp Decay Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "amp_rel_curve",
+        name: "Amp Release Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "env_hold",
+        name: "Env 2 Hold",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "env_atk_curve",
+        name: "Env 2 Attack Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "env_dec_curve",
+        name: "Env 2 Decay Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "env_rel_curve",
+        name: "Env 2 Release Curve",
+        range: (0, 1000),
+        start: 500,
+        magnet: None,
+    },
+    Setting {
+        id: "filter_model",
+        name: "Filter Model",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod3_source",
+        name: "Mod 3 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod3_target",
+        name: "Mod 3 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod3_amount",
+        name: "Mod 3 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod4_source",
+        name: "Mod 4 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod4_target",
+        name: "Mod 4 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod4_amount",
+        name: "Mod 4 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod5_source",
+        name: "Mod 5 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod5_target",
+        name: "Mod 5 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod5_amount",
+        name: "Mod 5 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod6_source",
+        name: "Mod 6 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod6_target",
+        name: "Mod 6 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod6_amount",
+        name: "Mod 6 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod7_source",
+        name: "Mod 7 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod7_target",
+        name: "Mod 7 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod7_amount",
+        name: "Mod 7 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod8_source",
+        name: "Mod 8 Source",
+        range: (0, 12),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod8_target",
+        name: "Mod 8 Target",
+        range: (0, 20),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "mod8_amount",
+        name: "Mod 8 Amount",
+        range: (-1000, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "macro1",
+        name: "Macro 1",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "macro2",
+        name: "Macro 2",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "macro3",
+        name: "Macro 3",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "macro4",
+        name: "Macro 4",
+        range: (0, 1000),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo_draw",
+        name: "LFO 1 Shape Engine",
+        range: (0, 1),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo1_mode",
+        name: "LFO 1 Trigger",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo1_style",
+        name: "LFO 1 Division",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo2_rate",
+        name: "LFO 2 Rate",
+        range: (0, 1000),
+        start: 350,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo2_sync",
+        name: "LFO 2 Sync",
+        range: (0, 8),
+        start: 5,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo2_mode",
+        name: "LFO 2 Trigger",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo2_style",
+        name: "LFO 2 Division",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo3_rate",
+        name: "LFO 3 Rate",
+        range: (0, 1000),
+        start: 350,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo3_sync",
+        name: "LFO 3 Sync",
+        range: (0, 8),
+        start: 5,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo3_mode",
+        name: "LFO 3 Trigger",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo3_style",
+        name: "LFO 3 Division",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo4_rate",
+        name: "LFO 4 Rate",
+        range: (0, 1000),
+        start: 350,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo4_sync",
+        name: "LFO 4 Sync",
+        range: (0, 8),
+        start: 5,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo4_mode",
+        name: "LFO 4 Trigger",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
+    Setting {
+        id: "lfo4_style",
+        name: "LFO 4 Division",
+        range: (0, 2),
+        start: 0,
+        magnet: None,
+    },
 ];
 pub const CONTROLS: [Control; 50] = [
     Control::Knob {
@@ -874,7 +1320,7 @@ pub const CONTROLS: [Control; 50] = [
         id: "a_source",
         x: 40.,
         top: 730.,
-        names: &["Classic", "Reference Saw"],
+        names: &["Wavetable / Sample", "Reference Saw"],
     },
     Control::Knob {
         id: "a_mode",
@@ -896,7 +1342,7 @@ pub const CONTROLS: [Control; 50] = [
         id: "b_source",
         x: 402.,
         top: 730.,
-        names: &["Classic", "Reference Saw"],
+        names: &["Wavetable / Sample", "Reference Saw"],
     },
     Control::Knob {
         id: "b_mode",
@@ -1019,11 +1465,33 @@ pub fn lfo_hz(v: f32) -> f32 {
     0.05 * 400.0_f32.powf(v / 1000.)
 }
 pub fn text(k: usize, v: i32) -> String {
+    if ROUTES[2..].contains(&k) {
+        return ALL_MOD_SOURCES[v.clamp(0, 12) as usize].into();
+    }
+    if ROUTES[2..].iter().any(|s| k == s + 1) {
+        return ALL_MOD_TARGETS[v.clamp(0, 20) as usize].into();
+    }
+    if LFO_CONTROLS.iter().any(|s| k == s[2]) {
+        return ["Note loop", "Free run", "One shot"][v.clamp(0, 2) as usize].into();
+    }
+    if LFO_CONTROLS.iter().any(|s| k == s[3]) {
+        return ["Straight", "Dotted", "Triplet"][v.clamp(0, 2) as usize].into();
+    }
+    if LFO_CONTROLS[1..].iter().any(|s| k == s[1]) {
+        return text(LFO_SYNC, v);
+    }
+    if LFO_CONTROLS[1..].iter().any(|s| k == s[0]) {
+        return text(LFO_RATE, v);
+    }
     match k {
+        LFO_DRAW => ["Classic shape", "Drawn shape"][v.clamp(0, 1) as usize].into(),
+        ENV_ENGINE => ["Classic", "Curved AHDSR"][v.clamp(0, 1) as usize].into(),
+        FILTER_MODEL => ["Classic", "SVF 12", "SVF 24"][v.clamp(0, 2) as usize].into(),
+        AMP_HOLD | ENV_HOLD => format!("{:.0} ms", hold_seconds(v as f32) * 1000.),
         A_PHASE | B_PHASE => format!("{v} deg"),
         MOD1_SOURCE | MOD2_SOURCE => MOD_SOURCES[v.clamp(0, 4) as usize].into(),
         MOD1_TARGET | MOD2_TARGET => MOD_TARGETS[v.clamp(0, 7) as usize].into(),
-        A_SOURCE | B_SOURCE => ["Classic", "Reference Saw"][v.clamp(0, 1) as usize].into(),
+        A_SOURCE | B_SOURCE => ["Wavetable / Sample", "Reference Saw"][v.clamp(0, 1) as usize].into(),
         A_MODE | B_MODE => WARP_NAMES[v.clamp(0, 10) as usize].into(),
         A_BANK | B_BANK => ["Basic", "Hollow", "Glass", "Vowel"][v.clamp(0, 3) as usize].into(),
         FILTER => ["Bypass", "Low pass", "Band pass", "High pass"][v.clamp(0, 3) as usize].into(),
@@ -1050,23 +1518,29 @@ pub fn text(k: usize, v: i32) -> String {
 }
 fn parse(k: usize, s: &str) -> Option<i32> {
     let s = s.trim();
-    if matches!(
-        k,
-        A_BANK
-            | B_BANK
-            | FILTER
-            | LFO_SHAPE
-            | LFO_TARGET
-            | LFO_SYNC
-            | A_SOURCE
-            | B_SOURCE
-            | A_MODE
-            | B_MODE
-            | MOD1_SOURCE
-            | MOD2_SOURCE
-            | MOD1_TARGET
-            | MOD2_TARGET
-    ) {
+    if ROUTES[2..].iter().any(|s| k == *s || k == s + 1)
+        || LFO_CONTROLS.iter().any(|s| s[1..].contains(&k))
+        || k == LFO_DRAW
+        || matches!(
+            k,
+            ENV_ENGINE
+                | FILTER_MODEL
+                | A_BANK
+                | B_BANK
+                | FILTER
+                | LFO_SHAPE
+                | LFO_TARGET
+                | LFO_SYNC
+                | A_SOURCE
+                | B_SOURCE
+                | A_MODE
+                | B_MODE
+                | MOD1_SOURCE
+                | MOD2_SOURCE
+                | MOD1_TARGET
+                | MOD2_TARGET
+        )
+    {
         return (SETTINGS[k].range.0..=SETTINGS[k].range.1)
             .find(|&v| text(k, v).eq_ignore_ascii_case(s));
     }
@@ -1080,15 +1554,22 @@ fn parse(k: usize, s: &str) -> Option<i32> {
         return None;
     }
     let v = match k {
+        AMP_HOLD | ENV_HOLD => (x.max(0.) / 32000.).powf(0.2) * 1000.,
         ATTACK | DECAY | RELEASE | ENV_ATTACK | ENV_DECAY | ENV_RELEASE => {
             x.max(1.).log10() / 4. * 1000.
         }
         CUTOFF => (x.max(20.) / 20.).log10() / 3. * 1000.,
-        LFO_RATE => (x.max(0.05) / 0.05).ln() / 400.0_f32.ln() * 1000.,
+        LFO_RATE | LFO2_RATE | LFO3_RATE | LFO4_RATE => {
+            (x.max(0.05) / 0.05).ln() / 400.0_f32.ln() * 1000.
+        }
         CHORUS_RATE => (x - 0.05) * 200.,
         DELAY_TIME => x - 50.,
         A_TUNE | B_TUNE | A_UNISON | B_UNISON | A_DETUNE | B_DETUNE | A_PHASE | B_PHASE => x,
         _ => x / 100. * SETTINGS[k].range.1 as f32,
     };
     Some((v.round() as i32).clamp(SETTINGS[k].range.0, SETTINGS[k].range.1))
+}
+
+pub fn hold_seconds(v: f32) -> f32 {
+    32. * (v / 1000.).powi(5)
 }

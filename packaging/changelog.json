@@ -4,6 +4,23 @@
   "sections": [
     {
       "date": "2026-11-03",
+      "title": "Lemon Wave sound browser and audio reliability · public build 2026110302",
+      "changes": [
+        "Lemon Wave now includes six named basic waves, a visible wavetable browser and My Samples for user-local recorded synth notes. Samples and imported tables are embedded in saved patches. Personal recordings and third-party libraries are not included in public downloads.",
+        "Expanded Wave with four drawable 65-point LFOs, eight modulation routes, four macros, dotted/triplet timing, drag-to-assign modulation and visual modulation feedback. Includes curved AHDSR envelopes, SVF 12/24 filter choices, fourteen factory choices and 109 stable host controls; existing native patches remain supported.",
+        "Fixed live-input timing when a mixer bus also receives audio through a latency-producing effect. Monitoring now follows the receiving track’s delay compensation.",
+        "Fixed multi-output instruments combining unavailable outputs into the final mixer insert. Outputs without a valid following track stay unconnected.",
+        "MPE seeking now respects Play truncated notes on transport, while pause/resume retains its existing independent-note behavior.",
+        "Fixed internal fallback effects retaining old settings after a live engine refresh; unchanged internal effects retain their DSP history.",
+        "Improved unsaved-change and autosave tracking for reported hosted-plugin edits, and stop saving when a hosted plugin cannot supply its state.",
+        "Project and backup saves now use temporary-file replacement and report backup failures. Cleanup protects original warp sources, and ZIP imports use independent extraction folders rather than reusing stale equal-size files.",
+        "Recording overflow now preserves elapsed time with silence for missing frames instead of shifting subsequent audio earlier. Lost-input warnings remain; missing audio cannot be recovered.",
+        "Redesigned the download page with Michael Lane Edition directly below Lemon Studio, a detailed feature overview, the updated Wave section and the full searchable Change Log. Complete DAW builds and matching source are published on the website and GitHub.",
+        "Includes Windows, Linux x64, Apple-silicon Mac and Intel Mac packages. Mac is ad-hoc signed, not notarized; Intel checks use Rosetta and Linux runtime/audio testing remains unperformed. Existing ARA and third-party compatibility limitations remain."
+      ]
+    },
+    {
+      "date": "2026-11-03",
       "title": "Lemon Wave, MPE and clip effects · public build 2026110301",
       "changes": [
         "Lemon Wave is now included directly in Lemon Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.",

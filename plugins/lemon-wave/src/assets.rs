@@ -12,31 +12,38 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 pub const FIELD: &str = "lemon-wave-tables-v1";
-pub const MAX_STATE: usize = 8 * 1024 * 1024;
+pub const MAX_STATE: usize = 64 * 1024 * 1024;
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sources {
     pub oscillators: [Option<Source>; 2],
+    #[serde(default)]
+    pub samples: [Option<crate::sample::Sample>; 2],
 }
 #[derive(Default)]
 pub struct Tables {
     pub oscillators: [Option<Table>; 2],
+    pub samples: [Option<crate::sample::Playback>; 2],
 }
 pub struct WaveParams {
     pub base: Arc<FxParams>,
+    pub page: std::sync::atomic::AtomicUsize,
+    pub curves: RwLock<crate::modulation::Curves>,
+    pub telemetry: crate::modulation::Telemetry,
     pub tables: RwLock<Arc<Tables>>,
     retired: Mutex<Vec<Arc<Tables>>>,
     pub status: Mutex<String>,
 }
 impl Default for WaveParams {
     fn default() -> Self {
-        Self { base:Arc::new(FxParams::new(controls::SPEC)), tables:RwLock::new(Arc::default()), retired:Mutex::default(), status:Mutex::new("Choose cycle length, then Import WAV. Imported tables travel with saved projects and presets.".into()) }
+        Self { page:Default::default(), curves:RwLock::default(), telemetry:Default::default(), base:Arc::new(FxParams::new(controls::SPEC)), tables:RwLock::new(Arc::default()), retired:Mutex::default(), status:Mutex::new("Choose cycle length, then Import WAV. Imported tables travel with saved projects and presets.".into()) }
     }
 }
 impl WaveParams {
     pub fn sources(&self) -> Sources {
         let tables = self.tables.read().unwrap();
         Sources {
+            samples: std::array::from_fn(|o| tables.samples[o].as_ref().map(|t| t.source.clone())),
             oscillators: std::array::from_fn(|o| {
                 tables.oscillators[o].as_ref().map(|t| t.source.clone())
             }),
@@ -44,7 +51,12 @@ impl WaveParams {
     }
     pub fn replace(&self, sources: Sources) -> Result<(), String> {
         let [a, b] = sources.oscillators;
+        let [sa, sb] = sources.samples;
         let tables = Arc::new(Tables {
+            samples: [
+                sa.map(crate::sample::Playback::compile).transpose()?,
+                sb.map(crate::sample::Playback::compile).transpose()?,
+            ],
             oscillators: [
                 a.map(Table::compile).transpose()?,
                 b.map(Table::compile).transpose()?,
@@ -69,6 +81,10 @@ unsafe impl Params for WaveParams {
     fn serialize_fields(&self) -> BTreeMap<String, String> {
         let mut fields = self.base.serialize_fields();
         fields.insert(
+            crate::modulation::FIELD.into(),
+            self.curves.read().unwrap().encode(),
+        );
+        fields.insert(
             FIELD.into(),
             serde_json::to_string(&self.sources()).unwrap(),
         );
@@ -76,6 +92,11 @@ unsafe impl Params for WaveParams {
     }
     fn deserialize_fields(&self, fields: &BTreeMap<String, String>) {
         self.base.deserialize_fields(fields);
+        let curves = fields
+            .get(crate::modulation::FIELD)
+            .map(|s| crate::modulation::Curves::decode(s))
+            .transpose();
+        *self.curves.write().unwrap() = curves.unwrap_or_default().unwrap_or_default();
         let result = match fields.get(FIELD) {
             None => self.replace(Sources::default()), // Older/factory patches must clear imported tables.
             Some(s) if s.len() > MAX_STATE => Err("Embedded table state exceeds size limit".into()),

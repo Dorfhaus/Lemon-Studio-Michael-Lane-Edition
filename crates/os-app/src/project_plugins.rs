@@ -91,19 +91,24 @@ pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
 /// plugin holding the plugin's identity and current state. A channel or slot the file already held as a wrapped
 /// plugin keeps the wrapper records Lemon Studio does not edit. A copy in another format that stands in for the plugin
 /// the file names, and that the user has not edited, leaves the file's wrapper as it is ([`untouched_stand_in`]).
-pub fn store_hosted(proj: &mut Project, plugins: &Plugins) {
+pub fn store_hosted(proj: &mut Project, plugins: &Plugins) -> Result<(), String> {
+    let mut copy=proj.clone();
+    store_hosted_inner(&mut copy,plugins)?;
+    *proj=copy;
+    Ok(())
+}
+fn store_hosted_inner(proj: &mut Project, plugins: &Plugins) -> Result<(), String> {
     for key in plugins.hosted.keys().copied().collect::<Vec<_>>() {
         if plugins.hosted.get(&key).is_some_and(|h|h.ara_saved.is_some()){continue;}
-        let Some(d) = plugins.descriptor(key) else { continue };
+        let d = plugins.descriptor(key).ok_or_else(||format!("Plugin {key} is unavailable; previous saved settings preserved"))?;
         if d.format == Format::Native {
             // The plugin's own state stream is what the file stores for it (spec §1, event 213). An instance that
             // did not give the file's state back byte for byte leaves the file's bytes alone (`sync_native`).
             if plugins.hosted.get(&key).is_some_and(|h| h.keep_file_state) {
                 continue;
             }
-            if let Some(state) = plugins.state(key) {
-                store_native(proj, key, state);
-            }
+            let state=plugins.state(key).ok_or_else(||format!("{} could not save its settings",d.name))?;
+            store_native(proj,key,state);
             continue;
         }
         let explicit_wrapper = fx_of(key).and_then(|(t,k)|proj.mixer.iter().find(|m|m.index==t)?.slots[k as usize].as_ref()).is_some_and(|slot|slot.name==WRAPPER);
@@ -113,7 +118,8 @@ pub fn store_hosted(proj: &mut Project, plugins: &Plugins) {
         if untouched_stand_in(proj, plugins, key, &d) {
             continue;
         }
-        let r = plugin_ref(&d, plugins.state(key).unwrap_or_default());
+        let state=plugins.state(key).ok_or_else(||format!("{} could not save its settings; previous saved settings preserved",d.name))?;
+        let r = plugin_ref(&d,state);
         match fx_of(key) {
             None => {
                 let Some(ch) = proj.channels.get_mut(key).filter(|c| c.kind == ChannelKind::Plugin) else { continue };
@@ -129,6 +135,7 @@ pub fn store_hosted(proj: &mut Project, plugins: &Plugins) {
             }
         }
     }
+    Ok(())
 }
 
 /// Whether the built-in effect `d` hosted under `key` plays a slot that `proj` stores as the FL effect it recreates
@@ -228,7 +235,8 @@ pub fn set_slot_sidechain(proj: &mut Project, plugins: &Plugins, track: u16, slo
     };
     if s.name != WRAPPER {
         let Some(d) = plugins.descriptor(key).filter(is_wrapped) else { return false };
-        s.state = wrapper::encode(None, &plugin_ref(&d, plugins.state(key).unwrap_or_default()));
+        let Some(state)=plugins.state(key) else{return false;};
+        s.state = wrapper::encode(None, &plugin_ref(&d, state));
         s.name = WRAPPER.into();
     }
     let Some(state) = wrapper::set_input_port(&s.state, 1, i32::try_from(port).unwrap_or(0)) else { return false };
@@ -617,7 +625,7 @@ mod tests {
         let r=plugin_ref(&d,vec![0xff]);let stored=wrapper::encode(None,&r);
         app.state.project.mixer[1].slots[0]=Some(SlotPlugin{name:WRAPPER.into(),state:stored.clone()});
         app.sync_wrapped();assert!(!app.plugins.hosted.contains_key(&fx_key(1,0)));
-        store_hosted(&mut app.state.project,&app.plugins);
+        store_hosted(&mut app.state.project,&app.plugins).unwrap();
         assert_eq!(app.state.project.mixer[1].slots[0].as_ref().unwrap().state,stored);
         assert!(app.state.message.as_deref().is_some_and(|m|m.contains("rejected")),"{:?}",app.state.message);
     }

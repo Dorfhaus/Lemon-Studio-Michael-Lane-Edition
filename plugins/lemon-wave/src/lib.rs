@@ -5,10 +5,16 @@ pub mod assets;
 pub mod controls;
 pub mod dsp;
 pub mod instrument_view;
+pub mod modulation;
+mod modulation_editor;
+pub mod reference_envelope;
+pub mod reference_filter;
 pub mod reference_oscillator;
 mod reference_voice;
 pub mod table_editor;
 pub mod wavetable;
+pub mod sample;
+mod sound_browser;
 use lemon_small_fx::Shared;
 #[cfg(test)]
 mod import_tests;
@@ -67,7 +73,9 @@ impl Plugin for LemonWave {
             let hex = raw.trim_matches('"');
             if hex.starts_with("01000000") && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 let old_count = hex.len().saturating_sub(8) / 8;
-                if (old_count == 44 || old_count == 50) && hex.len() == 8 + old_count * 8 {
+                if (old_count == 44 || old_count == 50 || old_count == 62 || old_count == 72)
+                    && hex.len() == 8 + old_count * 8
+                {
                     let suffix: String = controls::SETTINGS[old_count..]
                         .iter()
                         .flat_map(|s| s.start.to_le_bytes())
@@ -119,6 +127,9 @@ impl Plugin for LemonWave {
         // retired assets so replacing this Arc cannot free a large table here.
         if let Ok(tables) = self.params.tables.try_read() {
             self.engine.custom = tables.clone();
+        }
+        if let Ok(curves) = self.params.curves.try_read() {
+            self.engine.curves = *curves;
         }
         let tempo = ctx.transport().tempo.unwrap_or(120.) as f32;
         self.engine.tempo = if tempo.is_finite() {
@@ -188,6 +199,7 @@ impl Plugin for LemonWave {
         if at < len {
             self.engine.render(&mut l[0][at..len], &mut r[0][at..len]);
         }
+        self.params.telemetry.publish(self.engine.live);
         for (note, channel, voice_id) in self.engine.take_ended() {
             ctx.send_event(NoteEvent::VoiceTerminated {
                 timing: (len as u32).saturating_sub(1),
@@ -231,10 +243,19 @@ mod tests {
     use lemon_small_fx::params::FxParams;
     #[test]
     fn factory_presets_extend_old_state_and_preserve_parameter_defaults() {
-        for index in 0..8 {
+        for index in 0..14 {
             let state = table_editor::TableEditor::factory_state(index);
             assert_eq!(state.params.len(), controls::COUNT);
-            for setting in &controls::SETTINGS[if index < 5 { 50 } else { controls::COUNT }..] {
+            for setting in &controls::SETTINGS[if index < 5 {
+                50
+            } else if index < 8 {
+                62
+            } else if index < 11 {
+                72
+            } else {
+                controls::COUNT
+            }..]
+            {
                 assert!(
                     matches!(state.params.get(setting.id),Some(nih_plug::wrapper::state::ParamValue::I32(v)) if *v==setting.start)
                 );
@@ -282,7 +303,7 @@ mod tests {
         for scale in [1., 1.5] {
             let mut c = os_ui::Canvas::new(1180, 820, scale).unwrap();
             let params = assets::WaveParams::default();
-            let hits = instrument_view::paint(
+            let mut hits = instrument_view::paint(
                 &mut c,
                 &Model,
                 &Default::default(),
@@ -291,6 +312,16 @@ mod tests {
                 [5; 2],
                 None,
             );
+            params.page.store(1, Ordering::Relaxed);
+            hits.extend(instrument_view::paint(
+                &mut c,
+                &Model,
+                &Default::default(),
+                "",
+                &params,
+                [5; 2],
+                None,
+            ));
             for setting in controls::SETTINGS {
                 assert!(
                     hits.iter().any(|h| h.t.id() == setting.id),

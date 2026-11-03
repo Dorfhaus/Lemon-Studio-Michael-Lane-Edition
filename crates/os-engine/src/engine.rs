@@ -729,6 +729,8 @@ struct MixTrack {
     /// What the engine itself plays into the track (sampler voices, the metronome) waits here for the latest path
     /// into it (delay compensation).
     pad: pdc::Pad,
+    /// Independent live-input delay preserves monitoring during song fades and pauses.
+    input_pad: pdc::Pad,
 }
 
 /// A mixer track's settings as the project stores them.
@@ -765,6 +767,8 @@ struct FxSlot {
     /// Switched on during the song: the effect is emptied before it runs again.
     fresh: bool,
     fx: Fx,
+    /// Initial internal-effect identity/settings used to decide whether DSP history is reusable.
+    own_source: Option<os_model::SlotPlugin>,
     /// The delay the effect last reported (read after it processes), and the pad its dry part waits in for it (spec:
     /// audio/delay-compensation.md "A slot's dry part").
     delay: u32,
@@ -793,6 +797,7 @@ impl FxSlot {
             mix,
             dry: Glide::new(os_dsp::mixer::dry_level(mix)),
             fresh: false,
+            own_source: None,
             fx,
             delay,
             dry_pad: pdc::Pad::default(),
@@ -863,6 +868,7 @@ impl MixTrack {
             },
             latency: (0.0, 0.0),
             pad: pdc::Pad::default(),
+            input_pad: pdc::Pad::default(),
         }
     }
 
@@ -988,6 +994,7 @@ pub struct Engine {
     audition_held: Vec<(usize,u16)>,
     audition_frame: u64,
     mixer_input: Option<Box<dyn MixerInput>>,
+    input_bus: Vec<Vec<f32>>,
     rate: u32,
     /// The main volume's gain `curve(stored / 12800)` and its ramp (spec: audio/mixer.md "Main volume"). Playback
     /// multiplies the master by it; an export does not (FL applies it after writing the tick), but the tail test sees it.
@@ -1378,7 +1385,9 @@ impl Engine {
                         match crate::effects::from_slot(&slot.name, &slot.state, rate) {
                             Some(mut fx) => {
                                 fx.set_tempo(tempo);
-                                effects.push(FxSlot::new(k, m.slot_on[k], mix_level(m.slot_mix[k]), Fx::Own(fx)));
+                                let mut effect = FxSlot::new(k, m.slot_on[k], mix_level(m.slot_mix[k]), Fx::Own(fx));
+                                effect.own_source = Some(slot.clone());
+                                effects.push(effect);
                                 report.effects_active += 1;
                             }
                             None => report.effects_bypassed += 1,
@@ -1441,7 +1450,7 @@ impl Engine {
         let (mut sched, end_tick) = schedule(project, mode, &mut report);
         sched.sort_by_key(|s| s.tick);
         let mut mpe=vec![];
-        for (row,ch) in project.channels.iter().enumerate(){let config=project.mpe.config(ch.index);if !config.enabled{continue;}let notes=sched.iter().filter(|n|n.channel==row&&n.cut.is_none()&&!n.slide).map(|n|crate::mpe::Scheduled{start:n.tick,end:if n.len>0{n.tick+n.len}else{end_tick.max(n.tick+1)},key:n.key.min(127)as u8,velocity:n.velocity,release:n.release,expression:project.mpe.get(n.expression).map(|e|e.window(0.,if n.expression_len>0{n.len as f32/n.expression_len as f32}else{1.})).unwrap_or_default(),fine:laws::fine_pitch_cents(n.fine)as f32/100.}).collect();mpe.push((row,crate::mpe::Playback::new(config,notes)));}
+        for (row,ch) in project.channels.iter().enumerate(){let config=project.mpe.config(ch.index);if !config.enabled{continue;}let notes=sched.iter().filter(|n|n.channel==row&&n.cut.is_none()&&!n.slide).map(|n|crate::mpe::Scheduled{start:n.tick,end:if n.len>0{n.tick+n.len}else{end_tick.max(n.tick+1)},key:n.key.min(127)as u8,velocity:n.velocity,release:n.release,expression:project.mpe.get(n.expression).map(|e|e.window(0.,if n.expression_len>0{n.len as f32/n.expression_len as f32}else{1.})).unwrap_or_default(),fine:laws::fine_pitch_cents(n.fine)as f32/100.}).collect();mpe.push((row,crate::mpe::Playback::new(config,notes).with_chase(false)));}
         sched.retain(|n|n.cut.is_some()||!mpe.iter().any(|v|v.0==n.channel));
 
         let mut triggers: Vec<Trigger> = sched
@@ -1625,6 +1634,7 @@ impl Engine {
             live_only: false,
             awake: false,
             mixer_input: None,
+            input_bus: Vec::new(),
             tail_done: false,
             held: false,
             count_in: 0,
@@ -1986,6 +1996,7 @@ impl Engine {
     /// Set it before seeking.
     pub fn set_truncated_on_transport(&mut self, on: bool) {
         self.truncated_on_transport = on;
+        for (_, playback) in &mut self.mpe { playback.chase_notes = on; }
     }
 
     /// Drop the scheduled notes: the engine only plays live notes (`note_on`).
@@ -2238,6 +2249,7 @@ impl Engine {
     /// from where their sample has got to. Notes before it are not triggered, except, with "Play truncated notes on
     /// transport" on (`set_truncated_on_transport`), those still going at it: they start afresh on it.
     pub fn seek_tick(&mut self, tick: u64) {
+        for (_, playback) in &mut self.mpe { playback.resume_tick = None; }
         self.clock = Clock::at_tick(self.rate, self.ppq, self.tick_tempo(), tick);
         self.tick = tick;
         self.landed = true;
@@ -2265,6 +2277,7 @@ impl Engine {
         self.pdc.restart();
         for t in &mut self.tracks {
             t.pad.clear();
+            t.input_pad.clear();
             for r in &mut t.routes {
                 r.pad.clear();
             }
@@ -2384,7 +2397,7 @@ impl Engine {
 
         self.looping = old.looping;
         self.loop_range = old.loop_range;
-        self.truncated_on_transport = old.truncated_on_transport;
+        self.set_truncated_on_transport(old.truncated_on_transport);
         // The metronome carries on, with a click that is sounding (rebuilt at a new rate).
         self.metronome = old.metronome.take().map(|m| if m.rate() == self.rate { m } else { crate::metronome::Metronome::new(m.switch().clone(), self.rate) });
         // So does a tap's click (a tap usually changes the tempo while its click sounds).
@@ -2564,6 +2577,7 @@ impl Engine {
                 if let (Some(next),Some(previous))=(&new.tune,&mut o.tune) {previous.configure(next.amount,next.key,next.scale,next.voice,next.learn,next.enabled);new.tune=o.tune.take();}
                 // The pads keep what they hold while the mixer is laid out as before.
                 new.pad = std::mem::take(&mut o.pad);
+                new.input_pad = std::mem::take(&mut o.input_pad);
                 // Sends and slot mix levels glide on from where they were.
                 if new.routes.len() == o.routes.len() && new.routes.iter().zip(&o.routes).all(|(a, b)| a.dest == b.dest) {
                     for (a, b) in new.routes.iter_mut().zip(&mut o.routes) {
@@ -2580,7 +2594,8 @@ impl Engine {
                         a.dry_pad = std::mem::take(&mut b.dry_pad);
                         a.key_pad = std::mem::take(&mut b.key_pad);
                         a.main_pad = std::mem::take(&mut b.main_pad);
-                        if let (Fx::Own(_), Fx::Own(_)) = (&a.fx, &b.fx) {
+                        if matches!((&a.fx, &b.fx), (Fx::Own(_), Fx::Own(_)))
+                            && a.own_source.is_some() && a.own_source == b.own_source {
                             std::mem::swap(&mut a.fx, &mut b.fx);
                         }
                     }
@@ -3534,10 +3549,11 @@ impl Engine {
                 }
             }
             for port in 0..inst.extra_outputs().min(15) {
+                let target = ch.insert + port + 1;
+                if target >= self.bus.len() { break; }
                 l.fill(0.);r.fill(0.);
                 if !inst.extra_output(port,l,r) {continue;}
                 self.channel_activity[c]|=l.iter().zip(r.iter()).any(|(a,b)|(a*gl).abs().max((b*gr).abs())>0.00001);
-                let target=(ch.insert+port+1).min(self.bus.len()-1);
                 let padded=&mut self.pad_buf;padded.clear();
                 padded.extend(l.iter().zip(r.iter()).flat_map(|(&a,&b)|[a*gl,b*gr]));
                 if let Some(p)=self.pdc.aux_pad.get_mut(c).and_then(|p|p.get_mut(port)) {p.run(padded);}
@@ -3614,7 +3630,13 @@ impl Engine {
     fn mix(&mut self, frames: usize, song: &TransportInfo) {
         if !self.exporting {
             if let Some(input) = &mut self.mixer_input {
-                input.render(self.rate, &mut self.bus);
+                self.input_bus.resize_with(self.bus.len(), Vec::new);
+                for b in &mut self.input_bus { b.clear(); b.resize(frames * 2, 0.0); }
+                input.render(self.rate, &mut self.input_bus);
+                for ((input, bus), track) in self.input_bus.iter_mut().zip(&mut self.bus).zip(&mut self.tracks) {
+                    track.input_pad.run(input);
+                    for (dst, sample) in bus.iter_mut().zip(input) { *dst += *sample; }
+                }
             }
         }
         let limit = os_dsp::glide::engine_limit(self.rate);
@@ -8549,3 +8571,6 @@ mod rack_strip_tests {
 
 
 }
+
+#[cfg(test)]
+mod audit_tests;
