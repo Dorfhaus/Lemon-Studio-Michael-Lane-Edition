@@ -61,6 +61,24 @@ pub enum Overlay {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClipSession {
+    pub arrangement:usize,
+    pub parts:Vec<(usize,os_model::Clip)>,
+    pub active:usize,
+}
+impl ClipSession {
+    pub fn clip(&self,s:&State,index:usize)->Option<os_model::Clip> {
+        if self.arrangement!=s.project.arrangement_index(){return None;}
+        let (i,old)=self.parts.get(index)?;
+        crate::playlist::clips(s).get(*i).copied().filter(|c|c.track==old.track && c.position==old.position && c.source==old.source)
+    }
+}
+pub fn active_clip(s:&State)->Option<os_model::Clip>{
+    let session=s.piano.clip_session.as_ref()?;
+    session.clip(s,session.active).filter(|c|c.source==os_model::ClipSource::Pattern(s.pattern))
+}
+
+#[derive(Debug, Clone)]
 pub struct PianoState {
     pub harmony: crate::harmony::Harmony,
     /// Time scroll in ticks (left edge of the grid).
@@ -108,6 +126,7 @@ pub struct PianoState {
     /// Key row pitch in pixels (vertical zoom, §3a; the measured default is [`ROW`]).
     pub row_h: f32,
     /// Ghost channels: other channels' notes of the pattern drawn dimmed (§5, Alt+V).
+    pub clip_session:Option<ClipSession>,
     pub layers:std::collections::BTreeSet<(u16,u16)>,
     pub ghosts: bool,
     /// Random state of the Randomize and humanize tools (§11).
@@ -149,6 +168,7 @@ impl Default for PianoState {
             marker_placed: false,
             range: None,
             row_h: ROW,
+            clip_session:None,
             layers:Default::default(),
             ghosts: true,
             rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1,
@@ -191,6 +211,7 @@ impl PianoState {
 /// Mapping between grid pixels and ticks / keys for one frame.
 pub struct Geom {
     pub grid: Rect,
+    pub source_window:Option<(f32,f32)>,
     pub keys: Vec<i32>,
     pub ppt: f32,
     pub scroll_x: f32,
@@ -208,12 +229,26 @@ pub struct Geom {
 
 impl Geom {
     pub fn new(s: &State, grid: Rect) -> Geom {
+        let mut geom=Self::timeline(s,grid);
+        if let Some(c)=active_clip(s){geom.for_clip(s,&c);}
+        geom
+    }
+
+    pub fn for_clip(&mut self,s:&State,c:&os_model::Clip){
+        self.scroll_x=((f64::from(s.piano.scroll_x)-f64::from(c.position))*c.pattern_rate()+crate::playlist::window(s,c).0) as f32;
+        self.ppt/=c.pattern_rate() as f32;
+        let start=crate::playlist::window(s,c).0 as f32;
+        self.source_window=Some((start,start+c.length as f32*c.pattern_rate() as f32));
+    }
+
+    pub fn timeline(s:&State,grid:Rect)->Geom{
         let ppq = u32::from(s.project.ppq.max(4));
         // A beat is the signature's note value: a quarter in 4/4, an eighth in 3/8.
         let bars: Vec<(u32, u32, u32)> =
             s.project.pattern_bars(s.pattern).into_iter().map(|(start, bar, (num, _))| (start, bar, (bar / u32::from(num.max(1))).max(1))).collect();
         Geom {
             grid,
+            source_window:None,
             keys: visible_key_list(s),
             ppt: s.piano.px_per_beat / ppq as f32,
             scroll_x: s.piano.scroll_x,
@@ -278,8 +313,10 @@ impl Geom {
             return None;
         }
         let len = if n.length == 0 { self.step } else { n.length };
-        let x = self.x_of(n.position as f32);
-        let w = (len as f32 * self.ppt).max(3.0);
+        let (mut start,mut end)=(n.position as f32,n.position as f32+len as f32);
+        if let Some((a,b))=self.source_window{start=start.max(a);end=end.min(b);if end<=start{return None;}}
+        let x=self.x_of(start);
+        let w=((end-start)*self.ppt).max(3.0);
         Some(Rect::new(x, self.y_of(key) - 1.0, w, self.row + 1.0))
     }
 }
@@ -947,6 +984,32 @@ pub fn zoom_time(s: &mut State, g: &Geom, x: f32, notches: f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn playlist_parts_round_trip_trimmed_and_stretched_song_positions(){
+        use super::*;
+        use crate::{app::App,playlist as pl,piano_tools::{self,NCmd}};
+        use os_model::{Clip,ClipSource};
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        let note=Note{position:120,length:48,..Note::step(0,0)};
+        app.state.project.patterns[0].notes.push(note);
+        app.state.project.patterns.push(Pattern{number:2,notes:vec![Note{channel:1,..note}],..Default::default()});
+        let a=Clip::new(384,192,2,ClipSource::Pattern(1));
+        let mut b=Clip::new(768,192,3,ClipSource::Pattern(2));
+        b.pattern_speed=2.;b.window=Some((96.,480.));
+        pl::arr_mut(&mut app.state).clips=vec![a,b];
+        app.state.playlist.sel=vec![0,1];pl::run(&mut app,pl::Cmd::ClipSession(0));
+        let rect=Rect::new(0.,0.,1500.,700.);
+        let timeline=Geom::timeline(&app.state,rect);
+        let x=timeline.x_of(780.);
+        piano_tools::run(&mut app,NCmd::SessionPart(1,1));
+        let editing=Geom::new(&app.state,rect);
+        assert_eq!(app.state.pattern,2);assert_eq!(app.state.selected_channel,1);
+        assert!((editing.tick_at(x)-120.).abs()<0.01);
+        assert!((editing.x_of(120.)-x).abs()<0.01);
+        assert!(editing.note_rect(&Note{position:0,length:12,..note}).is_none());
+        piano_tools::run(&mut app,NCmd::EndSession);assert!(active_clip(&app.state).is_none());
+    }
+
     #[test]
     fn new_notes_copy_controls_not_place_or_mute() {
         use super::*;

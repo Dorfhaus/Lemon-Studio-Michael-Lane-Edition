@@ -156,18 +156,24 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         ui.veil(tab, t.window_title);
     }
 
-    overview(ui, s, &l, &g, notes, ch);
+    let active_clip=piano::active_clip(s);
+    let song_grid=active_clip.map(|_|Geom::timeline(s,l.grid));
+    let timeline=song_grid.as_ref().unwrap_or(&g);
+    overview(ui, s, &l, timeline, notes, ch);
     // A time-signature marker shows its signature (spec: ui/pattern-time-signature.md §2).
     let markers: Vec<(u32, String)> =
         s.project.pattern(s.pattern).map_or(&[][..], |p| &p.markers).iter().map(|m| (m.position, super::playlist::marker_label(m))).collect();
-    ruler(ui, &l, &g, range, s.piano.marker, &markers);
+    if let Some(c)=active_clip{
+        let marker=(f64::from(c.position)+(f64::from(s.piano.marker)-crate::playlist::window(s,&c).0)/c.pattern_rate()).max(0.) as u32;
+        ruler(ui,&l,timeline,range,marker,&[]);
+    }else{ruler(ui,&l,&g,range,s.piano.marker,&markers);}
     // Lit keys: the one held with the mouse and this channel's notes playing now (§4).
     let mut lit: Vec<i32> = s.piano.held.into_iter().collect();
     lit.extend(s.piano.typed.iter().filter(|&&(c, _)| Some(c) == ch).map(|&(_, k)| k));
     lit.extend(f.sounding.iter().filter(|&&(c, _)| Some(c) == ch).map(|&(_, k)| i32::from(k)));
     ui.live(Live::Sounding, l.keys);
     keyboard(ui, &l, &g, &lit);
-    grid(ui, s, &l, &g, range);
+    grid(ui, s, &l, timeline, range);
 
     // Notes: ghosts of the other channels first (when shown, Alt+V), then this channel's (§5).
     ui.hit(l.grid, Action::PianoGrid, "Piano roll: click to add a note, drag a note to move it or its end to resize, right-click to delete");
@@ -178,7 +184,29 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             ui.c.stroke_rrect(nr.inset(1.5), if lemon { 3.0 } else { 2.0 }, 1.0, ghost);
         }
     }
+    if let Some(session)=s.piano.clip_session.as_ref().filter(|_|active_clip.is_some()){
+        for i in 0..session.parts.len(){
+            if i==session.active{continue;}
+            let Some(c)=session.clip(s,i) else{continue;};
+            let os_model::ClipSource::Pattern(n)=c.source else{continue;};
+            let mut projected=Geom::timeline(s,l.grid);projected.for_clip(s,&c);
+            let bounds=Rect::span(timeline.x_of(c.position as f32),timeline.x_of(c.end() as f32),l.grid.y,l.grid.bottom()).intersect(&l.grid);
+            if bounds.is_empty(){continue;}
+            ui.c.push_clip(bounds);
+            if let Some(p)=s.project.pattern(n){for note in &p.notes {
+                if let Some(r)=projected.note_rect(note){
+                    let hit=r.intersect(&bounds);
+                    if !hit.is_empty(){
+                        ui.c.stroke_rrect(r.inset(1.),2.,1.,t.accent.with_alpha(155));
+                        ui.hit(hit,Action::PianoCommand(crate::piano_tools::NCmd::SessionPart(i,note.channel)),"Click to edit this Playlist clip");
+                    }
+                }
+            }}
+            ui.c.pop_clip();
+        }
+    }
     for &(pattern,channel) in &s.piano.layers {
+        if active_clip.is_some(){break;}
         if pattern==s.pattern && (Some(channel)==ch || s.piano.ghosts) {continue;}
         if let Some(p)=s.project.pattern(pattern){for n in p.notes.iter().filter(|n|n.channel==channel){
             if let Some(r)=g.note_rect(n).filter(|r|r.intersect(&l.grid).w>0.){ui.c.stroke_rrect(r.inset(1.),2.,1.,t.accent.with_alpha(145));}
@@ -282,7 +310,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // Playhead: the pattern's own in pattern mode; in song mode where the song is in this pattern, while a clip of
     // it plays there.
     let head = if !f.playing { None } else if f.song { piano::pattern_tick_in_song(s, f.tick) } else { Some(f.tick) };
-    if let Some(tick) = head {
+    if active_clip.is_some() && s.song_mode{
+        let tick=if f.playing{f.tick}else{f64::from(s.playlist.pos)};
+        let x=timeline.x_of(tick as f32);ui.c.fill_rect(Rect::new(x,l.grid.y,1.5,l.grid.h),t.playhead);
+    } else if let Some(tick) = head {
         let x = g.x_of(tick as f32);
         ui.c.fill_rect(Rect::new(x, l.grid.y, 1.5, l.grid.h), t.playhead);
     } else if let Some(tick) = (!f.playing && s.song_mode).then(|| piano::pattern_tick_in_song(s, f64::from(s.playlist.pos))).flatten() {
@@ -411,7 +442,9 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     // Horizontal scroll bar over the pattern plus room to scroll on (half a screen past the
     // pattern or the current view).
     let view = l.grid.w / g.ppt;
-    let len = piano::pattern_length(s, s.pattern) as f32;
+    let len = if let Some(session)=s.piano.clip_session.as_ref().filter(|_|piano::active_clip(s).is_some()){
+        (0..session.parts.len()).filter_map(|i|session.clip(s,i)).map(|c|c.end()).max().unwrap_or(0) as f32
+    }else{piano::pattern_length(s,s.pattern) as f32};
     let span = s.piano.bar_span.unwrap_or(len.max(g.scroll_x + view) + view / 2.0);
     // Scroll arrows at both ends (§1a); the bar runs between them (small scroll bars: no arrows).
     let arrow = if super::small_scrollbars() { 0.0 } else { 19.0 };
@@ -425,7 +458,8 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     // Mini-map: one dash per note of the channel.
     let dash = t.note_top.mix(t.note_bottom, 0.5);
     for n in notes.iter().filter(|n| Some(n.channel) == ch && crate::piano_tools::view_on("piano_mini_preview",true)) {
-        let x = o.x + n.position as f32 / span * o.w;
+        let position=piano::active_clip(s).map_or(n.position as f64,|c|f64::from(c.position)+(f64::from(n.position)-crate::playlist::window(s,&c).0)/c.pattern_rate());
+        let x = o.x + position as f32 / span * o.w;
         let w = (piano::shown_len(s, n) as f32 / span * o.w).max(1.0);
         let y = o.y + 3.0 + (1.0 - f32::from(n.key) / TOP_KEY as f32) * (o.h - 7.0);
         ui.c.fill_rect(Rect::new(x, y.round(), w, 1.0), dash);

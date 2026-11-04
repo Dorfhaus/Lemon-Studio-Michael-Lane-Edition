@@ -2752,7 +2752,7 @@ impl App {
             use winit::platform::scancode::PhysicalKeyExtScancode;
             if let winit::keyboard::PhysicalKey::Code(code) = winit::keyboard::PhysicalKey::from_scancode(k.scancode) {
                 if k.undo {
-                    if k.pressed {self.undo_key(k.alt);}
+                    if k.pressed {self.undo_key(k.alt||k.shift);}
                     continue;
                 }
                 // Space keeps playing / stopping the song (the typing keyboard does not use it).
@@ -2890,6 +2890,8 @@ impl App {
                         let chans = &mut self.state.project.channels;
                         chans.get_mut(row).into_iter().for_each(|c| c.mixer_track = t.min(max));
                     }
+                    #[cfg(target_os="linux")] Request::Undo(redo)=>{self.undo_key(redo);continue;}
+                    Request::WaveZoom(row,pct)=>{crate::playlist::run(self,crate::playlist::Cmd::WaveSize(row,pct));continue;}
                     Request::PickTrack(row) => {
                         self.route_hover=None;
                         crate::route_picker::open(self,row);
@@ -3342,7 +3344,10 @@ impl App {
             PItem::new("View FPS", Cmd::Cpu(CpuCmd::Fps(true))).mark(Mark::Radio(c.fps_view)),
             PItem::new("Misc", Cmd::Cpu(CpuCmd::Misc)).mark(Mark::Check(c.misc)),
             PItem::sep(),
-            PItem::new("Performance monitor load bars",Cmd::Cpu(CpuCmd::LoadBars)).mark(Mark::Check(c.load_bars)),
+            PItem::sub("Performance monitor style",vec![
+                PItem::new("Detailed table",Cmd::Cpu(CpuCmd::LoadBars(false))).mark(Mark::Radio(!c.load_bars)),
+                PItem::new("Load dashboard",Cmd::Cpu(CpuCmd::LoadBars(true))).mark(Mark::Radio(c.load_bars)),
+            ]),
             PItem::new("Plugin performance monitor", Cmd::Cpu(CpuCmd::Monitor)).mark(Mark::Check(self.state.shown(Win::Perf))),
             PItem::new("Audio settings", Cmd::Cpu(CpuCmd::AudioSettings)),
         ];
@@ -4131,8 +4136,10 @@ impl App {
 
     /// Periodic housekeeping; returns whether a repaint is needed.
     pub fn tick(&mut self) -> bool {
-        #[cfg(windows)]
-        if let Some(track)=crate::plugin_window::clicked_strip(){
+        #[cfg(target_os="macos")] let clicked_strip=crate::strip_editor::clicked_strip();
+        #[cfg(windows)] let clicked_strip=crate::plugin_window::clicked_strip();
+        #[cfg(any(windows,target_os="macos"))]
+        if let Some(track)=clicked_strip{
             crate::mixer::select(&mut self.state,track,false);self.damage_win(Win::Mixer);
         }
         let edge_due=self.edge_tick.elapsed()>=std::time::Duration::from_millis(30);
@@ -4496,6 +4503,25 @@ impl App {
     }
 
     /// A file dropped on the window: audio onto the playlist becomes an audio clip; a project opens.
+    pub(crate) fn playlist_drop_position(&self)->Option<(u16,u32)> {
+        let (x,y)=self.mouse;
+        let grid=self.pl_grid.filter(|g|g.contains(x,y))?;
+        let geom=crate::playlist::PGeom::new(&self.state,grid);
+        Some((geom.track_at(y),crate::playlist::snap_place(&self.state,&geom,geom.tick_at(x),self.alt)))
+    }
+
+    pub(crate) fn import_stems(&mut self,files:Vec<PathBuf>,track:u16,tick:u32){
+        let mut failures=Vec::new();
+        for path in &files {
+            if let Err(reason)=crate::playlist::import_audio_clip(&mut self.state,&path.to_string_lossy(),track,tick){
+                failures.push(format!("{}: {reason}",path.display()));
+            }
+        }
+        self.state.message=Some(format!("Imported {} of {} stems{}",
+            files.len()-failures.len(),files.len(),if failures.is_empty(){String::new()}else{format!(" — {}",failures.join(", "))}));
+        self.invalidate();
+    }
+
     pub fn drop_file(&mut self, path: PathBuf) {
         // Explorer/OLE drops are delivered to winit's parent window even over a
         // docked native plugin child. Resolve that child before the rack/playlist.
@@ -4526,7 +4552,8 @@ impl App {
                 self.state.selected_channel = row;
                 self.state.rack.select_only(row);
             }
-            return self.midi_drop(path, row.is_some() || matches!(win,Some(Win::PianoRoll | Win::ChannelRack)));
+            let placement=if win==Some(Win::Playlist) && plugin.is_none(){self.playlist_drop_position()}else{None};
+            return self.midi_drop(path, row.is_some() || matches!(win,Some(Win::PianoRoll | Win::ChannelRack)),placement);
         }
         // A preset goes into the plugin under the mouse, or a new instance of its plugin (spec: plugins/presets.md).
         if crate::presets::is_preset_file(&path) {
@@ -8136,6 +8163,9 @@ impl App {
             self.state.message = Some("Piano roll: no channel selected".into());
             return;
         };
+        if matches!(a,Action::PianoGrid|Action::PianoVelocity) && g.source_window.is_some_and(|(start,end)|{
+            let tick=g.tick_at(x);tick<start || tick>=end
+        }){return;}
         self.state.piano.event_focus = matches!(a, Action::PianoVelocity);
         let tool = self.state.piano.tool;
         // Ctrl temporarily selects with any note tool, without editing or auditioning notes.
@@ -23126,7 +23156,6 @@ impl App {
         let panes=crate::rack_mixer::geometry(&self.state,self.state.win_rect(Win::Mixer));
         let keys:Vec<_>=panes.iter().filter_map(|v|Some(crate::plugins::fx_key(v.track,crate::rack_mixer::slot(&self.state,v.track)?))).collect();
         let close:Vec<_>=self.plugins.hosted.iter().filter_map(|(key,h)|(h.rack_editor.is_some()&&!keys.contains(key)).then_some(*key)).collect();for key in close{
-            #[cfg(windows)]
             if crate::plugins::fx_of(key).is_some_and(|(t,k)|crate::rack_mixer::slot(&self.state,t)==Some(k)) &&
                 self.plugins.hosted.get_mut(&key).and_then(|h|h.rack_editor.as_mut()).is_some_and(|e|e.hide_for_scroll()){continue;}
             self.plugins.close_rack(key);

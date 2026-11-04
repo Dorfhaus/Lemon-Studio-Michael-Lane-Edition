@@ -230,6 +230,7 @@ struct Shell {
     /// A title-bar move or edge resize done by hand: cursor and window rect (screen px) at the press, and the edge
     /// (None = move). The system's own move / size loops block the event loop, which froze all drawing.
     dropped_files: Vec<std::path::PathBuf>,
+    stem_anchor:Option<(u16,u32)>,
     grab: Option<Grab>,
     /// A press on the maximized window's title bar: the cursor (screen px) and its height in the window (physical px).
     /// The window is restored under the cursor and moved once the cursor travels past the drag distance; a click
@@ -879,23 +880,11 @@ impl ApplicationHandler for Shell {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        self.detached.flush_stems(&mut self.app);
         let files=std::mem::take(&mut self.dropped_files);
-        if files.len()>1 && self.app.top_hit(self.app.mouse.0,self.app.mouse.1).and_then(|h|h.win)==Some(app::Win::Playlist)
-            && files.iter().all(|p|crate::views::browser::file_icon(&p.to_string_lossy())==crate::icons::Icon::FileAudio)
-            && self.app.pl_grid().is_some_and(|g|g.contains(self.app.mouse.0,self.app.mouse.1)) {
-            let grid=self.app.pl_grid().unwrap();
-            let s=&mut self.app.state;
-            let g=playlist::PGeom::new(s,grid);
-            let track=g.track_at(self.app.mouse.1);
-            let tick=playlist::snap_place(s,&g,g.tick_at(self.app.mouse.0),self.app.alt);
-            let mut errors=Vec::new();
-            for file in &files {
-                if let Err(reason)=playlist::import_audio_clip(s,&file.to_string_lossy(),track,tick) {
-                    errors.push(format!("{}: {reason}",file.display()));
-                }
-            }
-            s.message=Some(if errors.is_empty(){format!("Imported {} aligned stems",files.len())}else{errors.join(" / ")});
-            self.app.invalidate();
+        if let Some((track,tick))=self.stem_anchor.take().filter(|_|files.len()>1 &&
+            files.iter().all(|p|crate::views::browser::file_icon(&p.to_string_lossy())==crate::icons::Icon::FileAudio)) {
+            self.app.import_stems(files,track,tick);
         } else { for file in files {self.app.drop_file(file);} }
         self.step(el, false);
     }
@@ -1198,6 +1187,9 @@ impl ApplicationHandler for Shell {
                     let (mx, my) = self.to_app(&window, f64::from(cx - p.x), f64::from(cy - p.y));
                     self.app.mouse_move(mx, my);
                 }
+                self.stem_anchor=if !self.app.modal_open() && self.app.top_hit(self.app.mouse.0,self.app.mouse.1).and_then(|h|h.win)==Some(app::Win::Playlist){
+                    self.app.playlist_drop_position()
+                }else{None};
                 self.dropped_files.push(path);
                 window.request_redraw();
             }
@@ -2042,6 +2034,7 @@ fn main() {
         inset: (0, 0, 0, 0),
         edge: None,
         dropped_files: Vec::new(),
+        stem_anchor:None,
         grab: None,
         unmax: None,
         pending: false,

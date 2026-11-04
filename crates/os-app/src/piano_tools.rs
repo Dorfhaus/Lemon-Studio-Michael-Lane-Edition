@@ -16,6 +16,8 @@ use crate::playlist::{Cmd, Mark, PItem, Popup};
 /// A piano-roll command (keyboard shortcut or Tools menu entry). Note values are `1/n` notes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NCmd {
+    SessionPart(usize,u16),
+    EndSession,
     Layer(u16,u16,bool),
     MenuKey(&'static str,bool,bool,bool),
     Tool(piano::Tool),
@@ -129,7 +131,21 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
         PItem::sub("View",vec![PItem::sub("Keyboard style",vec![item("FL 11 style",NCmd::KeyboardStyle(true)).mark(Mark::Radio(classic_keyboard())),item("Piano-shaped",NCmd::KeyboardStyle(false)).mark(Mark::Radio(!classic_keyboard()))]),item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
         PItem::sub("Helpers",helpers),
         PItem::sub("Time markers",vec![item("Add time marker",NCmd::AddMarker).key("Alt+T")]),
-        PItem::sub("MIDI parts",s.project.patterns.iter().flat_map(|p|{
+        PItem::sub("MIDI parts",if let Some(session)=s.piano.clip_session.as_ref().filter(|_|piano::active_clip(s).is_some()){
+            let mut rows=Vec::new();
+            for i in 0..session.parts.len(){
+                let Some(c)=session.clip(s,i) else{continue;};
+                let os_model::ClipSource::Pattern(n)=c.source else{continue;};
+                let Some(pattern)=s.project.pattern(n) else{continue;};
+                for ch in pattern.notes.iter().map(|note|note.channel).collect::<std::collections::BTreeSet<_>>() {
+                    if let Some(row)=s.project.channels.iter().position(|v|v.index==ch){
+                        let label=format!("{} • Track {} • Tick {} • {}",crate::patterns::name_of(s,n),c.track+1,c.position,channel_name(s,row));
+                        rows.push(PItem::new(label,Cmd::Piano(NCmd::SessionPart(i,ch))).mark(Mark::Radio(session.active==i && s.selected_channel==row)));
+                    }
+                }
+            }
+            rows.push(item("Return to pattern editing",NCmd::EndSession));rows
+        }else{s.project.patterns.iter().flat_map(|p|{
             let channels:std::collections::BTreeSet<_>=p.notes.iter().map(|n|n.channel).collect();
             channels.into_iter().filter_map(move |ch|{
                 let row=s.project.channels.iter().position(|c|c.index==ch)?;
@@ -138,7 +154,7 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
                     item("Edit this part",NCmd::Layer(p.number,ch,true)).mark(Mark::Radio(s.pattern==p.number && row==s.selected_channel))
                 ]))
             })
-        }).collect()),
+        }).collect()}),
         PItem::sub("Target channel",target_menu(s,x,y).items),
     ];
     Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
@@ -438,7 +454,17 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
     let done = |changed: bool, what: &str| if changed { format!("Piano roll: {what}") } else { format!("Piano roll: {what}: nothing to change") };
     let msg = match cmd {
         NCmd::MenuKey(..)=>unreachable!(),
+        NCmd::EndSession=>{s.piano.clip_session=None;s.piano.scroll_x=0.;s.piano.clear_selection();app.invalidate();return None;}
+        NCmd::SessionPart(i,ch)=>{
+            let clip=s.piano.clip_session.as_ref()?.clip(s,i)?;
+            let os_model::ClipSource::Pattern(n)=clip.source else{return None;};
+            let row=s.project.channels.iter().position(|c|c.index==ch)?;
+            s.piano.clip_session.as_mut()?.active=i;
+            crate::patterns::select(s,n);s.selected_channel=row;s.rack.select_only(row);s.piano.clear_selection();s.piano.dirty=true;
+            app.invalidate();return None;
+        }
         NCmd::Layer(p,ch,edit)=>{
+            s.piano.clip_session=None;
             if edit {
                 if let Some(row)=s.project.channels.iter().position(|c|c.index==ch){
                     if let Some(prev)=piano::channel(s){s.piano.layers.insert((s.pattern,prev));}

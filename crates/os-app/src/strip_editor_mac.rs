@@ -2,10 +2,10 @@
 //! Native AppKit parents for mixer strip editors. Editor sizes are device pixels;
 //! AppKit geometry is points. The composited editor fits the mixer height.
 use std::{cell::RefCell, ffi::c_void, time::Instant};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, AnyThread};
+use objc2::{ClassType,define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, AnyThread};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSResponder, NSScrollView, NSScreen, NSEvent, NSTrackingArea, NSTrackingAreaOptions};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSObjectProtocol,NSPoint, NSRect, NSSize};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGMutablePath;
 use objc2_quartz_core::{CAShapeLayer, CATransaction};
@@ -33,7 +33,19 @@ struct InputState {
     width: f64,
     capture: Option<Retained<NSView>>,
 }
+thread_local!{static CLICKED:std::cell::Cell<Option<u16>>=const{std::cell::Cell::new(None)};}
+pub fn contains_editor(view:&NSView)->bool{
+    if view.isKindOfClass(StripView::class()){return true;}
+    let mut ancestor=unsafe{view.superview()};
+    while let Some(parent)=ancestor{
+        if parent.isKindOfClass(StripView::class()){return true;}
+        ancestor=unsafe{parent.superview()};
+    }
+    false
+}
+pub fn clicked_strip()->Option<u16>{CLICKED.with(|t|t.take())}
 struct StripData {
+    track:std::cell::Cell<Option<u16>>,
     clip: RefCell<Option<Vec<NSRect>>>,
     input: RefCell<Option<InputState>>,
     forwarding: RefCell<Vec<usize>>,
@@ -94,6 +106,9 @@ impl StripView {
             })
         }) {
             return;
+        }
+        if matches!(kind,PointerAction::Down) && let Some(track)=self.ivars().track.get(){
+            CLICKED.with(|t|t.set(Some(track)));os_clap::wake();
         }
         let route = {
             let mut state = self.ivars().input.borrow_mut();
@@ -217,6 +232,7 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
 fn view(mtm: MainThreadMarker) -> Retained<StripView> {
     let v = StripView::alloc(mtm).set_ivars(StripData {
         clip: RefCell::new(None),
+        track:std::cell::Cell::new(None),
         input: RefCell::new(None),
         forwarding: RefCell::new(Vec::new()),
     });
@@ -262,12 +278,14 @@ impl MappedEvent {
 
 pub struct Editor {
     outer:Retained<StripView>, scroll:Retained<NSScrollView>, document:Retained<StripView>, zoom_view:Retained<NSView>, inner:Retained<NSView>,
+    hidden_since:Option<Instant>,
     pub owner:isize, pub scale:f32, backing:f64, size:(u32,u32), profile:Profile, pages:Vec<Page>, page:usize,
     rect:[i32;4], clip:Vec<[i32;4]>, page_left:f32, page_width:f32, slide:Option<(Instant,f32,f32)>, layout_changed:bool,
 }
 impl Editor {
     pub fn new(owner:isize,scale:f32)->Result<Self,String>{
         let mtm=MainThreadMarker::new().ok_or("Channel strips must open on the main thread")?;
+        crate::plugin_window::prepare_embedded(mtm);
         let parent=unsafe {(owner as *const NSView).as_ref()}.ok_or("Mixer window unavailable")?;
         let backing=parent.window().map_or(1.,|w|w.backingScaleFactor());
         let outer=view(mtm); outer.setWantsLayer(true); outer.setHidden(true);
@@ -282,7 +300,7 @@ impl Editor {
         let inner=NSView::initWithFrame(NSView::alloc(mtm),rect(0.,0.,560.,700.));
         inner.setAutoresizesSubviews(false);
         zoom_view.addSubview(&inner); document.addSubview(&zoom_view); scroll.setDocumentView(Some(&document)); outer.addSubview(&scroll); parent.addSubview(&outer);
-        Ok(Self{outer,scroll,document,zoom_view,inner,owner,scale,backing,size:(1,1),profile:Profile::Whole,pages:vec![Page{left:0.,right:1.}],page:0,rect:[0;4],clip:vec![],page_left:0.,page_width:1.,slide:None,layout_changed:false})
+        Ok(Self{hidden_since:None,outer,scroll,document,zoom_view,inner,owner,scale,backing,size:(1,1),profile:Profile::Whole,pages:vec![Page{left:0.,right:1.}],page:0,rect:[0;4],clip:vec![],page_left:0.,page_width:1.,slide:None,layout_changed:false})
     }
     pub fn area(&self)->*mut c_void {Retained::as_ptr(&self.inner) as *mut c_void}
     pub fn accept_size(&mut self,size:(u32,u32))->bool {
@@ -346,7 +364,12 @@ impl Editor {
         let p=owner.convertPoint_fromView(p,None);
         ((p.x*self.backing) as f32/self.scale,(p.y*self.backing) as f32/self.scale)
     }
+    pub fn hide_for_scroll(&mut self)->bool{
+        if self.hidden_since.is_none(){self.outer.setHidden(true);self.hidden_since=Some(Instant::now());}
+        self.hidden_since.is_some_and(|t|t.elapsed()<std::time::Duration::from_secs(2))
+    }
     pub fn place(&mut self,r:[i32;4],clip:[i32;4],covers:&[[i32;4]]) {
+        if self.hidden_since.take().is_some(){self.clip.clear();}
         let mut key=vec![clip];key.extend_from_slice(covers);if self.rect==r&&self.clip==key{return;}
         self.rect=r;self.clip=key;let k=self.backing;
         self.outer.setFrame(rect(r[0] as f64/k,r[1] as f64/k,(r[2]-r[0]) as f64/k,(r[3]-r[1]) as f64/k));
@@ -385,6 +408,7 @@ impl crate::plugins::Plugins {
         if h.rack_editor.is_none(){
             let result=(||{
                 let mut e=Editor::new(owner,scale)?;e.rect=r;
+                let track=crate::plugins::fx_of(key).map(|(t,_)|t);e.outer.ivars().track.set(track);e.document.ivars().track.set(track);
                 let mut p=h.plugin.lock().map_err(|_|"Plugin busy".to_string())?;e.profile=profile(p.desc());
                 let result=p.open_editor(e.area(),e.backing as f32);
                 let size=match result {Ok(size)=>size,Err(err)=>{p.close_editor();return Err(err);}};

@@ -32,6 +32,7 @@ pub struct KeyMsg {
     /// Hardware scancode as winit's `PhysicalKeyExtScancode` expects it (extended keys carry 0xE000).
     pub scancode: u32,
     pub undo:bool,
+    pub shift:bool,
     pub pressed: bool,
     pub ctrl: bool,
     pub alt: bool,
@@ -79,6 +80,7 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                 let in_frame = frame_of(focus).is_some();
                 let up = lp & (1 << 31) != 0;
                 let repeat = !up && lp & (1 << 30) != 0;
+                if in_frame && repeat && wp==usize::from(b'Z') && GetKeyState(i32::from(VK_CONTROL))<0 {return 1;}
                 if in_frame && !repeat {
                     let mut sc = ((lp >> 16) & 0xff) as u32;
                     if lp & (1 << 24) != 0 {
@@ -86,7 +88,7 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     }
                     let down = |vk: u16| GetKeyState(i32::from(vk)) < 0;
                     if let Ok(mut k) = KEYS.lock() {
-                        k.push(KeyMsg { scancode:sc,undo:wp==usize::from(b'Z') && down(VK_CONTROL), pressed: !up, ctrl: down(VK_CONTROL), alt: down(VK_MENU) });
+                        k.push(KeyMsg { scancode:sc,shift:down(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT),undo:wp==usize::from(b'Z') && down(VK_CONTROL), pressed: !up, ctrl: down(VK_CONTROL), alt: down(VK_MENU) });
                     }
                     // The host owns project undo; do not also undo inside the native editor.
                     if wp==usize::from(b'Z') && down(VK_CONTROL) {os_clap::wake();return 1;}

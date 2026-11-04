@@ -4,6 +4,18 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Playlist MIDI editing and resizable instrument windows \u00b7 public build 2026110406",
+      "changes": [
+        "Drop a MIDI file onto the Playlist grid to create a new pattern and place its clip at the chosen lane and snapped beat. Undo removes the import and restores the previous song.",
+        "Select pattern clips, then choose Edit selected MIDI clips together. See their notes on a shared song timeline and switch the editable clip by clicking its outlined notes or using the MIDI parts menu. Trim offsets and pattern speeds are respected.",
+        "Drag the right edge, bottom edge or lower-right corner of the Lemon Wave plugin frame and release to resize the instrument proportionally. The window menu still offers preset sizes.",
+        "Multi-file stem imports use one drop anchor in both docked and detached Playlists and report how many files succeeded.",
+        "On Mac, clicking an embedded channel strip selects its mixer track, and briefly scrolling it out of view preserves the open editor. Plugin-focused Undo and Redo have improved handling on Windows, Mac and Linux/X11.",
+        "The CPU panel menu now offers two performance monitor styles: a detailed table and a load dashboard with per-plugin meters, processing time, total audio load and dropout count."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Playlist folders, safer imports and mixer group editing \u00b7 public build 2026110405",
       "changes": [
         "Create and name Playlist folders for a range of tracks, group tracks below them, and collapse or expand the folder. Enable the optional left-hand clip picker from the Clips menu.",

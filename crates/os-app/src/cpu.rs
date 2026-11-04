@@ -50,7 +50,7 @@ pub enum CpuCmd {
     /// View FPS (true) or the voice count (false).
     Fps(bool),
     Misc,
-    LoadBars,
+    LoadBars(bool),
     Monitor,
     AudioSettings,
 }
@@ -139,7 +139,7 @@ impl Cpu {
         match c {
             CpuCmd::Refresh(r) => self.refresh = r,
             CpuCmd::Fps(f) => self.fps_view = f,
-            CpuCmd::LoadBars=>self.load_bars=!self.load_bars,
+            CpuCmd::LoadBars(on)=>self.load_bars=on,
             CpuCmd::Misc => self.misc = !self.misc,
             CpuCmd::Monitor | CpuCmd::AudioSettings => return,
         }

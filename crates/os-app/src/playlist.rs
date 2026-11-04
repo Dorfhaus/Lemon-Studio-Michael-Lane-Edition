@@ -294,6 +294,7 @@ pub enum Cmd {
     ClipMute(usize),
     ClipDelete(usize),
     ClipUnique(usize),
+    ClipSession(usize),
     ClipEditSource(usize),
     ClipSelectSimilar(usize),
     ClipRename(usize),
@@ -2721,6 +2722,7 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
             }
         }
         PickKind::Pattern => {
+            items.push(PItem::new("Edit selected MIDI clips together",Cmd::ClipSession(i)));
             items.push(PItem::new("Edit pattern",Cmd::ClipEditSource(i)));
             items.push(PItem::new("Reset pattern stretch",Cmd::ResetPatternStretch(i)));
         }
@@ -4764,7 +4766,23 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             snapshot_unique(s);
             make_unique(s, i).map(|_| "Made clip unique".into())
         }
+        Cmd::ClipSession(i)=>{
+            let indices=if s.playlist.sel.contains(&i){s.playlist.sel.clone()}else{vec![i]};
+            let parts:Vec<_>=indices.into_iter().filter_map(|k|clips(s).get(k).filter(|c|matches!(c.source,ClipSource::Pattern(_))).map(|c|(k,*c))).collect();
+            let active=parts.iter().position(|(k,_)|*k==i)?;
+            let clip=parts[active].1;
+            let ClipSource::Pattern(n)=clip.source else{return None;};
+            s.piano.scroll_x=parts.iter().map(|(_,c)|c.position).min().unwrap_or(0) as f32;
+            s.piano.clip_session=Some(crate::piano::ClipSession{arrangement:s.project.arrangement_index(),parts,active});
+            s.pattern=n;
+            if let Some(row)=s.project.pattern(n).and_then(|p|p.notes.first()).and_then(|note|s.project.channels.iter().position(|ch|ch.index==note.channel)){
+                s.selected_channel=row;s.rack.select_only(row);
+            }
+            s.piano.clear_selection();s.raise(crate::app::Win::PianoRoll);
+            Some("Editing Playlist clips together. Switch the editable clip in Piano Roll > MIDI parts.".into())
+        }
         Cmd::ClipEditSource(i) => {
+            s.piano.clip_session=None;
             if let Some(ClipSource::Pattern(n)) = clips(s).get(i).map(|c| c.source) {
                 s.pattern = n;
                 s.raise(crate::app::Win::PianoRoll);

@@ -171,6 +171,8 @@ pub enum Request {
     PitchRange(usize, i32),
     Track(usize, u16),
     ShowTrack(usize),
+    #[cfg(target_os="linux")] Undo(bool),
+    WaveZoom(usize,u16),
     TrackHoverEnd,
     TrackHover(i32,i32),
     TrackDrop(usize,i32,i32),
@@ -1285,7 +1287,14 @@ impl Plugins {
                     // A resizable Lemon plugin (Tesla): the frame's edges resize it.
                     w.set_resizable(l.resizable().map(|(mw, mh)| (mw as f32, mh as f32)));
                 }
+                let wave=h.name=="Lemon Wave";
+                if wave {w.set_resizable(Some((100.,80.)));}
                 for e in w.take_events() {
+                    if let FrameEvent::ResizeFinished(ratio)=e {
+                        if wave {out.push(Request::WaveZoom(row,(wave_zoom()*ratio*100.).round().clamp(40.,125.) as u16));}
+                        continue;
+                    }
+                    if wave && matches!(e,FrameEvent::Resize(..)){continue;}
                     match (&e, &mut h.link) {
                         (FrameEvent::Page(n), Some(l)) => {
                             l.set_page(*n);
@@ -1303,7 +1312,7 @@ impl Plugins {
                         _ => {}
                     }
                     out.push(match e {
-                        FrameEvent::Page(_) | FrameEvent::Resize(..) => continue,
+                        FrameEvent::Page(_) | FrameEvent::Resize(..) | FrameEvent::ResizeFinished(_) => continue,
                         FrameEvent::Close => {
                             close.push(row);
                             Request::Close(row)
@@ -1318,6 +1327,7 @@ impl Plugins {
                         FrameEvent::TrackHoverEnd=>Request::TrackHoverEnd,
                         FrameEvent::TrackHover(x,y)=>Request::TrackHover(x,y),
                         FrameEvent::TrackDrop(x,y) => Request::TrackDrop(row,x,y),
+                        #[cfg(target_os="linux")] FrameEvent::Undo(redo)=>Request::Undo(redo),
                         FrameEvent::PickTrack => Request::PickTrack(row),
                         FrameEvent::Raise => Request::Raise(row),
                         FrameEvent::Menu(x, y) => Request::Menu(row, x, y),

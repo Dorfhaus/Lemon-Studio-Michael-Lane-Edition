@@ -6,7 +6,7 @@ use winit::{event::{WindowEvent,ElementState,MouseButton,MouseScrollDelta},event
 use crate::{app::{App,Win,Action},layout::{self,MainWin}};
 use os_ui::Canvas;
 #[derive(Default)]
-pub struct Windows { panes:Vec<Pane>, screens:Vec<[i32;4]>, main:Option<crate::app::ViewContext>, changed:bool, layout_generation:u64 }
+pub struct Windows { stems:Option<(u16,u32,Vec<std::path::PathBuf>)>, panes:Vec<Pane>, screens:Vec<[i32;4]>, main:Option<crate::app::ViewContext>, changed:bool, layout_generation:u64 }
 struct Pane {
     kind:Win, window:Rc<Window>, surface:softbuffer::Surface<Rc<Window>,Rc<Window>>, canvas:Canvas,
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
@@ -14,6 +14,9 @@ struct Pane {
 fn key(w:Win)-> &'static str {match w {Win::Browser=>"native_browser",Win::Mixer=>"native_mixer",Win::PianoRoll=>"native_piano",_=>"native_playlist"}}
 fn title(w:Win)-> &'static str {match w {Win::Browser=>"Lemon Studio - Browser",Win::Mixer=>"Lemon Studio - Mixer",Win::PianoRoll=>"Lemon Studio - Piano roll",_=>"Lemon Studio - Playlist"}}
 impl Windows {
+    pub fn flush_stems(&mut self,app:&mut App){
+        if let Some((track,tick,files))=self.stems.take(){app.import_stems(files,track,tick);self.changed=true;}
+    }
     pub fn browser_window(&self) -> Option<&Window> { self.panes.iter().find(|p| p.kind == Win::Browser).map(|p| p.window.as_ref()) }
     fn save_main(&mut self,app:&mut App){if self.main.is_none(){self.main=Some(app.take_view_context());}}
     pub fn restore_main(&mut self,app:&mut App)->bool {
@@ -126,7 +129,18 @@ impl Windows {
                 let used=if let winit::keyboard::PhysicalKey::Code(code)=event.physical_key {app.typing_key(code,pressed,crate::ctrl(p.mods),p.mods.alt_key())}else{false};
                 if pressed&&!used {app.repeat=event.repeat;app.key(&event.logical_key,crate::ctrl(p.mods),p.mods.alt_key());app.repeat=false;}
             }
-            WindowEvent::DroppedFile(path)=>{app.state.native_input=Some(p.kind);app.drop_file(path);}
+            WindowEvent::DroppedFile(path)=>{
+                app.state.native_input=Some(p.kind);
+                let at=crate::screen_state(&p.window).map(|v|v.0);
+                #[cfg(target_os="linux")] let at=at.or_else(crate::plugin_window::pointer);
+                if let (Some((cx,cy)),Ok(origin))=(at,p.window.inner_position()){
+                    app.mouse=((cx-origin.x) as f32/scale,(cy-origin.y) as f32/scale);
+                }
+                if p.kind==Win::Playlist && !app.modal_open() && crate::views::browser::file_icon(&path.to_string_lossy())==crate::icons::Icon::FileAudio
+                    && let Some((track,tick))=app.playlist_drop_position(){
+                    self.stems.get_or_insert_with(||(track,tick,Vec::new())).2.push(path);
+                }else{app.drop_file_at_plugin(path,None);}
+            }
             _=>{}
         }
         #[cfg(windows)] if p.kind==Win::Mixer && redraw && p.refresh_editors {for h in app.plugins.hosted.values(){if let Some(e)=&h.rack_editor{e.refresh();}}}

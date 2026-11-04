@@ -41,7 +41,7 @@ pub use x11::{
 #[cfg(target_os = "macos")]
 mod cocoa;
 #[cfg(target_os = "macos")]
-pub use cocoa::{focus_main, default_position, lift_hide, lift_show, pointer, row_window_at, screen_to_main, stack, take_exposed, take_keys, take_lift_input, FrameWindow};
+pub use cocoa::{install_monitor as prepare_embedded,focus_main, default_position, lift_hide, lift_show, pointer, row_window_at, screen_to_main, stack, take_exposed, take_keys, take_lift_input, FrameWindow};
 
 /// Where a detached window opening for the first time goes: where a new window opens. Only Windows places it by
 /// monitor (Settings "Open detached plugins with the main window"; spec: ui/settings-choices.md "Miscellaneous:
@@ -232,6 +232,8 @@ pub enum FrameEvent {
     /// The frame's edges were dragged: the plugin's editor should take this content size (logical px). Only for a
     /// plugin that said it may be resized (host link `Resizable`; spec: plugins/host-link.md).
     Resize(u32, u32),
+    ResizeFinished(f32),
+    #[cfg(target_os="linux")] Undo(bool),
 }
 
 /// A frame edge being dragged: which edges, the press (window coordinates, logical px) and the editor size then.
@@ -1080,6 +1082,12 @@ impl State {
             else if !moved && (x-x0).hypot(y-y0)<=4. && part_at(self,x,y)==Some(Part::Track) {self.events.push(FrameEvent::PickTrack);}
             os_clap::wake();
         }
+        if let Some(s)=self.sizing {
+            let rx=s.asked.0 as f32/s.editor.0.max(1.);
+            let ry=s.asked.1 as f32/s.editor.1.max(1.);
+            let ratio=if (rx-1.).abs()>(ry-1.).abs(){rx}else{ry};
+            if (ratio-1.).abs()>0.001{self.events.push(FrameEvent::ResizeFinished(ratio));os_clap::wake();}
+        }
         let armed = self.armed.take();
         let over = armed.is_some() && part_at(self, x, y) == armed;
         self.release();
@@ -1287,6 +1295,18 @@ mod tests {
 
     /// A resizable plugin's frame (Tesla): its right and bottom edges and their corner drag the editor's size, never
     /// below its smallest; a fixed-size plugin's frame has no edges to drag (spec: plugins/host-link.md `Resizable`).
+    #[test]
+    fn wave_corner_reports_one_proportional_resize_when_released(){
+        let mut st=state(true,"Insert 1");
+        st.resize_min=Some((100.,80.));
+        let (w,h)=st.size();let editor=st.editor;
+        let at=|x:f32,y:f32|(x as i32,y as i32);
+        st.left_down(w-1.,h-1.,false,&at);
+        st.motion(w-1.-editor.0/4.,h-1.-editor.1/4.,false);
+        st.left_up(w-1.-editor.0/4.,h-1.-editor.1/4.);
+        assert!(matches!(st.events.last(),Some(FrameEvent::ResizeFinished(v)) if (*v-0.75).abs()<0.01));
+    }
+
     #[test]
     fn frame_edges_resize_a_resizable_editor() {
         let mut st = state(true, "Master");
