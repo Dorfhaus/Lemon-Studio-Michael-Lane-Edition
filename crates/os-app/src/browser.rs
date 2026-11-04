@@ -46,15 +46,20 @@ impl App {
             self.browser_split_press();
             return true;
         }
+        if let Action::CommunityVote(id)=a {self.state.browser_sel=Some(id.clone());crate::community_samples::control(self,3);return true;}
+        if let Action::Community(cmd)=*a {crate::community_samples::control(self,cmd);return true;}
         if let Action::FeatureVote(i,cmd)=*a {crate::feature_votes::act(self,i,cmd);return true;}
         if let Action::StarterPack(cmd)=*a {crate::starter_pack::act(self,cmd);return true;}
         if let Action::PluginDownload(i,cmd)=*a {crate::plugin_downloads::act(self,i,cmd);return true;}
         if matches!(a,Action::BrowserTab(_)|Action::BrowserCollapse) {crate::browser_preview::dismiss(self);}
+        if *a == Action::BrowserTab(view::EXCHANGE_BUTTON) {
+            crate::community_samples::refresh(&mut self.state);
+        }
         if *a == Action::BrowserTab(view::PARAMETERS_TAB) { self.params_tick(); }
         let s = &mut self.state;
         match *a {
             Action::BrowserTab(i) => {
-                s.browser_tab = if i <= view::PARAMETERS_TAB { i } else { 0 };
+                s.browser_tab = if i <= view::EXCHANGE_BUTTON { i } else { 0 };
                 s.browser_auto_hidden=false;
                 if let Some(label)=match i {1=>Some("Current project"),2=>Some("Plugin database"),4=>Some("Plugin presets"),_=>None} {s.browser_open.insert(format!("{i}:{label}"));}
                 s.browser_search.clear();
@@ -109,7 +114,10 @@ impl App {
                     _ => {}
                 }
                 if let Item::Sample(path) = &row.item {
-                    self.preview_sample(path);
+                    if s.browser_tab==view::EXCHANGE_BUTTON && !std::path::Path::new(path).is_file() {
+                        crate::community_samples::fetch(s,&row.key);
+                        crate::browser_preview::dismiss(self);
+                    } else { self.preview_sample(path); }
                 } else {crate::browser_preview::dismiss(self);}
                 let s = &mut self.state;
                 s.browser_scroll = s.browser_scroll.min(view::max_scroll(s));
@@ -142,7 +150,9 @@ impl App {
         if current == Some(i) { return; }
         let row = &rows[i];
         select(&mut self.state, &row.key);
-        if let Item::Sample(path) = &row.item { self.preview_sample(path); }
+        if let Item::Sample(path) = &row.item {
+            if self.state.browser_tab==view::EXCHANGE_BUTTON && !std::path::Path::new(path).is_file(){crate::community_samples::fetch(&mut self.state,&row.key);}else{self.preview_sample(path);}
+        }
         else { crate::browser_preview::dismiss(self); }
         reveal(&mut self.state);
         self.invalidate();
@@ -167,6 +177,12 @@ impl App {
                 s.browser_auto_hidden = false;
                 s.show_browser = true;
                 s.playlist.popup = None;
+            }
+            BCmd::CommunityCategory(index,kind,upload) => crate::community_samples::set_category(s,index,kind,upload),
+            BCmd::CommunityGenre(index,upload) => crate::community_samples::set_genre(s,index,upload),
+            BCmd::CommunityControl(cmd) => crate::community_samples::control(self,cmd),
+            BCmd::SampleExchange => {
+                self.browser_act(&Action::BrowserTab(view::EXCHANGE_BUTTON));
             }
             BCmd::StarterPack => crate::starter_pack::act(self,1),
             BCmd::AddFolder => {let row=s.browser_folders.len();self.search_folder_pick(row);}
@@ -267,7 +283,7 @@ impl App {
 
     /// Whether typed letters belong to the browser search (the typing keyboard leaves them alone).
     pub(crate) fn browser_takes_typing(&self) -> bool {
-        self.state.browser_search_focus || (view::opt(&self.state, view::OPT_TYPE) && self.over_browser())
+        crate::community_samples::editing(&self.state) || self.state.browser_search_focus || (view::opt(&self.state, view::OPT_TYPE) && self.over_browser())
     }
 
     /// Browser keys (spec §4, §5); returns whether the key was used.
@@ -283,7 +299,7 @@ impl App {
                 return true;
             }
         }
-        if over && !ctrl && !alt && !shift && matches!(self.state.browser_tab, 0 | 3) {
+        if over && !ctrl && !alt && !shift && matches!(self.state.browser_tab, 0 | 3 | view::EXCHANGE_BUTTON) {
             if let Key::Named(k @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) = key {
                 self.browser_sample_step(*k == NamedKey::ArrowDown);
                 return true;
@@ -471,6 +487,11 @@ impl App {
             }
             Item::Sample(path) => {
                 if let Some((track, tick)) = spot {
+                    if let Some(id)=crate::community_samples::pending(s,&path){
+                        s.community.drops.push((id.clone(),track,tick));
+                        crate::community_samples::fetch(s,&id);
+                        return;
+                    }
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
                     s.message = Some(match pl::import_audio_clip(s, &path, track, tick) {
                         Ok(_) => format!("Added audio clip {name}"),
@@ -723,7 +744,7 @@ impl Jump {
     pub fn from_label(menu: usize, label: &str) -> Option<Jump> {
         use crate::views::menus::{ADD_MENU, TOOLS_MENU, VIEW};
         let j = match (menu, label) {
-            (VIEW, "Undo history") => Jump::Section("History"),
+            (VIEW | crate::views::menus::EDIT_MENU, "Undo history") => Jump::Section("History"),
             (VIEW, "Patterns") => Jump::Section("Patterns"),
             (VIEW, "Generators in use") => Jump::Section("Generators"),
             (VIEW, "Effects in use") => Jump::Section("Effects"),
@@ -742,9 +763,13 @@ impl Jump {
 /// Options-menu commands (spec §4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BCmd {
+    CommunityCategory(usize,usize,bool),
+    CommunityGenre(usize,bool),
+    CommunityControl(u8),
     /// Find previous (-1) / next (1).
     AddFolder,
     StarterPack,
+    SampleExchange,
     ConfigureFolders,
     Detach,
     Find(isize),
@@ -875,6 +900,8 @@ pub fn options_menu(s: &crate::app::State) -> Vec<PItem> {
     let searching=!s.browser_search.is_empty();
     let find=|label,key,dir| {let item=b(label,BCmd::Find(dir)).key(key);if searching {item}else{item.off()}};
     vec![
+        #[cfg(windows)]
+        b("Community Samples",BCmd::SampleExchange),
         b("Add sample folder...",BCmd::AddFolder),
         PItem::sub("Content",vec![
             t("Single Folder View",view::OPT_SINGLE_FOLDER),
@@ -1169,7 +1196,7 @@ mod favorite_tests {
         let mut c=os_ui::Canvas::new(1280,900,1.25).unwrap();
         app.state.show_browser=true;app.paint(&mut c,None);
         let tabs:Vec<_>=app.hits.iter().filter_map(|h|if let Action::BrowserTab(i)=h.action {Some(i)}else{None}).collect();
-        assert_eq!(tabs,vec![0,3,5,6]);
+        assert_eq!(tabs,vec![0,view::EXCHANGE_BUTTON,3,5,6]);
         app.state.browser_search="nothing".into();app.browser_act(&Action::BrowserTab(0));
         assert!(app.state.browser_search.is_empty());
         if let Some(dir)=std::env::var_os("OS_SHOT_DIR") {app.paint(&mut c,None);c.pixmap.save_png(std::path::PathBuf::from(dir).join("samples-browser.png")).unwrap();}

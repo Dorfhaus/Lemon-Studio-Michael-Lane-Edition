@@ -31,6 +31,7 @@ pub enum Icon {
     Save,
     SaveRender,
     Download,
+    Exchange,
     Vote,
     Info,
     TypingKeyboard,
@@ -102,6 +103,7 @@ const DOWNLOAD: TablerIcon = TablerIcon { filled: false, d: "M 12 3 L 12 15 M 7 
 
 fn shape(icon: Icon) -> &'static TablerIcon {
     match icon {
+        Icon::Exchange => &TablerIcon { filled: false, d: "M 3 8 L 20 8 L 15 3 M 21 16 L 4 16 L 9 21" },
         Icon::Vote => &VOTE,
         Icon::Minimize => &tb::MINUS,
         Icon::Restore => &tb::SQUARES,

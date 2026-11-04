@@ -165,7 +165,7 @@ const FILE: &[Item] = &[
 /// The project's undo history (spec: ui/settings-choices.md "Undo history: the four checks (2026-10-16)"): the first
 /// entry names what Ctrl+Z does next, Redo (Ctrl+Alt+Z) is there with Alternate undo mode on and a history to act on
 /// (`label_now`, `in_menu`).
-const EDIT: &[Item] = &[it("Undo", "Ctrl+Z"), it("Redo", "Ctrl+Alt+Z")];
+const EDIT: &[Item] = &[it("Undo", "Ctrl+Z"), it("Redo", "Ctrl+Alt+Z"), it("Undo history", "")];
 
 const ADD_PLUGINS: &[Item] = &[
     it("More plugins...", "").on(),
@@ -445,7 +445,7 @@ pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
 /// Whether an entry can be chosen now: it works (`works`), EDIT's have a step to act on, and the project file rows
 /// that need a saved project have one (`needs_file`).
 pub fn active(s: &State, menu: usize, item: &Item) -> bool {
-    works(menu, item) && (menu != EDIT_MENU || crate::history::edit_enabled(s, item.label == "Redo")) && (s.path.is_some() || !needs_file(menu, item.label))
+    works(menu, item) && (menu != EDIT_MENU || item.label == "Undo history" || crate::history::edit_enabled(s, item.label == "Redo")) && (s.path.is_some() || !needs_file(menu, item.label))
 }
 
 /// FILE / TOOLS ▸ Delete unused files and save project.

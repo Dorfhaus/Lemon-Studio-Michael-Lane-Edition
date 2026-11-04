@@ -61,6 +61,7 @@ jpeg-decoder = { version = "0.3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde_json = "1"
 getrandom = "0.3.4"
+base64 = "0.22"
 ureq = "2.12"
 ed25519-dalek = "2"
 sha2 = "0.10"

@@ -14,9 +14,10 @@ unsafe fn position(hwnd:HWND,d:&mut Data){unsafe{
     d.offset=d.offset.clamp(0,(d.size.1-r.bottom).max(0));
     let info=SCROLLINFO{cbSize:std::mem::size_of::<SCROLLINFO>() as u32,fMask:SIF_RANGE|SIF_PAGE|SIF_POS,nMin:0,nMax:d.size.1-1,nPage:r.bottom.max(1) as u32,nPos:d.offset,nTrackPos:0};SetScrollInfo(hwnd,SB_VERT,&info,1);
     GetClientRect(hwnd,&mut r);
-    let w=d.page_width.round().max(1.) as i32;
+    let left=d.x.round() as i32;
+    let w=((d.x+d.page_width).round() as i32-left).max(1);
     SetWindowPos(d.port,std::ptr::null_mut(),(r.right-w).max(0)/2,0,w,r.bottom.max(1),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
-    SetWindowPos(d.inner,std::ptr::null_mut(),-d.x.round() as i32,-d.offset,d.size.0.max(1),d.size.1.max(1),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
+    SetWindowPos(d.inner,std::ptr::null_mut(),-left,-d.offset,d.size.0.max(1),d.size.1.max(1),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOCOPYBITS);
     repaint(hwnd);crate::plugin_window::embedded_exposed();
 }}
 unsafe extern "system" fn proc(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT{unsafe{
@@ -121,7 +122,7 @@ fn prepare(d:&os_host::Descriptor,scale:f32,r:[i32;4],mut probe:impl FnMut(f32)-
     let experimental=!d.vendor.eq_ignore_ascii_case("Waves");
     if experimental {
         let a=probe(1.)?;let b=probe(0.75)?;
-        if a==b{return Err("This unsupported strip does not respond to host resizing. Only Waves strips are supported; other strips must be resizable.".into());}
+        if a==b{return Err("This unsupported strip does not respond to host resizing. UAD and other non-Waves strips must respond to host resizing.".into());}
     }
     let fit=((r[3]-r[1]).max(1) as f32/spec.1 as f32).clamp(0.25,scale.max(1.)*3.);
     let size=match probe(fit){Ok(size)=>size,Err(_) => {let size=probe(scale)?;if !crate::rack_mixer::vertical_shape(size){return Err("This plugin reported an invalid editor size.".into());}return Ok(scale);}};

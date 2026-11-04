@@ -259,6 +259,8 @@ pub enum Action {
     BrowserPreview(u8),
     PluginDownload(usize, u8),
     StarterPack(u8),
+    Community(u8),
+    CommunityVote(String),
     FeatureVote(u64,i8),
     /// Browser list background (wheel scrolls).
     BrowserList,
@@ -1060,6 +1062,7 @@ pub struct State {
     pub catalog_hover: Option<(usize, std::time::Instant)>,
     pub catalog_tooltip: Option<usize>,
     pub plugin_picker: crate::plugin_picker::View,
+    pub community: crate::community_samples::View,
     pub feature_votes: crate::feature_votes::View,
     pub browser_open: std::collections::HashSet<String>,
     /// Folders dropped on the window: All-tab roots (spec: ui/browser.md §6).
@@ -1518,7 +1521,7 @@ impl App {
                 menu_open: None,
                 menu_sub: None,
                 lane_menu: false,
-                settings: views::settings::SettingsUi { native: os_native::settings_shown(), ..Default::default() },
+                settings: views::settings::SettingsUi { native: cfg!(all(windows,target_arch="x86_64")) || os_native::settings_shown(), ..Default::default() },
                 fl_text: saved_fl_text(),
                 theme_base: saved_fl_text(),
                 playlist_scroll: (0.0, 0.0),
@@ -1528,6 +1531,7 @@ impl App {
                 browser_tab: 0,
                 catalog_hover: None, catalog_tooltip: None,
                 plugin_picker: Default::default(),
+                community: Default::default(),
                 feature_votes: Default::default(),
                 browser_open: views::browser::default_open(),
                 browser_folders: crate::browser::load_folders(),
@@ -1774,6 +1778,7 @@ impl App {
                 // As saved (event 9); a file without it opens in song mode, as in FL 26 (spec: flp/engine-events.md
                 // "Project").
                 s.song_mode = project.song_mode.unwrap_or(true);
+                s.community.drops.clear();
                 s.project = project;
                 // Opening in song mode sets the initial values, as FL 26 does (spec: flp/engine-events.md "Event
                 // 216"); the project is opened with them, not changed.
@@ -2229,6 +2234,8 @@ impl App {
                     self.set_factory_folder(Some(p));
                 }
             }
+            Then::CommunitySample => {if let Some(p)=file {crate::community_samples::choose(&mut self.state,&p);}}
+            Then::CommunityNewsletter(on) => {if reply==Reply::Button(Answer::Yes){crate::community_samples::newsletter(&mut self.state,on);}}
             Then::SaveTemplate => {
                 if let Some(p) = file {
                     self.template_chosen(p);
@@ -2340,6 +2347,7 @@ impl App {
         self.transport.stop();
         self.reset_hosted();
         let s = &mut self.state;
+        s.community.drops.clear();
         s.project = default_project();
         crate::project_info::created(s);
         s.file = None;
@@ -4116,6 +4124,7 @@ impl App {
         crate::plugin_downloads::tick(self);
         crate::starter_pack::tick(self);
         crate::feature_votes::tick(self);
+        crate::community_samples::tick(self);
         crate::plugin_previews::tick(self);
         let (_, update_status) = crate::updates::display();
         if self.update_status != update_status { self.update_status = update_status; self.invalidate(); }
@@ -5214,6 +5223,7 @@ impl App {
             SAct::Check(k) if k == views::settings::NATIVE_HOST_CHECK => {
                 let on = !os_native::enabled();
                 os_native::set_enabled(on);
+                crate::prefs::set_text("host_installed_fl_plugins",if on{"1"}else{"0"});
                 self.start_scan(crate::plugin_db::Mode::Changed);
                 self.state.message = Some(if on { "Experimental native plugin host on: looking for native plugins".into() } else { "Experimental native plugin host off".into() });
                 // The hidden preference applies again (or stops applying) with the host.
@@ -6069,6 +6079,11 @@ impl App {
             }
             return;
         }
+        // Menu titles take the press even when another popup already owns the mouse.
+        if let Some(Action::Menu(i)) = action {
+            self.act(Action::Menu(i));
+            return;
+        }
         // Playlist popup menus close on any click outside them (their scroll bars are in them); a click elsewhere
         // accepts an open text box.
         if self.state.playlist.popup.is_some() && !matches!(action, Some(Action::PlPopup(_) | Action::PlPopupSub(_) | Action::PlPopupDeep(..) | Action::Scrollbar(Scroll::Popup | Scroll::PopupSub | Scroll::PopupDeep(_)))) {
@@ -6077,7 +6092,7 @@ impl App {
             // closes it.
             match self.state.menu_sub.take() {
                 Some(i) if self.state.menu_open.is_some() && !matches!(action, Some(Action::MenuSub(_, j)) if j == i) => {}
-                _ => return,
+                _ => { self.state.menu_open = None; self.invalidate(); return; }
             }
         }
         // The pattern name box / delete confirmation are modal: a click outside accepts the box.
@@ -6103,6 +6118,7 @@ impl App {
             crate::search_folders::commit(&mut self.state);
         }
         // Clicking anywhere but the search field leaves it (spec: ui/browser.md §5).
+        if !matches!(action,Some(Action::Community(_))){crate::community_samples::blur(&mut self.state);}
         if action != Some(Action::FeatureVote(0,3)) {self.state.feature_votes.focus=false;}
         if !matches!(action,Some(Action::FeatureVote(_,13|14|26))) {self.state.feature_votes.forum.focus=0;}
         if action != Some(Action::BrowserSearch) {
@@ -7547,6 +7563,7 @@ impl App {
         }
         if crate::plugin_picker::key(self,key,ctrl,alt){return;}
         if crate::feature_votes::key(self,key,ctrl,alt){return;}
+        if crate::community_samples::key(self,key,ctrl,alt){return;}
         // So does a box of the settings window's Info page while it is edited, and a cell of File ▸ Browser extra
         // search folders.
         if self.info_key(key, ctrl, alt) || self.folder_cell_key(key, ctrl, alt) || self.name_key(key, ctrl, alt) {
@@ -8341,8 +8358,9 @@ impl App {
             _ => return false,
         }
         // A pick in a dropdown's submenu closes the dropdown with it.
-        if matches!(a, Action::PlPopup(_) | Action::PlPopupSub(_) | Action::PlPopupDeep(..)) && self.state.playlist.popup.is_none() && self.state.menu_sub.take().is_some() {
+        if matches!(a, Action::PlPopup(_) | Action::PlPopupSub(_) | Action::PlPopupDeep(..)) && self.state.playlist.popup.is_none() {
             self.state.menu_open = None;
+            self.state.menu_sub = None;
         }
         self.invalidate();
         true
@@ -8797,7 +8815,7 @@ impl App {
                 self.damage_win(Win::PianoRoll);
             }
             Action::CloseWin(w) => s.hide(w),
-            Action::BrowserPreview(_) | Action::StarterPack(_) | Action::FeatureVote(_,_) | Action::PluginDownload(_, _) | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserScroll | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserSplitter => {}
+            Action::CommunityVote(_) | Action::Community(_) | Action::BrowserPreview(_) | Action::StarterPack(_) | Action::FeatureVote(_,_) | Action::PluginDownload(_, _) | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserScroll | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserSplitter => {}
             Action::TypeIn(t) => crate::typein::click(s, t),
             Action::Ai | Action::Donate | Action::Updates | Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::Swallow => {}
             Action::PlTool(_)
@@ -11741,6 +11759,24 @@ mod tests {
             assert!((value(&app, ctl) - default(ctl)).abs() < 1e-4, "Reset resets {ctl:?}");
             assert!(app.state.playlist.popup.is_none());
             frame(&mut app, &mut c, None);
+        }
+    }
+
+    #[test]
+    fn main_menu_titles_switch_on_first_press() {
+        let mut app = App::new(None);
+        let mut canvas = Canvas::new(1280, 900, 1.0).unwrap();
+        for index in [0, 1, 2, 3, 4, 5, 6, 7, 1] {
+            frame(&mut app, &mut canvas, None);
+            let title = hit_rect(&app, &Action::Menu(index));
+            app.mouse_move(title.cx(), title.cy());
+            app.mouse_down();
+            assert_eq!(app.state.menu_open, Some(index));
+            let items = &app.state.playlist.popup.as_ref().unwrap().items;
+            if index == views::menus::EDIT_MENU {
+                assert!(items.iter().any(|item| item.label == "Undo history" && item.enabled));
+            }
+            app.mouse_up();
         }
     }
 

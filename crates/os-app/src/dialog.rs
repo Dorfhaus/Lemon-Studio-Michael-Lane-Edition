@@ -54,6 +54,8 @@ fn accel(label: &str) -> char {
 /// The work that waits for a dialog's answer (`App::dialog_done`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Then {
+    CommunitySample,
+    CommunityNewsletter(bool),
     /// Nothing (an information box).
     Nothing,
     StemDownload(usize, u8),

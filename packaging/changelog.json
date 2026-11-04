@@ -4,6 +4,19 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Community Samples, template FX recall and Browser menu fixes \u00b7 public build 2026110403",
+      "changes": [
+        "Community Samples is available in the Browser on Windows, Linux and Mac. Browse by sound type and genre, see waveforms, preview audio and drag samples directly into the Playlist.",
+        "Create a community account in the app to vote and upload your own samples. Uploads require a specific sound type, genre, creator credit and acceptance of the royalty-free license. Email updates are optional.",
+        "Saved user templates now restore their mixer FX enable and bypass states, including the master track. The factory starter keeps its original defaults.",
+        "Switching between main menu titles opens the new menu on the first press. Edit includes Undo history even in a fresh project.",
+        "Plugin scanning tolerates non-UTF-8 or unterminated diagnostic output from plugins. Channel Strip view now identifies tested Waves support and untested support for compatible resizable UAD strips.",
+        "Channel Strip pages now stop at the Waves panel dividers on SSL E/G, SSL EV2 and Abbey Road TG12345. Narrow pages such as Scheps Omni Channel fit their mixer columns at smaller sizes.",
+        "On 64-bit Windows, Settings > Plugins offers a remembered opt-in to scan compatible native FL Studio instruments and effects from your own installation. Installed copies are checked in isolation before use; compatibility varies by plugin."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Lemon Wave chords, Night Shift presets and sampler workflows \u00b7 public build 2026110401",
       "changes": [
         "Lemon Wave adds a playable six-octave keyboard, scale-aware chords and a tempo-synced arpeggiator for both mouse and MIDI input.",

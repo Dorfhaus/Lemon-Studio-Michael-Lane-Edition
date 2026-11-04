@@ -235,7 +235,7 @@ pub const PLUGINS: usize = 4;
 /// Opt in to the experimental FL native plugin host (spec plugins/fruity-abi.md), on the Plugins page only with
 /// `OPENSTUDIO_NATIVE_SETTINGS` (`SettingsUi::native`). Labels are the keys for `SAct::Check`; `App::settings_act`
 /// acts on them.
-pub const NATIVE_HOST_CHECK: &str = "Experimental: host installed native plugins";
+pub const NATIVE_HOST_CHECK: &str = "Load installed FL Studio plugins (experimental)";
 /// Shown only while the native host is on: an opened project's native plugins are played by the installed plugins,
 /// never by the built-in Lemon recreations (spec plugins/fruity-abi.md "Opened projects").
 pub const NATIVE_FIRST_CHECK: &str = "Experimental: real native plugins instead of Lemon recreations";

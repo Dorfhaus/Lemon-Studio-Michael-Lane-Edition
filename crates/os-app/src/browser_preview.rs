@@ -24,7 +24,7 @@ pub struct Preview {
     resume:bool,
 }
 impl Preview {pub fn busy(&self)->bool {self.pending.is_some()||self.playing}}
-pub fn visible(s:&State)->bool {matches!(s.browser_tab,0|3)&&view::opt(s,view::OPT_PANEL)&&s.browser_preview.path.is_some()}
+pub fn visible(s:&State)->bool {matches!(s.browser_tab,0|3|view::EXCHANGE_BUTTON)&&view::opt(s,view::OPT_PANEL)&&s.browser_preview.path.is_some()}
 fn overview(sample:&os_engine::sample::Sample)->Vec<(f32,f32)> {
     let step=sample.frames().div_ceil(512).max(1);
     sample.left.chunks(step).zip(sample.right.chunks(step)).map(|(l,r)|l.iter().zip(r).fold((0f32,0f32),|(lo,hi),(&a,&b)|(lo.min(a).min(b),hi.max(a).max(b)))).collect()

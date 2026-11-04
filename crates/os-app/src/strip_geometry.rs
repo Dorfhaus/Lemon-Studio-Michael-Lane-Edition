@@ -18,20 +18,19 @@ pub(super) fn pages(profile:Profile,size:(u32,u32))->Vec<Page>{
     // back to the complete original editor, never equal-width guessed pages.
     let spec:Option<(f32,&[f32])>=match profile{
         Profile::Scheps if (1.26..=1.42).contains(&ratio)=>Some((840.,&[0.,115.,227.,339.,451.,601.,840.])),
-        Profile::SslClassic if (0.49..=0.55).contains(&ratio)=>Some((357.,&[0.,185.,357.])),
+        Profile::SslClassic if (0.49..=0.55).contains(&ratio)=>Some((357.,&[0.,180.,357.])),
         _=>None,
     };
     // Installed TG12345 has distinct mono/stereo layouts. Keep each complete
-    // dynamics, EQ and output section; stereo overlap retains boundary controls.
+    // dynamics, EQ and output section between the dividers on its native faceplate.
     if matches!(profile,Profile::Tg12345){
-        let spec=if (0.85..=0.92).contains(&ratio){Some((518.,[(0.,166.),(166.,332.),(332.,518.)]))}
-            else if (1.08..=1.16).contains(&ratio){Some((658.,[(0.,224.),(209.,420.),(392.,658.)]))}else{None};
+        let spec=if (0.85..=0.92).contains(&ratio){Some((518.,[(0.,165.),(165.,331.),(331.,518.)]))}
+            else if (1.08..=1.16).contains(&ratio){Some((658.,[(0.,205.),(205.,410.),(410.,658.)]))}else{None};
         if let Some((width,parts))=spec{return parts.into_iter().map(|(l,r)|Page{left:l*size.0 as f32/width,right:r*size.0 as f32/width}).collect();}
     }
-    // EV2's section-edge hit areas overlap: include them in full on their own
-    // page instead of slicing at the decorative 155/310 dividers.
+    // Use the painted module boundaries; adjacent hit areas must not widen the displayed page.
     if matches!(profile,Profile::SslEv2)&&(0.72..=0.80).contains(&ratio){
-        return [(0.,164.),(154.,320.),(310.,465.)].into_iter().map(|(l,r)|Page{left:l*size.0 as f32/465.,right:r*size.0 as f32/465.}).collect();
+        return [(0.,155.),(155.,310.),(310.,465.)].into_iter().map(|(l,r)|Page{left:l*size.0 as f32/465.,right:r*size.0 as f32/465.}).collect();
     }
     if let Some((width,cuts))=spec{cuts.windows(2).map(|p|Page{left:p[0]*size.0 as f32/width,right:p[1]*size.0 as f32/width}).collect()}
     else{vec![Page{left:0.,right:size.0 as f32}]}
@@ -40,12 +39,12 @@ pub(super) fn pages(profile:Profile,size:(u32,u32))->Vec<Page>{
 #[cfg(test)] mod tests {
     #[test]fn section_pages_stop_at_complete_module_boundaries(){
         for factor in [0.5,1.,1.5,2.] {let p=super::pages(super::Profile::Scheps,((840.*factor) as u32,(614.*factor) as u32));assert_eq!(p.len(),6);for (page,pair) in p.iter().zip([0.,115.,227.,339.,451.,601.,840.].windows(2)){assert!((page.left-pair[0]*factor).abs()<0.01);assert!((page.right-pair[1]*factor).abs()<0.01);}assert_eq!(p.last().unwrap().right,840.*factor);}
-        for (profile,size,cuts) in [(super::Profile::SslClassic,(357,675),vec![0.,185.,357.])]{let p=super::pages(profile,size);assert_eq!(p.len()+1,cuts.len());for (p,c) in p.iter().zip(cuts.windows(2)){assert_eq!((p.left,p.right),(c[0],c[1]));}}
+        for (profile,size,cuts) in [(super::Profile::SslClassic,(357,675),vec![0.,180.,357.])]{let p=super::pages(profile,size);assert_eq!(p.len()+1,cuts.len());for (p,c) in p.iter().zip(cuts.windows(2)){assert_eq!((p.left,p.right),(c[0],c[1]));}}
         let ev=super::pages(super::Profile::SslEv2,(465,614));assert_eq!(ev.len(),3);
-        assert!(ev[0].right>=162.);assert!(ev[1].left<=159.&&ev[1].right>=318.);assert_eq!(ev[2].right,465.);
+        assert_eq!(ev[0].right,155.);assert_eq!(ev[0].right,ev[1].left);assert_eq!(ev[1].right,ev[2].left);assert_eq!(ev[2].right,465.);
         assert_eq!(super::pages(super::Profile::Whole,(1200,600)).len(),1);
         assert_eq!(super::pages(super::Profile::Scheps,(1400,600)).len(),1,"Unknown expanded layout must not guess module boundaries");
-        for (size,cuts) in [((518,587),[(0.,166.),(166.,332.),(332.,518.)]),((658,587),[(0.,224.),(209.,420.),(392.,658.)])]{
+        for (size,cuts) in [((518,587),[(0.,165.),(165.,331.),(331.,518.)]),((658,587),[(0.,205.),(205.,410.),(410.,658.)])]{
             for factor in [0.5,1.,1.5,2.] {let p=super::pages(super::Profile::Tg12345,((size.0 as f32*factor) as u32,(size.1 as f32*factor) as u32));assert_eq!(p.len(),3);for (p,(l,r)) in p.iter().zip(cuts){assert!((p.left-l*factor).abs()<0.01);assert!((p.right-r*factor).abs()<0.01);}}
         }
         assert_eq!(super::pages(super::Profile::Tg12345,(300,587)).len(),1);
@@ -66,8 +65,8 @@ pub(super) fn mac_strip_zoom(height:u32,available:i32)->f64 {
             let zoom=mac_strip_zoom(height,available);
             assert!((height as f64*zoom-available as f64).abs()<0.001);
             let windows_fit=available as f64/675.;
-            let mac_page_width=185.*backing*zoom/ui as f64;
-            assert!((mac_page_width-185.*windows_fit/ui as f64).abs()<0.001);
+            let mac_page_width=180.*backing*zoom/ui as f64;
+            assert!((mac_page_width-180.*windows_fit/ui as f64).abs()<0.001);
             // Cocoa bounds transforms must also invert mouse coordinates.
             let native_y=217.;let displayed_y=native_y*zoom;
             assert!((displayed_y/zoom-native_y).abs()<0.001);

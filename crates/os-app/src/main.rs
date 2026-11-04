@@ -30,6 +30,8 @@ mod audio_bench;
 #[cfg(test)]
 mod open_bench;
 mod browser;
+mod community_samples;
+mod community_service;
 mod browser_preview;
 mod plugin_downloads;
 mod plugin_picker;

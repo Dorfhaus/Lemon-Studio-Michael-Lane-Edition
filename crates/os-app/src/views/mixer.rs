@@ -25,7 +25,7 @@ pub const STRIP_W: f32 = 84.0;
 pub fn strip_width(s: &State) -> f32 {if s.mixer.layout==crate::rack_mixer::VIEW{return s.mixer.rack_width;}if mx::traditional(s) {traditional::width(s)} else {STRIP_W}}
 pub fn channel_width(s:&State,n:u16)->f32{
     let base=strip_width(s);
-    if s.mixer.layout==crate::rack_mixer::VIEW && crate::rack_mixer::slot(s,n).is_some(){s.mixer.rack_auto_width.get(&n).copied().unwrap_or(base).max(92.)}else{base}
+    if s.mixer.layout==crate::rack_mixer::VIEW && crate::rack_mixer::slot(s,n).is_some(){s.mixer.rack_auto_width.get(&n).copied().unwrap_or(base).max(32.)}else{base}
 }
 pub fn channel_offset(s:&State,n:u16)->f32{
     if s.mixer.layout!=crate::rack_mixer::VIEW{return strip_width(s)*f32::from(n.saturating_sub(1));}
@@ -151,8 +151,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     title_tools(ui, s, r);
     if s.mixer.layout==crate::rack_mixer::VIEW {
         let notice=Rect::new(r.x+136.,r.y+2.,(r.w-panel_w-218.).max(0.),19.);
-        ui.c.text_clip(Font::new(11),notice.x,notice.y+2.,notice.w,ui.t.text_dim,"Currently only Waves plugins supported");
-        ui.hit(notice,Action::Swallow,"Waves channel strips are supported. Other resizable strips are experimental and untested.");
+        ui.c.text_clip(Font::new(11),notice.x,notice.y+2.,notice.w,ui.t.text_dim,"Waves: tested  ·  UAD: supported, untested");
+        ui.hit(notice,Action::Swallow,"Supported Waves channel strips have been tested. Compatible resizable UAD channel strips are supported but untested.");
     }
     if r.h < 2.0 * TITLE_H {
         // Collapsed to the title bar: only the slot panel's title with the window buttons.

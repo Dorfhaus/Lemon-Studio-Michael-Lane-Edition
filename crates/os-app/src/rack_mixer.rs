@@ -75,7 +75,7 @@ fn validate(app:&mut App,t:u16,k:u8)->Result<(),String>{
 fn choose(app:&mut App,n:u16,index:usize,all:bool,state:Option<Vec<u8>>)->Result<String,String>{
     if !app.plugins.effect_ready(index){return Err("Plugin is still being checked. Try again shortly.".into());}
     let desc=app.plugins.effects.get(index).ok_or("That plugin is no longer in the list. Reopen the picker.")?.desc.clone();
-    if n==0||!strip_kind(&desc){return Err("Choose a supported Waves channel strip. AudioTrack and other racks are excluded.".into());}
+    if n==0||!strip_kind(&desc){return Err("Choose a supported Waves or compatible resizable UAD channel strip. AudioTrack and other racks are excluded.".into());}
     let tracks:Vec<u16>=if all {(1..=mixer::inserts(&app.state)).filter(|t|state.is_none()||*t!=n).collect()}else{vec![n]};
     let mut dest=Vec::new();for t in &tracks {let m=mixer::track(&app.state,*t).ok_or("The destination mixer channel no longer exists.")?;let Some(k)=(0..64).find(|k|*k!=10&&m.slots[*k].is_none())else{return Err(format!("{} has no empty effect slot. No channels changed.",mixer::name(&app.state,*t)))};dest.push((*t,k as u8));}
     if dest.is_empty(){return Err("No other insert channels to fill.".into());}
@@ -121,7 +121,7 @@ pub fn geometry(s:&State,r:Rect)->Vec<Pane>{crate::views::mixer::vertical_panes(
 pub fn paint_pager(ui:&mut crate::app::Ui,s:&State,n:u16,r:Rect){
     if slot(s,n).is_none(){return;}
     let Some((index,count))=s.mixer.rack_pages.get(&n).copied().filter(|(_,count)|*count>1)else{return};
-    let y=r.bottom()+2.;let w=22.;
+    let y=r.bottom()+2.;let w=(r.w*0.24).min(22.);
     for (x,d,on) in [(r.x,-1,index>0),(r.right()-w,1,index+1<count)] {
         let b=Rect::new(x,y,w,14.);ui.c.fill_rrect(b,3.,ui.t.button);
         ui.c.text_center(os_ui::Font::new(12),b,if on{ui.t.text}else{ui.t.text_dim},if d<0{"<"}else{">"});
@@ -180,6 +180,8 @@ mod tests {
     }
     #[test]fn rack_mixer_native_width_moves_neighbors_and_keeps_fader_alignment(){
         let (mut app,index)=setup();run(&mut app,Command::Choose(1,index,false));mixer::set_layout(&mut app.state,VIEW);
+        app.state.mixer.rack_auto_width.insert(1,64.);
+        assert_eq!(crate::views::mixer::channel_width(&app.state,1),64.);
         app.state.mixer.rack_auto_width.insert(1,326.);
         assert_eq!(crate::views::mixer::channel_width(&app.state,1),326.);
         assert_eq!(crate::views::mixer::channel_offset(&app.state,2),326.);

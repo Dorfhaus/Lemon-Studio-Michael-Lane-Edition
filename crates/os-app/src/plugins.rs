@@ -344,7 +344,11 @@ pub fn load_file(path: &Path, format: os_host::Format) -> Result<Arc<dyn Library
 /// interop path (spec plugins/fruity-abi.md), so they stay off by default. Each is tried in a child process before
 /// its first load here (`Plugins::native_check`).
 pub fn native_files() -> Vec<PathBuf> {
-    if os_native::enabled() { os_native::dll_files() } else { Vec::new() }
+    if !os_native::enabled(){return Vec::new();}
+    if let Some(chosen)=crate::factory_folder::chosen().filter(|p|p.join("Plugins/Fruity").is_dir()){
+        return os_native::dll_files_in(&chosen);
+    }
+    os_native::dll_files()
 }
 
 /// A plugin file known from the scan cache: lists the cached plugins without loading the file, and loads it the first
