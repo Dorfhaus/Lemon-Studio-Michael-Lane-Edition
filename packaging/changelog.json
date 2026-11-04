@@ -4,6 +4,20 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Playlist editing, mixer routing and classic CPU meter \u00b7 public build 2026110408",
+      "changes": [
+        "Choose Compact or Classic FL-style under Options > CPU meter. Classic shows audio load, load history and memory in MB.",
+        "Drag Playlist track headers to reorder tracks, Shift-drag to select a range, and dissolve a folder from its menu. Collapsed folders occupy one row and expanded tracks have clearer separation.",
+        "The Playlist Brush selects clips as you paint them and can erase across multiple clips with a right drag. The Playlist now shares the Piano Roll play-start marker and has a lightly tinted overview scrollbar.",
+        "Smaller tool cursors now appear in both the Playlist and Piano Roll, including detached editors. The Channel Rack right-click menu offers fills every 2, 4 or 8 steps.",
+        "In both mixer layouts, pause briefly between tracks to reveal the insert button. Track insertion supports Undo. Active FX buttons in the traditional mixer have darker lettering.",
+        "Select a routed sidechain input from the effect wrapper wrench tab. VST2 effects with auxiliary audio inputs now receive the sidechain signal.",
+        "Lemon Wave has a Drag to size handle. Fixed resize gestures being canceled during editor refreshes and added Windows resize cursors.",
+        "Hosted instruments now receive stopped transport during audition. Linux VST2 editors receive the host display connection, and overlapping Windows plugin editors repaint newly exposed areas sooner."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Playlist track selection and drag-to-folder \u00b7 public build 2026110407",
       "changes": [
         "Click a Playlist track name or drag down the track names to select tracks, including empty lanes. Shift-click extends a range, and Ctrl-click on Windows or Linux and Cmd-click on Mac toggle individual tracks.",

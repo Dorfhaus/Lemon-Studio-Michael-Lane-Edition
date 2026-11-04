@@ -472,6 +472,9 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
         ui.c.fill_rect(track,ui.t.scrollbar);
         let r=Rect::new(track.x+1.,track.y+thumb_at,(track.w-2.).max(1.),thumb);
         ui.c.fill_rrect(r,2.,kit::scroll_thumb(ui.t,st,kit::high_visibility()));
+    } else if target == Scroll::PlaylistX {
+        // The Playlist paints its translucent thumb over the clip overview.
+        ui.c.fill_rect(track, ui.t.scrollbar);
     } else {kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);}
     if target==Scroll::PlaylistY {
         for y in [track.y+thumb_at+2.,track.y+thumb_at+thumb-3.] {

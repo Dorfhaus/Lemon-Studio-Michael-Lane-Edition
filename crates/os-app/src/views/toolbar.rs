@@ -175,7 +175,9 @@ impl ActionSizes {
             donate: canvas.text_width(font, "Donate").ceil() + 12.0,
             feedback: canvas.text_width(Font::new(11), "Report a bug").ceil() + 12.0,
             hint: if hint { Panel::Hint.width() + 6.0 } else { 0.0 },
-            cpu: if crate::settings_file::flag("toolbar_cpu_visible", true) { 54.0 } else { 0.0 },
+            cpu: if !crate::settings_file::flag("toolbar_cpu_visible", true) { 0.0 }
+                 else if crate::settings_file::flag("toolbar_cpu_classic",false) { crate::app::CPU_RECT.w+6.0 }
+                 else { 54.0 },
         }
     }
 
@@ -263,7 +265,10 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
 
     {
         let cr=Rect::new(width-actions_w+2.,8.,48.,24.);
-        if show_cpu {ui.c.fill_rrect(cr,3.,t.sunken);
+        if mini_cpu_w > 54.0 {
+            let a=At{dx:cr.x-crate::app::CPU_RECT.x,dy:0.};
+            classic_cpu(ui,s,a);
+        } else if show_cpu {ui.c.fill_rrect(cr,3.,t.sunken);
         ui.hit(cr,Action::CpuPanel,s.cpu.hint());
         let load=s.cpu.now.load;
         let ink=if load>=100{t.meter_clip}else if load>=75{t.meter_high}else{t.text_dim};
@@ -357,7 +362,7 @@ fn panel(ui: &mut Ui, c: &Ctx, p: Panel) -> bool {
         Panel::Recording => return recording(ui, c),
         Panel::Time => time(ui, c),
         Panel::Monitor => monitor(ui, c),
-        Panel::Cpu => cpu(ui, c),
+        Panel::Cpu => classic_cpu(ui,c.s,c.a),
         Panel::Utilities => return utilities(ui, c),
         Panel::Menu => menu_bar(ui, c),
         Panel::Volume => volume(ui, c),
@@ -702,11 +707,11 @@ fn monitor(ui: &mut Ui, c: &Ctx) {
 
 /// CPU panel (spec: ui/main-window.md §13): audio load (bar, percent, recent history or the Misc counts), memory,
 /// voices (or frames per second), dropouts. The hint is the reading in words (`App::tick`).
-fn cpu(ui: &mut Ui, c: &Ctx) {
-    let (t, a, s) = (ui.t, c.a, c.s);
+fn classic_cpu(ui:&mut Ui,s:&State,a:At) {
+    let t=ui.t;
     let cpu = a.r(crate::app::CPU_RECT);
     sunken(ui, cpu, t.sunken_dark);
-    ui.hit(cpu, Action::CpuPanel, "");
+    ui.hit(cpu, Action::CpuPanel, s.cpu.hint());
     let r = &s.cpu.now;
     let level = |load: u32| match load {
         0..75 => t.glyph,

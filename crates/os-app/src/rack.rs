@@ -1432,6 +1432,11 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         PItem::sub("Insert", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
         PItem::sub("Replace", crate::plugin_menu::items(s, Target::Replace(r), true)),
     ];
+    items.extend([PItem::sep(),
+        it("Fill each 2 steps", RCmd::Fill(r, 2)),
+        it("Fill each 4 steps", RCmd::Fill(r, 4)),
+        it("Fill each 8 steps", RCmd::Fill(r, 8)),
+    ]);
     items.extend(crate::instrument_stack::menu(s,r));
     if sampler { items.push(it("Load sample...", RCmd::LoadSample(r))); }
     items.extend([
@@ -1457,9 +1462,6 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
     items.push(if s.rack.clipboard.is_some() { paste } else { paste.off() });
     items.extend([
         PItem::sep(),
-        it("Fill each 2 steps", RCmd::Fill(r, 2)),
-        it("Fill each 4 steps", RCmd::Fill(r, 4)),
-        it("Fill each 8 steps", RCmd::Fill(r, 8)),
         it("Advanced fill...", RCmd::AdvancedFill(r)),
         PItem::sep(),
         it("Rotate left", RCmd::Rotate(r, -1)).key("Shift+Ctrl+Left"),
@@ -2403,6 +2405,7 @@ mod tests {
             assert!(contains(&clip.items,&cmd));
         }
         let channel=channel_menu(&app.state,0,0.,0.);
+        for n in [2,4,8]{assert!(channel.items.iter().any(|p|p.cmd==Cmd::Rack(RCmd::Fill(0,n))));}
         assert!(!channel.items.iter().any(|p|p.col));
         assert!(contains(&channel.items,&Cmd::Rack(RCmd::Copy(0))));
     }

@@ -2784,7 +2784,7 @@ impl App {
                     }
                     // A native Wayland main window (Linux): the popups cannot be lifted above a plugin window there.
                     #[cfg(not(windows))]
-                    Request::Menu(..) | Request::Presets(..) | Request::MiscMenu(..) | Request::KnobMenu(..) if self.plugins.owner == 0 => {
+                    Request::SidechainMenu(..) | Request::Menu(..) | Request::Presets(..) | Request::MiscMenu(..) | Request::KnobMenu(..) if self.plugins.owner == 0 => {
                         self.state.message = Some(off_text(PLUGIN_POPUPS));
                         self.invalidate();
                         continue;
@@ -2812,6 +2812,15 @@ impl App {
                         }
                         self.invalidate();
                         continue;
+                    }
+                    Request::SidechainMenu(row,x,y)=>{
+                        let Some((track,slot))=crate::plugins::fx_of(row) else{continue};
+                        let (x,y)=self.screen_to_canvas(x,y);
+                        let mut items=crate::mixer::sidechain_items(&self.state,track,slot);
+                        if items.len()==1 {items.push(crate::playlist::PItem::head("Route a source track to this insert first"));}
+                        self.state.playlist.popup=Some(crate::playlist::Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()});
+                        self.popup_lift=self.plugins.window_of(row).and_then(|(_,detached)|detached.then_some(row));
+                        self.invalidate();continue;
                     }
                     Request::Menu(row, x, y) => {
                         let Some((_, detached)) = self.plugins.window_of(row) else { continue };
@@ -4137,6 +4146,10 @@ impl App {
 
     /// Periodic housekeeping; returns whether a repaint is needed.
     pub fn tick(&mut self) -> bool {
+        if !self.state.mixer.insertion_ready && self.drag.is_none() && self.pressed.is_none() &&
+            self.state.mixer.insertion_hover.is_some_and(|(_,_,since)|since.elapsed()>=std::time::Duration::from_millis(550)){
+            self.state.mixer.insertion_ready=true;self.damage_win(Win::Mixer);
+        }
         #[cfg(target_os="macos")] let clicked_strip=crate::strip_editor::clicked_strip();
         #[cfg(windows)] let clicked_strip=crate::plugin_window::clicked_strip();
         #[cfg(any(windows,target_os="macos"))]
@@ -5973,6 +5986,15 @@ impl App {
                 self.damage_band(HINT_RECT);
             }
         }
+        let boundary=match &hover {
+            Some(Action::Mix(crate::mixer::MHit::InsertBoundary(n)|crate::mixer::MHit::InsertBefore(n))) if self.pressed.is_none() && self.drag.is_none()=>Some(*n),
+            _=>None,
+        };
+        let mixer=&mut self.state.mixer;
+        if !mixer.insertion_hover.is_some_and(|(n,(hx,hy),_)|Some(n)==boundary && (hx-x).hypot(hy-y)<=5.) {
+            mixer.insertion_hover=boundary.map(|n|(n,(x,y),std::time::Instant::now()));
+            if mixer.insertion_ready {mixer.insertion_ready=false;self.damage_win(Win::Mixer);}
+        }
         self.hover = hover;
         self.hover_rect = rect;
         self.hint = hint;
@@ -6308,7 +6330,6 @@ impl App {
             (None, Some(Action::RackResize(e))) => *e,
             _ => 0,
         };
-        if edges == 0 && self.state.piano.tool==Tool::Slice && matches!(self.hover,Some(Action::PianoGrid|Action::PianoNote(_))) {return Cursor::Playlist(crate::playlist::PlTool::Slice, 0);}
         if edges == 0 && let Some(cursor) = crate::playlist_tools::cursor(self) { return cursor; }
         match edges {
             0 if self.resize_cursor => Cursor::EwResize,
@@ -9287,6 +9308,11 @@ impl App {
     pub(crate) fn menu_item(&mut self, menu: usize, item: usize) {
         use views::menus::*;
         match (menu, item) {
+            (OPTIONS_MENU, OPT_CPU_COMPACT | OPT_CPU_CLASSIC) => {
+                crate::settings_file::set_flag("toolbar_cpu_classic",item==OPT_CPU_CLASSIC);
+                crate::settings_file::set_flag("toolbar_cpu_visible",true);
+                self.invalidate();
+            }
             (0, FILE_NEW) => self.ask_discard("starting a new project", crate::dialog::Next::NewProject),
             // Theme import (spec: ui/flstheme.md): pick a .flstheme, starting in FL's theme folder when installed.
             (OPTIONS_MENU | ADD_MENU, i) if item_at(menu, i).and_then(|it| views::settings::tab_for_menu(it.label)).is_some() => {
@@ -14489,14 +14515,23 @@ mod tests {
         let mut app=App::new(None);app.state.project=test_project();app.state.raise(Win::Mixer);
         let ws=&mut app.state.wins[Win::Mixer.slot().unwrap()];
         ws.rect=Rect::new(220.,90.,1300.,760.);
+        for layout in [mx::WIDE,mx::TRADITIONAL] {
+        app.mouse_move(5.,5.);
+        mx::set_layout(&mut app.state,layout);
         let mut canvas=Canvas::new(1920,1080,1.25).unwrap();frame(&mut app,&mut canvas,None);
-        let action=Action::Mix(MHit::InsertBefore(3));let r=hit_rect(&app,&action);
+        let action=Action::Mix(MHit::InsertBoundary(3));let r=hit_rect(&app,&action);
         assert!(r.w<=8.);
         app.mouse_move(r.cx(),r.cy());frame(&mut app,&mut canvas,None);
         assert_eq!(app.hover,Some(action.clone()));
-        if let Some(dir)=std::env::var_os("OS_SHOT_DIR") {canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("mixer-insert.png")).unwrap();}
+        let count=mx::inserts(&app.state);
+        app.mouse_down();app.mouse_up();assert_eq!(mx::inserts(&app.state),count);
+        app.mouse_move(0.,0.);app.mouse_move(r.cx(),r.cy());
+        app.state.mixer.insertion_hover.as_mut().unwrap().2-=std::time::Duration::from_millis(575);
+        app.tick();frame(&mut app,&mut canvas,None);
         let count=mx::inserts(&app.state);app.mouse_down();app.mouse_up();
         assert_eq!(mx::inserts(&app.state),count+1);assert_eq!(app.state.selected_mixer,3);
+        app.key(&winit::keyboard::Key::Character("z".into()),true,false);assert_eq!(mx::inserts(&app.state),count);
+        }
     }
 
     #[test]
@@ -19277,7 +19312,7 @@ mod tests {
         pl::run(&mut app, pl::Cmd::GroupCollapse(2));
         let rows = pl::Rows::new(&app.state);
         assert!(rows.strip(1) && rows.strip(2) && !rows.strip(0) && !rows.strip(3));
-        assert_eq!(rows.top(3), pl::ROW_H + 2.0 * pl::STRIP_H);
+        assert_eq!(rows.top(3), pl::ROW_H);
         frame(&mut app, &mut c, None);
         let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
         assert_eq!(g.track_at(g.y_of(3) + 1.0), 3, "rows below the strips map back to their tracks");
@@ -20600,6 +20635,32 @@ mod tests {
     }
 
     #[test]
+    fn brush_stroke_selects_and_moves_only_new_clips() {
+        use crate::playlist as pl;
+        use os_model::{Clip,ClipSource};
+        let mut canvas=Canvas::new(1920,1080,1.).unwrap();
+        let (mut app,_,_,_)=ruler_app(&mut canvas);
+        let src=ClipSource::Pattern(1);
+        app.state.playlist.tool=pl::PlTool::Paint;
+        app.state.playlist.source=Some(src);
+        app.state.playlist.lock_len=Some((src,96));
+        pl::arr_mut(&mut app.state).clips=vec![Clip::new(96,96,0,src)];
+        app.state.playlist.sel=vec![0];
+        frame(&mut app,&mut canvas,None);
+        let g=pl::PGeom::new(&app.state,app.pl_grid().unwrap());
+        let y=g.y_of(0)+g.rows.clip_h()*0.65;
+        app.mouse_move(g.x_of(0.)+1.,y);app.mouse_down();
+        assert_eq!(app.state.playlist.sel,[1]);
+        app.mouse_move(g.x_of(300.),y);
+        assert_eq!(app.state.playlist.sel,[1,2,3]);
+        app.mouse_move(g.x_of(200.),y);app.mouse_up();
+        assert_eq!(app.state.playlist.sel,[1,2,3]);
+        let x=g.x_of(240.);
+        app.mouse_move(x,y);app.mouse_down();app.mouse_move(x,g.y_of(1)+g.rows.clip_h()*0.65);app.mouse_up();
+        assert_eq!(pl::clips(&app.state).iter().map(|c|c.track).collect::<Vec<_>>(),[0,1,1,1]);
+    }
+
+    #[test]
     fn header_selection_folder_drop_and_empty_grid_deselect(){
         use crate::playlist as pl;
         use os_model::{Clip,ClipSource};
@@ -20635,8 +20696,8 @@ mod tests {
         assert_eq!(app.state.playlist.header_selection,[2,3,4]);
         let top=hit_rect(&app,&Action::PlHeader(0));
         let end=hit_rect(&app,&Action::PlHeader(3));
-        app.mouse_move(top.x+28.,top.y+8.);app.mouse_down();app.mouse_move(end.x+28.,end.y+8.);app.mouse_up();
-        assert_eq!(app.state.playlist.header_selection,[0,1,2,3]);
+        header(&mut app,&mut c,0);app.shift=true;app.mouse_move(top.x+28.,top.y+8.);app.mouse_down();app.mouse_move(end.x+28.,end.y+8.);app.mouse_up();
+        app.shift=false;assert_eq!(app.state.playlist.header_selection,[0,1,2,3]);
         for tool in [pl::PlTool::Draw,pl::PlTool::Paint]{
             app.state.playlist.tool=tool;app.state.playlist.sel=vec![0];app.state.playlist.header_selection=vec![2,3];app.state.playlist.range=Some((0,384));
             frame(&mut app,&mut c,None);let g=app.pl_grid().unwrap();
@@ -20644,6 +20705,24 @@ mod tests {
             assert!(app.state.playlist.header_selection.is_empty() && app.state.playlist.sel.is_empty() && app.state.playlist.range.is_none());
             assert_eq!(pl::clips(&app.state).len(),1);
         }
+        pl::run(&mut app,pl::Cmd::GroupCollapse(1));
+        let rows=pl::Rows::new(&app.state);
+        assert_eq!(rows.top(2),rows.top(5));
+        pl::run(&mut app,pl::Cmd::DissolveFolder(1));
+        assert_eq!(pl::track_info(&app.state,2).unwrap().name.as_deref(),Some("Lane 4"));
+        assert_eq!(pl::group_track(&app.state,2),None);
+        assert_eq!(pl::clips(&app.state)[0].track,2);
+        frame(&mut app,&mut c,None);
+        let a=hit_rect(&app,&Action::PlHeader(2));
+        let b=hit_rect(&app,&Action::PlHeader(0));
+        app.mouse_move(a.x+28.,a.y+8.);app.mouse_down();app.mouse_move(b.x+28.,b.y+8.);app.mouse_up();
+        assert_eq!(pl::clips(&app.state)[0].track,0);
+        pl::arr_mut(&mut app.state).clips=(1..=4).map(|i|Clip::new(i*96,48,0,ClipSource::Pattern(1))).collect();
+        frame(&mut app,&mut c,None);
+        let g=pl::PGeom::new(&app.state,app.pl_grid().unwrap());
+        let end=g.clip_rect(&pl::clips(&app.state)[3]);
+        app.mouse_move(g.grid.x+2.,end.cy());app.mouse_down_right();app.mouse_move(end.cx(),end.cy());app.mouse_up();
+        assert!(pl::clips(&app.state).is_empty());
     }
 
     #[test]

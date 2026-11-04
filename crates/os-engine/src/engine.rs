@@ -3792,7 +3792,7 @@ impl Engine {
     /// quarter notes (`tick_tempo`): what FL tells plugins in a bar of other than 4 steps per beat is not measured.
     fn transport_at(&self, frame: u64) -> TransportInfo {
         let mut start = TransportInfo {
-            playing: true,
+            playing: !self.live_only,
             tempo: self.tick_tempo(),
             frame: 0,
             beats: 0.0,
@@ -4825,6 +4825,15 @@ mod tests {
             // 48000 * 60 / (130 * 96) = 230.77 samples per tick.
             assert!(seen.iter().all(|s| s.1 == 230 || s.1 == 231), "{who}: one call per tick");
         }
+        // Audition and playback use separate engines but share the plugin instance.
+        let mut idle = Engine::new(&p, &mut lib, 48000, PlayMode::Pattern(1));
+        idle.clear_schedule();
+        idle.set_awake(true);
+        idle.set_instrument(0, inst.clone());
+        idle.process(&mut out);
+        assert!(!inst.lock().unwrap().seen.last().unwrap().0.playing);
+        e.process(&mut out);
+        assert!(inst.lock().unwrap().seen.last().unwrap().0.playing);
         let t = TransportInfo { looping: None, ..fx.lock().unwrap().seen[0].0 };
         let later = t.advanced(48000 * 3, 48000);
         assert_eq!((later.frame, later.bar), (144000, 1));

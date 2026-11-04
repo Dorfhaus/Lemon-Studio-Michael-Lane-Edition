@@ -430,8 +430,14 @@ impl FrameWindow {
     }
 
     /// The plugin's smallest editor size when the frame's edges may resize it (`None`: a fixed size).
+    pub fn enable_wave_zoom(&self) {
+        self.state.borrow_mut().wave_zoom=true;
+        self.set_resizable(None);
+    }
+
     pub fn set_resizable(&self, min: Option<(f32, f32)>) {
         let mut st = self.state.borrow_mut();
+        let min=st.effective_resize_min(min);
         if st.resize_min != min {
             st.resize_min = min;
             if min.is_none() {
@@ -624,7 +630,7 @@ unsafe fn apply_clip(hwnd: HWND, state: &RefCell<State>) {
             expose();
         }
         SetWindowRgn(hwnd, rgn, 1); // the system owns `rgn` now
-        RedrawWindow(hwnd, std::ptr::null(), gained, RDW_INVALIDATE | RDW_ALLCHILDREN);
+        RedrawWindow(hwnd, std::ptr::null(), gained, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         for r in [whole, old, gained, lost] {
             DeleteObject(r);
         }
@@ -714,6 +720,19 @@ unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         }
         let Some(w) = win_of(hwnd) else { return DefWindowProcW(hwnd, msg, wp, lp) };
         match msg {
+            WM_SETCURSOR if wp as HWND == hwnd && (lp as u32 & 0xffff)==HTCLIENT as u32 => {
+                let mut pt:POINT=std::mem::zeroed();
+                GetCursorPos(&mut pt);ScreenToClient(hwnd,&mut pt);
+                let st=w.state.borrow();
+                let edge=st.sizing.map(|s|(s.right,s.bottom)).or_else(||match part_at(&st,pt.x as f32/w.scale,pt.y as f32/w.scale){
+                    Some(Part::Edge{right,bottom})=>Some((right,bottom)),_=>None,
+                });
+                if let Some((right,bottom))=edge{
+                    let shape=if right && bottom {IDC_SIZENWSE} else if right {IDC_SIZEWE} else {IDC_SIZENS};
+                    SetCursor(LoadCursorW(std::ptr::null_mut(),shape));return 1;
+                }
+                DefWindowProcW(hwnd,msg,wp,lp)
+            }
             WM_NCHITTEST => {
                 // The whole frame is client area; the title bar is moved by hand (WM_LBUTTONDOWN).
                 HTCLIENT as LRESULT

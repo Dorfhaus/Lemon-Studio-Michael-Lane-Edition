@@ -206,6 +206,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
     }
     overview(ui, s, over, bars * bar_t);
+    let (offset,width)=os_ui::kit::thumb(over.w,sx,grid_w,bars*bar_w);
+    let thumb = t.text_dim.mix(Color::rgb(0xffda50), 0.32).with_alpha(222);
+    ui.c.fill_rrect(Rect::new(over.x+offset,over.y+2.,width,over.h-4.),3.,thumb);
     let ruler = ruler_rect(s, grid);
     ruler_paint(ui, s, &g, ruler, f);
     ui.c.fill_rect(Rect::new(grid_x + grid_w + 4.0, client.y + 1.0, vbar, client.h), t.scrollbar);
@@ -481,9 +484,7 @@ fn ruler_paint(ui: &mut Ui, s: &State, g: &PGeom, ruler: Rect, f: &FrameInfo) {
     // on the position, its top along the ruler's top).
     let tick = if f.playing && f.song { f.tick as f32 } else { s.playlist.pos as f32 };
     let x = g.x_of(tick);
-    let (y0, k) = (ruler.y + 0.5, 9.0);
-    ui.c.fill_polygon(&[(x - 0.5, y0 - 0.5), (x + k + 1.0, y0 - 0.5), (x - 0.5, y0 + k + 1.0)], t.s(0x0b1114));
-    ui.c.fill_polygon(&[(x, y0), (x + k, y0), (x, y0 + k)], t.playhead);
+    super::piano::play_start_marker(ui,x,ruler.y);
     ui.c.pop_clip();
 }
 
@@ -1141,7 +1142,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let base = if on { base } else { base.mix(t.grid_gap, 0.4) };
     let (bx, bw) = if member { (x + INDENT, w - INDENT) } else { (x, w) };
     let gap = if strip { 1.0 } else { 3.0 };
-    let bh = if joins_below { h } else { h - gap };
+    let bh = h - gap;
     let hr = Rect::new(bx, y, bw, bh);
     if member {
         // The indent beside the members: a dark strip (FL dithers it).
@@ -1158,9 +1159,9 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         let left = if lead { hr.x + k } else { hr.x };
         ui.c.fill_rect(Rect::new(left, hr.bottom() - k, hr.right() - left, k), bottom);
     }
-    ui.hit(hr, Action::PlHeader(row), "Drag to select tracks; Shift selects a range, Ctrl/Cmd toggles a track; right-click to create a folder");
+    ui.hit(hr, Action::PlHeader(row), "Drag to move a track; Shift-drag selects a range, Ctrl/Cmd toggles a track; right-click to create a folder");
     if s.playlist.header_selection.contains(&row) || s.playlist.drop_folder==Some(row){
-        ui.c.stroke_rrect(hr.inset(1.),2.,1.5,t.accent);ui.c.fill_rect(Rect::new(hr.x,hr.y,3.,hr.h),t.accent);
+        ui.c.fill_rrect(Rect::new(hr.x+1.,hr.y+3.,3.,(hr.h-6.).max(1.)),1.5,t.accent);
     }
     if strip {return;}
     // The LED and "…" keep their distance from the row's bottom when the track height changes (Alt+wheel); short

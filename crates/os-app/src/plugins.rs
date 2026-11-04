@@ -190,6 +190,7 @@ pub enum Request {
     Raise(usize),
     /// The menu arrow was clicked: open the window menu at this screen point.
     Menu(usize, i32, i32),
+    SidechainMenu(usize,i32,i32),
     /// The title-bar Presets box was clicked: open the preset list at this screen point (spec: plugins/presets.md).
     Presets(usize, i32, i32),
     /// The Presets box arrows: next (+1) / previous (-1) preset.
@@ -1022,6 +1023,7 @@ impl Plugins {
             let size=result?;crate::rack_mixer::observe_editor(p.desc(),size,k);size
         };
         h.link = fit_editor(&w, size, k);
+        if h.name=="Lemon Wave" {w.enable_wave_zoom();}
         // On top: the app stacks it above its other windows (`State::raise`), and a new child window starts below
         // the open ones.
         w.raise();
@@ -1288,7 +1290,6 @@ impl Plugins {
                     w.set_resizable(l.resizable().map(|(mw, mh)| (mw as f32, mh as f32)));
                 }
                 let wave=h.name=="Lemon Wave";
-                if wave {w.set_resizable(Some((100.,80.)));}
                 for e in w.take_events() {
                     if let FrameEvent::ResizeFinished(ratio)=e {
                         if wave {out.push(Request::WaveZoom(row,(wave_zoom()*ratio*100.).round().clamp(40.,125.) as u16));}
@@ -1330,6 +1331,7 @@ impl Plugins {
                         #[cfg(target_os="linux")] FrameEvent::Undo(redo)=>Request::Undo(redo),
                         FrameEvent::PickTrack => Request::PickTrack(row),
                         FrameEvent::Raise => Request::Raise(row),
+                        FrameEvent::SidechainMenu(x,y)=>Request::SidechainMenu(row,x,y),
                         FrameEvent::Menu(x, y) => Request::Menu(row, x, y),
                         FrameEvent::Presets(x, y) => Request::Presets(row, x, y),
                         FrameEvent::PresetStep(d) => Request::PresetStep(row, d),

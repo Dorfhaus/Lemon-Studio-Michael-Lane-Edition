@@ -3204,6 +3204,7 @@ dependencies = [
  "os-engine",
  "os-host",
  "windows-sys 0.61.2",
+ "x11-dl",
 ]
 
 [[package]]

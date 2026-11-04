@@ -20,6 +20,21 @@ use crate::mixer::{self as mx, MHit};
 use crate::icons::{self, Icon};
 
 mod traditional;
+fn insertion_button(ui:&mut Ui,s:&State,area:Rect,client:Rect,n:u16,x:f32){
+        if client.h<=72. || x<area.x || x>area.right()-10.0 {return;}
+        let lane=Rect::new(x-4.0,client.y,8.0,client.h-52.0);
+        let action=Action::Mix(MHit::InsertBefore(n));
+        ui.hit(lane,Action::Mix(MHit::InsertBoundary(n)),"Pause here to insert a mixer track");
+        if s.mixer.insertion_ready && s.mixer.insertion_hover.is_some_and(|(t,_,_)|t==n) && lane.outset(5.).contains(ui.mouse.0,ui.mouse.1) {
+            let y=ui.mouse.1.clamp(lane.y+10.0,lane.bottom()-10.0);
+            let button=Rect::new(x-9.0,y-9.0,18.0,18.0);
+            ui.hit(button,action,"Insert an empty mixer track here");
+            ui.c.fill_rect_gradient(button,ui.t.accent.mix(ui.t.button_hi,0.48),ui.t.button_hi,9.0);
+            ui.c.stroke_rrect(button,9.0,1.0,ui.t.accent);
+            icons::draw(ui.c,Icon::Plus,button.inset(3.0),ui.t.tx(0xffffff));
+        }
+}
+
 
 pub const STRIP_W: f32 = 84.0;
 pub fn strip_width(s: &State) -> f32 {if s.mixer.layout==crate::rack_mixer::VIEW{return s.mixer.rack_width;}if mx::traditional(s) {traditional::width(s)} else {STRIP_W}}
@@ -192,17 +207,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     // Narrow boundary targets reveal an insertion button only while hovered.
     for &(n,x) in &visible {
-        if x<area.x || x>area.right()-10.0 {continue;}
-        let lane=Rect::new(x-4.0,client.y,8.0,client.h-52.0);
-        let action=Action::Mix(MHit::InsertBefore(n as u16));
-        if ui.hit(lane,action.clone(),"Insert an empty mixer track here") {
-            let y=ui.mouse.1.clamp(lane.y+10.0,lane.bottom()-10.0);
-            let button=Rect::new(x-9.0,y-9.0,18.0,18.0);
-            ui.hit(button,action,"Insert an empty mixer track here");
-            ui.c.fill_rrect(button,4.0,ui.t.button_hi);
-            ui.c.stroke_rrect(button,4.0,1.0,ui.t.tx(0xc4cbd0));
-            icons::draw(ui.c,Icon::Plus,button.inset(3.0),ui.t.tx(0xffffff));
-        }
+        insertion_button(ui,s,area,client,n as u16,x);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
     let px = area.x + end - s.mixer_scroll + 14.0;

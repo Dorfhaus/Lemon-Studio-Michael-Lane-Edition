@@ -508,13 +508,17 @@ fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u
         ui.c.text(Font::new(12), x + 4.0, rr.y + 2.0, t.text, name);
     }
     // Play-start marker: an orange downward triangle (§10, colours sampled from FL).
-    let mx = g.x_of(marker as f32).round() + 0.5;
-    let tri = [(mx - 7.5, rr.y + 2.0), (mx + 7.5, rr.y + 2.0), (mx, rr.y + 11.0)];
-    ui.c.fill_polygon(&tri, ui.t.s(0x2f1818));
-    let inner = [(mx - 5.5, rr.y + 3.0), (mx + 5.5, rr.y + 3.0), (mx, rr.y + 9.5)];
-    ui.c.fill_polygon(&inner, ui.t.h(0xdd9561));
-    ui.c.fill_rect(Rect::new(mx - 5.0, rr.y + 3.0, 10.0, 1.0), ui.t.h(0xffc08b));
+    play_start_marker(ui,g.x_of(marker as f32),rr.y);
     ui.c.pop_clip();
+}
+
+pub(super) fn play_start_marker(ui:&mut Ui,x:f32,y:f32){
+    let mx = x.round() + 0.5;
+    let tri = [(mx - 7.5, y + 2.0), (mx + 7.5, y + 2.0), (mx, y + 11.0)];
+    ui.c.fill_polygon(&tri, ui.t.s(0x2f1818));
+    let inner = [(mx - 5.5, y + 3.0), (mx + 5.5, y + 3.0), (mx, y + 9.5)];
+    ui.c.fill_polygon(&inner, ui.t.h(0xdd9561));
+    ui.c.fill_rect(Rect::new(mx - 5.0, y + 3.0, 10.0, 1.0), ui.t.h(0xffc08b));
 }
 
 fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {

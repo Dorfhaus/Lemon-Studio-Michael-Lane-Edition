@@ -63,6 +63,7 @@ pub enum Snap {
     StackInstrument(Box<RackSide>,usize,Vec<u8>),
     Tempo(f64),
     Ara(usize, Option<String>, Option<Vec<u8>>),
+    MixerInsert { n:u16,remove:bool,previous:u16,selection:Vec<u16> },
     MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     ChannelRoute(usize,u16),
     InstrumentLanes(Vec<(u16,u16,u16,u16)>),
@@ -370,6 +371,7 @@ impl Snap {
             },
             Snap::AudioWarps(_)=>Snap::AudioWarps(s.project.audio_warps.clone()),
             Snap::Tempo(_) => Snap::Tempo(s.tempo),
+            Snap::MixerInsert{n,remove,..}=>Snap::MixerInsert{n:*n,remove:!*remove,previous:s.selected_mixer,selection:s.mixer.sel.clone()},
             Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::InstrumentLanes(_)=>Snap::InstrumentLanes(s.project.instrument_lanes.clone()),
             Snap::Ara(row,..) => Self::ara(s,*row).unwrap_or_else(||self.clone()),
@@ -458,6 +460,7 @@ impl Snap {
             | Snap::StackInstrument(..)
             | Snap::AudioWarps(..)
             | Snap::Tempo(..)
+            | Snap::MixerInsert{..}
             | Snap::MixerMove{..}
             | Snap::InstrumentLanes(..)
             | Snap::ChannelRoute(..)
@@ -544,6 +547,7 @@ impl Snap {
             }
             Snap::RackStrips(v) => {for c in v {crate::mixer::put_channel(s,c);}},
             Snap::MixerChannel(c) => crate::mixer::put_channel(s,*c),
+            Snap::MixerInsert{n,remove,previous,selection}=>{if remove {crate::mixer::undo_insert(s,n);}else{crate::mixer::add_track(s,Some(n));}s.selected_mixer=previous;s.mixer.sel=selection;},
             Snap::MixerMove{from,to,arrangements,lanes}=>{crate::mixer::reorder(s,from,to,false);s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
             Snap::InstrumentLanes(v)=>s.project.instrument_lanes=v,
             Snap::ChannelLayout(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.channel_layout=p;}},

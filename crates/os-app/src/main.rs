@@ -543,23 +543,7 @@ impl Shell {
         if c != self.cursor || self.cursor_scale != scale {
             self.cursor = c;
             self.cursor_scale = scale;
-            if let app::Cursor::Playlist(tool,phase) = c {
-                let found=self.tool_cursors.iter().position(|(t,p,k,_)| *t==tool && *p==phase && *k==scale);
-                let index=found.or_else(|| {
-                    let source=playlist_tools::cursor_source(tool,phase,f32::from(scale)/100.)?;
-                    self.tool_cursors.push((tool,phase,scale,el.create_custom_cursor(source)));
-                    Some(self.tool_cursors.len()-1)
-                });
-                if let Some(i)=index { window.set_cursor(self.tool_cursors[i].3.clone()); return; }
-            }
-            window.set_cursor(match c {
-                app::Cursor::Playlist(..) => CursorIcon::Default,
-                app::Cursor::Default => CursorIcon::Default,
-                app::Cursor::EwResize => CursorIcon::EwResize,
-                app::Cursor::NsResize => CursorIcon::NsResize,
-                app::Cursor::NwseResize => CursorIcon::NwseResize,
-                app::Cursor::NeswResize => CursorIcon::NeswResize,
-            });
+            apply_window_cursor(window,el,c,scale,&mut self.tool_cursors);
         }
     }
 
@@ -639,7 +623,7 @@ impl Shell {
 
     fn step(&mut self, el: &ActiveEventLoop, held: bool) {
         if self.app.state.native_view.is_none() {self.main_mouse=self.app.mouse;}
-        self.detached.sync(&mut self.app,el);
+        self.detached.sync(&mut self.app,el,&mut self.tool_cursors);
         let current=screens(el);
         if current!=self.display_layout {
             self.display_layout=current.clone();
@@ -925,7 +909,7 @@ impl ApplicationHandler for Shell {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if self.detached.owns(_id) {if self.app.state.native_view.is_none(){self.main_mouse=self.app.mouse;}self.detached.event(&mut self.app,el,_id,event);self.prepare_main();self.pending|=self.app.has_damage();return;}
+        if self.detached.owns(_id) {if self.app.state.native_view.is_none(){self.main_mouse=self.app.mouse;}self.detached.event(&mut self.app,el,_id,event,&mut self.tool_cursors);self.prepare_main();self.pending|=self.app.has_damage();return;}
         self.prepare_main();
         if matches!(event,WindowEvent::MouseInput{state:ElementState::Pressed,..}|WindowEvent::KeyboardInput{..}|WindowEvent::Focused(true)) {
             if self.app.state.native_input.take().is_some() {let popup=self.app.state.playlist.popup.is_some()||self.app.state.menu_open.is_some();self.app.state.playlist.popup=None;self.app.state.menu_open=None;if popup {self.app.invalidate();}}
@@ -1874,6 +1858,26 @@ fn wake_ui() {
             }
         }
     }
+}
+
+fn apply_window_cursor(window:&Window, el:&ActiveEventLoop, c:app::Cursor, scale:u16, cache:&mut Vec<(playlist::PlTool,u8,u16,winit::window::CustomCursor)>) {
+            if let app::Cursor::Playlist(tool,phase) = c {
+                let found=cache.iter().position(|(t,p,k,_)| *t==tool && *p==phase && *k==scale);
+                let index=found.or_else(|| {
+                    let source=playlist_tools::cursor_source(tool,phase,f32::from(scale)/100.)?;
+                    cache.push((tool,phase,scale,el.create_custom_cursor(source)));
+                    Some(cache.len()-1)
+                });
+                if let Some(i)=index { window.set_cursor(cache[i].3.clone()); return; }
+            }
+            window.set_cursor(match c {
+                app::Cursor::Playlist(..) => CursorIcon::Default,
+                app::Cursor::Default => CursorIcon::Default,
+                app::Cursor::EwResize => CursorIcon::EwResize,
+                app::Cursor::NsResize => CursorIcon::NsResize,
+                app::Cursor::NwseResize => CursorIcon::NwseResize,
+                app::Cursor::NeswResize => CursorIcon::NeswResize,
+            });
 }
 
 fn main() {

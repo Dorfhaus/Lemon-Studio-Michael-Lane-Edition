@@ -190,6 +190,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let left = area.x + width * (n - 1) as f32 - s.mixer_scroll;
         strip(ui, s, n as u16, left, bottom, f, &ly);
     }
+    for n in (first+1..first+1+count).filter(|n|*n<=usize::from(inserts)){
+        insertion_button(ui,s,area,client,n as u16,area.x+width*(n-1) as f32-s.mixer_scroll);
+    }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
     let px = area.x + width * f32::from(inserts) - s.mixer_scroll + 14.0;
     let pb = Rect::new(px - 9.0, ly.y(HANDLE_0DB) - 9.0, 18.0, 18.0);
@@ -428,7 +431,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let on=!s.mixer.all_fx_bypassed && track.is_none_or(|m|m.slots_enabled);
     ui.hit(fx,Action::Mix(MHit::Effects(n)),"Enable / bypass track effects");
     ui.c.fill_rrect(fx,2.,if on {ui.t.accent} else {ui.t.button_hi});
-    ui.c.text_center(Font::new(10),fx,ui.t.text,"FX");
+    ui.c.text_center(Font::new(10),fx,if on {Color::rgb(0x000000)} else {ui.t.text},"FX");
     if !master {
         let rec=Rect::new(sx-7.,by-122.,14.,14.);
         ui.hit(rec,Action::Mix(MHit::Disk(n)),"Arm / disarm disk recording");

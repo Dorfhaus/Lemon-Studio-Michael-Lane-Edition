@@ -553,8 +553,14 @@ impl FrameWindow {
     }
 
     /// The plugin's smallest editor size when the frame's edges may resize it (`None`: a fixed size).
+    pub fn enable_wave_zoom(&self) {
+        self.f.state.borrow_mut().wave_zoom=true;
+        self.set_resizable(None);
+    }
+
     pub fn set_resizable(&self, min: Option<(f32, f32)>) {
         let mut st = self.f.state.borrow_mut();
+        let min=st.effective_resize_min(min);
         if st.resize_min != min {
             st.resize_min = min;
             if min.is_none() {

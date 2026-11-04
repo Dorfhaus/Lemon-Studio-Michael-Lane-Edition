@@ -216,6 +216,7 @@ pub enum FrameEvent {
     Misc(crate::misc_page::M, f32),
     /// A Misc tab list (chord list, number box values) or knob menu: the app opens it at this screen point.
     MiscMenu(crate::misc_page::M, i32, i32),
+    SidechainMenu(i32,i32),
     /// A strip knob was right-clicked: the app opens its menu (Reset first) at this screen point.
     KnobMenu(Knob, i32, i32),
     /// A Misc tab keyboard key: key, velocity, pressed.
@@ -291,6 +292,7 @@ struct State {
     /// Plugin editor size (logical px).
     editor: (f32, f32),
     /// The editor's smallest size when the frame's edges may resize it (a resizable Lemon plugin, as Tesla).
+    wave_zoom: bool,
     resize_min: Option<(f32, f32)>,
     /// An edge drag in progress.
     sizing: Option<Sizing>,
@@ -334,6 +336,7 @@ impl State {
             preset: None,
             misc_ui: Default::default(),
             editor,
+            wave_zoom: false,
             resize_min: None,
             sizing: None,
             maxed: None,
@@ -404,6 +407,10 @@ impl State {
     /// tab change in FL does), the plugin's editor otherwise.
     fn shown(&self) -> (f32, f32) {
         if self.misc && self.info.misc.is_some() { (crate::misc_page::PAGE_W, crate::misc_page::PAGE_H) } else { self.editor }
+    }
+    // Wave scales through the host even though the native editor reports a fixed size.
+    fn effective_resize_min(&self,native:Option<(f32,f32)>)->Option<(f32,f32)> {
+        if self.wave_zoom {Some((100.,80.))} else {native}
     }
     /// The frame's edges and its maximize button resize the editor: a resizable plugin, its editor showing.
     fn resizable(&self) -> bool {
@@ -498,6 +505,7 @@ fn parts(st: &State) -> Vec<(Rect, Part)> {
     if max_w(st) > 0.0 {
         v.push((Rect::new(w - 42.0, 7.0, 17.0, 17.0), Part::Maximize));
     }
+    if let Some(r)=wave_size_handle(st){v.push((r,Part::Edge{right:true,bottom:true}));}
     if st.resizable() {
         // The corner first (it overlaps both edges); below the title bar, so the close button stays a button.
         v.push((Rect::new(w - CORNER, h - CORNER, CORNER, CORNER), Part::Edge { right: true, bottom: true }));
@@ -530,6 +538,11 @@ fn parts(st: &State) -> Vec<(Rect, Part)> {
     }
     v.push((Rect::new(0.0, 0.0, w, TITLE_H), Part::Caption));
     v
+}
+
+// Keep the zoom control reachable when a docked Wave editor extends beyond the workspace.
+fn wave_size_handle(st:&State)->Option<Rect>{
+    (st.resizable() && st.wave_zoom).then(||Rect::new(48.,5.,75.,20.))
 }
 
 fn part_at(st: &State, x: f32, y: f32) -> Option<Part> {
@@ -589,6 +602,8 @@ fn title_font() -> Font {
     Font::new(13)
 }
 
+fn sidechain_button(st:&State)->Rect {Rect::new(BORDER+8.,st.area_y()+28.,(st.size().0-2.*BORDER-16.).clamp(1.,200.),28.)}
+
 fn paint(c: &mut Canvas, st: &State) {
     let (w, h) = st.size();
     c.begin_frame(None);
@@ -610,7 +625,12 @@ fn paint(c: &mut Canvas, st: &State) {
     if st.misc {
         match &st.info.misc {
             Some(v) => crate::misc_page::paint(c, &os_theme::current(), a.x, a.y, v, &st.misc_ui),
-            None => c.text_center(Font::new(16), a, c_grey(), "No channel settings here"),
+            None => {
+                c.text_clip(Font::new(15),a.x+10.,a.y+5.,a.w-20.,c_text(),"Effect routing");
+                let button=sidechain_button(st);
+                c.fill_rrect(button,5.,c_frame());
+                c.text_center(Font::new(15),button,c_text(),"Sidechain input...");
+            }
         }
     }
 }
@@ -632,7 +652,11 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
     let p = presets_rect(st);
     let f = title_font();
     let ty = (19.0 - c.ascent(f)).round();
-    let nx = 48.0;
+    let nx = if let Some(r)=wave_size_handle(st){
+        c.fill_rrect(r,4.,c_body());
+        c.text_center(Font::new(12),r,c_text(),"Drag to size");
+        r.right()+6.
+    }else{48.};
     let room = (p.x - 8.0 - nx).max(0.0);
     let nw = c.text_width(f, &st.info.name).min(room);
     c.text_clip(f, nx, ty, room, c_text(), &st.info.name);
@@ -846,6 +870,10 @@ impl State {
 
     /// Left button down at (x, y); `double` for the second press of a double click.
     fn left_down(&mut self, x: f32, y: f32, double: bool, screen: ToScreen) -> Reply {
+        if self.misc && self.info.misc.is_none() && sidechain_button(self).contains(x,y){
+            let b=sidechain_button(self);let (sx,sy)=screen(b.x,b.bottom());
+            self.events.push(FrameEvent::SidechainMenu(sx,sy));os_clap::wake();return Reply::None;
+        }
         let part = part_at(self, x, y);
         match part {
             Some(Part::Menu) => {
@@ -1281,6 +1309,15 @@ mod tests {
         State { strip, ..State::new(info, (480.0, 270.0), false) }
     }
 
+    #[test]
+    fn effect_wrench_opens_sidechain_selector() {
+        let mut st=state(true,"Insert 6");
+        st.info.misc=None;st.misc=true;
+        let r=sidechain_button(&st);
+        st.left_down(r.cx(),r.cy(),false,&|x,y|(x as i32,y as i32));
+        assert_eq!(st.events,[FrameEvent::SidechainMenu(r.x as i32,r.bottom() as i32)]);
+    }
+
     /// "Open detached plugins with the main window": a detached window opening for the first time keeps its place
     /// relative to the monitor it would open on, moved to the chosen monitor and kept on it (spec:
     /// ui/settings-choices.md "Miscellaneous: naming, detached plugins and startup").
@@ -1305,6 +1342,19 @@ mod tests {
         st.motion(w-1.-editor.0/4.,h-1.-editor.1/4.,false);
         st.left_up(w-1.-editor.0/4.,h-1.-editor.1/4.);
         assert!(matches!(st.events.last(),Some(FrameEvent::ResizeFinished(v)) if (*v-0.75).abs()<0.01));
+    }
+
+    #[test]
+    fn wave_title_handle_resizes_with_the_corner_outside_the_workspace(){
+        let mut st=state(true,"Master");
+        st.wave_zoom=true;
+        st.resize_min=st.effective_resize_min(None);
+        let handle=wave_size_handle(&st).unwrap();
+        let x=handle.cx();let y=handle.cy();let dx=st.editor.0*0.25;
+        assert_eq!(st.left_down(x,y,false,&|x,y|(x as i32,y as i32)),Reply::Capture);
+        assert_eq!(st.effective_resize_min(None),st.resize_min,"an idle refresh must preserve the drag");
+        st.motion(x+dx,y,false);st.left_up(x+dx,y);
+        assert!(matches!(st.events.last(),Some(FrameEvent::ResizeFinished(r)) if (*r-1.25).abs()<0.01));
     }
 
     #[test]

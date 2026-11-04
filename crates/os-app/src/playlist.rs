@@ -328,6 +328,7 @@ pub enum Cmd {
     TrackSolo(u16),
     /// Group the track with the one above it, or take it out of its group (§6a).
     CreateFolder(u16),
+    DissolveFolder(u16),
     TrackGroup(u16),
     /// Arrangements (§12): show arrangement `n`, add an empty one, clone / rename / delete the current one, copy
     /// arrangement `n`'s clips into the current one.
@@ -818,7 +819,7 @@ impl Rows {
             }
             let cs: Vec<_> = clips(s).iter().filter(|c| usize::from(c.track) == t).collect();
             let folded = !cs.is_empty() && cs.iter().all(|c| matches!(c.source, ClipSource::Channel(ch) if s.playlist.automation_owners.get(&ch).is_some_and(|row| usize::from(*row) != t)));
-            y += if folded { 0.0 } else if grouped && collapsed { STRIP_H } else { row_h };
+            y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { row_h };
         }
         top.push(y);
         Rows { top, row_h }
@@ -939,7 +940,7 @@ impl PGeom {
         let w = ((self.x64(f64::from(c.position) + f64::from(c.length)) - x) as f32).max(3.0);
         let x = x as f32;
         if self.rows.strip(c.track) {
-            return Rect::new(x, self.y_of(c.track) + 1.0, w, STRIP_H - 2.0);
+            return Rect::new(x, -100000., 0., 0.);
         }
         Rect::new(x, self.y_of(c.track), w, self.rows.clip_h())
     }
@@ -2888,6 +2889,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
     let items = vec![
         PItem::head("Track"),
         PItem::new("Create folder",Cmd::CreateFolder(t)),
+        if track_info(s,t).is_some_and(|r|r.folder){PItem::new("Dissolve folder (keep tracks)",Cmd::DissolveFolder(t))}else{PItem::sep()},
         if track_info(s,t).is_some_and(|t|t.frozen.is_some()) { PItem::new("Unfreeze track (resume editing)", Cmd::UnfreezeTrack(t)) } else { PItem::new("Freeze track (save CPU)", Cmd::FreezeTrack(t)) },
         PItem::new("Bounce track", Cmd::BounceTrack(t)),
         PItem::sep(),
@@ -3005,6 +3007,7 @@ pub enum PlDrag {
     ResizeR { x0: f32, orig: Vec<(usize, Clip)> },
     Slip { x0: f32, i: usize, orig: Clip },
     Erase,
+    SweepErase{x:f32,y:f32},
     Mute { on: bool },
     Paint { track: u16, start: u32, len: u32 },
     Marquee { x0: f32, y0: f32, base: Vec<usize> },
@@ -3199,7 +3202,13 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     if right && hit.is_none() && matches!(tool,PlTool::Draw|PlTool::Paint) {
         s.playlist.sel.clear();s.playlist.header_selection.clear();s.playlist.header_anchor=None;
         s.playlist.range=None;s.playlist.overlay=None;s.playlist.last_header=None;
-        s.playlist.last_clip=None;app.drag=None;app.invalidate();return;
+        s.playlist.last_clip=None;
+        if tool==PlTool::Draw {app.drag=None;app.invalidate();return;}
+    }
+    if right && tool==PlTool::Paint {
+        snapshot_as(s,"Playlist brush erase");
+        app.drag=Some(Drag::Pl(PlDrag::SweepErase{x,y}));
+        erase_at(app,grid);app.resize_cursor=false;return;
     }
     let alt = app.alt;
 
@@ -3417,6 +3426,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 let i = place(s, track, start);
                 let c = clips(s)[i];
                 if tool == PlTool::Paint {
+                    s.playlist.sel.push(i);
                     app.drag = Some(Drag::Pl(PlDrag::Paint { track, start, len: c.length.max(1) }));
                 } else {
                     app.drag = Some(Drag::Pl(PlDrag::Move { x0: x, y0: y, orig: vec![(i, c)], fresh: true }));
@@ -3629,6 +3639,24 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             let dt = snap_delta(s, &g, (x - x0) / g.ppt, alt);
             slip(s, i, &orig, dt);
         }
+        PlDrag::SweepErase{x:x0,y:y0}=>{
+            let mut ids=Vec::new();
+            for (i,c) in clips(s).iter().enumerate(){
+                let r=g.clip_rect(c);
+                let r=r.intersect(&grid);
+                if r.w<=0. || r.h<=0. {continue;}
+                let (mut lo,mut hi)=(0.0_f32,1.0_f32);
+                for (a,d,min,max) in [(x0,x-x0,r.x,r.right()),(y0,y-y0,r.y,r.bottom())]{
+                    if d==0. {if a<min || a>=max {lo=2.;}}else{
+                        let (u,v)=((min-a)/d,(max-a)/d);
+                        lo=lo.max(u.min(v));hi=hi.min(u.max(v));
+                    }
+                }
+                if lo<=hi{ids.push(i);}
+            }
+            if !ids.is_empty(){delete(s,ids);app.invalidate();}
+            app.resize_cursor=false;app.drag=Some(Drag::Pl(PlDrag::SweepErase{x,y}));return;
+        }
         PlDrag::Erase => return erase_at(app, grid),
         PlDrag::Mute { on } => return mute_at(app, grid, on),
         PlDrag::Paint { track, start, len } => {
@@ -3644,7 +3672,9 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 let pos = pos as u32;
                 let taken = clips(s).iter().any(|c| c.track == track && c.position < pos + len && c.end() > pos);
                 if !taken {
+                    let index = clips(s).len();
                     arr_mut(s).clips.push(Clip::new(pos, len, track, src));
+                    s.playlist.sel.push(index);
                     s.piano.dirty = true;
                 }
             }
@@ -3816,7 +3846,19 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
             let target=g.track_at(app.mouse.1.clamp(grid.y,grid.bottom()-1.));
             s.playlist.drop_folder=None;
             if app.mouse.1>=grid.y && app.mouse.1<grid.bottom(){
-                if let Some(folder)=folder_target(s,target){
+                if let Some(parent)=group_track(s,row).filter(|&p|track_info(s,p).is_some_and(|r|r.folder) && crate::comping::parent(s,row).is_none()) {
+                    if target!=row && target!=parent {
+                        if track_info(s,target).is_some_and(|r|r.folder) {
+                            move_into_folder(s,row,target);
+                        }else{
+                            snapshot_as(s,"Move playlist track");
+                            let mut order:Vec<_>=(0..TRACKS).filter(|&r|r!=row).collect();
+                            order.insert(target as usize,row);
+                            arr_mut(s).tracks[row as usize].grouped=group_track(s,target).is_some();
+                            apply_track_order(s,&order,row,&[row],&[]);
+                        }
+                    }
+                }else if let Some(folder)=folder_target(s,target){
                     if let Some(message)=move_into_folder(s,row,folder){s.message=Some(message);}
                 }else if row!=target {
                     snapshot_as(s,"Move playlist track");reorder_track(s,row,target);
@@ -4137,7 +4179,7 @@ pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
     if double {
         start_edit(s, EditTarget::TrackName(t), at);
     } else {
-        app.drag=Some(Drag::Pl(PlDrag::HeaderRange {anchor:t,base:Vec::new()}));
+        app.drag=Some(Drag::Pl(PlDrag::Track {row:t,y0:app.mouse.1,started:false}));
     }
     app.invalidate();
 }
@@ -4979,6 +5021,21 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             snapshot(s);
             toggle_solo(s, t);
             None
+        }
+        Cmd::DissolveFolder(t) => {
+            if !track_info(s,t).is_some_and(|r|r.folder){return None;}
+            snapshot_as(s,"Dissolve playlist folder");
+            let tracks=&mut arr_mut(s).tracks;
+            tracks[t as usize].folder=false;
+            tracks[t as usize].collapsed=false;
+            for row in tracks.iter_mut().skip(t as usize+1).take_while(|r|r.grouped){row.grouped=false;}
+            if !clips(s).iter().any(|c|c.track==t) && !s.project.instrument_lanes.iter().any(|v|v.2==t) && track_info(s,t).is_some_and(|r|r.frozen.is_none() && r.comp.is_none()){
+                arr_mut(s).tracks[t as usize]=PlaylistTrack::new(u32::from(t)+1);
+                let order:Vec<_>=(0..TRACKS).filter(|&r|r!=t).chain(std::iter::once(t)).collect();
+                apply_track_order(s,&order,t,&[],&[]);
+                s.playlist.track=t;s.playlist.header_selection=vec![t];s.playlist.header_anchor=Some(t);
+            }
+            Some("Folder dissolved".into())
         }
         Cmd::CreateFolder(t) => {
             let mut rows=folder_members(s,t);

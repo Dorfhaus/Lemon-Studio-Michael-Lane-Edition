@@ -23,7 +23,20 @@ pub fn phase(s: &State) -> u8 {
 }
 pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
+    if matches!(app.hover,Some(Action::PianoGrid|Action::PianoNote(_))) {
+        use crate::piano::Tool;
+        let tool=if matches!(app.drag,Some(crate::app::Drag::NoteErase)) {PlTool::Delete}
+            else if app.ctrl {PlTool::Select}
+            else {match app.state.piano.tool {
+                Tool::Draw=>PlTool::Draw, Tool::Paint=>PlTool::Paint, Tool::Delete=>PlTool::Delete,
+                Tool::Mute=>PlTool::Mute, Tool::Slice=>PlTool::Slice, Tool::Select=>PlTool::Select,
+                Tool::Zoom=>PlTool::Zoom, Tool::Playback=>PlTool::Playback,
+            }};
+        if app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint){return Some(Cursor::EwResize);}
+        return Some(Cursor::Playlist(tool,3));
+    }
     if app.hover != Some(Action::PlaylistArea) { return None; }
+    if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::SweepErase{..}))){return Some(Cursor::Playlist(PlTool::Delete,3));}
     let tool = if app.ctrl { PlTool::Select } else { app.state.playlist.tool };
     if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::EwResize); }
 
@@ -45,7 +58,7 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
     mask.begin_frame(None);
     mask.clear(Color::rgb(0x000000));
     let icon = match tool { PlTool::Draw => Icon::Pencil, PlTool::Paint => Icon::Brush, PlTool::Slice => Icon::Slice, PlTool::Select | PlTool::Comp => Icon::Select, PlTool::Delete => Icon::Delete, PlTool::Mute => Icon::Mute, PlTool::Zoom => Icon::Zoom, PlTool::Slip => Icon::Slip, PlTool::Playback => Icon::Play };
-    let size = [24.0,26.5,26.2,26.0][usize::from(phase.min(3))];
+    let size = [19.5,21.5,21.2,21.0][usize::from(phase.min(3))];
     let (tip_x,tip_y,at_x,at_y)=match tool {
         PlTool::Draw | PlTool::Paint => (3.,21.,6.,26.),
         PlTool::Slice => (3.,19.,6.,26.),
