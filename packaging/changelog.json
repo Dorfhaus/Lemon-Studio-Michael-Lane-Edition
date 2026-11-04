@@ -4,6 +4,13 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Michael Lane Edition startup artwork \u00b7 public build 2026110404",
+      "changes": [
+        "The startup logo now carries Michael Lane Edition in gold lettering along the outer groove of the animated record. The loading status stays below the artwork."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Community Samples, template FX recall and Browser menu fixes \u00b7 public build 2026110403",
       "changes": [
         "Community Samples is available in the Browser on Windows, Linux and Mac. Browse by sound type and genre, see waveforms, preview audio and drag samples directly into the Playlist.",
