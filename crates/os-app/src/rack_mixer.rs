@@ -206,7 +206,7 @@ mod tests {
             let pane=geometry(&app.state,app.state.win_rect(Win::Mixer)).into_iter().find(|p|p.track==1).unwrap();
             for action in [Action::Fader(1),Action::Knob(crate::knobs::KnobId::MixPan(1)),Action::Mix(mixer::MHit::Effects(1)),Action::Mix(mixer::MHit::Disk(1))]{
                 let r=app.hits.iter().find(|h|h.action==action).unwrap().rect;
-                assert!(r.x>=pane.rect.x&&r.right()<=pane.rect.right());assert!(r.y>pane.rect.bottom());
+                assert!(r.x>=pane.rect.x&&r.right()<=pane.rect.right(),"{action:?} rect {r:?} outside {pane:?} at width {width}",pane=pane.rect);assert!(r.y>pane.rect.bottom());
             }
             let hit=|a|app.hits.iter().find(|h|h.action==a).unwrap().rect;
             let fader=hit(Action::Fader(1));let pan=hit(Action::Knob(crate::knobs::KnobId::MixPan(1)));

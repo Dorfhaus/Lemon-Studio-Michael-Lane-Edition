@@ -337,6 +337,7 @@ const HELP: &[Item] = &[
     it("What's new", ""),
     SEP,
     it("About...", "").on(),
+    it("Lemon Studio Discord", "").on(),
 ];
 
 pub const MENUS: &[Menu] = &[
@@ -1099,11 +1100,13 @@ pub fn toolbar_items(s: &State) -> Vec<crate::playlist::PItem> {
     let switch = |label: &'static str, sw: Switch, on: bool| PItem::new(label, Cmd::Toolbar(sw)).mark(Mark::Check(on));
     let mut items = vec![
         PItem::head("Toolbars"),
+        PItem::new("Mixer",Cmd::MainMenu(VIEW,VIEW_ITEMS.iter().position(|item|item.label=="Mixer").expect("Mixer menu entry"))).key("F9").mark(Mark::Check(s.shown(Win::Mixer))),
         switch("Edit", Switch::Edit, s.bar.editing),
         switch("Separators", Switch::Separators, o.separators),
         switch("Flat buttons", Switch::Flat, o.flat),
         PItem::sep(),
         switch("Hint bar", Switch::HintBar, o.hint_bar),
+        switch("Tesla audio editor",Switch::Tesla,crate::settings_file::flag("toolbar_tesla",false)),
         switch("CPU and memory", Switch::CpuMemory, crate::settings_file::flag("toolbar_cpu_visible",true)),
         // A command: always the dim mark (§1).
         switch("Hide", Switch::Hide, false).key("Ctrl+F11"),
@@ -1163,7 +1166,10 @@ pub fn clock_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
   let mut app=crate::app::App::new(None);
   for m in 0..MENUS.len(){let rows=organized_items(&app.state,m);assert!(!rows.is_empty());assert!(rows.len()<22,"menu {m} still too long");
    fn commands(rows:&[crate::playlist::PItem],out:&mut Vec<(usize,usize)>){for r in rows{assert!(!matches!(r.cmd,crate::playlist::Cmd::NotYet(_)));if let crate::playlist::Cmd::MainMenu(m,i)=r.cmd{out.push((m,i));}commands(&r.children,out);}}
-   let mut cmds=vec![];commands(&rows,&mut cmds);let mut unique=cmds.clone();unique.sort();unique.dedup();assert_eq!(cmds.len(),unique.len());
+   let mut cmds=vec![];commands(&rows,&mut cmds);let mut unique=cmds.clone();unique.sort();unique.dedup();// Mixer is intentionally reachable both directly in View and under Toolbars.
+   let mixer=(VIEW,VIEW_ITEMS.iter().position(|item|item.label=="Mixer").unwrap());
+   if m==VIEW{assert_eq!(cmds.iter().filter(|c|**c==mixer).count(),2);}
+   assert_eq!(cmds.len(),unique.len()+usize::from(m==VIEW));
    for(i,item) in MENUS[m].cols.iter().flat_map(|(_,v)|v.iter()).enumerate(){if item.kind==Kind::Item&&works(m,item)&&in_menu(&app.state,m,item)&&submenu(m,item.label).is_none(){assert!(cmds.contains(&(m,i)),"missing {}",item.label);}}
   }
   let old=crate::settings_file::flag("toolbar_cpu_visible",true);

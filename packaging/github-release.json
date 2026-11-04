@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.04.4",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.04.4",
-  "notes": "- The startup logo now carries Michael Lane Edition in gold lettering along the outer groove of the animated record. The loading status stays below the artwork.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.04.5",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.04.5",
+  "notes": "- Create and name Playlist folders for a range of tracks, group tracks below them, and collapse or expand the folder. Enable the optional left-hand clip picker from the Clips menu.\n- Select across stems without moving the first clip. The selection scrolls at the Playlist edges, zoom boxes have a stronger outline, and Draw and Paint have distinct tool cursors.\n- Drag browser samples over the Playlist toolbar button to open it. Multi-file drops in the main Playlist share one position. Dropping MIDI onto an instrument or Channel Rack channel blends its notes into the current project.\n- Make it fit and Detect sample tempo are in the audio clip menu. Long-stem tempo analysis compares pulses across multiple sections.\n- Use Ctrl+Shift on Windows and Linux or Cmd+Shift on Mac to group mixer strips. Adjust levels together in dB and undo group coloring. Mixer pan wheel steps are more responsive.\n- Routing can auto-scroll at the mixer edges. Windows Channel Strip Mixer View supports selecting a track directly from its native editor and reduces editor reopening during scrolling.\n- The Piano Roll MIDI parts menu lets you overlay notes and switch the editable pattern and channel. Alt-click resets velocity in the Piano Roll and Channel Rack graph editor.\n- Choose a Lemon Wave editor size in its window menu. Sort the plugin picker by name, vendor or category, enable the optional Tesla toolbar button, and switch on load bars in the performance monitor.\n- Improved plugin-focused undo shortcut handling and reduced unnecessary SSL-style mixer drawing. The Help menu links to the Lemon Studio Discord.\n- Fixed independent Channel Rack pattern loops, remembered rack visibility, small-screen layouts and Windows Lemon Chop sizing. Improved forum repainting and access to the Mixer toolbar shortcut.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.04.4.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110404/Lemon-Studio-Windows-Setup-2026.11.04.4.exe",
-      "sha256": "a8e592a3fdebb00c45a4ee0ddf1cffce5215b1bbd0f7419cec040f7e090812bb"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.04.5.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110405/Lemon-Studio-Windows-Setup-2026.11.04.5.exe",
+      "sha256": "3ce7e31dc216e19f8de2fef96d556eecdf99edc6b9c2481ccaf995312b793a69"
     },
     {
-      "name": "Lemon-Studio-Source-2026110404.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110404/Lemon%20Studio%20Source.zip",
-      "sha256": "1a954b1f7fa434338c05b658cc2c463d1c206be064677a6dcd58b09948e40f98"
+      "name": "Lemon-Studio-Source-2026110405.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110405/Lemon%20Studio%20Source.zip",
+      "sha256": "8fb4f3ca561e93e73f90336fdda43a353dfbbda5dd76427190ccef753b5f9bfc"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110404.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110404/Lemon-Studio-Linux-x86_64-2026110404.tar.gz",
-      "sha256": "cf66e39f98d331583019a2c877401383aa575835738afd4ac45e22a6d152ab3a"
+      "name": "Lemon-Studio-Linux-x86_64-2026110405.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110405/Lemon-Studio-Linux-x86_64-2026110405.tar.gz",
+      "sha256": "cd8329e058637a894b134d2410931dda78eaa9f581eefd90395523721fdaa28b"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110404.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110404/Lemon-Studio-Mac-arm64-2026110404.dmg",
-      "sha256": "be1049d4c4cc88100b2a04d7a70d0149aeb39ac754928db3a1e1056e5d9735d9"
+      "name": "Lemon-Studio-Mac-arm64-2026110405.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110405/Lemon-Studio-Mac-arm64-2026110405.dmg",
+      "sha256": "dc2d0e3c628231cfdb8f90473ff718c1f42903ef986395b7e7de73c3e0a3364e"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110404.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110404/Lemon-Studio-Source-Mac-arm64-2026110404.zip",
-      "sha256": "8ddbf7e4b73d100a5fa5829af99ccb07a5526feed1601eb96900f2d3e1a6ceb6"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110405.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110405/Lemon-Studio-Source-Mac-arm64-2026110405.zip",
+      "sha256": "0b522cbd2c9903464f4d78df6e8e0eb3ed6513e5e88385b2f5dde85fff6d4014"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110404.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110404/Lemon-Studio-Mac-x86_64-2026110404.dmg",
-      "sha256": "8fb7657976ac749a87743407efc2a6a01a0d6f746cc660ae8152f5e71cb62a5c"
+      "name": "Lemon-Studio-Mac-x86_64-2026110405.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110405/Lemon-Studio-Mac-x86_64-2026110405.dmg",
+      "sha256": "aab70792ad5c3cda27dd3b1d5080f8175de38452460e0baf3228bd5bcd5dd9b8"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110404.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110404/Lemon-Studio-Source-Mac-x86_64-2026110404.zip",
-      "sha256": "0f699080c543d918f56c693d8701eae1a610f2015181ba1bec77a18eee07c272"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110405.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110405/Lemon-Studio-Source-Mac-x86_64-2026110405.zip",
+      "sha256": "e29b38e26a94e5e5474dbba304c55c0a91f0ccda76f56d1aa43ce65d7dab3cb7"
     }
   ]
 }

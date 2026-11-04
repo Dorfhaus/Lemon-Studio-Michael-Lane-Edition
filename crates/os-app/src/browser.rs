@@ -412,6 +412,11 @@ impl App {
         if !started && (x - m0.0).hypot(y - m0.1) < DRAG_START {
             return;
         }
+        if !self.state.shown(Win::Playlist) && matches!(item,Item::Sample(_) | Item::File(_))
+            && self.top_hit(x,y).is_some_and(|h|h.action==Action::ToggleWin(Win::Playlist)) {
+            self.state.raise(Win::Playlist);
+            self.invalidate();
+        }
         if !started {
             self.drag = Some(Drag::Browser { item, label: label.clone(), m0, started: true });
         }

@@ -625,6 +625,19 @@ impl App {
         }
     }
 
+    pub(crate) fn midi_drop(&mut self, path: PathBuf, channel: bool) {
+        let file = match std::fs::read(&path).map_err(|e|e.to_string()).and_then(|b|os_smf::read(&b).map_err(|e|e.to_string())) {
+            Ok(file) => file,
+            Err(e) => return self.tell(Kind::Warning,TITLE,spans(&[&e])),
+        };
+        let o = Options { new_project:false, blend:true, ..options_for(&file) };
+        if channel && crate::piano::channel(&self.state).is_some() {
+            self.import_into_piano(&path,&file,&o);
+        } else {
+            self.import_into_project(&path,&file,&o);
+        }
+    }
+
     /// The settings are chosen: the piano roll's import at once; FILE's into this project at once, into a new one
     /// once unsaved changes are answered.
     fn midi_accepted(&mut self, path: PathBuf, smf: Smf, o: Options, piano: bool) {
@@ -1176,11 +1189,11 @@ mod tests {
         app.key(&Key::Named(NamedKey::Escape), false, false);
         let path = write_three("drop");
         let before = app.state.project.clone();
-        app.drop_file(path.clone());
-        assert!(form(&app).is_some());
-        app.key(&Key::Named(NamedKey::Escape), false, false);
+        app.drop_file_at_plugin(path.clone(), Some(1));
         assert!(!app.modal_open());
-        assert_eq!(app.state.project, before);
+        assert_eq!(app.state.project.channels,before.channels);
+        assert_eq!(app.state.selected_channel,1);
+        assert_ne!(app.state.project.patterns,before.patterns);
         let _ = std::fs::remove_file(path);
     }
 
@@ -1191,7 +1204,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("os_midi_late_{}.mid", std::process::id()));
         std::fs::write(&path, LATE_NOTE).unwrap();
         let mut app = test_app();
-        app.drop_file(path.clone());
+        app.midi_file_chosen(path.clone(),false);
         assert!(form(&app).expect("the form shows for the late file").o.realign);
         app.dialog_click(crate::dialog::DHit::Form(FHit::Main));
         let notes = &app.state.project.patterns[0].notes;

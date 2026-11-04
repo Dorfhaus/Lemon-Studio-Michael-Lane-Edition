@@ -224,6 +224,7 @@ pub enum Cmd {
     MidiExt(Option<String>),
     /// Plugin window menu > Detached: rack row, new state (spec: ui/plugin-window.md "Docking and the window menu").
     #[cfg_attr(not(windows), allow(dead_code))]
+    WaveSize(usize,u16),
     PluginDetach(usize, bool),
     NotYet(&'static str),
     Tool(PlTool),
@@ -313,6 +314,7 @@ pub enum Cmd {
     PointPaste(u16, usize),
     PointOriginal(u16, usize),
     Control(crate::playlist_controls::Control),
+    TogglePicker,
     ChooseSource(ClipSource),
     PointMode(u16, usize, AutoMode),
     PointValue(u16, usize),
@@ -324,6 +326,7 @@ pub enum Cmd {
     TrackAutomationCreate(u16, u32, String, f64),
     TrackSolo(u16),
     /// Group the track with the one above it, or take it out of its group (§6a).
+    CreateFolder(u16),
     TrackGroup(u16),
     /// Arrangements (§12): show arrangement `n`, add an empty one, clone / rename / delete the current one, copy
     /// arrangement `n`'s clips into the current one.
@@ -613,6 +616,7 @@ pub struct PlaylistState {
     pub snap: EditorSnap,
     /// The current clip source (what Draw / Paint place); `None` = the current pattern.
     pub source: Option<ClipSource>,
+    pub picker_visible: bool,
     pub picker: PickKind,
     /// Picker list scroll, pixels.
     pub pick_scroll: f32,
@@ -679,6 +683,7 @@ impl Default for PlaylistState {
             tool: PlTool::Paint,
             snap: EditorSnap::Main,
             source: None,
+            picker_visible: crate::settings_file::flag("playlist_picker",false),
             picker: PickKind::Pattern,
             pick_scroll: 0.0,
             pick_rows: [PICK_ROW; 3],
@@ -2693,6 +2698,8 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
             items.push(PItem::new("Clip effects...",Cmd::ClipEffects(i)));
             items.push(PItem::new("Send to mixer track...",Cmd::ClipRoute(i)));
             use crate::loop_fit::Fit;
+            items.push(PItem::new("Detect sample tempo",Cmd::FitLoop(i,Fit::Detect)));
+            items.push(PItem::new("Make it fit",Cmd::FitLoop(i,Fit::Auto)));
             let mut fitting=vec![
                 PItem::new("Make it fit",Cmd::FitLoop(i,Fit::Auto)),
                 PItem::new("Warp markers...",Cmd::Warp(i)),
@@ -2875,6 +2882,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
         PItem::new("Mute all clips", Cmd::TrackMuteClips(t, true)),
         PItem::new("Unmute all clips", Cmd::TrackMuteClips(t, false)),
         PItem::sep(),
+        PItem::new("Create folder for track range...",Cmd::CreateFolder(t)),
         PItem::new("Group with above track", Cmd::TrackGroup(t)).mark(Mark::Check(track_info(s, t).is_some_and(|x| x.grouped))),
         PItem::new("Collapse group", Cmd::GroupCollapse(t))
             .mark(Mark::Check(group_track(s, t).or(Some(t)).and_then(|g| track_info(s, g)).is_some_and(|x| x.collapsed))),
@@ -3199,13 +3207,20 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             }
             None => {
                 let base = s.playlist.sel.clone();
-                app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y, base }));
+                app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base }));
             }
         }
         app.invalidate();
         return;
     }
 
+
+    if tool == PlTool::Select && !right {
+        s.playlist.sel = hit.map_or_else(Vec::new, |i| with_groups(s, vec![i]));
+        app.drag = Some(Drag::Pl(PlDrag::Marquee { x0:x, y0:y+s.playlist_scroll.1, base:Vec::new() }));
+        app.invalidate();
+        return;
+    }
 
     // Audio clip handles: fades, fade tensions, gain (§9a).
     if let (Some(ci), false) = (hit, right) {
@@ -3362,7 +3377,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
         }
         PlTool::Select if hit.is_none() => {
             s.playlist.sel.clear();
-            app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y, base: Vec::new() }));
+            app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base: Vec::new() }));
         }
         PlTool::Draw | PlTool::Paint | PlTool::Select => match hit {
             // Right-Shift+drag on empty grid with Draw / Paint: a quick slice line, as the Slice tool (§3).
@@ -3611,7 +3626,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
         PlDrag::Marquee { x0, y0, base } => {
-            let r = Rect::span(x0.min(x), x0.max(x), y0.min(y), y0.max(y));
+            let y0 = y0 - s.playlist_scroll.1;
+            let r = Rect::span(x0.min(x), x0.max(x)+1., y0.min(y), y0.max(y)+1.);
             s.playlist.overlay = Some(Overlay::Marquee(r));
             let mut sel = base.clone();
             for (i, c) in clips(s).iter().enumerate() {
@@ -4388,6 +4404,21 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             return Some(if on { "Continuous scrolling on" } else { "Continuous scrolling off" }.into());
         }
         #[cfg(plugin_windows)]
+        Cmd::WaveSize(row,pct)=>{
+            #[cfg(windows)] app.plugins.wave_size(row,pct);
+            #[cfg(any(target_os="linux",target_os="macos"))]
+            if app.plugins.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){
+                crate::prefs::set_text("wave_editor_percent",&pct.to_string());
+                #[cfg(target_os="linux")]
+                if let Some(info)=crate::app::channel_info(&app.state.project,row){
+                    app.plugins.close_window(row);if let Err(error)=app.plugins.open_window(row,info){return Some(error);}
+                }
+                #[cfg(target_os="macos")]
+                if let Some(w)=app.plugins.hosted.get(&row).and_then(|h|h.window.as_ref()){w.set_editor_zoom(crate::plugins::wave_zoom());}
+            }
+            let _=(row,pct);
+            return None;
+        }
         Cmd::PluginDetach(row, on) => {
             app.plugins.set_detached(row, on);
             app.state.raise(crate::app::Win::Hosted(row));
@@ -4453,6 +4484,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::CompTrack(t) => Some(crate::comping::enable(s, t)),
         Cmd::CompUse(i, range) => Some(crate::comping::choose(s, i, range)),
         Cmd::Control(c) => { crate::playlist_controls::run(s, c); None }
+        Cmd::TogglePicker => {s.playlist.picker_visible=!s.playlist.picker_visible;crate::settings_file::set_flag("playlist_picker",s.playlist.picker_visible);None}
         Cmd::ChooseSource(src) => {
             crate::rack::focus_source(s,src);
             s.playlist.source = Some(src);
@@ -4462,7 +4494,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             crate::playlist_tools::select(s, PlTool::Paint);
             None
         }
-        Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
+        Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {
             crate::playlist_tools::select(s, t);
@@ -4851,6 +4883,19 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::TrackSolo(t) => {
             snapshot(s);
             toggle_solo(s, t);
+            None
+        }
+        Cmd::CreateFolder(t) => {
+            let selected:Vec<_>=s.playlist.sel.iter().filter_map(|&i|clips(s).get(i).map(|c|c.track)).collect();
+            let (first,last)=if selected.contains(&t) {(*selected.iter().min().unwrap(),*selected.iter().max().unwrap())} else {(t,t)};
+            if last>=TRACKS-1 || clips(s).iter().any(|c|c.track==TRACKS-1) {return Some("No room to insert a folder track".into());}
+            snapshot(s);
+            insert_track(s,first);
+            let tracks=&mut arr_mut(s).tracks;
+            tracks[first as usize].name=Some("Folder".into());
+            for row in first+1..=last+1 {tracks[row as usize].grouped=true;}
+            let at=grid.map_or((380.,160.),|g|(g.x-108.,PGeom::new(s,g).y_of(first)));
+            start_edit(s,EditTarget::TrackName(first),at);
             None
         }
         Cmd::TrackGroup(t) if t > 0 => {

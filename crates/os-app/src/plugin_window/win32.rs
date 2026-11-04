@@ -31,6 +31,7 @@ use super::*;
 pub struct KeyMsg {
     /// Hardware scancode as winit's `PhysicalKeyExtScancode` expects it (extended keys carry 0xE000).
     pub scancode: u32,
+    pub undo:bool,
     pub pressed: bool,
     pub ctrl: bool,
     pub alt: bool,
@@ -85,10 +86,10 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     }
                     let down = |vk: u16| GetKeyState(i32::from(vk)) < 0;
                     if let Ok(mut k) = KEYS.lock() {
-                        k.push(KeyMsg { scancode: sc, pressed: !up, ctrl: down(VK_CONTROL), alt: down(VK_MENU) });
+                        k.push(KeyMsg { scancode:sc,undo:wp==usize::from(b'Z') && down(VK_CONTROL), pressed: !up, ctrl: down(VK_CONTROL), alt: down(VK_MENU) });
                     }
                     // The host owns project undo; do not also undo inside the native editor.
-                    if sc==0x2c && down(VK_CONTROL) {return 1;}
+                    if wp==usize::from(b'Z') && down(VK_CONTROL) {os_clap::wake();return 1;}
                 }
             }
         }
@@ -137,8 +138,23 @@ pub fn focus_main() {
     }
 }
 
+static CLICKED_TRACK:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+pub fn clicked_strip()->Option<u16>{CLICKED_TRACK.swap(0,Ordering::Relaxed).checked_sub(1).map(|t|t as u16)}
+unsafe extern "system" fn strip_mouse_hook(code:i32,wp:WPARAM,lp:LPARAM)->LRESULT{unsafe{
+    if code==0 && wp==WM_LBUTTONDOWN as usize && lp!=0 {
+        let mut hwnd=(*(lp as *const MOUSEHOOKSTRUCT)).hwnd;
+        let prop:Vec<u16>="LemonStripTrack".encode_utf16().chain(Some(0)).collect();
+        while !hwnd.is_null(){
+            let track=GetPropW(hwnd,prop.as_ptr()) as usize;
+            if track!=0 {CLICKED_TRACK.store(track,Ordering::Relaxed);break;}
+            hwnd=GetAncestor(hwnd,GA_PARENT);
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(),code,wp,lp)
+}}
 fn install_key_hook() {
     KEY_HOOK.call_once(|| unsafe {
+        SetWindowsHookExW(WH_MOUSE,Some(strip_mouse_hook),std::ptr::null_mut(),GetCurrentThreadId());
         SetWindowsHookExW(WH_KEYBOARD, Some(key_hook), std::ptr::null_mut(), GetCurrentThreadId());
     });
 }
@@ -765,6 +781,7 @@ unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             }
             WM_MOUSEMOVE => {
                 if w.state.borrow().track_drag.is_some() {
+                    let (x,y)=client_point(hwnd,lp,w.scale,false);w.state.borrow_mut().motion(x,y,false);
                     SetCursor(route_clip_cursor());
                     return 0;
                 }
@@ -1053,6 +1070,34 @@ fn screens() -> Vec<[i32; 4]> {
 
 /// Screen position for a new plugin window: right of the owner's left edge, below its toolbar (physical px; the
 /// offset is logical, so the window lands on the same part of the layout at every scale).
+pub fn chop_placement(owner:isize,pos:(i32,i32),scale:f32,detached:bool,work:Option<[i32;4]>)->(f32,(i32,i32)){
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint,GetMonitorInfoW,MONITORINFO,MONITOR_DEFAULTTONEAREST};
+    let bounds=unsafe{
+        if let Some([x,y,r,b])=work.filter(|_|!detached && owner!=0){
+            let mut origin=POINT{x:0,y:0};ClientToScreen(owner as HWND,&mut origin);
+            [x+origin.x,y+origin.y,r+origin.x,b+origin.y]
+        }else{
+            let mut info:MONITORINFO=std::mem::zeroed();info.cbSize=std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(MonitorFromPoint(POINT{x:pos.0,y:pos.1},MONITOR_DEFAULTTONEAREST),&mut info)==0{return (scale,pos);}
+            [info.rcWork.left,info.rcWork.top,info.rcWork.right,info.rcWork.bottom]
+        }
+    };
+    fit_chop(bounds,pos,scale)
+}
+fn fit_chop([l,t,r,b]:[i32;4],pos:(i32,i32),scale:f32)->(f32,(i32,i32)){
+    let width=lemon_chop::view::W as f32+2.*BORDER;
+    let height=lemon_chop::view::H as f32+TITLE_H+STRIP_H+BORDER+1.;
+    let fit=scale.min((r-l).max(1) as f32/width).min((b-t).max(1) as f32/height);
+    (fit,(pos.0.clamp(l,(r-(width*fit).ceil() as i32).max(l)),pos.1.clamp(t,(b-(height*fit).ceil() as i32).max(t))))
+}
+#[test]
+fn chop_fits_below_toolbar_on_small_displays(){
+    for scale in [1.,1.25,1.5]{
+        let (k,(x,y))=fit_chop([200,85,1280,720],(420,160),scale);
+        assert!(x>=200 && y>=85 && x as f32+1054.*k<=1280.01 && y as f32+941.*k<=720.01);
+    }
+}
+
 pub fn default_position(owner: isize, scale: f32) -> (i32, i32) {
     let mut r: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetWindowRect(owner as HWND, &mut r) };

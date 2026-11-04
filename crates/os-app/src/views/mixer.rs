@@ -149,7 +149,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let r = if left { Rect::new(r.x + panel_w, r.y, r.w, r.h) } else { r };
     let client = super::window_frame_ex(ui, Win::Mixer, Rect::new(r.x, r.y, r.w - panel_w, r.h), "", 0.0, false, inner.is_some());
     title_tools(ui, s, r);
-    if s.mixer.layout==crate::rack_mixer::VIEW {
+    if s.mixer.layout==crate::rack_mixer::VIEW && mx::selected(s).len()==1 {
         let notice=Rect::new(r.x+136.,r.y+2.,(r.w-panel_w-218.).max(0.),19.);
         ui.c.text_clip(Font::new(11),notice.x,notice.y+2.,notice.w,ui.t.text_dim,"Waves: tested  ·  UAD: supported, untested");
         ui.hit(notice,Action::Swallow,"Supported Waves channel strips have been tested. Compatible resizable UAD channel strips are supported but untested.");
@@ -179,14 +179,19 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         ui.c.fill_rect(Rect::new(r.x + 4.0 + width, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
     }
     ui.c.push_clip(area);
-    let visible:Vec<u16>=(1..=inserts).filter(|n|{let x=channel_offset(s,*n)-s.mixer_scroll;x+channel_width(s,*n)>0.&&x<area.w}).collect();
-    for &n in &visible {
-        let left = area.x + channel_offset(s,n) - s.mixer_scroll;
+    let mut end=0.;
+    let mut visible=Vec::new();
+    for n in 1..=inserts {
+        let x=end-s.mixer_scroll;
+        let w=channel_width(s,n);
+        if x+w>0. && x<area.w{visible.push((n,area.x+x));}
+        end+=w;
+    }
+    for &(n,left) in &visible {
         strip(ui, s, n as u16, left, bottom, f, &ly);
     }
     // Narrow boundary targets reveal an insertion button only while hovered.
-    for &n in &visible {
-        let x=area.x+channel_offset(s,n)-s.mixer_scroll;
+    for &(n,x) in &visible {
         if x<area.x || x>area.right()-10.0 {continue;}
         let lane=Rect::new(x-4.0,client.y,8.0,client.h-52.0);
         let action=Action::Mix(MHit::InsertBefore(n as u16));
@@ -200,7 +205,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
-    let px = area.x + channel_offset(s,inserts+1) - s.mixer_scroll + 14.0;
+    let px = area.x + end - s.mixer_scroll + 14.0;
     let pb = Rect::new(px - 9.0, ly.y(HANDLE_0DB) - 9.0, 18.0, 18.0);
     if px < area.right() + 10.0 {
         let hov = ui.hit(pb, Action::Mix(MHit::Add), "Add more tracks");
@@ -216,7 +221,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
 
     // Horizontal scroll bar under the strips.
     let sb = Rect::new(area.x + 13.0, bottom - 14.0, area.w - 20.0, 9.0);
-    super::scrollbar(ui, sb, false, s.mixer_scroll, area.w, channel_offset(s,inserts+1)+width, crate::app::Scroll::MixerX);
+    super::scrollbar(ui, sb, false, s.mixer_scroll, area.w, end+width, crate::app::Scroll::MixerX);
     chevron(ui, area.x + 5.0, bottom - 9.5, false, ui.t.s(0x5d6366));
     cables(ui, s, strips, area, bottom);
 
@@ -268,6 +273,8 @@ fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32) {
 }
 
 fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
+    let count=mx::selected(s).len();
+    if count>1{ui.c.text_clip(Font::new(12),r.x+136.,r.y+3.,(r.w-224.).max(0.),ui.t.accent,&format!("{count} tracks selected"));}
     let y = r.y + 11.5;
     let ob = Rect::new(r.x + 3.0, y - 9.0, 16.0, 18.0);
     let hov = ui.hit(ob, Action::Mix(MHit::Options), "Mixer options");
@@ -435,7 +442,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let selected = s.selected_mixer == n;
     let also = !selected && mx::is_selected(s, n);
     let kx=left+width/2.;
-    let (mx,sx)=if vertical {(kx+1.,kx-27.)}else{(kx+10.,kx-10.)};
+    let (mx,sx)=if vertical {(kx+1.,(kx-27.).max(left+17.))}else{(kx+10.,kx-10.)};
     let _ = f;
 
     // Body and the strip divider.
@@ -628,7 +635,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let master = n == 0;
     let by = bottom;
     let fx_on = !s.mixer.all_fx_bypassed && track.is_none_or(|m| m.slots_enabled);
-    let button_x=if vertical {kx+28.}else{mx};
+    let button_x=if vertical {(kx+28.).min(left+width-15.)}else{mx};
     let button_w=if vertical {24.}else{30.};
     let fx_button = Rect::new(button_x-button_w/2., by - if vertical {67.}else{79.}, button_w, 17.0);
     let fx_hover = ui.hit(fx_button, Action::Mix(MHit::Effects(n)), if fx_on { "Effects enabled — click to bypass this channel's plugins" } else { "Effects bypassed — click to enable this channel's plugins" });
@@ -704,7 +711,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // Quiet dividers; selection and explicit group boundaries carry the emphasis.
     let top = ly.y(HEAD_Y0);
     let height = bottom - top - 16.0;
-    let border = if selected { ui.t.accent } else if also { ui.t.tx(0x8b999f) } else { ui.t.s(0x464f54) };
+    let border = if selected { ui.t.accent } else if also { ui.t.accent } else { ui.t.s(0x464f54) };
     ui.c.stroke_rrect(Rect::new(left + 0.75, top + 0.75, width - 1.5, height - 1.5), 0.0, 1.0, border);
     if mx::has_separator(s, n) {
         if console {analog::separator(ui,Rect::new(left,top,6.,height));}else{ui.c.fill_rect(Rect::new(left, top, 6.0, height), ui.t.s(0x919da3));}
@@ -1133,7 +1140,8 @@ pub(crate) fn vertical_panes(s:&State,outer:Rect)->Vec<crate::rack_mixer::Pane>{
     let r=super::frame_rects(s,Win::Mixer,outer).0;if r.h<2.*TITLE_H{return vec![];}
     let width=strip_width(s);let left=mx::inspector_left();let x=r.x+if left{221.}else{0.};
     let area=Rect::new(x+9.+width,r.y+TITLE_H,r.w-221.-9.-width-7.,r.h-TITLE_H);let ly=Ly::for_state(r,s);
-    (1..=mx::inserts(s)).filter_map(|n|{let rect=vertical_rect(area.x+channel_offset(s,n)-s.mixer_scroll,channel_width(s,n),&ly);let clip=rect.intersect(&area);(!clip.is_empty()).then_some(crate::rack_mixer::Pane{track:n,rect,clip})}).collect()
+    let mut x=area.x-s.mixer_scroll;
+    (1..=mx::inserts(s)).filter_map(|n|{let w=channel_width(s,n);let rect=vertical_rect(x,w,&ly);x+=w;let clip=rect.intersect(&area);(!clip.is_empty()).then_some(crate::rack_mixer::Pane{track:n,rect,clip})}).collect()
 }
 
 pub(crate) fn vertical_pane_height(outer:Rect)->f32{{let mut ly=Ly::new(outer);ly.compression=STRIP_FADER_COMPRESSION;vertical_rect(0.,128.,&ly).h}}

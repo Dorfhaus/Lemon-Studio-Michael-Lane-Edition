@@ -6,7 +6,7 @@
 //! frame and whether it was maximized) and, inside it, the Playlist, Mixer and Piano roll (their floating rects and
 //! whether each was maximized or collapsed to its title bar), the Channel rack (its place and size), the Plugin
 //! performance monitor, the Tempo tapper and the Touch controller. App-wide, kept in `settings.txt` (`settings_file`)
-//! as the app closes, never in the project. Which windows are open is not kept: a start shows its usual ones.
+//! as the app closes, never in the project. A fresh session also restores Channel Rack visibility when a prior choice exists.
 //!
 //! Keys: `window_main` (`x,y,w,h,maximized`: outer top-left and inner size in the units the window system places
 //! windows in, points on macOS and pixels elsewhere), `window_playlist`, `window_mixer`, `window_piano_roll`
@@ -90,6 +90,11 @@ pub fn restore(s: &mut State) {
     }
     // A reopened project's layout takes precedence over the last application session.
     restore_project_layout(s);
+    if s.path.is_none() {
+        match get("window_channel_rack_open").as_deref(){
+            Some("1")=>s.raise(Win::ChannelRack),Some("0")=>s.hide(Win::ChannelRack),_=>{}
+        }
+    }
 }
 
 /// First-run default only; defer until the main canvas supplies the actual display size.
@@ -103,7 +108,11 @@ pub fn apply_startup_layout(s: &mut State) {
     let height=work.h.max(min_mix+min_playlist);
     let mix_h=(height*0.62).round().clamp(min_mix,height-min_playlist);
     s.wins[Win::Mixer.slot().unwrap()]=WinState {rect:Rect::new(work.x,work.y,work.w,mix_h),maxed:false,mini:false};
-    s.wins[Win::Playlist.slot().unwrap()]=WinState {rect:Rect::new(work.x,work.y+mix_h,work.w,height-mix_h),maxed:false,mini:false};
+    // A wrapped toolbar can leave less space than the two minimum heights.
+    // Keep the Playlist footer on screen and overlap the frames by the shortage.
+    let playlist_h=height-mix_h;
+    let playlist_y=(work.bottom()-playlist_h).max(work.y);
+    s.wins[Win::Playlist.slot().unwrap()]=WinState {rect:Rect::new(work.x,playlist_y,work.w,playlist_h),maxed:false,mini:false};
     s.hide(Win::ChannelRack);s.hide(Win::PianoRoll);
     s.raise(Win::Playlist);s.raise(Win::Mixer);
     s.dock_work=Some(work);
@@ -121,6 +130,7 @@ pub fn save(s: &State) {
             keep(key, &[ws.rect.x, ws.rect.y, ws.rect.w, ws.rect.h, switch(ws.maxed), switch(ws.mini)]);
         }
     }
+    write("window_channel_rack_open",if s.shown(Win::ChannelRack){"1"}else{"0"});
     keep(RACK, &[s.rack_pos.0, s.rack_pos.1, s.rack_size.0, s.rack_size.1]);
     for (key, pos, placed) in [(PERF, s.perf.pos, s.perf.placed), (TAPPER, s.tapper.pos, s.tapper.placed), (TOUCH, s.touch.pos, s.touch.placed)] {
         if placed {
@@ -172,7 +182,9 @@ mod tests {
             let mut c=os_ui::Canvas::new(w,h,1.).unwrap();a.paint(&mut c,None);
             let work=a.state.work_rect();let m=a.state.win_rect(Win::Mixer);let p=a.state.win_rect(Win::Playlist);
             assert_eq!((m.x,m.y,m.w),(work.x,work.y,work.w));
-            assert_eq!((p.x,p.y,p.w,p.bottom()),(work.x,m.bottom(),work.w,work.bottom()));
+            assert_eq!((p.x,p.w,p.bottom()),(work.x,work.w,work.bottom()));
+            let overlap=(Win::Mixer.min_size().1+Win::Playlist.min_size().1-work.h).max(0.);
+            assert!((m.bottom()-p.y-overlap).abs()<0.01);
             assert!(m.h>=Win::Mixer.min_size().1 && p.h>=Win::Playlist.min_size().1);
             assert!(a.state.shown(Win::Mixer)&&a.state.shown(Win::Playlist));
             assert!(!a.state.shown(Win::ChannelRack)&&!a.state.shown(Win::PianoRoll));
@@ -200,11 +212,13 @@ mod tests {
         s.tapper.pos = (700.0, 420.0);
         s.tapper.placed = true;
         crate::mixer::set_layout(s,crate::mixer::TRADITIONAL);
+        s.raise(Win::ChannelRack);
         save(&app.state);
 
         let mut next = App::new(None);
         assert!(next.state.wins.iter().all(|w| w.maxed), "a new App starts with the defaults");
         restore(&mut next.state);
+        assert!(next.state.shown(Win::ChannelRack));
         let (a, b) = (&app.state, &next.state);
         assert_eq!(b.mixer.layout,crate::mixer::TRADITIONAL);
         for i in 0..3 {

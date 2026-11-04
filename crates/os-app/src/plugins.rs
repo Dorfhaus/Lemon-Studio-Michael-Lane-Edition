@@ -171,6 +171,8 @@ pub enum Request {
     PitchRange(usize, i32),
     Track(usize, u16),
     ShowTrack(usize),
+    TrackHoverEnd,
+    TrackHover(i32,i32),
     TrackDrop(usize,i32,i32),
     PickTrack(usize),
     /// A preview note from a Lemon plugin's own keyboard (host link): row, key, velocity, on.
@@ -224,6 +226,17 @@ fn earliest_over(open: impl Iterator<Item = (usize, u64)>, max: usize) -> Option
 }
 
 /// The `hosted` key of mixer track `track`'s slot `slot`.
+#[cfg(plugin_windows)]
+pub(crate) fn wave_zoom()->f32 {crate::prefs::text("wave_editor_percent").and_then(|s|s.parse::<u16>().ok()).unwrap_or(75).clamp(40,125) as f32/100.}
+#[cfg(windows)]
+impl Plugins {
+    pub(crate) fn wave_size(&mut self,row:usize,pct:u16){
+        if self.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){
+            crate::prefs::set_text("wave_editor_percent",&pct.to_string());
+            self.pending_scales.insert(row,self.scale);
+        }
+    }
+}
 pub fn fx_key(track: u16, slot: u8) -> usize {
     FX_KEY + usize::from(track) * 64 + usize::from(slot)
 }
@@ -236,6 +249,7 @@ pub fn fx_of(key: usize) -> Option<(u16, u8)> {
 #[derive(Default)]
 pub struct Plugins {
     pub defer_editor_scale:bool,
+    #[cfg(windows)] chop_workspace:Option<[i32;4]>,
     pending_scales:BTreeMap<usize,f32>,
     pub edit_revision: u64,
     #[cfg(test)] pub state_fail: std::collections::BTreeSet<usize>,
@@ -975,8 +989,19 @@ impl Plugins {
             (true, None) => crate::plugin_window::first_position(owner, scale, crate::prefs::check(&crate::prefs::DETACHED_WITH_MAIN)),
             (false, _) => crate::plugin_window::default_position(owner, scale),
         };
+        #[cfg(windows)]
+        let scale=if h.name=="Lemon Wave" {scale*wave_zoom()} else {scale};
         // Create the frame at a provisional size, embed the editor, then fit the frame to the editor's real size.
+        #[cfg(windows)]
+        let (scale,pos)=if h.plugin.lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+            crate::plugin_window::chop_placement(owner,pos,scale,h.detached,self.chop_workspace)
+        }else{(scale,pos)};
+        #[cfg(target_os="linux")]
+        let w=FrameWindow::with_zoom(owner,info,(560.,437.),pos,h.detached,if h.name=="Lemon Wave"{wave_zoom()}else{1.})?;
+        #[cfg(not(target_os="linux"))]
         let w = FrameWindow::new(owner, info, (560.0, 437.0), scale, pos, h.detached)?;
+        #[cfg(target_os="macos")]
+        if h.name=="Lemon Wave" {w.set_editor_zoom(wave_zoom());}
         // Mixer effects have no channel strip (spec: ui/mixer.md §7).
         if row >= FX_KEY {
             w.set_strip(false);
@@ -1008,6 +1033,16 @@ impl Plugins {
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub(crate) fn update_chop_workspace(&mut self,work:[i32;4]){
+        if self.chop_workspace.replace(work)==Some(work){return;}
+        for (&row,h) in &self.hosted {
+            if !h.detached && h.window.is_some() && h.plugin.try_lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+                self.pending_scales.insert(row,self.scale);
+            }
+        }
+    }
+
     /// The main window's DPI scale changed: docked windows follow it (detached ones follow their own monitor,
     /// `FrameEvent::Dpi`). Spec: ui/ui-scaling.md §3.
     pub fn set_scale(&mut self, scale: f32) {
@@ -1025,11 +1060,18 @@ impl Plugins {
     /// scale when the editor opens (on macOS its sizes are measured at it). The plugin's page is kept.
     #[cfg(any(windows, target_os = "macos"))]
     fn rescale_window(&mut self, row: usize, scale: f32) {
+        let requested_scale=scale;
+        #[cfg(windows)]
+        let scale=if self.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){scale*wave_zoom()}else{scale};
         let Some(Hosted { plugin, window: Some(w), link, .. }) = self.hosted.get_mut(&row) else { return };
+        #[cfg(windows)]
+        let scale=if plugin.try_lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+            crate::plugin_window::chop_placement(self.owner,w.position().unwrap_or_default(),scale,w.detached(),self.chop_workspace).0
+        }else{scale};
         if w.scale() == scale {
             return;
         }
-        let Ok(mut p) = plugin.try_lock() else { self.pending_scales.insert(row,scale);return };
+        let Ok(mut p) = plugin.try_lock() else { self.pending_scales.insert(row,requested_scale);return };
         let page = link.as_ref().map(|l| l.page_now());
         p.close_editor();
         w.set_scale(scale);
@@ -1040,6 +1082,8 @@ impl Plugins {
                 None
             }
         };
+        #[cfg(windows)]
+        if p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc()){w.move_into_workspace();}
         if let (Some(l), Some(page)) = (link.as_mut(), page) {
             l.set_page(page);
             w.set_page(l.page_now());
@@ -1271,6 +1315,8 @@ impl Plugins {
                         FrameEvent::PitchRange(r) => Request::PitchRange(row, r),
                         FrameEvent::Track(t) => Request::Track(row, t),
                         FrameEvent::ShowTrack => Request::ShowTrack(row),
+                        FrameEvent::TrackHoverEnd=>Request::TrackHoverEnd,
+                        FrameEvent::TrackHover(x,y)=>Request::TrackHover(x,y),
                         FrameEvent::TrackDrop(x,y) => Request::TrackDrop(row,x,y),
                         FrameEvent::PickTrack => Request::PickTrack(row),
                         FrameEvent::Raise => Request::Raise(row),

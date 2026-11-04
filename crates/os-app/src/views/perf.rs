@@ -171,6 +171,10 @@ pub fn paint(ui: &mut Ui, s: &State, _f: &FrameInfo) {
         }
         let ty_s = if row.synth { "Synth" } else { "FX" };
         ui.c.text(f, r.x + COLS[1].1 + 6.0, ty, t.text, ty_s);
+        if s.cpu.load_bars {
+            let (_,cx,cw)=COLS[2];let bar=Rect::new(r.x+cx+2.,r.y+2.,((cw-4.)*row.share() as f32/100.).clamp(0.,cw-4.),ROW_H-4.);
+            ui.c.fill_rect(bar,t.accent.with_alpha(105));
+        }
         let nums = [
             format!("{:.1}", row.share()),
             fmt_us(row.time),

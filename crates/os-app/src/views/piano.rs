@@ -178,6 +178,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             ui.c.stroke_rrect(nr.inset(1.5), if lemon { 3.0 } else { 2.0 }, 1.0, ghost);
         }
     }
+    for &(pattern,channel) in &s.piano.layers {
+        if pattern==s.pattern && (Some(channel)==ch || s.piano.ghosts) {continue;}
+        if let Some(p)=s.project.pattern(pattern){for n in p.notes.iter().filter(|n|n.channel==channel){
+            if let Some(r)=g.note_rect(n).filter(|r|r.intersect(&l.grid).w>0.){ui.c.stroke_rrect(r.inset(1.),2.,1.,t.accent.with_alpha(145));}
+        }}
+    }
     let label_font = Font::new(11);
     for (i, n) in notes.iter().enumerate().filter(|(_, n)| Some(n.channel) == ch) {
         let Some(nr) = g.note_rect(n) else { continue };

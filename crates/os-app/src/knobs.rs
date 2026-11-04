@@ -67,6 +67,7 @@ impl KnobId {
             // spec: ui/channel-rack.md §11 (3 % per notch; pan percent spans half the range), §7 (swing 4-5 %).
             KnobId::ChanVol(_) => 0.03,
             KnobId::ChanPan(_) => 0.015,
+            KnobId::MixPan(_) => 0.025,
             KnobId::Swing => 0.045,
             KnobId::Strum(k) => k.notch(),
             KnobId::Arp(k) => k.notch(),

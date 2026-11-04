@@ -210,6 +210,7 @@ pub const AUTOMATION_AT_PLAYBACK_POSITION: Check =
 /// General ▸ Miscellaneous: opening or focusing a plugin window selects its mixer track
 /// (`App::select_window_track`). Spec: ui/settings-choices.md "Miscellaneous: seven more checks, Default template and
 /// Startup project".
+pub const ROUTE_EDGE_SCROLL:Check=Check{key:"route_edge_scroll",label:"Auto-scroll mixer while routing",default:true};
 pub const AUTO_SELECT_LINKED: Check = Check { key: "auto_select_linked_modules", label: "Auto select linked modules", default: true };
 
 /// General ▸ Miscellaneous: stored and shown only. FL showed no change on native plugin windows; it has no effect until
@@ -521,6 +522,7 @@ pub const CHECKS: &[&Check] = &[
     &ALTERNATE_METER_SCALE,
     &AUTOMATION_AT_PLAYBACK_POSITION,
     &AUTO_SELECT_LINKED,
+    &ROUTE_EDGE_SCROLL,
     &HIDE_PLUGIN_TOOLBAR,
     &AUTO_NAME_CHANNELS,
     &AUTO_NAME_EFFECT_SLOTS,

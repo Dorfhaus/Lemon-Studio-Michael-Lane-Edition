@@ -16,6 +16,7 @@ use crate::playlist::{Cmd, Mark, PItem, Popup};
 /// A piano-roll command (keyboard shortcut or Tools menu entry). Note values are `1/n` notes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NCmd {
+    Layer(u16,u16,bool),
     MenuKey(&'static str,bool,bool,bool),
     Tool(piano::Tool),
     View(&'static str),
@@ -128,6 +129,16 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
         PItem::sub("View",vec![PItem::sub("Keyboard style",vec![item("FL 11 style",NCmd::KeyboardStyle(true)).mark(Mark::Radio(classic_keyboard())),item("Piano-shaped",NCmd::KeyboardStyle(false)).mark(Mark::Radio(!classic_keyboard()))]),item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
         PItem::sub("Helpers",helpers),
         PItem::sub("Time markers",vec![item("Add time marker",NCmd::AddMarker).key("Alt+T")]),
+        PItem::sub("MIDI parts",s.project.patterns.iter().flat_map(|p|{
+            let channels:std::collections::BTreeSet<_>=p.notes.iter().map(|n|n.channel).collect();
+            channels.into_iter().filter_map(move |ch|{
+                let row=s.project.channels.iter().position(|c|c.index==ch)?;
+                Some(PItem::sub(format!("{} / {}",crate::patterns::name_of(s,p.number),channel_name(s,row)),vec![
+                    item("Show notes",NCmd::Layer(p.number,ch,false)).mark(Mark::Check(s.piano.layers.contains(&(p.number,ch)))),
+                    item("Edit this part",NCmd::Layer(p.number,ch,true)).mark(Mark::Radio(s.pattern==p.number && row==s.selected_channel))
+                ]))
+            })
+        }).collect()),
         PItem::sub("Target channel",target_menu(s,x,y).items),
     ];
     Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
@@ -427,6 +438,15 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
     let done = |changed: bool, what: &str| if changed { format!("Piano roll: {what}") } else { format!("Piano roll: {what}: nothing to change") };
     let msg = match cmd {
         NCmd::MenuKey(..)=>unreachable!(),
+        NCmd::Layer(p,ch,edit)=>{
+            if edit {
+                if let Some(row)=s.project.channels.iter().position(|c|c.index==ch){
+                    if let Some(prev)=piano::channel(s){s.piano.layers.insert((s.pattern,prev));}
+                    crate::patterns::select(s,p);s.selected_channel=row;s.rack.select_only(row);s.piano.select(p,ch,Vec::new());s.piano.layers.insert((p,ch));s.piano.dirty=true;
+                }
+            }else if !s.piano.layers.remove(&(p,ch)){s.piano.layers.insert((p,ch));}
+            app.invalidate();return None;
+        }
         NCmd::ChannelMute=>{let row=s.selected_channel;crate::rack::toggle_mute(s,row);return None;},
         NCmd::ChannelSolo=>{let row=s.selected_channel;crate::rack::solo(s,row);return None;},
         NCmd::Transfer(row,copy)=>return Some(transfer(s,row,copy)),

@@ -25,8 +25,8 @@ pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
     if app.hover != Some(Action::PlaylistArea) { return None; }
     let tool = if app.ctrl { PlTool::Select } else { app.state.playlist.tool };
-    if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select) { return Some(Cursor::EwResize); }
-    if matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::Default); }
+    if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::EwResize); }
+
     Some(Cursor::Playlist(tool, phase(&app.state)))
 }
 
@@ -44,7 +44,7 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
     let mut mask = Canvas::new(px,px,scale).ok()?;
     mask.begin_frame(None);
     mask.clear(Color::rgb(0x000000));
-    let icon = match tool { PlTool::Draw | PlTool::Paint => Icon::Brush, PlTool::Slice => Icon::Slice, PlTool::Select | PlTool::Comp => Icon::Select, PlTool::Delete => Icon::Delete, PlTool::Mute => Icon::Mute, PlTool::Zoom => Icon::Zoom, PlTool::Slip => Icon::Slip, PlTool::Playback => Icon::Play };
+    let icon = match tool { PlTool::Draw => Icon::Pencil, PlTool::Paint => Icon::Brush, PlTool::Slice => Icon::Slice, PlTool::Select | PlTool::Comp => Icon::Select, PlTool::Delete => Icon::Delete, PlTool::Mute => Icon::Mute, PlTool::Zoom => Icon::Zoom, PlTool::Slip => Icon::Slip, PlTool::Playback => Icon::Play };
     let size = [24.0,26.5,26.2,26.0][usize::from(phase.min(3))];
     let (tip_x,tip_y,at_x,at_y)=match tool {
         PlTool::Draw | PlTool::Paint => (3.,21.,6.,26.),
@@ -95,11 +95,12 @@ pub fn sources(s: &State, kind: PickKind) -> Vec<ClipSource> {
     }
 }
 pub fn clips_menu(s: &State, x: f32, y: f32) -> Popup {
-    let items=[(PickKind::Pattern,"Patterns"),(PickKind::Audio,"Audio clips"),(PickKind::Automation,"Automation clips")].into_iter().map(|(kind,label)| {
+    let mut items:Vec<_>=[(PickKind::Pattern,"Patterns"),(PickKind::Audio,"Audio clips"),(PickKind::Automation,"Automation clips")].into_iter().map(|(kind,label)| {
         let mut entries: Vec<_> = sources(s,kind).into_iter().map(|src| PItem::new(pl::source_name(s,src),Cmd::ChooseSource(src)).mark(Mark::Radio(pl::source(s)==src))).collect();
         if entries.is_empty() { entries.push(PItem::new("No clips yet",Cmd::Nothing).off()); }
         PItem::sub(label,entries)
     }).collect();
+    items.push(PItem::new("Show clip picker panel",Cmd::TogglePicker).mark(Mark::Check(s.playlist.picker_visible)));
     Popup{x,y,items,sub:None,scroll:[0;2], cascade: Vec::new()}
 }
 

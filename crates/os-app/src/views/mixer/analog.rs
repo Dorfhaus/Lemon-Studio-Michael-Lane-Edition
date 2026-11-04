@@ -7,6 +7,7 @@ const INK: Color = Color::rgb(0xe1ddd1);
 const DARK: Color = Color::rgb(0x111315);
 
 pub(super) fn panel(ui: &mut Ui, r: Rect, base: Color, selected: bool) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     ui.c.fill_rect(r, DARK);
     let face = r.inset(2.);
     ui.c.fill_rect_gradient(
@@ -48,6 +49,7 @@ pub(super) fn panel(ui: &mut Ui, r: Rect, base: Color, selected: bool) {
     }
 }
 pub(super) fn well(ui: &mut Ui, r: Rect) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     ui.c.fill_rrect(r, 4., Color::rgb(0x111213));
     ui.c.fill_rect_gradient(r.inset(1.5), Color::rgb(0x242726), Color::rgb(0x343735), 3.);
     ui.c.line(
@@ -68,6 +70,7 @@ pub(super) fn well(ui: &mut Ui, r: Rect) {
     );
 }
 pub(super) fn plate(ui: &mut Ui, r: Rect) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     ui.c.fill_rect_gradient(r, Color::rgb(0x383c3a), Color::rgb(0x292d2b), 2.);
     ui.c.line(
         r.x + 2.,
@@ -157,6 +160,7 @@ pub(super) fn button(ui: &mut Ui, r: Rect, on: bool, hover: bool, col: Color) ->
 }
 /// Backlit console switch: the symbol lives inside a recessed glass lens.
 pub(super) fn signal_switch(ui: &mut Ui, r: Rect, on: bool, hover: bool, swap: bool) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     let tint = Color::rgb(if swap { 0x79b9c8 } else { 0xd6b776 });
     button(ui, r, false, hover, tint);
     let lens = r.inset(3.);
@@ -182,6 +186,7 @@ pub(super) fn signal_switch(ui: &mut Ui, r: Rect, on: bool, hover: bool, swap: b
     ui.c.pop_clip();
 }
 pub(super) fn knob(ui: &mut Ui, x: f32, y: f32, r: f32, value: f32, cap: Color, hover: bool) {
+    if !ui.c.visible(Rect::new(x-r-5.,y-r-5.,2.*r+10.,2.*r+10.)) {return;}
     let r = r.max(1.);
     ui.c.fill_circle(
         x + 0.6,
@@ -237,6 +242,7 @@ pub(super) fn knob(ui: &mut Ui, x: f32, y: f32, r: f32, value: f32, cap: Color, 
     );
 }
 pub(super) fn rocker(ui: &mut Ui, r: Rect, on: bool, hover: bool) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     ui.c.fill_rrect(r.outset(1.), 2., DARK);
     ui.c.fill_rect_gradient(r, Color::rgb(0x92978c), Color::rgb(0x474d45), 2.);
     let face = r.inset(2.);
@@ -325,6 +331,7 @@ pub(super) fn fader(ui: &mut Ui, x: f32, y: f32, selected: bool, hover: bool) {
     );
 }
 pub(super) fn vu(ui: &mut Ui, r: Rect, levels: [f32; 2], clipped: bool, selected: bool) {
+    if !ui.c.visible(r.outset(6.)) {return;}
     ui.c.fill_rrect(
         Rect::new(r.x - 2., r.y - 1., r.w + 4., r.h + 4.),
         5.,

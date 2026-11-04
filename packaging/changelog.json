@@ -4,6 +4,22 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Playlist folders, safer imports and mixer group editing \u00b7 public build 2026110405",
+      "changes": [
+        "Create and name Playlist folders for a range of tracks, group tracks below them, and collapse or expand the folder. Enable the optional left-hand clip picker from the Clips menu.",
+        "Select across stems without moving the first clip. The selection scrolls at the Playlist edges, zoom boxes have a stronger outline, and Draw and Paint have distinct tool cursors.",
+        "Drag browser samples over the Playlist toolbar button to open it. Multi-file drops in the main Playlist share one position. Dropping MIDI onto an instrument or Channel Rack channel blends its notes into the current project.",
+        "Make it fit and Detect sample tempo are in the audio clip menu. Long-stem tempo analysis compares pulses across multiple sections.",
+        "Use Ctrl+Shift on Windows and Linux or Cmd+Shift on Mac to group mixer strips. Adjust levels together in dB and undo group coloring. Mixer pan wheel steps are more responsive.",
+        "Routing can auto-scroll at the mixer edges. Windows Channel Strip Mixer View supports selecting a track directly from its native editor and reduces editor reopening during scrolling.",
+        "The Piano Roll MIDI parts menu lets you overlay notes and switch the editable pattern and channel. Alt-click resets velocity in the Piano Roll and Channel Rack graph editor.",
+        "Choose a Lemon Wave editor size in its window menu. Sort the plugin picker by name, vendor or category, enable the optional Tesla toolbar button, and switch on load bars in the performance monitor.",
+        "Improved plugin-focused undo shortcut handling and reduced unnecessary SSL-style mixer drawing. The Help menu links to the Lemon Studio Discord.",
+        "Fixed independent Channel Rack pattern loops, remembered rack visibility, small-screen layouts and Windows Lemon Chop sizing. Improved forum repainting and access to the Mixer toolbar shortcut."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Michael Lane Edition startup artwork \u00b7 public build 2026110404",
       "changes": [
         "The startup logo now carries Michael Lane Edition in gold lettering along the outer groove of the animated record. The loading status stays below the artwork."

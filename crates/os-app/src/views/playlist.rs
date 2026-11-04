@@ -136,7 +136,38 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
 
     // Track-header strip: add button and the NOTE / CHAN / PAT filters.
-    let strip = Rect::new(r.x + 2.0, client.y + 1.0, 108.0, 38.0);
+    let pick_w=picker_width(s,r);
+    if pick_w>0. {
+        let pane=Rect::new(r.x+2.,client.y,pick_w,(r.bottom()-client.y).max(0.));
+        ui.c.fill_rect(pane,t.track_header);
+        for (i,kind) in [PickKind::Pattern,PickKind::Audio,PickKind::Automation].into_iter().enumerate(){
+            let b=Rect::new(pane.x+3.+i as f32*40.,pane.y+3.,38.,24.);
+            let hot=ui.hit(b,Action::PlPickTab(kind),format!("{kind:?} clips"));
+            let ink=tool_face(ui,b,s.playlist.picker==kind,hot);
+            icons::draw(ui.c,kind_icon(kind),b.inset(4.),ink);
+        }
+        let list=Rect::new(pane.x,pane.y+30.,pane.w,(pane.h-30.).max(0.));
+        ui.hit(list,Action::PlPickList,"Clip sources");
+        let items=crate::playlist_tools::sources(s,s.playlist.picker);
+        let pitch=s.playlist.pick_row();
+        let total=items.len() as f32*pitch;
+        let offset=s.playlist.pick_scroll.min((total-list.h).max(0.));
+        let list=if total>list.h {
+            super::scrollbar(ui,Rect::new(list.right()-10.,list.y,10.,list.h),true,offset,list.h,total,crate::app::Scroll::PlPick);
+            Rect::new(list.x,list.y,list.w-10.,list.h)
+        }else{list};
+        ui.c.push_clip(list);
+        for (i,src) in items.into_iter().enumerate(){
+            let row=Rect::new(list.x+2.,list.y+i as f32*pitch-offset,list.w-4.,pitch-1.);
+            if row.bottom()<=list.y || row.y>=list.bottom(){continue;}
+            let name=pl::source_name(s,src);
+            let hot=ui.hit(row.intersect(&list),Action::PlPick(src),name.clone());
+            let ink=tool_face(ui,row,pl::source(s)==src,hot);
+            ui.c.text_clip(Font::new(12),row.x+5.,row.y+4.,row.w-10.,ink,&name);
+        }
+        ui.c.pop_clip();
+    }
+    let strip = Rect::new(r.x + pick_w + 2.0, client.y + 1.0, 108.0, 38.0);
     if super::lemon(ui) {
         ui.c.fill_rrect(strip, lk::r_btn(t), t.track_header);
     } else {
@@ -145,7 +176,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     clip_controls(ui, s, strip);
 
     // Arrangement geometry.
-    let head_x = r.x + 2.0;
+    let head_x = r.x + pick_w + 2.0;
     let head_w = 98.0;
     let grid = grid_rect(s, r, client);
     debug_assert_eq!(grid, cover);
@@ -258,8 +289,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             ui.c.stroke_rrect(m, 0.0, 1.0, Color::rgb(0xff6060));
         }
         Some(Overlay::ZoomBox(m)) => {
-            ui.c.fill_rect(m, ui.t.tx(0xffffff).with_alpha(20));
-            ui.c.stroke_rrect(m, 0.0, 1.0, ui.t.tx(0xd0d8dc));
+            ui.c.fill_rect(m, Color::rgb(0xffca37).with_alpha(65));
+            ui.c.stroke_rrect(m, 0.0, 4.0, Color::rgb(0x252015));
+            ui.c.stroke_rrect(m, 0.0, 2.0, Color::rgb(0xffda50));
         }
         Some(Overlay::Slice { tick, t0, t1 }) => {
             let x = g.x_of(tick as f32);
@@ -332,15 +364,16 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
         grid,
         ruler: ruler_rect(s, grid),
         lane: (!pl::markers(s).is_empty()).then(|| Rect::new(grid.x, overview.y + 41.0, grid.w, MARKER_H)),
-        heads: Rect::new(super::frame_rects(s, Win::Playlist, s.win_rect(Win::Playlist)).0.x + 2.0, grid.y, 98.0, grid.h),
+        heads: Rect::new(grid.x - 110., grid.y, 98.0, grid.h),
         vbar: Rect::new(grid.right(), overview.y, 4.0 + bar_sizes().1, grid.bottom() - overview.y),
         overview,
     }
 }
 
 /// The arrangement grid in a window laid out at `r` with client rect `client` (see `super::frame_rects`).
+fn picker_width(s:&State,r:Rect)->f32 { if s.playlist.picker_visible && r.w>=430. {132.} else {0.} }
 fn grid_rect(s: &State, r: Rect, client: Rect) -> Rect {
-    let grid_x = r.x + 2.0 + 98.0 + 12.0;
+    let grid_x = r.x + picker_width(s,r) + 2.0 + 98.0 + 12.0;
     let grid_w = (r.right() - grid_x - 4.0 - bar_sizes().1).max(1.0);
     let grid_y = client.y + 42.0 + if pl::markers(s).is_empty() { 0.0 } else { MARKER_H };
     Rect::new(grid_x, grid_y, grid_w, (r.bottom() - grid_y).max(0.0))
@@ -1148,7 +1181,9 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
     if !editing {
         let name_w = if short { hr.w - 26.0 } else { hr.w - 4.0 };
-        ui.c.text_clip(Font::new(16), hr.x + 2.0, hr.y + 1.0, name_w, text, &pl::track_name(s, row));
+        let indent=if lead {15.}else{0.};
+        if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.,hr.y+3.,13.,13.),text);}
+        ui.c.text_clip(Font::new(16), hr.x + 2.0+indent, hr.y + 1.0, name_w-indent, text, &pl::track_name(s, row));
     }
     if !short {
         ui.c.text(Font::new(14), hr.x + 14.0, led.y - 6.0, text.shade(-0.2), "...");

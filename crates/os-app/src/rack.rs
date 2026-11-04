@@ -746,6 +746,8 @@ impl App {
         if seen.is_none_or(|p| p == now) {
             return;
         }
+        if let Some(previous)=seen {write_loops(&mut self.state,previous);}
+        read_loops(&mut self.state);
         // Per rack row: the channel has notes or steps in the new pattern.
         let s = &self.state;
         let used: Vec<bool> = match s.project.pattern(now) {
@@ -1968,45 +1970,43 @@ pub fn play_project(s: &State) -> Project {
     }
     p.tempo = Some(s.tempo);
     p.current_pattern = Some(s.pattern);
-    if s.rack.loop_mode && !s.rack.loop_len.is_empty() {
-        let rows: Vec<usize> = s.rack.loop_len.keys().copied().collect();
-        expand_loops(&mut p, s, &rows);
+    let active=s.rack.pattern_seen.unwrap_or(s.pattern);
+    let ps=per_step(s);
+    let ends:Vec<_>=p.patterns.iter().map(|pat|p.pattern_length(pat.number)).collect();
+    for (pat,end) in p.patterns.iter_mut().zip(ends) {
+        let loops=if pat.number==active {
+            if !s.rack.loop_mode {continue;}
+            s.rack.loop_len.iter().filter_map(|(&row,&n)|p.channels.get(row).map(|ch|(ch.index,n))).collect()
+        }else{
+            if pat.loop_off.is_some(){continue;}
+            pat.loops.clone()
+        };
+        expand_loops(pat,end,ps,&loops);
     }
     p
 }
 
-/// Repeat each row's first `loop_len` steps up to the end of every pattern (its length as played, §23); notes past
-/// the loop length go.
-fn expand_loops(p: &mut Project, s: &State, rows: &[usize]) {
-    let ps = per_step(s);
-    let ends: Vec<u32> = p.patterns.iter().map(|pat| p.pattern_length(pat.number)).collect();
-    for &r in rows {
-        let (Some(&len), Some(ch)) = (s.rack.loop_len.get(&r), p.channels.get(r).map(|c| c.index)) else { continue };
-        let span = len.max(1) * ps;
-        for (pat, &end) in p.patterns.iter_mut().zip(&ends) {
-            let src: Vec<Note> = pat.notes.iter().filter(|n| n.channel == ch && n.position < span).copied().collect();
-            if src.is_empty() {
-                continue;
-            }
-            pat.notes.retain(|n| n.channel != ch);
-            let mut off = 0;
-            while off < end {
-                pat.notes.extend(src.iter().filter(|n| n.position + off < end).map(|n| Note { position: n.position + off, ..*n }));
-                off += span;
-            }
-            pat.notes.sort_by_key(|n| (n.position, n.channel));
+fn expand_loops(pat:&mut os_model::Pattern,end:u32,per_step:u32,loops:&[(u16,u32)]) {
+    for &(ch,steps) in loops {
+        if steps==0 || steps==os_model::Pattern::LOOP_FOLLOW {continue;}
+        let span=steps.saturating_mul(per_step).max(1);
+        let src:Vec<_>=pat.notes.iter().filter(|n|n.channel==ch && n.position<span).copied().collect();
+        pat.notes.retain(|n|n.channel!=ch);
+        if src.is_empty(){continue;}
+        for off in (0..end).step_by(span as usize) {
+            pat.notes.extend(src.iter().filter(|n|n.position<end-off).map(|n|Note{position:n.position+off,..*n}));
         }
+        pat.notes.sort_by_key(|n|(n.position,n.channel));
     }
 }
 
 /// Loop button > Burn: write the loops into the current pattern's notes and drop the loop lengths.
 fn burn(s: &mut State, all: bool) {
     let rows: Vec<usize> = if all { s.rack.loop_len.keys().copied().collect() } else { s.rack.sel.iter().copied().filter(|r| s.rack.loop_len.contains_key(r)).collect() };
-    let mut p = s.project.clone();
-    expand_loops(&mut p, s, &rows);
-    if let (Some(src), Some(dst)) = (p.pattern(s.pattern).cloned(), s.project.patterns.iter_mut().find(|x| x.number == s.pattern)) {
-        dst.notes = src.notes;
-    }
+    let loops:Vec<_>=rows.iter().filter_map(|&r|Some((s.project.channels.get(r)?.index,*s.rack.loop_len.get(&r)?))).collect();
+    let end=s.project.pattern_length(s.pattern);
+    let ps=per_step(s);
+    if let Some(pat)=s.project.patterns.iter_mut().find(|p|p.number==s.pattern){expand_loops(pat,end,ps,&loops);}
     for r in rows {
         s.rack.loop_len.remove(&r);
     }
@@ -2258,6 +2258,13 @@ pub fn from_model(s: &mut State) {
             None => Filter::All,
         },
     };
+    read_loops(s);
+    s.rack.pattern_seen=Some(s.pattern);
+    organize_clips(s);
+}
+
+fn read_loops(s:&mut State) {
+    let (p,rack)=(&s.project,&mut s.rack);
     let pat = p.pattern(s.pattern);
     let loops = pat.map(|p| p.loops.clone()).unwrap_or_default();
     rack.loop_len = loops
@@ -2275,7 +2282,6 @@ pub fn from_model(s: &mut State) {
         None => 0,
     };
     rack.loop_mode = !loops.is_empty() && off.is_none();
-    organize_clips(s);
 }
 
 /// Writes the rack state into the project before a save (the inverse of [`from_model`]).
@@ -2306,7 +2312,11 @@ pub fn to_model(s: &mut State) {
     if p.groups.is_empty() {
         p.current_group = None;
     }
-    // Loop lengths belong to the current pattern.
+    write_loops(s,s.rack.pattern_seen.unwrap_or(s.pattern));
+}
+
+fn write_loops(s:&mut State,n:u16){
+    let (p,rack)=(&s.project,&s.rack);
     let mut loops: Vec<(u16, u32)> =
         rack.loop_len.iter().filter_map(|(&r, &l)| p.channels.get(r).map(|c| (c.index, l))).collect();
     if rack.loop_type == 1 && !loops.is_empty() {
@@ -2315,7 +2325,6 @@ pub fn to_model(s: &mut State) {
     }
     loops.sort_by_key(|l| l.0);
     let loop_off = (!rack.loop_mode && !loops.is_empty()).then(|| LOOP_TYPE_CODES[usize::from(rack.loop_type.min(2))]);
-    let n = s.pattern;
     // Pairs with no length (0) carry nothing: a file that has them is unchanged.
     let set = |l: &[(u16, u32)]| l.iter().filter(|x| x.1 != 0).copied().collect::<BTreeSet<_>>();
     let changed = p.pattern(n).map_or(!loops.is_empty(), |pat| set(&pat.loops) != set(&loops) || pat.loop_off != loop_off);
@@ -2333,6 +2342,21 @@ mod tests {
     /// Ctrl+C / Ctrl+X / Ctrl+V with the rack in front (§11, §20): copy takes the selected channels' steps, a row each;
     /// paste puts the first row into the first selected channel and the next rows into the rows below it, whatever else
     /// is selected; cut copies and clears. Each change is one undo step.
+    #[test]
+    fn imported_pattern_loops_are_independent() {
+        let mut app=App::new(None);let s=&mut app.state;s.project=crate::app::test_project();
+        let step=per_step(s);let ch=s.project.channels[0].index;
+        for (number,span) in [(1,2),(2,3)]{
+            let pat=crate::patterns::pat_mut(s,number);pat.length=Some(step*12);
+            pat.notes.push(Note::step(ch,0));pat.loops=vec![(ch,span)];
+        }
+        s.pattern=1;from_model(s);
+        let p=play_project(s);assert_eq!(p.pattern(1).unwrap().notes.len(),6);assert_eq!(p.pattern(2).unwrap().notes.len(),4);
+        s.rack.loop_len.insert(0,4);s.pattern=2;app.pattern_tick();
+        assert_eq!(app.state.rack.loop_len.get(&0),Some(&3));
+        assert_eq!(app.state.project.pattern(1).unwrap().loops,vec![(ch,4)]);
+    }
+
     #[test]
     fn automatic_clip_groups_preserve_custom_groups_and_roundtrip() {
         let mut app=App::new(None);let s=&mut app.state;

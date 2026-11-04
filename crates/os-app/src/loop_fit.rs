@@ -7,7 +7,7 @@ use crate::playlist as pl;
 use os_model::ClipSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fit { Auto, Half, Double, Bars(u16), Reset, Edges, Trim }
+pub enum Fit { Detect, Auto, Half, Double, Bars(u16), Reset, Edges, Trim }
 
 /// Favor a small timing correction over a half/double-time interpretation of the rhythm.
 /// Whole-bar loops stay whole bars; shorter loops use half-beat increments.
@@ -44,7 +44,44 @@ fn detected_beats(sample:&os_engine::Sample,near:f64)->Option<(f64,f64)> {
     let rate=sample.rate.max(1) as usize;
     let hop=(rate/200).max(1);
     let n=sample.frames();let secs=n as f64/rate as f64;
-    if secs<0.4 || secs>120.0 {return None;}
+    if secs<0.4 {return None;}
+    if secs>16. {
+        // Measure local pulse rather than assuming a whole song contains an exact number of bars.
+        let mut votes=Vec::new();
+        for fraction in [0.15,0.45,0.75] {
+            let start=((n-rate*12) as f64*fraction) as usize;
+            let mut env=Vec::new();let mut prev=0.0f64;
+            for i in (start..start+rate*12-hop).step_by(hop) {
+                let energy=(i..i+hop).step_by(4).map(|j|f64::from(sample.left[j]).powi(2)+f64::from(sample.right[j]).powi(2)).sum::<f64>().sqrt();
+                env.push((energy-prev).max(0.));prev=energy;
+            }
+            // Spread one transient over nearby bins so fractional lags do not artificially favor half-time.
+            let env:Vec<f64>=env.windows(5).map(|w|w[0]+2.*w[1]+3.*w[2]+2.*w[3]+w[4]).collect();
+            let hz=rate as f64/hop as f64;
+            let corr=|lag:usize|{
+                let(mut ab,mut aa,mut bb)=(0.,0.,0.);
+                for (&a,&b) in env.iter().zip(env.iter().skip(lag)){ab+=a*b;aa+=a*a;bb+=b*b;}
+                ab/(aa*bb).sqrt().max(1e-12)
+            };
+            let mut best=(0.,0.);
+            for lag in (hz*60./210.) as usize..=(hz*60./55.) as usize {
+                if lag<2 {continue;}
+                let (left,mid,right)=(corr(lag-1),corr(lag),corr(lag+1));
+                if mid<0.26 || mid<left || mid<right {continue;}
+                let adjustment=(0.5*(right-left)/(2.*mid-left-right).max(1e-9)).clamp(-0.5,0.5);
+                let bpm=60.*hz/(lag as f64+adjustment);
+                let score=mid-0.08*(bpm/near.clamp(55.,210.)).log2().abs();
+                if score>best.1 {best=(bpm,score);}
+            }
+            if best.1>0.2 {votes.push(best);}
+        }
+        let best=votes.iter().map(|&(b,_)|{
+            let matching:Vec<_>=votes.iter().filter(|(v,_)|(v-b).abs()<1.8).collect();
+            let weight=matching.iter().map(|v|v.1).sum::<f64>();
+            (matching.iter().map(|v|v.0*v.1).sum::<f64>()/weight,weight,matching.len())
+        }).filter(|v|v.2>=2).max_by(|a,b|a.1.total_cmp(&b.1))?;
+        return Some((secs*best.0/60.,best.0));
+    }
     let mut env=Vec::new();let mut prev=0.0f64;
     for start in (0..n).step_by(hop) {
         let end=(start+hop).min(n);
@@ -111,6 +148,9 @@ pub fn run(app: &mut App, i: usize, cmd: Fit) -> Option<String> {
     let fraction = clip.window.map(|(a,b)| (b-a)/(secs*1000.0)).unwrap_or(1.0).clamp(1e-6,1.0);
     let ppq=f64::from(app.state.project.ppq.max(4));
     let detected=source_beats(&sample,&path,app.state.tempo);
+    if cmd==Fit::Detect {
+        return Some(detected.map_or_else(||"No consistent tempo found. Try a drum stem.".into(),|(_,b)|format!("Detected source tempo: {b:.1} BPM")));
+    }
     let visible_beats = match cmd {
         Fit::Auto => {
             if !has_audio(&sample, clip.window) {
@@ -151,6 +191,11 @@ mod tests {
     let (beats,bpm)=detected_beats(&sample,120.0).unwrap();assert_eq!(beats,16.0);assert!((bpm-126.0).abs()<0.1);
     assert_eq!(source_beats(&sample,"Top Loop 2 - 126 BPM.wav",90.0).unwrap().0,16.0);
     assert_eq!(tagged_tempo("Top Loop 126.wav"),None);
+ }
+ #[test] fn detects_full_stem_with_leading_silence_and_partial_bar(){
+    let rate=8000;let frames=55*rate;let mut sample=os_engine::Sample{rate:rate as u32,left:vec![0.;frames],right:vec![0.;frames]};
+    for beat in 0..104 {let i=rate*2+(beat as f64*rate as f64*60./127.) as usize;for j in 0..80 {sample.left[i+j]=1.-j as f32/80.;}}
+    assert!((detected_beats(&sample,120.).unwrap().1-127.).abs()<1.);
  }
  #[test] fn sanctuary_source_loops_keep_four_bars() {
     let dir=std::path::Path::new(r"E:\PRO Samples\EDM & ELECTRONIC\TOP LOOPS\Top Drum Loops");

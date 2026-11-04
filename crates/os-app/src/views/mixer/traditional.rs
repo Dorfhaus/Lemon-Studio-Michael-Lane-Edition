@@ -461,6 +461,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
             ui.c.fill_polygon(&[(kx - 3.5, ay - 9.0), (kx, ay - 12.5), (kx + 3.5, ay - 9.0)], ui.t.h(0xf09a28));
         }
     }
+    if selected||also {ui.c.stroke_rrect(Rect::new(left+0.75,ly.y(HEAD_Y0)+0.75,width-1.5,bottom-ly.y(HEAD_Y0)-17.5),0.,1.,ui.t.accent);}
     if mx::has_separator(s,n) {ui.c.fill_rect(Rect::new(left,ly.y(HEAD_Y0),4.,bottom-ly.y(HEAD_Y0)-16.),ui.t.text_dim);}
 }
 

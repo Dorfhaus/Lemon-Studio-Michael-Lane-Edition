@@ -108,6 +108,7 @@ pub struct PianoState {
     /// Key row pitch in pixels (vertical zoom, §3a; the measured default is [`ROW`]).
     pub row_h: f32,
     /// Ghost channels: other channels' notes of the pattern drawn dimmed (§5, Alt+V).
+    pub layers:std::collections::BTreeSet<(u16,u16)>,
     pub ghosts: bool,
     /// Random state of the Randomize and humanize tools (§11).
     pub rng: u64,
@@ -148,6 +149,7 @@ impl Default for PianoState {
             marker_placed: false,
             range: None,
             row_h: ROW,
+            layers:Default::default(),
             ghosts: true,
             rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1,
             split: crate::piano_split::load(),

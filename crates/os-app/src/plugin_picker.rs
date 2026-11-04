@@ -4,23 +4,25 @@ use crate::{app::{Action,App,State,Ui,Drag},plugin_menu::{Target,PlugCmd},plugin
 use os_ui::{Rect,Font};
 use winit::keyboard::{Key,NamedKey};
 #[derive(Clone,Copy,Debug,PartialEq)]
-pub enum Hit { Background,Close,Filter(u8),Favorite(bool,usize),Tile(bool,usize),Manage,Clear,Picture(bool,usize),Page(i8),Generate,CancelGeneration,PreviewReport }
+pub enum Hit { Background,Close,Sort,Filter(u8),Favorite(bool,usize),Tile(bool,usize),Manage,Clear,Picture(bool,usize),Page(i8),Generate,CancelGeneration,PreviewReport }
 #[derive(Clone,Debug)]
 pub struct View {
     pub open:bool, pub target:Target, pub query:String, pub filter:u8,
-    pub preview_revision:u64,
+    pub sort:u8, pub preview_revision:u64,
     pub images:crate::plugin_artwork::Images, pub hovered:Option<(bool,usize)>,
     pub first:usize, pub selected:usize, pub pending:Option<(Hit,(f32,f32))>,
 }
-impl Default for View {fn default()->Self{Self{preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None}}}
+impl Default for View {fn default()->Self{Self{sort:0,preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None}}}
 fn entries(s:&State,effect:bool)->Vec<&Entry>{
     let v=&s.plugin_picker;
     if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
         || (v.filter==1 && effect) || (v.filter==2 && !effect) {return Vec::new();}
     let q=v.query.to_lowercase();
     let list=if effect{&s.plugdb.lists.fx}else{&s.plugdb.lists.gens};
-    list.iter().filter(|e| (v.filter!=3 || e.favorite) && q.split_whitespace().all(|w|
-        format!("{} {} {} {}",e.label,e.vendor,e.category,crate::plugin_db::format_label(e.format)).to_lowercase().contains(w))).collect()
+    let mut rows:Vec<_>=list.iter().filter(|e| (v.filter!=3 || e.favorite) && q.split_whitespace().all(|w|
+        format!("{} {} {} {}",e.label,e.vendor,e.category,crate::plugin_db::format_label(e.format)).to_lowercase().contains(w))).collect();
+    rows.sort_by_cached_key(|e| (match v.sort {1=>e.vendor.to_lowercase(),2=>e.category.to_lowercase(),_=>String::new()},e.label.to_lowercase()));
+    rows
 }
 fn choices(s:&State)->Vec<(bool,usize)>{[true,false].into_iter().flat_map(|fx|entries(s,fx).into_iter().map(move|e|(fx,e.index))).collect()}
 fn panes(s:&State)->Vec<bool>{
@@ -38,7 +40,7 @@ fn geometry(s:&State)->(Rect,usize,usize){
 }
 fn max_first(s:&State)->usize{let (_,cols,rows)=geometry(s);entries(s,true).len().max(entries(s,false).len()).div_ceil(cols).div_ceil(rows).saturating_sub(1)*rows}
 pub fn open(app:&mut App,target:Target){
-    app.state.menu_open=None;app.state.playlist.popup=None;app.state.plugin_picker=View{open:true,target,..Default::default()};
+    app.state.menu_open=None;app.state.playlist.popup=None;app.state.plugin_picker=View{open:true,target,sort:crate::prefs::text("picker_sort").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0).min(2),..Default::default()};
     app.state.plugin_picker.images=crate::plugin_artwork::load(app.state.plugdb.lists.fx.iter().chain(&app.state.plugdb.lists.gens).cloned());
     app.pressed=None;app.invalidate();
 }
@@ -65,6 +67,7 @@ pub fn act(app:&mut App,hit:Hit){
         Hit::PreviewReport=>crate::plugin_previews::report(app),
         Hit::Picture(fx,index)=>{let list=if fx{&app.state.plugdb.lists.fx}else{&app.state.plugdb.lists.gens};if let Some(uid)=list.iter().find(|e|e.index==index).map(|e|e.uid.clone()){crate::plugin_artwork::choose(app,uid);}},
         Hit::Page(direction)=>{let (_,_,rows)=geometry(&app.state);let max=max_first(&app.state);let v=&mut app.state.plugin_picker;v.first=v.first.saturating_add_signed(direction as isize*rows as isize).min(max);},
+        Hit::Sort=>{let v=&mut app.state.plugin_picker;v.sort=(v.sort+1)%3;crate::prefs::set_text("picker_sort",&v.sort.to_string());v.first=0;v.selected=0;v.hovered=None;}
         Hit::Close=>close(app),
         Hit::Filter(f)=>{let v=&mut app.state.plugin_picker;if v.target==Target::All || f==0 || f==3{v.filter=f;v.first=0;v.selected=0;v.hovered=None;}},
         Hit::Clear=>{let v=&mut app.state.plugin_picker;v.query.clear();v.first=0;v.selected=0;},
@@ -153,10 +156,11 @@ pub fn paint(ui:&mut Ui,s:&State){
     let title=match v.target{Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)=>"Choose an effect",Target::All=>"Plugin picker"};
     let progress=crate::plugin_previews::progress();
     let caption=if progress.running{format!("{} / {} · {}",progress.done,progress.total,progress.current)}else{title.into()};
-    ui.c.text_clip(Font::new(20).bold(),r.x+18.,r.y+16.,r.w-370.,ui.t.text,&caption);
+    ui.c.text_clip(Font::new(20).bold(),r.x+18.,r.y+16.,(r.w-475.).max(1.),ui.t.text,&caption);
     if !progress.summary.is_empty(){ui.c.text_clip(Font::new(10),r.x+18.,r.y+38.,r.w-350.,ui.t.text_dim,&progress.summary);}
     let button=|ui:&mut Ui,r:Rect,label:&str,h:Hit,on:bool|crate::feature_votes::button(ui,r,label,Action::PluginPicker(h),true,on,label);
     if cfg!(windows){button(ui,Rect::new(r.right()-324.,r.y+12.,154.,28.),if progress.running{"Cancel generation"}else{"Generate previews"},if progress.running{Hit::CancelGeneration}else{Hit::Generate},!progress.running);}
+    button(ui,Rect::new(r.right()-448.,r.y+12.,116.,28.),["Sort: Name","Sort: Vendor","Sort: Category"][v.sort as usize],Hit::Sort,false);
     button(ui,Rect::new(r.right()-162.,r.y+12.,108.,28.),"Manage plugins",Hit::Manage,false);
     button(ui,Rect::new(r.right()-44.,r.y+12.,28.,28.),"X",Hit::Close,false);
     let filters:Vec<(u8,&str)>=if v.target==Target::All{vec![(0,"Hybrid"),(1,"Instruments"),(2,"Effects"),(3,"Favorites")]}else{vec![(0,"All"),(3,"Favorites")]};

@@ -47,6 +47,7 @@ use super::*;
 pub struct KeyMsg {
     /// The key's virtual key code (`NSEvent.keyCode`), as winit's `PhysicalKeyExtScancode` expects it on macOS.
     pub scancode: u32,
+    pub undo:bool,
     pub pressed: bool,
     /// Control or Command.
     pub ctrl: bool,
@@ -379,6 +380,7 @@ struct Frame {
     state: RefCell<State>,
     canvas: RefCell<Canvas>,
     /// The backing scale the frame is drawn at.
+    editor_zoom:Cell<f32>,
     scale: Cell<f32>,
     /// Docked and clipped: the parts shown (frame points); `None`: all of it.
     shown: RefCell<Option<Vec<NSRect>>>,
@@ -431,6 +433,7 @@ impl FrameWindow {
                 state: RefCell::new(state),
                 // Sized at the real scale once placed (`layout`).
                 canvas: RefCell::new(Canvas::new(1, 1, 1.0).expect("canvas")),
+                editor_zoom:Cell::new(1.),
                 scale: Cell::new(scale),
                 shown: RefCell::new(None),
                 wheel: Cell::new(0.0),
@@ -612,7 +615,14 @@ impl FrameWindow {
     }
 
     /// Follows a new editor size (plugins may resize).
+    pub fn set_editor_zoom(&self,zoom:f32){
+        let old=self.f.editor_zoom.replace(zoom);
+        let displayed=self.f.state.borrow().editor;
+        self.set_editor_size((displayed.0/old,displayed.1/old));
+    }
     pub fn set_editor_size(&self, editor: (f32, f32)) {
+        let zoom=self.f.editor_zoom.get();
+        let editor=(editor.0*zoom,editor.1*zoom);
         if self.f.state.borrow().editor != editor {
             self.f.state.borrow_mut().editor = editor;
             self.f.layout();
@@ -750,6 +760,10 @@ impl Frame {
             None => self.view.setFrameSize(NSSize::new(w, h)),
         }
         self.area.setFrame(rect(f64::from(BORDER), f64::from(ay), f64::from(ed.0), f64::from(ed.1)));
+        let zoom=f64::from(self.editor_zoom.get());
+        if zoom!=1. || self.area.bounds().size!=self.area.frame().size {
+            self.area.setBoundsSize(NSSize::new(f64::from(ed.0)/zoom,f64::from(ed.1)/zoom));
+        }
         self.pin_editor();
         self.area.setHidden(!show);
         let k = self.scale.get();
@@ -773,7 +787,7 @@ impl Frame {
     /// area's height when they open or resize (before the frame follows them): Vital, resized from its own settings,
     /// hung below a gap at the top; Surge, placed at the origin of a smaller area, was cut off at the top.
     fn pin_editor(&self) {
-        let h = self.area.frame().size.height;
+        let h = self.area.bounds().size.height;
         for v in self.area.subviews().iter() {
             let f = v.frame();
             let y = h - f.size.height;
@@ -1070,6 +1084,7 @@ fn monitor(e: &NSEvent) {
         let flags = e.modifierFlags();
         let k = KeyMsg {
             scancode: u32::from(e.keyCode()),
+            undo:flags.intersects(NSEventModifierFlags::Control | NSEventModifierFlags::Command) && e.charactersIgnoringModifiers().is_some_and(|s|s.to_string().eq_ignore_ascii_case("z")),
             pressed: t == NSEventType::KeyDown,
             ctrl: flags.intersects(NSEventModifierFlags::Control | NSEventModifierFlags::Command),
             alt: flags.contains(NSEventModifierFlags::Option),

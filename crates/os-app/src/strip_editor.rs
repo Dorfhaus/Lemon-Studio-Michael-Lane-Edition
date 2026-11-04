@@ -6,7 +6,7 @@ use windows_sys::Win32::{Foundation::{HWND,LPARAM,LRESULT,WPARAM,RECT,POINT},Gra
 use crate::strip_geometry::*;
 fn ease(t:f32)->f32{let t=t.clamp(0.,1.);t*t*(3.-2.*t)}
 struct Data {inner:HWND,port:HWND,size:(i32,i32),offset:i32,x:f32,page_width:f32}
-pub struct Editor {hwnd:HWND,data:Box<Data>,pub owner:isize,pub scale:f32,rect:[i32;4],clip:Vec<[i32;4]>,profile:Profile,pages:Vec<Page>,page:usize,slide:Option<(Instant,f32,f32)>,open_height:i32,pending_height:Option<(i32,Instant)>}
+pub struct Editor {hidden_since:Option<Instant>,hwnd:HWND,data:Box<Data>,pub owner:isize,pub scale:f32,rect:[i32;4],clip:Vec<[i32;4]>,profile:Profile,pages:Vec<Page>,page:usize,slide:Option<(Instant,f32,f32)>,open_height:i32,pending_height:Option<(i32,Instant)>}
 fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(Some(0)).collect()}
 unsafe fn repaint(hwnd:HWND){unsafe{RedrawWindow(hwnd,std::ptr::null(),std::ptr::null_mut(),RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}}
 unsafe fn position(hwnd:HWND,d:&mut Data){unsafe{
@@ -37,8 +37,12 @@ impl Editor{
         let port=create(hwnd,WS_VISIBLE);if port.is_null(){DestroyWindow(hwnd);return Err("Could not create section viewport".into());}
         let inner=create(port,WS_VISIBLE);if inner.is_null(){DestroyWindow(hwnd);return Err("Could not create editor parent".into());}
         let mut data=Box::new(Data{inner,port,size:(1,1),offset:0,x:0.,page_width:1.});SetWindowLongPtrW(hwnd,GWLP_USERDATA,(&mut *data as *mut Data) as isize);
-        Ok(Self{hwnd,data,owner,scale,rect:[0;4],clip:vec![],profile:Profile::Whole,pages:vec![Page{left:0.,right:1.}],page:0,slide:None,open_height:0,pending_height:None})
+        Ok(Self{hidden_since:None,hwnd,data,owner,scale,rect:[0;4],clip:vec![],profile:Profile::Whole,pages:vec![Page{left:0.,right:1.}],page:0,slide:None,open_height:0,pending_height:None})
     }}
+    pub fn hide_for_scroll(&mut self)->bool {
+        if self.hidden_since.is_none(){unsafe{ShowWindow(self.hwnd,SW_HIDE);}self.hidden_since=Some(Instant::now());}
+        self.hidden_since.is_some_and(|t|t.elapsed()<Duration::from_secs(2))
+    }
     pub fn refresh(&self){unsafe{repaint(self.hwnd);}crate::plugin_window::embedded_exposed();}
     pub fn area(&self)->*mut c_void{self.data.inner as _}
     pub fn accept_size(&mut self,size:(u32,u32))->bool{
@@ -66,8 +70,10 @@ impl Editor{
     }
     pub fn screen_point(&self,p:(i32,i32))->(i32,i32){unsafe{let mut pt=POINT{x:p.0,y:p.1};ClientToScreen(self.data.inner,&mut pt);(pt.x,pt.y)}}
     pub fn place(&mut self,r:[i32;4],clip:[i32;4],covers:&[[i32;4]]){unsafe{
+        if self.hidden_since.take().is_some(){self.clip.clear();}
         let mut key=vec![clip];key.extend_from_slice(covers);if r==self.rect&&key==self.clip{return;}self.clip=key;crate::plugin_window::embedded_exposed();
-        if r!=self.rect{SetWindowPos(self.hwnd,HWND_BOTTOM,r[0],r[1],(r[2]-r[0]).max(1),(r[3]-r[1]).max(1),SWP_NOACTIVATE|SWP_NOCOPYBITS);self.rect=r;position(self.hwnd,&mut self.data);}
+        let size_changed=r[2]-r[0]!=self.rect[2]-self.rect[0] || r[3]-r[1]!=self.rect[3]-self.rect[1];
+        if r!=self.rect{SetWindowPos(self.hwnd,HWND_BOTTOM,r[0],r[1],(r[2]-r[0]).max(1),(r[3]-r[1]).max(1),SWP_NOACTIVATE|SWP_NOCOPYBITS);self.rect=r;if size_changed{position(self.hwnd,&mut self.data);}}
         let region=CreateRectRgn(clip[0]-r[0],clip[1]-r[1],clip[2]-r[0],clip[3]-r[1]);
         for c in covers{let cut=CreateRectRgn(c[0]-r[0],c[1]-r[1],c[2]-r[0],c[3]-r[1]);CombineRgn(region,region,cut,RGN_DIFF);DeleteObject(cut);}
         if SetWindowRgn(self.hwnd,region,1)==0{DeleteObject(region);}ShowWindow(self.hwnd,SW_SHOWNOACTIVATE);repaint(self.hwnd);
@@ -97,6 +103,7 @@ impl crate::plugins::Plugins {
         if h.rack_editor.is_none(){
             let result=(||{
                 let mut e=Editor::new(owner,scale)?;e.rect=r;
+                unsafe{SetPropW(e.hwnd,wide("LemonStripTrack").as_ptr(),(crate::plugins::fx_of(key).unwrap().0 as usize+1) as _);}
                 let mut p=h.plugin.lock().map_err(|_|"Plugin busy".to_string())?;
                 let d=p.desc().clone();e.profile=profile(&d);e.open_height=r[3]-r[1];
                 let fit=prepare(&d,scale,r,|scale|{let result=p.open_editor(e.area(),scale);p.close_editor();result})?;

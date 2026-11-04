@@ -886,6 +886,7 @@ pub enum Drag {
     LimitScroll { dx: f32 },
     /// A plain press on a mixer strip, held: the strip under the cursor is selected as it slides across, to preview
     /// tracks one after another.
+    MixerRange { anchor:u16, original:Vec<u16>, ranged:bool },
     MixSelect { from:u16, x0:f32, to:u16, started:bool },
     Tempo { y0: f32, t0: f64, step: f64, moved: bool },
     /// The song position slider's handle (`dx` = grab offset from its centre), or the button held on its track (the
@@ -1330,6 +1331,8 @@ pub struct App {
     pub canvas_off: (i32, i32),
     /// The open popup belongs to this row's detached plugin window: it is shown lifted above that window.
     #[cfg_attr(not(plugin_windows), allow(dead_code))]
+    route_hover:Option<(f32,f32)>,
+    edge_tick:std::time::Instant,
     popup_lift: Option<usize>,
     /// The open popup is a menu a hosted plugin asked for (`hosted` key, menu id): closed without a pick, the plugin is
     /// told (`plugin_popup`).
@@ -1613,6 +1616,7 @@ impl App {
             overlays: Vec::new(),
             #[cfg(any(windows,target_os="macos"))] rack_parent:0,
             canvas_off: (0, 0),
+            route_hover:None,edge_tick:std::time::Instant::now(),
             popup_lift: None,
             plugin_menu: None,
             bars: Vec::new(),
@@ -2747,7 +2751,7 @@ impl App {
         for k in crate::plugin_window::take_keys() {
             use winit::platform::scancode::PhysicalKeyExtScancode;
             if let winit::keyboard::PhysicalKey::Code(code) = winit::keyboard::PhysicalKey::from_scancode(k.scancode) {
-                if k.ctrl && code==winit::keyboard::KeyCode::KeyZ {
+                if k.undo {
                     if k.pressed {self.undo_key(k.alt);}
                     continue;
                 }
@@ -2812,6 +2816,10 @@ impl App {
                         let Some((_, detached)) = self.plugins.window_of(row) else { continue };
                         let (lx, ly) = self.screen_to_canvas(x, y);
                         let mut menu = crate::playlist::plugin_window_menu(row, detached, lx, ly);
+                        if self.plugins.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){
+                            menu.items.insert(0,crate::playlist::PItem::sub("Editor size",[40,50,60,75,85,100,125].into_iter().map(|pct|
+                                crate::playlist::PItem::new(format!("{pct}%"),crate::playlist::Cmd::WaveSize(row,pct))).collect()));
+                        }
                         crate::presets::fill_window_menu(self, row, &mut menu);
                         // A channel's window: Replace ▸ lists the generators (an effect slot's stays greyed here; the
                         // mixer's slot menu has its own Replace ▸).
@@ -2883,6 +2891,7 @@ impl App {
                         chans.get_mut(row).into_iter().for_each(|c| c.mixer_track = t.min(max));
                     }
                     Request::PickTrack(row) => {
+                        self.route_hover=None;
                         crate::route_picker::open(self,row);
                         self.popup_lift=Some(row);
                         #[cfg(windows)]
@@ -2895,7 +2904,10 @@ impl App {
                         crate::plugin_window::focus_main();
                         continue;
                     }
+                    Request::TrackHoverEnd=>{self.route_hover=None;continue;}
+                    Request::TrackHover(x,y)=>{self.route_hover=Some(self.screen_to_canvas(x,y));continue;}
                     Request::TrackDrop(row,x,y) => {
+                        self.route_hover=None;
                         #[cfg(any(windows,target_os="macos"))]
                         if self.plugins.row_at_screen(x,y).is_some() {continue;}
                         let (x,y)=self.screen_to_canvas(x,y);
@@ -3029,6 +3041,8 @@ impl App {
         let (ox, oy) = self.canvas_off;
         let px = |r: Rect| [(r.x * k).floor() as i32 + ox, (r.y * k).floor() as i32 + oy, (r.right() * k).ceil() as i32 + ox, (r.bottom() * k).ceil() as i32 + oy];
         let work = px(self.state.work_rect());
+        #[cfg(windows)]
+        self.plugins.update_chop_workspace(work);
         let over: Vec<[i32; 4]> = self.overlays.iter().map(|&r| px(r.outset(2.0))).collect();
         let z = self.state.z.clone();
         let stacked: Vec<usize> = z.iter().filter_map(|w| if let Win::Hosted(r) = w { Some(*r) } else { None }).collect();
@@ -3328,6 +3342,7 @@ impl App {
             PItem::new("View FPS", Cmd::Cpu(CpuCmd::Fps(true))).mark(Mark::Radio(c.fps_view)),
             PItem::new("Misc", Cmd::Cpu(CpuCmd::Misc)).mark(Mark::Check(c.misc)),
             PItem::sep(),
+            PItem::new("Performance monitor load bars",Cmd::Cpu(CpuCmd::LoadBars)).mark(Mark::Check(c.load_bars)),
             PItem::new("Plugin performance monitor", Cmd::Cpu(CpuCmd::Monitor)).mark(Mark::Check(self.state.shown(Win::Perf))),
             PItem::new("Audio settings", Cmd::Cpu(CpuCmd::AudioSettings)),
         ];
@@ -4116,6 +4131,28 @@ impl App {
 
     /// Periodic housekeeping; returns whether a repaint is needed.
     pub fn tick(&mut self) -> bool {
+        #[cfg(windows)]
+        if let Some(track)=crate::plugin_window::clicked_strip(){
+            crate::mixer::select(&mut self.state,track,false);self.damage_win(Win::Mixer);
+        }
+        let edge_due=self.edge_tick.elapsed()>=std::time::Duration::from_millis(30);
+        if edge_due {
+            self.edge_tick=std::time::Instant::now();
+            let pos=if matches!(self.drag,Some(Drag::RackMixer{started:true,..})){Some(self.mouse)}else{self.route_hover};
+            if let Some((x,y))=pos{self.route_edge(x,y);}
+        }
+        if let (true,Some(Drag::Pl(d @ crate::playlist::PlDrag::Marquee{..})), Some(grid)) = (edge_due,&self.drag,self.pl_grid) {
+            let y=self.mouse.1;
+            let delta=if y>grid.bottom()-18. {8.} else if y<grid.y+18. {-8.} else {0.};
+            if delta!=0. {
+                let limit=(crate::playlist::Rows::new(&self.state).total()-grid.h).max(0.);
+                let pos=(self.state.playlist_scroll.1+delta).clamp(0.,limit);
+                if pos!=self.state.playlist_scroll.1 {
+                    self.state.playlist_scroll.1=pos;
+                    crate::playlist::drag_move(self,d.clone(),grid);
+                }
+            }
+        }
         crate::stem_separation::tick(self);
         crate::headphones::tick(self);
         crate::browser_preview::tick(self);
@@ -4483,8 +4520,13 @@ impl App {
         // Respect the drop destination: a piano-roll drop imports into its current
         // channel, without unexpectedly starting a new project.
         if ext == "mid" || ext == "midi" {
-            let piano = self.top_hit(self.mouse.0, self.mouse.1).and_then(|h| h.win) == Some(Win::PianoRoll);
-            return self.midi_file_chosen(path, piano);
+            let win = self.top_hit(self.mouse.0, self.mouse.1).and_then(|h| h.win);
+            let row = plugin.or_else(|| (win == Some(Win::ChannelRack)).then(|| views::rack::row_at(&self.state,self.mouse.1)).flatten());
+            if let Some(row) = row.filter(|&i| i < self.state.project.channels.len()) {
+                self.state.selected_channel = row;
+                self.state.rack.select_only(row);
+            }
+            return self.midi_drop(path, row.is_some() || matches!(win,Some(Win::PianoRoll | Win::ChannelRack)));
         }
         // A preset goes into the plugin under the mouse, or a new instance of its plugin (spec: plugins/presets.md).
         if crate::presets::is_preset_file(&path) {
@@ -5670,6 +5712,21 @@ impl App {
                     crate::patterns::select(&mut self.state, n);
                     self.invalidate();
                 }
+                Drag::MixerRange { anchor, original, ranged } => {
+                    if let Some(n)=self.hits.iter().rev().find_map(|h| match h.action {
+                        Action::Mix(crate::mixer::MHit::Strip(n)) if h.rect.contains(x,y)=>Some(n), _=>None
+                    }) {
+                        if n!=anchor || ranged {
+                            self.drag=Some(Drag::MixerRange{anchor,original:original.clone(),ranged:true});
+                            let mut tracks=original;
+                            tracks.extend(anchor.min(n)..=anchor.max(n));
+                            tracks.sort_unstable();tracks.dedup();
+                            self.state.mixer.sel=tracks;
+                            self.state.selected_mixer=n;
+                            self.damage_win(Win::Mixer);
+                        }
+                    }
+                }
                 Drag::MixSelect { from,x0,to,started } => {
                     let started=started || (x-x0).abs()>6.0;
                     let under=self.hits.iter().rev().find_map(|h|match h.action {
@@ -5689,11 +5746,9 @@ impl App {
                 Drag::Fader { track, y0, v0, group } => {
                     let per_px = views::mixer::fader_per_px(&self.state,track);
                     let delta=-f64::from(y-y0)*per_px;
-                    let delta=crate::mixer::group_delta(&group,delta);
-                    for &(t,v) in &group {if let Some(m)=crate::mixer::track_mut(&mut self.state,t){m.volume=Some(v+delta);}}
+                    let v=crate::mixer::move_faders(&mut self.state,&group,track,v0,delta);
                     self.state.piano.dirty=true;
                     for &(t,_) in &group {self.smart_record_host(&Action::Fader(t));}
-                    let v=v0+delta;
                     if group.len()>1 {self.damage_win(Win::Mixer);}
                     self.hint = Cow::Owned(crate::mixer::level_text("Volume", v));
                     // Traditional gain labels sit outside the narrow fader hit target.
@@ -5855,7 +5910,7 @@ impl App {
                 } else if let Some(i) = hit {
                     let r = pg.clip_rect(&crate::playlist::clips(&self.state)[i]);
                     let z = crate::playlist::EDGE.min(r.w / 4.0);
-                    let tool_resizes = matches!(self.state.playlist.tool, crate::playlist::PlTool::Draw | crate::playlist::PlTool::Paint | crate::playlist::PlTool::Select);
+                    let tool_resizes = matches!(self.state.playlist.tool, crate::playlist::PlTool::Draw | crate::playlist::PlTool::Paint);
                     resize |= tool_resizes && (x <= r.x + z || x >= r.right() - z);
                     if hint.is_empty() || hint == "Playlist" {
                         hint = Cow::Owned(crate::playlist::source_name(&self.state, crate::playlist::clips(&self.state)[i].source));
@@ -5920,6 +5975,7 @@ impl App {
             ),
             // A filled effect slot's name opens its window; an empty one's opens the effect menu.
             Action::Mix(MHit::SlotName(i)) => crate::mixer::slot_name(&self.state, self.state.selected_mixer, *i).is_some(),
+            Action::Mix(MHit::Meter(_)) if self.ctrl && self.shift => false,
             Action::Mix(h) => matches!(
                 h,
                 MHit::Led(_) | MHit::Polarity(_) | MHit::Swap(_) | MHit::Effects(_) | MHit::AllEffects | MHit::Jump(..) | MHit::Meter(_) | MHit::Route(_) | MHit::Unroute(_) | MHit::Add | MHit::AddAfter | MHit::SlotLed(_)
@@ -6659,6 +6715,13 @@ impl App {
         }
     }
 
+    fn route_edge(&mut self,x:f32,y:f32){
+        if !crate::prefs::check(&crate::prefs::ROUTE_EDGE_SCROLL) || self.top_hit(x,y).and_then(|h|h.win)!=Some(Win::Mixer){return;}
+        if let Some(b)=self.bar(Scroll::MixerX){
+            let delta=if x<b.track.x+24.{-20.}else if x>b.track.right()-24.{20.}else{0.};
+            if delta!=0.{self.scroll_set(Scroll::MixerX,self.state.mixer_scroll+delta);self.damage_win(Win::Mixer);}
+        }
+    }
     fn drop_sampler_track(&mut self,row:usize,x:f32,y:f32) {
         // Respect the top window: dropping onto a covering window is not a mixer drop.
         if !self.top_hit(x,y).is_some_and(|h|matches!(h.action,Action::Mix(_)|Action::Fader(_)|Action::Knob(_)|Action::RackStrip(_))) {return;}
@@ -7124,7 +7187,7 @@ impl App {
             self.damage_rect(panel);
             return;
         }
-        let v = lane.value_at(panel, y);
+        let v = if self.alt && lane == piano::Lane::Velocity { 100 } else { lane.value_at(panel, y) };
         let (ta, tb) = (g.tick_at(last_x.min(x)), g.tick_at(last_x.max(x)));
         // The notes the cursor's path covers: those starting inside it, and the note already playing where the path
         // begins (the latest start at or before it; before the first note, the first one), so a click anywhere above
@@ -7434,10 +7497,10 @@ impl App {
             let s = &mut self.state;
             let v0=crate::mixer::track(s,t)?.volume.unwrap_or(0.8);
             let group=crate::mixer::fader_group(s,t);
-            let delta=crate::mixer::group_delta(&group,f64::from(dy.signum())*views::mixer::FADER_NOTCH);
+            let delta=(v0+f64::from(dy.signum())*views::mixer::FADER_NOTCH).clamp(0.,1.)-v0;
             if delta!=0.0 {
                 crate::mixer::snapshot_faders(s,&group);
-                for &(n,v) in &group {if let Some(m)=crate::mixer::track_mut(s,n){m.volume=Some(v+delta);}}
+                crate::mixer::move_faders(s,&group,t,v0,delta);
                 s.piano.dirty=true;
             }
             for &(n,_) in &group {self.smart_record_host(&Action::Fader(n));}
@@ -8627,6 +8690,16 @@ impl App {
                     self.damage_eq();
                 }
             }
+            Action::Mix(crate::mixer::MHit::Strip(n)|crate::mixer::MHit::Meter(n)) if self.ctrl && self.shift => {
+                let original=crate::mixer::selected(s);
+                let mut tracks=original.clone();
+                if let Some(i)=tracks.iter().position(|&t|t==n) {
+                    if tracks.len()>1 {tracks.remove(i);}
+                    if s.selected_mixer==n {s.selected_mixer=tracks[0];}
+                }else{tracks.push(n);s.selected_mixer=n;}
+                s.mixer.sel=tracks;
+                self.drag=Some(Drag::MixerRange{anchor:n,original,ranged:false});
+            }
             Action::Mix(h) => {
                 let plain_strip = matches!(h, crate::mixer::MHit::Strip(_)) && !self.ctrl && !self.shift;
                 if let Some(m) = crate::mixer::hit(self, h) {
@@ -8962,7 +9035,7 @@ impl App {
     fn rack_graph_at(&mut self, (x, y): (f32, f32)) {
         let Some(b) = views::rack::graph_bars(&self.state) else { return };
         let Some(k) = views::rack::step_at(&self.state, x) else { return };
-        let v = ((b.bottom() - y) / b.h).clamp(0.0, 1.0);
+        let v = if self.alt && self.state.rack.graph_tab == crate::rack::Tab::Vel { 100.0/128.0 } else { ((b.bottom() - y) / b.h).clamp(0.0, 1.0) };
         if let Some(t) = crate::rack::graph_set(&mut self.state, k, v) {
             self.hint = Cow::Owned(t);
         }
@@ -9217,6 +9290,7 @@ impl App {
                 let v = item_at(ADD_MENU, i).and_then(|it| menu_view(ADD_MENU, it.label)).expect("checked");
                 self.state.message = crate::plugin_menu::run(self, crate::plugin_menu::PlugCmd::View(v));
             }
+            (HELP_MENU, 7) => {if let Err(e)=crate::donate::open_url("https://discord.gg/CDYs4rQEk"){self.state.message=Some(e);}}
             (HELP_MENU, HELP_ABOUT) => {
                 // The Windows build includes the ASIO SDK, which is under version 3 only (THIRD-PARTY-NOTICES.txt §9).
                 let licence = if cfg!(windows) { "the GNU GPL v3" } else { "the GNU GPL v3 or later" };
@@ -9341,6 +9415,7 @@ impl App {
             Switch::Separators => s.toolbar.separators = !s.toolbar.separators,
             Switch::Flat => s.toolbar.flat = !s.toolbar.flat,
             Switch::HintBar => s.toolbar.hint_bar = !s.toolbar.hint_bar,
+            Switch::Tesla=>crate::settings_file::set_flag("toolbar_tesla",!crate::settings_file::flag("toolbar_tesla",false)),
             Switch::CpuMemory => {
                 let on=crate::settings_file::flag("toolbar_cpu_visible",true);
                 crate::settings_file::set_flag("toolbar_cpu_visible",!on);
@@ -14287,6 +14362,37 @@ mod tests {
     }
 
     #[test]
+    fn mixer_modifier_selection_db_and_color_undo() {
+        use crate::mixer as mx;
+        use mx::{MHit,MCmd};
+        let mut a=App::new(None);a.state.project=test_project();a.state.z=vec![Win::Mixer];
+        let mut c=Canvas::new(1920,1080,1.).unwrap();frame(&mut a,&mut c,None);
+        let rect=|a:&App,n|hit_rect(a,&Action::Mix(MHit::Strip(n)));
+        let header=|a:&mut App,n|{let r=rect(a,n);a.mouse_move(r.cx(),r.y+3.);a.mouse_down();};
+        header(&mut a,1);a.mouse_up();a.ctrl=true;a.shift=true;
+        header(&mut a,2);a.mouse_up();
+        assert_eq!(mx::selected(&a.state).len(),2);assert!(a.state.playlist.edit.is_none());
+        header(&mut a,2);a.mouse_up();assert_eq!(mx::selected(&a.state),vec![1]);
+        header(&mut a,2);let r=rect(&a,4);a.mouse_move(r.cx(),r.y+3.);a.mouse_up();
+        assert!((1..=4).all(|t|mx::is_selected(&a.state,t)));
+        a.ctrl=false;a.shift=false;header(&mut a,1);a.mouse_up();
+        a.ctrl=true;a.shift=true;let r=hit_rect(&a,&Action::Mix(MHit::Meter(2)));a.mouse_move(r.cx(),r.cy());a.mouse_down();a.mouse_up();a.ctrl=false;a.shift=false;
+        assert_eq!(mx::selected(&a.state).len(),2);
+        let f=|db:f64|0.8*(10.*10f64.powf(db/20.)).ln_1p()/11f64.ln();
+        for (t,db) in [(1,-6.),(2,-10.),(3,-4.)]{mx::track_mut(&mut a.state,t).unwrap().volume=Some(f(db));}
+        let r=hit_rect(&a,&Action::Fader(1));let per=views::mixer::fader_per_px(&a.state,1);
+        a.mouse_move(r.cx(),r.cy());a.mouse_down();a.mouse_move(r.cx(),r.cy()+((f(-6.)-f(-9.))/per) as f32);a.mouse_up();
+        for(t,db)in[(1,-9.),(2,-13.),(3,-4.)]{assert!((mx::track(&a.state,t).unwrap().volume.unwrap()-f(db)).abs()<1e-5);}
+        crate::history::undo(&mut a.state);
+        for(t,db)in[(1,-6.),(2,-10.)]{assert_eq!(mx::track(&a.state,t).unwrap().volume,Some(f(db)));}
+        let old:Vec<_>=(1..=3).map(|t|mx::track(&a.state,t).unwrap().color).collect();
+        let gold=Some(os_model::Rgb::new(240,210,70));mx::run(&mut a,MCmd::Color(1,gold));
+        assert!((1..=2).all(|t|mx::track(&a.state,t).unwrap().color==gold));
+        assert_eq!(mx::track(&a.state,3).unwrap().color,old[2]);
+        crate::history::undo(&mut a.state);assert_eq!(old,(1..=3).map(|t|mx::track(&a.state,t).unwrap().color).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn grouped_faders_and_rack_route_drag() {
         use crate::mixer as mx;
         let mut app=App::new(None);app.state.project=test_project();
@@ -14298,7 +14404,7 @@ mod tests {
         let r=hit_rect(&app,&Action::Fader(1));app.mouse_move(r.cx(),r.cy());app.mouse_down();
         app.mouse_move(r.cx(),r.cy()-20.);app.mouse_up();
         let one=mx::track(&app.state,1).unwrap().volume.unwrap();let two=mx::track(&app.state,2).unwrap().volume.unwrap();
-        assert!(one>0.6&&two>0.4);assert!((one-two-0.2).abs()<1e-9);
+        assert!(one>0.6&&two>0.4);let gain=os_engine::laws::fader_gain;assert!((gain(one)/gain(0.6)-gain(two)/gain(0.4)).abs()<1e-9);
         crate::history::undo(&mut app.state);
         assert_eq!(mx::track(&app.state,1).unwrap().volume,Some(0.6));
         assert_eq!(mx::track(&app.state,2).unwrap().volume,Some(0.4));
@@ -19155,7 +19261,7 @@ mod tests {
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 48000, &[0.5; 96000]).unwrap();
         crate::playlist::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 1, bar).unwrap();
         app.state.project.arrangements[0].clips[0].length = bar * 2;
-        for tool in [crate::playlist::PlTool::Draw, crate::playlist::PlTool::Paint, crate::playlist::PlTool::Select] {
+        for tool in [crate::playlist::PlTool::Draw, crate::playlist::PlTool::Paint] {
             app.state.playlist.tool = tool;
             frame(&mut app, &mut canvas, None);
             let grid = app.pl_grid().unwrap();
@@ -19429,6 +19535,10 @@ mod tests {
         assert!(!app.hits.iter().any(|h| matches!(h.action,Action::PlPickTab(_) | Action::PlPick(_) | Action::PlPickList | Action::PlPickAdd)));
         let grid=app.pl_grid().unwrap();
         assert!(grid.x-app.state.win_rect(Win::Playlist).x<130.,"picker width returned to the grid");
+        pl::run(&mut app,pl::Cmd::TogglePicker);frame(&mut app,&mut canvas,None);
+        assert!(app.hits.iter().any(|h|matches!(h.action,Action::PlPickTab(_))));
+        assert!(app.pl_grid().unwrap().x>grid.x+120.);
+        pl::run(&mut app,pl::Cmd::TogglePicker);frame(&mut app,&mut canvas,None);
         let path=std::env::temp_dir().join(format!("lemon-clips-menu-{}.wav",std::process::id()));
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),8000,&[0.2;32000]).unwrap();
         pl::add_audio_clip(&mut app.state,&path.to_string_lossy(),0,0).unwrap();
@@ -19459,7 +19569,7 @@ mod tests {
         app.hover=Some(Action::PlaylistArea);app.resize_cursor=false;
         assert!(matches!(app.cursor(),Cursor::Playlist(PlTool::Select,_)));
         app.ctrl=false;
-        assert_eq!(app.cursor(),Cursor::Default,"B uses the normal pointer for painting");
+        assert!(matches!(app.cursor(),Cursor::Playlist(PlTool::Paint,_)));
         assert!(!crate::playlist_tools::animating(&app.state),"no brush pointer animation");
         app.resize_cursor=true;
         assert_eq!(app.cursor(),Cursor::EwResize,"clip edge resizing still has its cursor");
@@ -19473,6 +19583,13 @@ mod tests {
         pl::press_grid(&mut app,grid,false);
         assert!(matches!(app.drag,Some(Drag::Pl(pl::PlDrag::Marquee{..}))));
         assert_eq!(app.state.playlist.tool,PlTool::Paint,"temporary selection does not change the brush");
+        app.ctrl=false;pt::select(&mut app.state,PlTool::Select);
+        let old=pl::clips(&app.state).to_vec();let g=pl::PGeom::new(&app.state,grid);let r=g.clip_rect(&old[i]);
+        app.mouse=(r.cx(),r.cy());pl::press_grid(&mut app,grid,false);
+        let Some(Drag::Pl(d @ pl::PlDrag::Marquee{..}))=app.drag.clone()else{panic!("select must never move a clip")};
+        app.mouse=(r.right()+15.,r.bottom()+10.);pl::drag_move(&mut app,d,grid);assert_eq!(pl::clips(&app.state),old);assert!(app.state.playlist.sel.contains(&i));
+        pl::run(&mut app,pl::Cmd::CreateFolder(old[i].track));assert!(pl::is_group_track(&app.state,old[i].track));
+        assert_eq!(pl::clips(&app.state)[i].position,old[i].position);
         let _=std::fs::remove_file(path);
     }
 
@@ -20264,7 +20381,7 @@ mod tests {
         assert!(app.drag.is_none());
         app.undo_key(false);
         assert_eq!(app.state.project.mixer[1].volume, Some(0.23));
-        for id in [KnobId::MixPan(1), KnobId::MixSep(1), KnobId::MasterVol, KnobId::MasterPitch] {
+        for id in [KnobId::MixPan(1), KnobId::MixSep(1), KnobId::MasterVol, KnobId::Varispeed] {
             app.state.set_knob(id, 0.11);
             frame(&mut app, &mut c, None);
             let r = hit_rect(&app, &Action::Knob(id));
@@ -23008,7 +23125,12 @@ impl App {
         if self.state.native_view.is_none(){if let Some(index)=self.state.z.iter().position(|w|*w==Win::Mixer){for w in &self.state.z[index+1..]{if !matches!(w,Win::Hosted(_))&&!self.state.native_detached.contains(w){covers.push(px(self.win_bounds(*w)));}}}}
         let panes=crate::rack_mixer::geometry(&self.state,self.state.win_rect(Win::Mixer));
         let keys:Vec<_>=panes.iter().filter_map(|v|Some(crate::plugins::fx_key(v.track,crate::rack_mixer::slot(&self.state,v.track)?))).collect();
-        let close:Vec<_>=self.plugins.hosted.iter().filter_map(|(key,h)|(h.rack_editor.is_some()&&!keys.contains(key)).then_some(*key)).collect();for key in close{self.plugins.close_rack(key);}
+        let close:Vec<_>=self.plugins.hosted.iter().filter_map(|(key,h)|(h.rack_editor.is_some()&&!keys.contains(key)).then_some(*key)).collect();for key in close{
+            #[cfg(windows)]
+            if crate::plugins::fx_of(key).is_some_and(|(t,k)|crate::rack_mixer::slot(&self.state,t)==Some(k)) &&
+                self.plugins.hosted.get_mut(&key).and_then(|h|h.rack_editor.as_mut()).is_some_and(|e|e.hide_for_scroll()){continue;}
+            self.plugins.close_rack(key);
+        }
         for v in panes {let Some(k)=crate::rack_mixer::slot(&self.state,v.track)else{continue};let key=crate::plugins::fx_key(v.track,k);self.plugins.show_rack(key,owner,scale,px(v.rect),px(v.clip),&covers);
             if let Some(width)=self.plugins.hosted.get(&key).and_then(|h|h.rack_editor.as_ref()).map(|e|e.required_width()){
                 if self.state.mixer.rack_auto_width.get(&v.track).is_none_or(|old|(*old-width).abs()>0.5){self.state.mixer.rack_auto_width.insert(v.track,width);self.invalidate();}

@@ -192,9 +192,12 @@ impl FrameWindow {
     /// frame is placed by the window manager, transient for `owner`. The scale is the X server's (`Xft.dpi`), not
     /// `_scale`: under Wayland the main window's scale does not apply to X11 windows.
     pub fn new(owner: isize, info: ChannelInfo, editor: (f32, f32), _scale: f32, pos: (i32, i32), detached: bool) -> Result<FrameWindow, String> {
+        Self::with_zoom(owner,info,editor,pos,detached,1.)
+    }
+    pub fn with_zoom(owner:isize,info:ChannelInfo,editor:(f32,f32),pos:(i32,i32),detached:bool,zoom:f32)->Result<FrameWindow,String>{
         let conn = conn()?;
         let fail = |e: &dyn std::fmt::Display| format!("could not create the plugin window: {e}");
-        let k = conn.scale;
+        let k = conn.scale*zoom;
         let owner = owner as xproto::Window;
         set_owner(&conn, owner);
         let docked = owner != 0 && !detached;

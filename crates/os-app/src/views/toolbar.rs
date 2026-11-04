@@ -84,6 +84,7 @@ pub enum Switch {
     Separators,
     Flat,
     HintBar,
+    Tesla,
     CpuMemory,
     Hide,
 }
@@ -158,6 +159,7 @@ pub(super) fn placements(s: &State, width: f32) -> Vec<Placed> {
 #[derive(Clone, Copy, Default)]
 pub struct ActionSizes {
     update: f32,
+    tesla:f32,
     donate: f32,
     feedback: f32,
     cpu: f32,
@@ -169,6 +171,7 @@ impl ActionSizes {
         let font = Font::new(12);
         Self {
             update: canvas.text_width(font, "Update").ceil() + 12.0,
+            tesla: if crate::settings_file::flag("toolbar_tesla",false){30.}else{0.},
             donate: canvas.text_width(font, "Donate").ceil() + 12.0,
             feedback: canvas.text_width(Font::new(11), "Report a bug").ceil() + 12.0,
             hint: if hint { Panel::Hint.width() + 6.0 } else { 0.0 },
@@ -177,7 +180,7 @@ impl ActionSizes {
     }
 
     pub fn width(self) -> f32 {
-        self.cpu + self.hint + 37.0 + self.update + self.donate + self.feedback + 24.0 + 32.0 + 104.0
+        self.tesla + self.cpu + self.hint + 37.0 + self.update + self.donate + self.feedback + 24.0 + 32.0 + 104.0
     }
 }
 
@@ -275,7 +278,12 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         ui.c.stroke_rrect(chip,2.,1.,ink);for d in [2.,5.,8.] {ui.c.line(chip.x-2.,chip.y+d,chip.x,chip.y+d,1.,ink);ui.c.line(chip.right(),chip.y+d,chip.right()+2.,chip.y+d,1.,ink);}
         ui.c.text_clip(action_font,ai.x+22.,ai.y+5.,20.,t.text,"AI");
         if !s.ai.client.is_empty(){ui.c.fill_circle(ai.right()-3.,ai.y+3.,2.,t.accent);}
-        let r = Rect::new(ai.right()+6., 8.0, update_w, 24.0);
+        if sizes.tesla>0. {
+            let b=Rect::new(ai.right()+6.,8.,24.,24.);
+            ui.hit(b,Action::Util(crate::app::Util::AudioEditor),"Open Tesla audio editor");
+            ui.c.fill_rrect(b,3.,t.sunken);icons::draw(ui.c,Icon::Wave,b.inset(4.),t.accent);
+        }
+        let r = Rect::new(ai.right()+6.+sizes.tesla, 8.0, update_w, 24.0);
         let (label, hint) = crate::updates::display();
         ui.hit(r, Action::Updates, if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
         ui.c.fill_rrect(r, 3.0, t.sunken);

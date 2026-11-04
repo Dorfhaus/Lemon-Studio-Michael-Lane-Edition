@@ -395,10 +395,16 @@ pub(crate) fn fader_group(s:&State,t:u16)->Vec<(u16,f64)> {
     let group=if selected(s).contains(&t){selected(s)}else{vec![t]};
     group.into_iter().filter_map(|n|track(s,n).map(|m|(n,m.volume.unwrap_or(0.8)))).collect()
 }
-pub(crate) fn group_delta(group:&[(u16,f64)],delta:f64)->f64 {
-    let lo=group.iter().map(|(_,v)|-*v).fold(-1.0,f64::max);
-    let hi=group.iter().map(|(_,v)|1.0-*v).fold(1.0,f64::min);
-    delta.clamp(lo,hi)
+pub(crate) fn move_faders(s:&mut State,group:&[(u16,f64)],leader:u16,start:f64,delta:f64)->f64{
+    let end=(start+delta).clamp(0.,1.);
+    let gain=os_engine::laws::fader_gain;
+    for &(track,value) in group {
+        let level=if track==leader || start==0. && value==0. {end}
+            else if start==0. || end==start {value}
+            else {(0.8*(10.*gain(value)*(gain(end)/gain(start))).ln_1p()/11f64.ln()).clamp(0.,1.)};
+        if let Some(m)=track_mut(s,track){m.volume=Some(level);}
+    }
+    end
 }
 pub(crate) fn snapshot_faders(s:&mut State,group:&[(u16,f64)]) {
     let snaps=group.iter().filter_map(|(n,_)|track(s,*n).map(|m|crate::history::Snap::Fader(*n,m.volume))).collect();
@@ -480,6 +486,7 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
             None
         }
         MHit::Meter(n) => {
+            select(s,n,false);
             if !s.mixer.peak_view.remove(&n) { s.mixer.peak_view.insert(n); }
             None
         }
@@ -1383,6 +1390,10 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
     }
     let at = app.mouse;
     let s = &mut app.state;
+    if let MCmd::Color(n,_)|MCmd::RandomColor(n)=c {
+        let snaps=targets(s,n).into_iter().filter_map(|t|track(s,t).map(|m|crate::history::Snap::TrackColor(t,m.color))).collect();
+        crate::history::record(s,"Mixer track color",crate::history::Snap::Several(snaps));
+    }
     let msg = match c {
         MCmd::RecordInput(..)|MCmd::ArmDisk(_)=>None,
         MCmd::TuneSetting(n,k,v)=>{

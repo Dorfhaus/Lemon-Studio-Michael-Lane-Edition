@@ -28,7 +28,7 @@ use os_ui::{Canvas, Color, Font, Rect};
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]
-pub use win32::{prepare_embedded,embedded_exposed,default_position, first_position, focus_main, lift_hide, lift_show, stack, take_exposed, take_keys, take_link, FrameWindow};
+pub use win32::{clicked_strip,chop_placement,prepare_embedded,embedded_exposed,default_position, first_position, focus_main, lift_hide, lift_show, stack, take_exposed, take_keys, take_link, FrameWindow};
 
 #[cfg(target_os = "linux")]
 mod x11;
@@ -199,6 +199,8 @@ pub enum FrameEvent {
     Track(u16),
     /// The TRACK box was double-clicked: the app shows the mixer at the channel's track.
     ShowTrack,
+    TrackHoverEnd,
+    TrackHover(i32,i32),
     TrackDrop(i32,i32),
     PickTrack,
     /// The window was clicked: it comes to the front of the app's window stack (docked windows, Windows).
@@ -999,7 +1001,11 @@ impl State {
             }
             return Reply::None;
         }
-        if let Some((_,_,_,_,x0,y0,moved))=self.track_drag.as_mut() {*moved |= (x-*x0).hypot(y-*y0)>4.;return Reply::None;}
+        if let Some((sx,sy,kx,ky,x0,y0,moved))=self.track_drag.as_mut() {
+            *moved |= (x-*x0).hypot(y-*y0)>4.;
+            if *moved {self.events.push(FrameEvent::TrackHover(*sx+(x * *kx).round() as i32,*sy+(y * *ky).round() as i32));}
+            return Reply::None;
+        }
         let mut hover = false;
         if self.misc {
             if self.misc_ui.bar_drag.is_some() {
@@ -1069,6 +1075,7 @@ impl State {
     fn left_up(&mut self, x: f32, y: f32) -> Reply {
         if let Some((sx,sy,kx,ky,x0,y0,moved))=self.track_drag.take() {
             let (w,h)=self.size();
+            if moved && x>=0. && y>=0. && x<w && y<h {self.events.push(FrameEvent::TrackHoverEnd);}
             if x<0.0 || y<0.0 || x>=w || y>=h {self.events.push(FrameEvent::TrackDrop(sx+(x*kx).round() as i32,sy+(y*ky).round() as i32));}
             else if !moved && (x-x0).hypot(y-y0)<=4. && part_at(self,x,y)==Some(Part::Track) {self.events.push(FrameEvent::PickTrack);}
             os_clap::wake();
@@ -1091,7 +1098,7 @@ impl State {
     /// The button was released (or the mouse lost otherwise): drags end, a held Misc key is let go, an armed title-bar
     /// button is let go without acting.
     fn release(&mut self) {
-        self.track_drag=None;
+        if self.track_drag.take().is_some_and(|d|d.6){self.events.push(FrameEvent::TrackHoverEnd);}
         self.armed = None;
         self.drag = None;
         self.sizing = None;
@@ -1460,9 +1467,9 @@ mod tests {
         st.left_down(x,y,false,&screen);st.motion(x+1.,y+1.,false);st.left_up(x+1.,y+1.);
         assert_eq!(st.events,vec![FrameEvent::PickTrack]);st.events.clear();
         st.left_down(x,y,false,&screen);st.motion(x+20.,y,false);st.motion(x,y,false);st.left_up(x,y);
-        assert!(st.events.is_empty(),"a drag returning to its start is not a click");
+        assert!(st.events.iter().all(|e|matches!(e,FrameEvent::TrackHover(..)|FrameEvent::TrackHoverEnd)),"a drag returning to its start is not a click");st.events.clear();
         st.left_down(x,y,false,&screen);st.motion(x,-100.,false);st.left_up(x,-100.);
-        assert_eq!(st.events,vec![FrameEvent::TrackDrop(x as i32,-100)]);st.events.clear();
+        assert_eq!(st.events.last(),Some(&FrameEvent::TrackDrop(x as i32,-100)));st.events.clear();
         st.left_down(x,y,false,&screen);st.release();st.left_up(x,y);assert!(st.events.is_empty());
         st.left_down(x,y,true,&screen);st.left_up(x,y);assert_eq!(st.events,vec![FrameEvent::ShowTrack]);
         range_and_track_boxes_edit_the_channel();
