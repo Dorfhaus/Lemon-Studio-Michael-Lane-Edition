@@ -1818,6 +1818,7 @@ impl TimeMarker {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistTrack {
+    pub folder:bool,
     /// Original clips retained for reversible instrument freezing. Mixer processing stays live.
     pub frozen: Option<Vec<Clip>>,
     /// Comp group leader: associated mixer insert. Children are muted source take lanes.
@@ -1839,7 +1840,7 @@ pub struct PlaylistTrack {
 impl PlaylistTrack {
     /// Track `number` as a new project has it: unnamed, default colour, on, not grouped.
     pub fn new(number: u32) -> Self {
-        PlaylistTrack { frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
+        PlaylistTrack { folder:false, frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
     }
 }
 

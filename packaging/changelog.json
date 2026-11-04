@@ -4,6 +4,16 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Playlist track selection and drag-to-folder \u00b7 public build 2026110407",
+      "changes": [
+        "Click a Playlist track name or drag down the track names to select tracks, including empty lanes. Shift-click extends a range, and Ctrl-click on Windows or Linux and Cmd-click on Mac toggle individual tracks.",
+        "Right-click a selected track header and choose Create folder at the top of the menu. Only the selected tracks are placed inside, in their existing order. Folders can be renamed, collapsed and saved with the project.",
+        "Drag a track or a selection by its three-line handle onto a folder header to move it inside. The folder highlights before you release.",
+        "With Pencil or Brush, right-click empty Playlist space to clear clip, track and time selections. Left-click still draws or paints."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Playlist MIDI editing and resizable instrument windows \u00b7 public build 2026110406",
       "changes": [
         "Drop a MIDI file onto the Playlist grid to create a new pattern and place its clip at the chosen lane and snapped beat. Undo removes the import and restores the previous song.",

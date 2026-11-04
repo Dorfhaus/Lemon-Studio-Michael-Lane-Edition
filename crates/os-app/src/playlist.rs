@@ -627,6 +627,9 @@ pub struct PlaylistState {
     /// Selected clips (indices into the first arrangement's clips).
     pub sel: Vec<usize>,
     /// Selected track (Ctrl+Up / Down, header click).
+    pub header_selection:Vec<u16>,
+    header_anchor:Option<u16>,
+    pub drop_folder:Option<u16>,
     pub track: u16,
     pub automation_last: HashMap<u16, u16>,
     pub sampler_rows: HashMap<usize, u16>,
@@ -689,6 +692,7 @@ impl Default for PlaylistState {
             pick_scroll: 0.0,
             pick_rows: [PICK_ROW; 3],
             sel: Vec::new(),
+            header_selection:Vec::new(),header_anchor:None,drop_folder:None,
             track: 0,
             automation_last: HashMap::new(),
             sampler_rows: HashMap::new(),
@@ -1086,7 +1090,7 @@ pub fn group_track(s: &State, t: u16) -> Option<u16> {
 
 /// Track `t` leads a group: it is not grouped and the track below it is.
 pub fn is_group_track(s: &State, t: u16) -> bool {
-    !track_info(s, t).is_some_and(|x| x.grouped) && track_info(s, t + 1).is_some_and(|x| x.grouped)
+    track_info(s,t).is_some_and(|x|x.folder) || (!track_info(s, t).is_some_and(|x| x.grouped) && track_info(s, t + 1).is_some_and(|x| x.grouped))
 }
 
 pub fn track_info(s: &State, t: u16) -> Option<&PlaylistTrack> {
@@ -1394,6 +1398,7 @@ pub(crate) fn restore(s: &mut State, (c, m, t, a, st, references, lanes, links):
     s.project.automations = a;
     s.playlist.original_values = references;
     s.project.instrument_lanes=lanes;
+    s.playlist.header_selection.clear();s.playlist.header_anchor=None;s.playlist.drop_folder=None;
     s.playlist.track=links.selected;
     s.playlist.automation_last=links.last;
     s.playlist.sampler_rows=links.samplers;
@@ -1975,10 +1980,16 @@ pub fn reorder_track(s: &mut State, row: u16, target: u16) -> u16 {
     let mut order:Vec<u16>=(0..TRACKS).filter(|r|!family.contains(r)).collect();
     let at=order.iter().position(|r|*r>=boundary).unwrap_or(order.len());
     order.splice(at..at,family.iter().copied());
+    if order.iter().enumerate().all(|(i,&r)|i==r as usize){return root;}
+    apply_track_order(s,&order,root,&family,&automation)
+}
+
+fn apply_track_order(s:&mut State,order:&[u16],root:u16,family:&[u16],automation:&[u16])->u16 {
     let mut map=vec![0u16;TRACKS as usize];
     for (new,&old) in order.iter().enumerate(){map[old as usize]=new as u16;}
     let remap=|r:u16|map.get(r as usize).copied().unwrap_or(r);
-    if remap(root)==root {return root;}
+    s.playlist.header_selection=s.playlist.header_selection.iter().map(|&t|remap(t)).collect();
+    s.playlist.header_anchor=s.playlist.header_anchor.map(remap);
     let arr=arr_mut(s);
     let old=arr.tracks.clone();
     arr.tracks=order.iter().enumerate().map(|(i,&r)|PlaylistTrack {number:i as u32+1,..old[r as usize].clone()}).collect();
@@ -1987,6 +1998,7 @@ pub fn reorder_track(s: &mut State, row: u16, target: u16) -> u16 {
         // without pulling unrelated clips from that shared row along.
         c.track=if !family.contains(&c.track) && matches!(c.source,ClipSource::Channel(ch) if automation.contains(&ch)) {remap(root)}else{remap(c.track)};
     }
+    for t in &mut arr.tracks{if let Some(frozen)=&mut t.frozen{for c in frozen{c.track=remap(c.track);}}}
     let number=arr.number;
     for v in &mut s.project.instrument_lanes {if v.1==number {v.2=remap(v.2);}}
     s.playlist.automation_last=std::mem::take(&mut s.playlist.automation_last).into_iter().map(|(r,ch)|(remap(r),ch)).collect();
@@ -2005,6 +2017,7 @@ pub fn reorder_track(s: &mut State, row: u16, target: u16) -> u16 {
 
 /// Swap two tracks with their clips.
 pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
+    s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
     for v in &mut s.project.instrument_lanes {if v.1==number {if v.2==a{v.2=b;}else if v.2==b{v.2=a;}}}
     let arr = arr_mut(s);
@@ -2023,6 +2036,7 @@ pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
 
 /// Insert an empty track at `t` (the rest move down; the last track's clips stay on it).
 pub fn insert_track(s: &mut State, t: u16) {
+    s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let shift = |r:u16| if r>=t {r.saturating_add(1).min(TRACKS-1)} else {r};
     s.playlist.automation_last=std::mem::take(&mut s.playlist.automation_last).into_iter().map(|(r,ch)|(shift(r),ch)).collect();
     s.playlist.automation_views=std::mem::take(&mut s.playlist.automation_views).into_iter().map(|(r,ch)|(shift(r),ch)).collect();
@@ -2050,6 +2064,7 @@ pub fn insert_track(s: &mut State, t: u16) {
 
 /// Delete track `t` with its clips (the rest move up).
 pub fn delete_track(s: &mut State, t: u16) {
+    s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
     let gone: Vec<usize> = clips(s).iter().enumerate().filter(|(_, c)| c.track == t).map(|(i, _)| i).collect();
     delete(s, gone);
@@ -2872,6 +2887,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
     .collect();
     let items = vec![
         PItem::head("Track"),
+        PItem::new("Create folder",Cmd::CreateFolder(t)),
         if track_info(s,t).is_some_and(|t|t.frozen.is_some()) { PItem::new("Unfreeze track (resume editing)", Cmd::UnfreezeTrack(t)) } else { PItem::new("Freeze track (save CPU)", Cmd::FreezeTrack(t)) },
         PItem::new("Bounce track", Cmd::BounceTrack(t)),
         PItem::sep(),
@@ -2884,7 +2900,6 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
         PItem::new("Mute all clips", Cmd::TrackMuteClips(t, true)),
         PItem::new("Unmute all clips", Cmd::TrackMuteClips(t, false)),
         PItem::sep(),
-        PItem::new("Create folder for track range...",Cmd::CreateFolder(t)),
         PItem::new("Group with above track", Cmd::TrackGroup(t)).mark(Mark::Check(track_info(s, t).is_some_and(|x| x.grouped))),
         PItem::new("Collapse group", Cmd::GroupCollapse(t))
             .mark(Mark::Check(group_track(s, t).or(Some(t)).and_then(|g| track_info(s, g)).is_some_and(|x| x.collapsed))),
@@ -2982,6 +2997,7 @@ pub fn knob_menu(s: &State, auto: Option<(u32, String, f64)>, typein: Option<cra
 #[derive(Debug, Clone)]
 pub enum PlDrag {
     Track { row:u16, y0:f32, started:bool },
+    HeaderRange {anchor:u16,base:Vec<u16>},
     Comp { clip: usize, x0: f32, start: u32 },
     /// `fresh` = the clip was just placed (its undo step stays even without a move).
     Move { x0: f32, y0: f32, orig: Vec<(usize, Clip)>, fresh: bool },
@@ -3180,6 +3196,11 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     let tick = g.tick_at(x).max(0.0);
     let hit = clip_at(s, &g, x, y);
     let tool = s.playlist.tool;
+    if right && hit.is_none() && matches!(tool,PlTool::Draw|PlTool::Paint) {
+        s.playlist.sel.clear();s.playlist.header_selection.clear();s.playlist.header_anchor=None;
+        s.playlist.range=None;s.playlist.overlay=None;s.playlist.last_header=None;
+        s.playlist.last_clip=None;app.drag=None;app.invalidate();return;
+    }
     let alt = app.alt;
 
     if tool == PlTool::Comp {
@@ -3546,15 +3567,16 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
     let s = &mut app.state;
     let g = PGeom::new(s, grid);
     match d {
-        PlDrag::Track {row,y0,mut started} => {
-            if !started && (y-y0).abs()<5. {return;}
-            let root=group_track(s,row).unwrap_or(row);
+        PlDrag::HeaderRange{anchor,base}=>{
             let target=g.track_at(y.clamp(grid.y,grid.bottom()-1.));
-            if target!=root {
-                if !started {snapshot_as(s,"Move playlist track");started=true;}
-                let row=reorder_track(s,root,target);
-                app.drag=Some(Drag::Pl(PlDrag::Track{row,y0,started}));
-            }
+            s.playlist.header_selection=base;
+            for t in anchor.min(target)..=anchor.max(target){if !s.playlist.header_selection.contains(&t){s.playlist.header_selection.push(t);}}
+        }
+        PlDrag::Track {row,y0,started} => {
+            if !started && (y-y0).abs()<5. {return;}
+            let target=g.track_at(y.clamp(grid.y,grid.bottom()-1.));
+            s.playlist.drop_folder=folder_target(s,target);
+            app.drag=Some(Drag::Pl(PlDrag::Track{row,y0,started:true}));
             if y<grid.y+16. || y>grid.bottom()-16. {
                 let max=(Rows::new(s).top(TRACKS)-grid.h).max(0.);
                 s.playlist_scroll.1=(s.playlist_scroll.1+if y<grid.y+16. {-s.playlist.row_h*0.4}else{s.playlist.row_h*0.4}).clamp(0.,max);
@@ -3790,6 +3812,18 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
         s.playlist.lock_len = Some((c.source, c.length));
     }
     match d {
+        PlDrag::Track{row,started:true,..}=>{
+            let target=g.track_at(app.mouse.1.clamp(grid.y,grid.bottom()-1.));
+            s.playlist.drop_folder=None;
+            if app.mouse.1>=grid.y && app.mouse.1<grid.bottom(){
+                if let Some(folder)=folder_target(s,target){
+                    if let Some(message)=move_into_folder(s,row,folder){s.message=Some(message);}
+                }else if row!=target {
+                    snapshot_as(s,"Move playlist track");reorder_track(s,row,target);
+                }
+            }
+            app.invalidate();
+        }
         PlDrag::Comp {clip,x0,start} => {
             let end=snap_round(s,&g,g.tick_at(app.mouse.0),app.alt);
             let range=if (app.mouse.0-x0).abs()>=3.0 {Some((start.min(end),start.max(end)))}else{crate::comping::section_at(s,clip,g.tick_at(app.mouse.0).max(0.) as u32)};
@@ -3914,6 +3948,7 @@ fn cmd_is_clone(c: &Cmd) -> bool {
 /// Shows arrangement number `n` (event 100, spec: flp/events/playlist.md): selection and undo belong to the one
 /// left; a playing song continues with the new one.
 pub fn show_arrangement(s: &mut State, n: u16) {
+    s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     s.project.current_arrangement = Some(n);
     s.playlist.sel.clear();
     s.playlist.hover_clip = None;
@@ -4046,21 +4081,63 @@ pub fn press_markers(app: &mut App, grid: Rect, right: bool) {
 }
 
 /// Track header press (§6): name area selects (double-click renames); right-click opens the track menu.
+fn folder_target(s:&State,t:u16)->Option<u16>{
+    let root=group_track(s,t).unwrap_or(t);
+    (is_group_track(s,root) && track_info(s,root).is_some_and(|x|x.comp.is_none())).then_some(root)
+}
+
+fn folder_members(s:&State,t:u16)->Vec<u16>{
+    let mut rows=if s.playlist.header_selection.contains(&t){s.playlist.header_selection.clone()}else{vec![t]};
+    rows.sort_unstable();rows.dedup();rows
+}
+fn movable_members(s:&State,rows:&[u16])->bool{
+    rows.iter().all(|&r|!is_group_track(s,r) && crate::comping::parent(s,r).is_none())
+}
+
+fn move_into_folder(s:&mut State,t:u16,folder:u16)->Option<String>{
+    let rows=folder_members(s,t);
+    if rows.contains(&folder){return None;}
+    if !movable_members(s,&rows){return Some("Select individual tracks to move into this folder.".into());}
+    if rows.iter().all(|&r|group_track(s,r)==Some(folder)){return None;}
+    snapshot_as(s,"Move tracks into folder");
+    let boundary=(folder+1..TRACKS).find(|&r|!track_info(s,r).is_some_and(|t|t.grouped)).unwrap_or(TRACKS);
+    let mut order:Vec<_>=(0..TRACKS).filter(|r|!rows.contains(r)).collect();
+    let at=order.partition_point(|r|*r<boundary);
+    order.splice(at..at,rows.iter().copied());
+    for &r in &rows{arr_mut(s).tracks[r as usize].grouped=true;}
+    arr_mut(s).tracks[folder as usize].folder=true;
+    apply_track_order(s,&order,t,&rows,&[]);
+    Some(format!("Moved {} track(s) into folder",rows.len()))
+}
+
 pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
     let s = &mut app.state;
     s.playlist.popup = None;
     if right {
+        if !s.playlist.header_selection.is_empty() && !s.playlist.header_selection.contains(&t){
+            s.playlist.header_selection=vec![t];s.playlist.header_anchor=Some(t);
+        }
         s.playlist.popup = Some(track_menu(s, t, app.mouse.0, app.mouse.1));
         return app.invalidate();
     }
     let now = std::time::Instant::now();
+    let anchor=if app.shift{s.playlist.header_anchor.unwrap_or(s.playlist.track)}else{t};
+    if app.ctrl || app.shift{
+        let mut base=if app.ctrl{s.playlist.header_selection.clone()}else{Vec::new()};
+        if app.ctrl && !app.shift && base.contains(&t){base.retain(|&r|r!=t);s.playlist.header_selection=base;s.playlist.last_header=None;return app.invalidate();}
+        s.playlist.header_selection=base.clone();
+        for r in anchor.min(t)..=anchor.max(t){if !s.playlist.header_selection.contains(&r){s.playlist.header_selection.push(r);}}
+        s.playlist.header_anchor=Some(anchor);s.playlist.track=t;s.playlist.last_header=None;
+        app.drag=Some(Drag::Pl(PlDrag::HeaderRange{anchor,base}));return app.invalidate();
+    }
+    s.playlist.header_anchor=Some(t);s.playlist.header_selection=vec![t];
     let double = s.playlist.last_header.is_some_and(|(lt, when)| lt == t && now.duration_since(when).as_millis() < 450);
     s.playlist.track = t;
     s.playlist.last_header = Some((t, now));
     if double {
         start_edit(s, EditTarget::TrackName(t), at);
     } else {
-        app.drag=Some(Drag::Pl(PlDrag::Track {row:t,y0:app.mouse.1,started:false}));
+        app.drag=Some(Drag::Pl(PlDrag::HeaderRange {anchor:t,base:Vec::new()}));
     }
     app.invalidate();
 }
@@ -4904,14 +4981,29 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             None
         }
         Cmd::CreateFolder(t) => {
-            let selected:Vec<_>=s.playlist.sel.iter().filter_map(|&i|clips(s).get(i).map(|c|c.track)).collect();
-            let (first,last)=if selected.contains(&t) {(*selected.iter().min().unwrap(),*selected.iter().max().unwrap())} else {(t,t)};
-            if last>=TRACKS-1 || clips(s).iter().any(|c|c.track==TRACKS-1) {return Some("No room to insert a folder track".into());}
-            snapshot(s);
+            let mut rows=folder_members(s,t);
+            if s.playlist.header_selection.is_empty(){
+                let selected:Vec<_>=s.playlist.sel.iter().filter_map(|&i|clips(s).get(i).map(|c|c.track)).collect();
+                if selected.contains(&t){rows=(*selected.iter().min()?..=*selected.iter().max()?).collect();}
+            }
+            if !movable_members(s,&rows){return Some("Select individual tracks to put in a folder.".into());}
+            let first=*rows.first()?;
+            if rows.contains(&(TRACKS-1)) || clips(s).iter().any(|c|c.track==TRACKS-1) ||
+                track_info(s,TRACKS-1).is_some_and(|tr|*tr!=PlaylistTrack::new(u32::from(TRACKS))){
+                return Some("No room to insert a folder track".into());
+            }
+            snapshot_as(s,"Create playlist folder");
+            // Insert above the original group rather than splitting unrelated existing children.
+            let first=group_track(s,first).unwrap_or(first);
             insert_track(s,first);
+            let members:Vec<_>=rows.iter().map(|r|r+1).collect();
+            let mut order:Vec<_>=(0..TRACKS).filter(|r|!members.contains(r)).collect();
+            order.splice(first as usize+1..first as usize+1,members.iter().copied());
             let tracks=&mut arr_mut(s).tracks;
-            tracks[first as usize].name=Some("Folder".into());
-            for row in first+1..=last+1 {tracks[row as usize].grouped=true;}
+            tracks[first as usize].name=Some("Folder".into());tracks[first as usize].folder=true;
+            for &r in &members{tracks[r as usize].grouped=true;}
+            apply_track_order(s,&order,first,&members,&[]);
+            s.playlist.header_selection=vec![first];s.playlist.header_anchor=Some(first);
             let at=grid.map_or((380.,160.),|g|(g.x-108.,PGeom::new(s,g).y_of(first)));
             start_edit(s,EditTarget::TrackName(first),at);
             None

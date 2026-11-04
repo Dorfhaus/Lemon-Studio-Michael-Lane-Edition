@@ -1137,7 +1137,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     // A member takes its group track's colour, so the block reads as one.
     let colored = s.mixer.recording.live.iter().find(|l|l.row==row).and_then(|l|l.color).or_else(||pl::track_info(s, leader.unwrap_or(row)).and_then(|i| i.color)).map(rgb);
     let base = colored.unwrap_or(t.track_header);
-    let base = if s.playlist.track == row { base.shade(0.1) } else { base };
+    let base = if s.playlist.header_selection.contains(&row) { base.shade(0.1) } else { base };
     let base = if on { base } else { base.mix(t.grid_gap, 0.4) };
     let (bx, bw) = if member { (x + INDENT, w - INDENT) } else { (x, w) };
     let gap = if strip { 1.0 } else { 3.0 };
@@ -1158,10 +1158,11 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         let left = if lead { hr.x + k } else { hr.x };
         ui.c.fill_rect(Rect::new(left, hr.bottom() - k, hr.right() - left, k), bottom);
     }
-    ui.hit(hr, Action::PlHeader(row), "Drag to move track with its takes and automation; double-click to rename");
-    if strip {
-        return;
+    ui.hit(hr, Action::PlHeader(row), "Drag to select tracks; Shift selects a range, Ctrl/Cmd toggles a track; right-click to create a folder");
+    if s.playlist.header_selection.contains(&row) || s.playlist.drop_folder==Some(row){
+        ui.c.stroke_rrect(hr.inset(1.),2.,1.5,t.accent);ui.c.fill_rect(Rect::new(hr.x,hr.y,3.,hr.h),t.accent);
     }
+    if strip {return;}
     // The LED and "…" keep their distance from the row's bottom when the track height changes (Alt+wheel); short
     // rows drop the "…" and keep the name clear of the LED.
     let short = g.rows.row_h < pl::ROW_H - 8.0;
@@ -1181,12 +1182,15 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
     if !editing {
         let name_w = if short { hr.w - 26.0 } else { hr.w - 4.0 };
-        let indent=if lead {15.}else{0.};
-        if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.,hr.y+3.,13.,13.),text);}
+        let indent=if lead {15.}else{0.}+if short {15.}else{0.};
+        if lead {icons::draw(ui.c,Icon::Folder,Rect::new(hr.x+2.+if short{15.}else{0.},hr.y+3.,13.,13.),text);}
         ui.c.text_clip(Font::new(16), hr.x + 2.0+indent, hr.y + 1.0, name_w-indent, text, &pl::track_name(s, row));
     }
-    if !short {
-        ui.c.text(Font::new(14), hr.x + 14.0, led.y - 6.0, text.shade(-0.2), "...");
+    {
+        let grip=if short{Rect::new(hr.x+1.,hr.y+1.,14.,13.)}else{Rect::new(hr.x+5.,led.y,18.,13.)};
+        ui.hit(grip,Action::PlTrackGrip(row),"Drag tracks onto a folder to add them, or onto another track to reorder");
+        for line in 0..3 {ui.c.fill_rect(Rect::new(grip.x+3.,grip.y+2.+line as f32*3.,10.,1.),text);}
+
     }
     let info = pl::track_info(s, row);
     if lead {

@@ -844,6 +844,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_peak_links(file,&mut p);
     read_channel_layouts(file,&mut p);
     read_strip_bypass(file,&mut p);
+    read_track_folders(file,&mut p);
     read_comp_groups(file, &mut p);
     read_frozen_tracks(file, &mut p);
     read_extra_fx(file, &mut p);
@@ -1658,6 +1659,7 @@ fn load_pl_track(events: &[Event], t: &PlTrackLoc, enc: TextEnc) -> PlaylistTrac
     let r = events[t.record].data().unwrap_or(&[]);
     let custom = t.color_flag.is_some_and(|i| int(&events[i]) != 0);
     PlaylistTrack {
+        folder:false,
         frozen: None,
         comp: None,
         number: r.get(0..4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap())),
@@ -3271,6 +3273,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_peak_links(project,file);
     write_channel_layouts(project,file);
     write_strip_bypass(project,file);
+    write_track_folders(project,file);
     write_comp_groups(project, file);
     write_frozen_tracks(project, file);
     write_extra_fx(project, file);
@@ -3808,6 +3811,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_peak_links(project,&mut file);
     write_channel_layouts(project,&mut file);
     write_strip_bypass(project,&mut file);
+    write_track_folders(project,&mut file);
     write_comp_groups(project, &mut file);
     write_frozen_tracks(project, &mut file);
     write_extra_fx(project, &mut file);
@@ -6423,6 +6427,26 @@ fn write_instrument_lanes(p:&Project,file:&mut FlpFile) {
 }
 
 // Versioned comp leaders; take grouping, muted state, source windows and fades use normal FLP records.
+const FOLDER_TAG:Tag=Tag(*b"LSFD");
+fn read_track_folders(file:&FlpFile,p:&mut Project){
+    for chunk in file.chunks.iter().filter(|c|c.tag==FOLDER_TAG){
+        if let ChunkBody::Raw(data)=&chunk.body && data.first()==Some(&1){
+            for row in data[1..].chunks_exact(4){
+                let arr=u16::from_le_bytes([row[0],row[1]]);
+                let index=u16::from_le_bytes([row[2],row[3]]) as usize;
+                if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==arr).and_then(|a|a.tracks.get_mut(index)){t.folder=true;}
+            }
+        }
+    }
+}
+fn write_track_folders(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=FOLDER_TAG);
+    let mut data=vec![1];for a in &p.arrangements{for (i,t) in a.tracks.iter().enumerate(){if t.folder{
+        data.extend(a.number.to_le_bytes());data.extend((i as u16).to_le_bytes());
+    }}}
+    if data.len()>1{file.chunks.push(Chunk{tag:FOLDER_TAG,body:ChunkBody::Raw(data)});}
+}
+
 const COMP_TAG: Tag = Tag(*b"LSCP");
 fn read_comp_groups(file: &FlpFile, p: &mut Project) {
     for c in &file.chunks {

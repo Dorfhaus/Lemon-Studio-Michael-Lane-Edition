@@ -324,6 +324,7 @@ pub enum Action {
     PlRuler,
     PlMarkers,
     PlHeader(u16),
+    PlTrackGrip(u16),
     PlLed(u16),
     PlAutomation(u16),
     PlAutomationToggle(u16),
@@ -4148,7 +4149,7 @@ impl App {
             let pos=if matches!(self.drag,Some(Drag::RackMixer{started:true,..})){Some(self.mouse)}else{self.route_hover};
             if let Some((x,y))=pos{self.route_edge(x,y);}
         }
-        if let (true,Some(Drag::Pl(d @ crate::playlist::PlDrag::Marquee{..})), Some(grid)) = (edge_due,&self.drag,self.pl_grid) {
+        if let (true,Some(Drag::Pl(d @ (crate::playlist::PlDrag::Marquee{..} | crate::playlist::PlDrag::HeaderRange{..}))), Some(grid)) = (edge_due,&self.drag,self.pl_grid) {
             let y=self.mouse.1;
             let delta=if y>grid.bottom()-18. {8.} else if y<grid.y+18. {-8.} else {0.};
             if delta!=0. {
@@ -8347,6 +8348,13 @@ impl App {
                     pl::press_markers(self, g, right);
                 }
             }
+            Action::PlTrackGrip(t)=>{
+                if right{pl::press_header(self,t,true,self.mouse);}else{
+                    if !self.state.playlist.header_selection.contains(&t){self.state.playlist.header_selection=vec![t];}
+                    self.state.playlist.track=t;
+                    self.drag=Some(Drag::Pl(pl::PlDrag::Track{row:t,y0:self.mouse.1,started:false}));self.invalidate();
+                }
+            }
             Action::PlHeader(t) => {
                 let at = self.top_hit(self.mouse.0, self.mouse.1).map_or(self.mouse, |h| (h.rect.x, h.rect.y));
                 pl::press_header(self, t, right, at);
@@ -8927,7 +8935,7 @@ impl App {
             | Action::PlClips
             | Action::PlRuler
             | Action::PlMarkers
-            | Action::PlHeader(_)
+            | Action::PlHeader(_) | Action::PlTrackGrip(_)
             | Action::PlLed(_)
             | Action::PlAutomationToggle(_)
             | Action::PlAutomation(_)
@@ -20592,6 +20600,53 @@ mod tests {
     }
 
     #[test]
+    fn header_selection_folder_drop_and_empty_grid_deselect(){
+        use crate::playlist as pl;
+        use os_model::{Clip,ClipSource};
+        let mut app=App::new(None);
+        app.state.project=test_project();app.state.show_browser=false;app.state.z=vec![Win::Playlist];
+        app.state.startup_layout_pending=false;
+        let a=pl::arr_mut(&mut app.state);
+        for r in 0..7{a.tracks[r].name=Some(format!("Lane {r}"));}
+        a.clips=vec![Clip::new(384,96,4,ClipSource::Pattern(1))];
+        let mut c=Canvas::new(1920,1080,1.).unwrap();
+        let header=|app:&mut App,c:&mut Canvas,t|{
+            frame(app,c,None);let r=hit_rect(app,&Action::PlHeader(t));
+            app.mouse_move(r.x+28.,r.y+8.);app.mouse_down();app.mouse_up();
+        };
+        header(&mut app,&mut c,1);
+        app.ctrl=true;header(&mut app,&mut c,4);app.ctrl=false;
+        assert_eq!(app.state.playlist.header_selection,[1,4]);
+        app.mouse_down_right();
+        let cmd=app.state.playlist.popup.as_ref().unwrap().items[1].clone();
+        assert_eq!(cmd.label,"Create folder");pl::run(&mut app,cmd.cmd);
+        assert_eq!(pl::track_info(&app.state,1).unwrap().name.as_deref(),Some("Folder"));
+        for (r,name,grouped) in [(2,"Lane 1",true),(3,"Lane 4",true),(4,"Lane 2",false)]{
+            let t=pl::track_info(&app.state,r).unwrap();assert_eq!((t.name.as_deref(),t.grouped),(Some(name),grouped));
+        }
+        assert_eq!((pl::clips(&app.state)[0].position,pl::clips(&app.state)[0].track),(384,3));
+        pl::commit_edit(&mut app.state);frame(&mut app,&mut c,None);
+        let grip=hit_rect(&app,&Action::PlTrackGrip(4));let target=hit_rect(&app,&Action::PlHeader(1));
+        app.mouse_move(grip.cx(),grip.cy());app.mouse_down();app.mouse_move(target.x+28.,target.y+8.);app.mouse_up();
+        assert_eq!(pl::group_track(&app.state,4),Some(1));
+        let back=os_flp::project::load(&os_flp::project::create(&app.state.project).unwrap()).unwrap();
+        assert!(back.arrangement().unwrap().tracks[1].folder);
+        header(&mut app,&mut c,2);app.shift=true;header(&mut app,&mut c,4);app.shift=false;
+        assert_eq!(app.state.playlist.header_selection,[2,3,4]);
+        let top=hit_rect(&app,&Action::PlHeader(0));
+        let end=hit_rect(&app,&Action::PlHeader(3));
+        app.mouse_move(top.x+28.,top.y+8.);app.mouse_down();app.mouse_move(end.x+28.,end.y+8.);app.mouse_up();
+        assert_eq!(app.state.playlist.header_selection,[0,1,2,3]);
+        for tool in [pl::PlTool::Draw,pl::PlTool::Paint]{
+            app.state.playlist.tool=tool;app.state.playlist.sel=vec![0];app.state.playlist.header_selection=vec![2,3];app.state.playlist.range=Some((0,384));
+            frame(&mut app,&mut c,None);let g=app.pl_grid().unwrap();
+            app.mouse_move(g.x+8.,g.y+8.);app.mouse_down_right();app.mouse_up();
+            assert!(app.state.playlist.header_selection.is_empty() && app.state.playlist.sel.is_empty() && app.state.playlist.range.is_none());
+            assert_eq!(pl::clips(&app.state).len(),1);
+        }
+    }
+
+    #[test]
     fn playlist_header_drag_moves_comp_and_automation_family() {
         use crate::playlist as pl;
         use os_model::{Clip,ClipSource,target};
@@ -20620,7 +20675,7 @@ mod tests {
         let before=pl::capture(&app.state);
         let mut canvas=Canvas::new(1920,1080,1.).unwrap();
         frame(&mut app,&mut canvas,None);
-        let header=hit_rect(&app,&Action::PlHeader(1));
+        let header=hit_rect(&app,&Action::PlTrackGrip(1));
         let grid=app.pl_grid().unwrap();
         let g=pl::PGeom::new(&app.state,grid);
         app.mouse_move(header.cx(),header.cy());app.mouse_down();
