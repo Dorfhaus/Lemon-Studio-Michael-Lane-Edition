@@ -768,7 +768,7 @@ fn subtract(rect: [i32; 4], cut: [i32; 4]) -> Vec<[i32; 4]> {
 
 /// The parts of window rect `me` inside `work` and outside every cover (a docked frame's clip, off Windows).
 #[cfg(not(windows))]
-fn visible(me: [i32; 4], work: [i32; 4], covers: &[[i32; 4]]) -> Vec<[i32; 4]> {
+pub(crate) fn visible(me: [i32; 4], work: [i32; 4], covers: &[[i32; 4]]) -> Vec<[i32; 4]> {
     let start = [me[0].max(work[0]), me[1].max(work[1]), me[2].min(work[2]), me[3].min(work[3])];
     if start[0] >= start[2] || start[1] >= start[3] {
         return Vec::new();

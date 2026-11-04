@@ -44,8 +44,8 @@ pub struct Hosted {
     pub name: String,
     #[cfg(plugin_windows)]
     pub window: Option<FrameWindow>,
-    #[cfg(windows)] pub rack_editor:Option<crate::strip_editor::Editor>,
-    #[cfg(windows)] pub rack_error:Option<String>,
+    #[cfg(any(windows,target_os="macos"))] pub rack_editor:Option<crate::strip_editor::Editor>,
+    #[cfg(any(windows,target_os="macos"))] pub rack_error:Option<String>,
     /// Set while the open editor belongs to a Lemon plugin that joined the strip (host link).
     #[cfg(plugin_windows)]
     pub link: Option<os_hostlink::Link>,
@@ -109,8 +109,8 @@ impl Hosted {
             name,
             #[cfg(plugin_windows)]
             window: None,
-            #[cfg(windows)] rack_editor:None,
-            #[cfg(windows)] rack_error:None,
+            #[cfg(any(windows,target_os="macos"))] rack_editor:None,
+            #[cfg(any(windows,target_os="macos"))] rack_error:None,
             #[cfg(plugin_windows)]
             link: None,
             #[cfg(plugin_windows)]
@@ -139,7 +139,7 @@ impl Hosted {
         let count = a.count();
         #[cfg(plugin_windows)]
         let editor = self.window.is_some();
-        #[cfg(windows)] let editor=editor||self.rack_editor.is_some();
+        #[cfg(any(windows,target_os="macos"))] let editor=editor||self.rack_editor.is_some();
         #[cfg(not(plugin_windows))]
         let editor = false;
         (count != last.count || editor || now.duration_since(last.at) >= LOOK_EVERY).then_some(Look { count, at: now })
@@ -942,7 +942,7 @@ impl Plugins {
     /// its own (Tesla plays its sample) or show what it hears.
     pub fn editor_open(&self) -> bool {
         #[cfg(plugin_windows)]
-        return self.hosted.values().any(|h| {let open=h.window.is_some();#[cfg(windows)] let open=open||h.rack_editor.is_some();open});
+        return self.hosted.values().any(|h| {let open=h.window.is_some();#[cfg(any(windows,target_os="macos"))] let open=open||h.rack_editor.is_some();open});
         #[cfg(not(plugin_windows))]
         false
     }
@@ -950,7 +950,7 @@ impl Plugins {
     /// Opens (or raises) row `row`'s plugin window.
     #[cfg(plugin_windows)]
     pub fn open_window(&mut self, row: usize, info: ChannelInfo) -> Result<(), String> {
-        #[cfg(windows)] self.close_rack(row);
+        #[cfg(any(windows,target_os="macos"))] self.close_rack(row);
         let (owner, scale) = (self.owner, self.scale);
         let h = self.hosted.get(&row).ok_or("not a plugin channel")?;
         if let Some(w) = &h.window {
@@ -1045,7 +1045,7 @@ impl Plugins {
     #[cfg(plugin_windows)]
     pub(crate) fn close_window(&mut self, row: usize) {
         self.pending_scales.remove(&row);
-        #[cfg(windows)] self.close_rack(row);
+        #[cfg(any(windows,target_os="macos"))] self.close_rack(row);
         if let Some(h) = self.hosted.get_mut(&row) {
             h.pending_editor_resize = None;
             // The mode and place it reopens in (spec: ui/settings-choices.md "Miscellaneous: naming, detached plugins
@@ -1175,7 +1175,7 @@ impl Plugins {
             let look = h.due(h.seen);
             let mut menu: Option<(os_host::Menu, (i32, i32))> = None;
             #[cfg(plugin_windows)] let mut editor_layout = None;
-            #[cfg(windows)] let mut embedded_size = None;
+            #[cfg(any(windows,target_os="macos"))] let mut embedded_size = None;
             if let Some(mut p) = look.and_then(|_| h.plugin.try_lock().ok()) {
                 h.seen = look.unwrap_or(h.seen);
                 // A crash stopped it (spec: plugins/plugin-formats.md, "Crash containment"): said once, window closed.
@@ -1186,7 +1186,7 @@ impl Plugins {
                 }
                 p.idle();
                 out.extend(p.take_playback_requests().into_iter().map(|request|Request::AraPlayback(row,request)));
-                #[cfg(windows)] if let (Some(_),Some(size))=(&h.rack_editor,p.editor_size()){
+                #[cfg(any(windows,target_os="macos"))] if let (Some(_),Some(size))=(&h.rack_editor,p.editor_size()){
                     if !crate::rack_mixer::vertical_shape(size){p.close_editor();h.rack_editor=None;h.rack_error=Some("This plugin reported an invalid editor size.".into());}
                     else {embedded_size=Some(size);}
                 }
@@ -1198,7 +1198,7 @@ impl Plugins {
                         let k = w.scale();
                         w.editor_to_screen(m.at.0 as f32 / k, m.at.1 as f32 / k)
                     });
-                    #[cfg(windows)] let at=at.or_else(||h.rack_editor.as_ref().map(|e|e.screen_point((m.at.0,m.at.1))));
+                    #[cfg(any(windows,target_os="macos"))] let at=at.or_else(||h.rack_editor.as_ref().map(|e|e.screen_point((m.at.0,m.at.1))));
                     #[cfg(not(plugin_windows))]
                     let at: Option<(i32, i32)> = None;
                     match at {
@@ -1221,7 +1221,7 @@ impl Plugins {
             }
             // Native window moves/repaints may block in the OS. Do them after
             // releasing the audio plugin instance, not inside its processing lock.
-            #[cfg(windows)] if let Some(e)=&mut h.rack_editor {if let Some(size)=embedded_size {e.accept_size(size);}e.animate();}
+            #[cfg(any(windows,target_os="macos"))] if let Some(e)=&mut h.rack_editor {if let Some(size)=embedded_size {e.accept_size(size);}e.animate();}
             #[cfg(plugin_windows)]
             if let Some(w) = &h.window {
                 if let Some((resizable,size))=editor_layout {w.set_resizable(resizable);w.set_editor_size(size);}
@@ -1351,7 +1351,7 @@ impl Drop for Hosted {
     /// window with it, and the plugin's own close then crashed at exit). The instance itself is retired, not
     /// destroyed here: see [`sweep_retired`].
     fn drop(&mut self) {
-        #[cfg(windows)] if self.rack_editor.is_some(){if let Ok(mut p)=self.plugin.lock(){p.close_editor();}self.rack_editor=None;}
+        #[cfg(any(windows,target_os="macos"))] if self.rack_editor.is_some(){if let Ok(mut p)=self.plugin.lock(){p.close_editor();}self.rack_editor=None;}
         #[cfg(plugin_windows)]
         if self.window.is_some() {
             if let Ok(mut p) = self.plugin.lock() {

@@ -96,13 +96,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     window_body(ui, r);
     let outer = r;
     let floating = !s.wins[Win::PianoRoll.slot().unwrap_or(0)].maxed && r.h >= 2.0 * crate::app::TITLE_H;
-    let (r, _) = super::framed(ui, s, Win::PianoRoll, r, title, 365.0, true);
+    let (r, _) = super::framed(ui, s, Win::PianoRoll, r, title, 408.0, true);
     // The target channel: name and arrow, orange with a ▾ while hovered (spec: ui/piano-target-channel.md §1).
     let name=format!("Piano roll: {name}");
     let font=Font::new(12);
-    let nx=r.x+if r.w>=500. {394.}else{350.};
-    if r.w>=500. {
-        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),344.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),368.)] {
+    let nx=r.x+if r.w>=550. {437.}else{393.};
+    if r.w>=550. {
+        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),387.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),411.)] {
             let b=Rect::new(r.x+x,r.y+2.,20.,18.);
             let hint=format!("{} channel: {}",if label=="M"{"Mute"}else{"Solo"},name);
             let hover=ui.hit(b,Action::PianoCommand(cmd),hint);
@@ -359,7 +359,16 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         (512.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
     ];
     for (x, icon, hint, action) in items {
-        let b = Rect::new(ox + x - 9.0, r.y + 2.0, 18.0, 18.0);
+        let snap = action == Some(Action::PianoSnapMenu);
+        let offset = if x > 263.0 { 43.0 } else { 0.0 };
+        let b = Rect::new(ox + x + offset - 9.0, r.y + 2.0, if snap { 61.0 } else { 18.0 }, 18.0);
+        if snap {
+            ui.hit(b, Action::PianoSnapMenu, crate::piano_snap::hint(s));
+            super::sunken(ui, b, t.sunken);
+            ui.c.text_center(os_ui::Font::new(11), Rect::new(b.x,b.y,b.w-9.0,b.h), t.text, s.piano.snap.label());
+            os_ui::kit::triangle(ui.c,b.right()-5.0,b.cy(),2.5,os_ui::kit::Dir::Down,t.text_dim);
+            continue;
+        }
         let Some(action) = action else {
             ui.off(b, hint);
             icons::draw(ui.c, icon, b, t.text_faint);

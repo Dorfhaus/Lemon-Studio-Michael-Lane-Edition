@@ -788,7 +788,7 @@ pub fn marquee_offset(t: f32, over: f32) -> f32 {
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
-    if s.browser_auto_hidden {
+    if s.browser_auto_hidden && s.native_view != Some(crate::app::Win::Browser) {
         ui.c.fill_rect(r,t.browser_title);
         ui.hit(r,Action::Swallow,"Move here to show the browser");
         ui.c.fill_rect(Rect::new(r.x+2.,r.y+8.,3.,28.),t.text_dim);
@@ -949,6 +949,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     // Splitter: drags the browser's width (§9).
     ui.c.fill_rect(Rect::new(bw, r.y, 6.0, r.h), t.splitter);
     ui.c.fill_rect(Rect::new(bw + 6.0, r.y, 2.0, r.h), t.splitter_dark);
+    if s.native_view == Some(crate::app::Win::Browser) { return; }
     ui.hit(Rect::new(bw, r.y, SPLITTER, r.h), Action::BrowserSplitter, "Browser: drag to resize, double-click for the default width");
 }
 

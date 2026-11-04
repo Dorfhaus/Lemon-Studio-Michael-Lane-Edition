@@ -11,7 +11,7 @@ use std::ops::Range;
 use os_ui::{Font, Rect};
 
 use super::{menus, sunken, tool_button, FrameInfo};
-use crate::app::{Action, Live, State, Ui, Util, Win};
+use crate::app::{Action, Live, State, Ui, Win};
 use crate::icons::{self, Icon};
 use crate::toolbar::{place, At, BarHit, Moving, Panel, Placed, Target, Tile, PANELS, ROW_H};
 
@@ -91,7 +91,7 @@ pub enum Switch {
 /// The toolbar's rows, the bottom edge excepted, in a band `width` px wide: one band, repainted whole while the
 /// separators are off (their contents are moved by a pixel after painting, `paint`).
 pub fn band(s: &State, width: f32) -> Rect {
-    Rect::new(0.0, 0.0, width, s.bar.layout.height())
+    Rect::new(0.0, 0.0, width, display_layout(s).height())
 }
 
 fn btn(x: f32, y: f32) -> Rect {
@@ -108,19 +108,77 @@ struct Ctx<'a> {
     preview: bool,
 }
 
-pub(super) fn visible_layout(s:&State)->crate::toolbar::Layout {
+pub(crate) fn visible_layout(s:&State)->crate::toolbar::Layout {
     let mut layout=s.bar.layout.clone();
     if !s.bar.editing {
         for row in &mut layout.rows {row.retain(|p|!matches!(p,Panel::Caption|Panel::Hint|Panel::Cpu));
             if row.contains(&Panel::Utilities)&&row.contains(&Panel::Windows){row.retain(|p|*p!=Panel::Utilities);let at=row.iter().position(|p|*p==Panel::Windows).unwrap();row.insert(at,Panel::Utilities);}
         }
-        if s.toolbar.hint_bar {
-            let row=layout.rows.iter_mut().find(|row|row.contains(&Panel::Utilities));
-            if let Some(row)=row {let at=row.iter().position(|p|*p==Panel::Utilities).unwrap()+1;row.insert(at,Panel::Hint);}
-            else if let Some(row)=layout.rows.first_mut(){row.push(Panel::Hint);}
-        }
+
     }
     layout
+}
+
+pub(super) fn display_layout(s: &State) -> &crate::toolbar::Layout {
+    s.toolbar_display_layout.as_ref().unwrap_or(&s.bar.layout)
+}
+
+/// Wrap whole panels after reaching the scale floor. Only the first row shares
+/// space with the fixed actions and window controls.
+pub(crate) fn wrap(mut layout: crate::toolbar::Layout, width: f32, actions: f32) -> crate::toolbar::Layout {
+    let mut rows = Vec::new();
+    for original in layout.rows {
+        let mut row = Vec::new();
+        let mut used = 0.0;
+        for panel in original {
+            let available = if rows.is_empty() { width - actions } else { width };
+            if used + panel.width() > available && (!row.is_empty() || rows.is_empty()) {
+                rows.push(std::mem::take(&mut row));
+                used = 0.0;
+            }
+            used += panel.width();
+            row.push(panel);
+        }
+        rows.push(row);
+    }
+    layout.rows = rows;
+    layout
+}
+
+pub(super) fn placements(s: &State, width: f32) -> Vec<Placed> {
+    let mut panels = place(display_layout(s), (width - s.toolbar_actions.width()).max(0.0), s.bar.editing);
+    if s.toolbar_actions.hint > 0.0 {
+        panels.push(Placed { panel: Panel::Hint, row: 0, idx: 0,
+            x: width - 124.0 - Panel::Hint.width(), w: Panel::Hint.width() });
+    }
+    panels
+}
+
+/// Measured once so the fit calculation and the painted buttons reserve identical space.
+#[derive(Clone, Copy, Default)]
+pub struct ActionSizes {
+    update: f32,
+    donate: f32,
+    feedback: f32,
+    cpu: f32,
+    hint: f32,
+}
+
+impl ActionSizes {
+    pub fn measure(canvas: &mut os_ui::Canvas, hint: bool) -> Self {
+        let font = Font::new(12);
+        Self {
+            update: canvas.text_width(font, "Update").ceil() + 12.0,
+            donate: canvas.text_width(font, "Donate").ceil() + 12.0,
+            feedback: canvas.text_width(Font::new(11), "Report a bug").ceil() + 12.0,
+            hint: if hint { Panel::Hint.width() + 6.0 } else { 0.0 },
+            cpu: if crate::settings_file::flag("toolbar_cpu_visible", true) { 54.0 } else { 0.0 },
+        }
+    }
+
+    pub fn width(self) -> f32 {
+        self.cpu + self.hint + 37.0 + self.update + self.donate + self.feedback + 24.0 + 32.0 + 104.0
+    }
 }
 
 /// The band in its own px, `width` of them wide (`views::paint` scales it by Toolbars scaling). In each row the panels
@@ -129,20 +187,17 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let t = ui.t;
     let lemon = super::lemon(ui);
     let editing = s.bar.editing;
-    let visible_layout = visible_layout(s);
-    let l = &visible_layout;
+    let l = display_layout(s);
     let action_font = Font::new(12);
-    let update_w = ui.c.text_width(action_font, "Update").ceil() + 12.0;
-    let donate_w = ui.c.text_width(action_font, "Donate").ceil() + 12.0;
-    let feedback_w=ui.c.text_width(action_font,"Report a bug").ceil()+20.;
-    let ai_w=48.;
-    let window_w = 104.0;
-    let show_cpu=crate::settings_file::flag("toolbar_cpu_visible",true);
-    let mini_cpu_w = if show_cpu {54.}else{0.};
-    let actions_w = mini_cpu_w + ai_w + update_w + donate_w + feedback_w + 24.0 + 32.0 + window_w;
+    let sizes = s.toolbar_actions;
+    let (update_w, donate_w, feedback_w) = (sizes.update, sizes.donate, sizes.feedback);
+    let (ai_w, window_w) = (37.0, 104.0);
+    let mini_cpu_w = sizes.cpu;
+    let show_cpu = mini_cpu_w > 0.0;
+    let actions_w = sizes.width();
     let content_width = (width - actions_w).max(100.0);
     s.toolbar_content_width.set(content_width);
-    let fit = room(content_width, crate::toolbar::natural_width(l, editing));
+    let fit = if editing { room(content_width, crate::toolbar::natural_width(l, true)) } else { f32::INFINITY };
     let (rows, h) = (l.rows.len(), l.height());
     // Separator lines: off from the Toolbars menu (spec: ui/toolbar-menu.md §2).
     let seps = s.toolbar.separators;
@@ -168,7 +223,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     // Empty toolbar areas drag the window (registered first, so controls win).
     ui.hit(Rect::new(0.0, 0.0, width, h), Action::DragWindow, "");
 
-    let placed = place(l, content_width, editing);
+    let placed = placements(s, width);
     for row in 0..rows {
         for p in placed.iter().filter(|p| p.row == row) {
             let a = p.at();
@@ -231,7 +286,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         ui.c.text_clip(action_font, donate.x + 6.0, donate.y + 5.0, donate.w - 12.0, t.text, "Donate");
         let report=Rect::new(donate.right()+6.,r.y,feedback_w,r.h);
         ui.hit(report,Action::FeatureVote(0,30),"Report a bug or send feedback: review technical details before submitting");
-        ui.c.fill_rrect(report,3.,t.accent);ui.c.text_center(action_font,report,t.sunken,"Report a bug");
+        ui.c.fill_rrect(report,3.,t.accent);ui.c.text_center(Font::new(11),report,t.sunken,"Report a bug");
     }
     // Window controls remain at the far right, outside the customizable panels.
     ui.c.fill_rect(Rect::new(width-window_w-17.,11.,1.,18.),t.toolbar_line);
@@ -333,8 +388,8 @@ fn hint_panel(ui: &mut Ui, c: &Ctx) {
     sunken(ui, hp, t.sunken);
     ui.hit(hp, Action::DragWindow, "Hint bar");
     let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or("") };
-    let mut font=Font::new(13);
-    for size in (9..=13).rev() {
+    let mut font=Font::new(11);
+    for size in (9..=11).rev() {
         font=Font::new(size);
         if ui.c.line_height(font)*2.<=hp.h-4. {break;}
     }
@@ -687,36 +742,9 @@ fn cpu(ui: &mut Ui, c: &Ctx) {
 /// Utility buttons: "left / right" hints, right clicks in `App::toolbar_right` (spec: ui/toolbar-buttons.md §2).
 /// FL's last one, the content library's download, is left out (spec: ui/main-window.md §2).
 fn utilities(ui: &mut Ui, c: &Ctx) -> bool {
-    let (a, s) = (c.a, c.s);
-    let utils = [
-        (Icon::Undo, "Undo / Undo history (Ctrl+Z)"),
-        (Icon::Cut, "Open audio editor / New audio editor"),
-        (Icon::Mic, "One-click audio recording"),
-        (Icon::Help, "Help index / About..."),
-        (Icon::Save, "Save as... / Save new version (Shift+Ctrl+S)"),
-        (Icon::SaveRender, "Export audio... (Ctrl+R)"),
-        (Icon::Info, "Project info (F11)"),
-    ];
-    for (i, (icon, hint)) in utils.into_iter().filter(|(icon, _)| *icon == Icon::SaveRender || *icon == Icon::Info).enumerate() {
-        let r = a.r(btn(1209.0 + 33.0 * i as f32, 4.0));
-        if r.right() > c.fit {
-            return false;
-        }
-        let action = match icon {
-            Icon::Undo => Action::Util(Util::Undo),
-            Icon::Help => Action::Util(Util::Help),
-            Icon::Save => Action::Util(Util::Save),
-            // spec: plugins/tesla/requests.md #5: Tesla on the master track.
-            Icon::Cut => Action::Util(Util::AudioEditor),
-            Icon::SaveRender => Action::MenuItem(0, menus::FILE_EXPORT),
-            Icon::Info => Action::MenuItem(menus::OPTIONS_MENU, menus::OPT_INFO),
-            // spec: ui/one-click-recording.md §2: lit while it records; a click then stops.
-            Icon::Mic => Action::OneClick,
-            _ => Action::Placeholder(hint),
-        };
-        let lit = icon == Icon::Mic && s.rec.audio;
-        tool_button(ui, r, icon, lit, action, hint);
-    }
+    let button = c.a.r(btn(1209.0, 4.0));
+    if button.right() > c.fit { return false; }
+    tool_button(ui, button, Icon::SaveRender, false, Action::MenuItem(0, menus::FILE_EXPORT), "Export audio... (Ctrl+R)");
     true
 }
 
@@ -1184,7 +1212,6 @@ mod tests {
         assert_eq!(bst(0.125, 120.0, 96), (1, 2, 0));
     }
 
-    use super::MORE_HINT;
     use crate::app::{Action, App, Win};
     use crate::prefs::{choice, set_choice, TOOLBARS_SCALING};
     use os_ui::{Canvas, Rect};
@@ -1213,7 +1240,7 @@ mod tests {
     /// their places below the band.
     #[test]
     fn toolbars_scaling_scales_the_top_band() {
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let Ok(mut c) = Canvas::new(4600, 1080, 1.0) else { return };
         let mut app = App::new(None);
         app.state.show_browser = true;
         app.paint(&mut c, None);
@@ -1244,7 +1271,7 @@ mod tests {
         assert_eq!((crate::views::band_h(&app.state), app.state.work_rect().y), (166.0, 166.0));
         assert_eq!(hit(&app, &Action::Clock), twice(clock));
         let drag = app.hits.iter().find(|h| h.action == Action::DragWindow).map(|h| h.rect);
-        assert_eq!(drag, Some(Rect::new(0.0, 0.0, 1920.0, 162.0)));
+        assert_eq!(drag, Some(Rect::new(0.0, 0.0, 4600.0, 162.0)));
         assert_eq!(hit(&app, &Action::BrowserTab(1)), Rect { y: tab.y + 83.0, ..tab });
         assert_eq!(app.state.win_rect(Win::Playlist).y, 166.0, "docked under the band");
         // A floating window keeps its distance to the band when the band shrinks back.
@@ -1262,7 +1289,7 @@ mod tests {
     /// Pop-ups scaling, rows 19 px at Main on a 100 % window) and the tempo's digits; repaints cover the scaled panels.
     #[test]
     fn band_controls_are_hit_where_drawn() {
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let Ok(mut c) = Canvas::new(4600, 1080, 1.0) else { return };
         let mut app = App::new(None);
         set_choice(&TOOLBARS_SCALING, 5);
         app.paint(&mut c, None);
@@ -1309,21 +1336,37 @@ mod tests {
         set_choice(&TOOLBARS_SCALING, 0);
     }
 
-    /// Narrow toolbars keep the hidden window commands reachable through View.
     #[test]
-    fn panels_that_do_not_fit_leave_an_arrow() {
-        for width in [900, 1100, 1300] {
-            let mut c = Canvas::new(width, 800, 1.0).unwrap();
-            let mut app = App::new(None);
-            app.paint(&mut c, None);
-            let h = app.hits.iter().rev().find(|h| h.hint == MORE_HINT).expect("overflow arrow");
-            let r = h.rect;
-            assert_eq!(h.action, Action::Menu(super::menus::VIEW));
-            assert!(r.x >= 0. && r.right() <= width as f32);
-            app.mouse_move(r.cx(), r.cy());
-            app.mouse_down();
-            app.mouse_up();
-            assert_eq!(app.state.menu_open, Some(super::menus::VIEW));
+    fn window_buttons_stay_clickable_after_resizing() {
+        let mut app = App::new(None);
+        let windows = [Win::Playlist, Win::PianoRoll, Win::ChannelRack, Win::Mixer, Win::Browser];
+        app.state.toolbar.hint_bar = true;
+        for (width, scale) in [(2400, 1.0), (2400, 2.0), (1440, 2.0), (800, 1.0), (2400, 1.0)] {
+            let mut canvas = Canvas::new(width, 1000, scale).unwrap();
+            app.paint(&mut canvas, None);
+            let ratio = crate::views::band_k(&app.state);
+            let preferred = crate::views::toolbar_scale(scale) / scale;
+            assert!(ratio >= preferred * 0.8 && ratio <= preferred);
+            if width == 800 {
+                assert!((ratio - preferred * 0.8).abs() < 0.001);
+                assert!(super::display_layout(&app.state).rows.len() > 1);
+            }
+            let hint = app.hits.iter().find(|h| h.hint == "Hint bar").unwrap().rect;
+            let report = hit(&app, &Action::FeatureVote(0,30));
+            assert!(hint.x >= report.right() && hint.right() <= hit(&app, &Action::Minimize).x);
+            assert!(!has(&app, &Action::MenuItem(super::menus::OPTIONS_MENU, super::menus::OPT_INFO)));
+            let mut last_right = 0.0;
+            for win in windows {
+                let button = hit(&app, &Action::ToggleWin(win));
+                assert!(button.x >= last_right && button.right() <= app.state.screen.0);
+                assert!(button.w > 0.0 && button.bottom() <= crate::views::band_h(&app.state));
+                last_right = button.right();
+            }
+            let browser = hit(&app, &Action::ToggleWin(Win::Browser));
+            let was_open = app.state.show_browser;
+            click(&mut app, &mut canvas, browser.cx(), browser.cy());
+            assert_ne!(app.state.show_browser, was_open);
         }
     }
+
 }

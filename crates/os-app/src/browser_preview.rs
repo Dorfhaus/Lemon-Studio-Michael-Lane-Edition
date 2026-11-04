@@ -73,6 +73,19 @@ fn processed(sample:Arc<os_engine::Sample>,normal:bool,reversed:bool,trim:bool)-
     }
     Arc::new(copy)
 }
+pub fn retrigger(app: &mut App, path: &str) {
+    if app.state.browser_preview.path.as_deref() == Some(path) && app.state.browser_preview.sample.is_some() {
+        app.transport.stop_preview();
+        app.state.browser_preview.position = 0.0;
+        play(app);
+    } else if app.state.browser_preview.path.as_deref() == Some(path) && app.state.browser_preview.pending.is_some() {
+        app.state.browser_preview.resume = true;
+        app.state.browser_preview.position = 0.0;
+    } else {
+        select(app, path);
+    }
+}
+
 fn play(app:&mut App) {
     let preview=&mut app.state.browser_preview;
     preview.resume=true;

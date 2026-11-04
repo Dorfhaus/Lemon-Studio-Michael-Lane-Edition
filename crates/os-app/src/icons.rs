@@ -87,6 +87,16 @@ const KICK: TablerIcon = TablerIcon { filled: false, d: "M 13.5 10.5 C 13.5 14.3
 /// four checks (2026-10-16)").
 const REDO: TablerIcon = TablerIcon { filled: false, d: "M 15 14 L 19 10 L 15 6 M 19 10 L 8 10 C 5.791 10 4 11.791 4 14 C 4 16.209 5.791 18 8 18 L 9 18" };
 
+// Three channel labels and a staggered pattern of active steps on a 24-unit grid.
+const CHANNEL_RACK: TablerIcon = TablerIcon {
+    filled: true,
+    d: concat!(
+        "M 1 3 L 8 3 L 8 7 L 1 7 Z M 11 3 L 15 3 L 15 7 L 11 7 Z M 19 3 L 23 3 L 23 7 L 19 7 Z ",
+        "M 1 10 L 8 10 L 8 14 L 1 14 Z M 15 10 L 19 10 L 19 14 L 15 14 Z ",
+        "M 1 17 L 8 17 L 8 21 L 1 21 Z M 11 17 L 15 17 L 15 21 L 11 21 Z M 19 17 L 23 17 L 23 21 L 19 21 Z"
+    ),
+};
+
 const VOTE: TablerIcon = TablerIcon {filled:false,d:"M 5 12 L 5 21 L 21 21 L 21 12 M 3 12 L 9 12 M 17 12 L 23 12 M 8 5 L 13 2 L 19 10 L 14 14 Z M 11 7 L 14 8 L 15 5"};
 const DOWNLOAD: TablerIcon = TablerIcon { filled: false, d: "M 12 3 L 12 15 M 7 10 L 12 15 L 17 10 M 4 16 L 4 21 L 20 21 L 20 16" };
 
@@ -121,7 +131,7 @@ fn shape(icon: Icon) -> &'static TablerIcon {
         Icon::Magnet => &tb::MAGNET,
         Icon::Playlist => &tb::PLAYLIST,
         Icon::PianoRoll => &tb::PIANO,
-        Icon::ChannelRack => &tb::LAYOUT_ROWS,
+        Icon::ChannelRack => &CHANNEL_RACK,
         Icon::Mixer => &tb::ADJUSTMENTS,
         Icon::Browser => &tb::FOLDERS,
         Icon::Project => &tb::FILE,

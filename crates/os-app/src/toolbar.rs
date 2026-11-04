@@ -168,13 +168,13 @@ impl Panel {
 
     /// Its width when it does not grow.
     pub fn width(self) -> f32 {
-        match self {Panel::Hint=>return 156.0,Panel::Recording=>return 168.0,_=>{}}
+        match self {Panel::Hint=>return 130.0,Panel::Recording=>return 168.0,_=>{}}
         if matches!(self, Panel::Monitor | Panel::Cpu | Panel::Tools) { return 0.0; }
         if self == Panel::Utilities {
-            return 72.0;
+            return 39.0;
         }
         if crate::settings_file::flag("declutter_toolbar", false) {
-            match self { Panel::Utilities => return 72.0, Panel::Tools => return 35.0, _ => {} }
+            match self { Panel::Tools => return 35.0, _ => {} }
         }
         let (_, x0, x1) = self.home();
         x1 - x0

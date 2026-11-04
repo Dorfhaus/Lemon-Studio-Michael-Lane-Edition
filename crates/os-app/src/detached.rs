@@ -11,9 +11,10 @@ struct Pane {
     kind:Win, window:Rc<Window>, surface:softbuffer::Surface<Rc<Window>,Rc<Window>>, canvas:Canvas,
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
 }
-fn key(w:Win)-> &'static str {match w {Win::Mixer=>"native_mixer",Win::PianoRoll=>"native_piano",_=>"native_playlist"}}
-fn title(w:Win)-> &'static str {match w {Win::Mixer=>"Lemon Studio - Mixer",Win::PianoRoll=>"Lemon Studio - Piano roll",_=>"Lemon Studio - Playlist"}}
+fn key(w:Win)-> &'static str {match w {Win::Browser=>"native_browser",Win::Mixer=>"native_mixer",Win::PianoRoll=>"native_piano",_=>"native_playlist"}}
+fn title(w:Win)-> &'static str {match w {Win::Browser=>"Lemon Studio - Browser",Win::Mixer=>"Lemon Studio - Mixer",Win::PianoRoll=>"Lemon Studio - Piano roll",_=>"Lemon Studio - Playlist"}}
 impl Windows {
+    pub fn browser_window(&self) -> Option<&Window> { self.panes.iter().find(|p| p.kind == Win::Browser).map(|p| p.window.as_ref()) }
     fn save_main(&mut self,app:&mut App){if self.main.is_none(){self.main=Some(app.take_view_context());}}
     pub fn restore_main(&mut self,app:&mut App)->bool {
         if let Some(c)=self.main.take(){app.restore_view_context(c);if self.changed {app.invalidate();}self.changed=false;return true;}false
@@ -40,7 +41,7 @@ impl Windows {
         let mut created=Vec::new();
         for kind in app.state.native_detached.clone() {
             if !app.state.shown(kind)||self.panes.iter().any(|p|p.kind==kind){continue;}
-            let initial=app.state.native_frames.iter().find(|(w,_)|*w==kind).map(|(_,f)|*f).or_else(||layout::native_win(key(kind))).unwrap_or(MainWin{pos:(100,100),size:(1100,800),max:false});
+            let initial=app.state.native_frames.iter().find(|(w,_)|*w==kind).map(|(_,f)|*f).or_else(||layout::native_win(key(kind))).unwrap_or(MainWin{pos:(100,100),size:if kind==Win::Browser{(380,680)}else{(1100,800)},max:false});
             let frame=layout::on_screens(initial,&screens);
             let attrs=Window::default_attributes().with_title(title(kind)).with_inner_size(PhysicalSize::new(frame.size.0,frame.size.1)).with_position(PhysicalPosition::new(frame.pos.0,frame.pos.1)).with_min_inner_size(LogicalSize::new(kind.min_size().0 as f64,kind.min_size().1 as f64)).with_maximized(frame.max).with_visible(false);
             let made=(||->Result<Pane,String>{
@@ -136,7 +137,8 @@ impl Windows {
 
 fn set_rack_parent(app:&mut App,window:&Window){
     #[cfg(windows)] {use winit::raw_window_handle::{HasWindowHandle,RawWindowHandle};app.rack_parent=match window.window_handle().map(|h|h.as_raw()){Ok(RawWindowHandle::Win32(h))=>h.hwnd.get(),_=>0};}
-    #[cfg(not(windows))] let _=(app,window);
+    #[cfg(target_os="macos")] {use winit::raw_window_handle::{HasWindowHandle,RawWindowHandle};app.rack_parent=match window.window_handle().map(|h|h.as_raw()){Ok(RawWindowHandle::AppKit(h))=>h.ns_view.as_ptr() as isize,_=>0};}
+    #[cfg(not(any(windows,target_os="macos")))] let _=(app,window);
 }
 
 // Focus/position/monitor notifications need no hit testing or rasterization.

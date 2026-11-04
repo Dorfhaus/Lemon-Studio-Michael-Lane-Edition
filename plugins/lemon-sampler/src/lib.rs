@@ -12,6 +12,7 @@ pub mod editor;
 pub mod fx;
 pub mod params;
 pub mod stream;
+pub mod sample_drop;
 pub mod view;
 
 use std::num::NonZeroU32;
@@ -62,6 +63,8 @@ struct SummarySlot {
 
 /// State shared by the audio thread, the background task and the editor.
 pub struct Shared {
+    /// Native editor parent, used to match a waveform drop to its channel pitch.
+    editor_parent: AtomicUsize,
     /// The loaded file decoded, while the played sample comes from memory (none while it plays from disk).
     pub raw: Mutex<Option<Arc<Sample>>>,
     /// Bumped on every load / clear.
@@ -93,6 +96,7 @@ impl Default for Shared {
     fn default() -> Self {
         Shared {
             raw: Mutex::new(None),
+            editor_parent: AtomicUsize::new(0),
             raw_version: AtomicU64::new(0),
             processed: Mutex::new(None),
             processed_version: AtomicU64::new(0),

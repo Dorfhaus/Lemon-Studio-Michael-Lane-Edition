@@ -44,6 +44,7 @@ mod cable;
 mod capture;
 mod input_monitor;
 mod detached;
+mod edited_sample;
 mod one_click;
 mod score_log;
 mod clip_colors;
@@ -84,7 +85,9 @@ mod midi_out;
 mod midi_play;
 mod mixer;
 mod rack_mixer;
+#[cfg(any(windows,target_os="macos"))] mod strip_geometry;
 #[cfg(windows)] mod strip_editor;
+#[cfg(target_os="macos")] #[path="strip_editor_mac.rs"] mod strip_editor;
 mod mini_eq;
 mod mixer_recording;
 mod smart_recording;
@@ -642,6 +645,18 @@ impl Shell {
             }
         }
         self.prepare_main();
+        if let Some(main) = &self.window {
+            let state = &self.app.state;
+            let target = if !state.show_browser { None }
+            else if state.native_detached.contains(&app::Win::Browser) {
+                self.detached.browser_window().map(|window| (window, 0.0, f64::from(window.inner_size().width)))
+            } else if !state.browser_auto_hidden {
+                let k = ui_scale(main);
+                Some((main.as_ref(), f64::from(views::work_y(state))*k, f64::from(views::browser_w(state))*k))
+            } else { None };
+            edited_sample::update_target(&self.app,target);
+            edited_sample::finish(&mut self.app);
+        }
         // Animate while playing; otherwise repaint a few times a second (peaks, clock).
         let ms = if self.app.animating() { 16 } else { 100 };
         let now = Instant::now();

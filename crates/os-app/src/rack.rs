@@ -1445,7 +1445,7 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         PItem::sep(),
         PItem::sub("Consolidate / Bounce to Audio", vec![it("Bounce including mixer effects", RCmd::BounceWet(r)),it("Consolidate (keep mixer live)", RCmd::Consolidate(r))]),
         it("Clone", RCmd::Clone(r)),
-        it("Delete...", RCmd::Delete(r)),
+        it("Delete...", RCmd::Delete(r)).key("D"),
         PItem::col(),
         PItem::head("Pattern editing"),
         it("Cut", RCmd::Cut(r)),

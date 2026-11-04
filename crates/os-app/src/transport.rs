@@ -1406,6 +1406,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
     let swap = |s: &mut Session, library: &mut SampleLibrary, switched:bool| {
         // Build outside the lock, then swap at the playing position.
         let mut e = engine(&s.project, library, s.rate, s.mode, &inst, true);
+        if s.mode == PlayMode::Song && s.project.arrangement().is_none_or(|a|a.clips.is_empty()) { e.empty_song_transport(); }
         if s.kind == Kind::Live {
             e.clear_schedule();
         }
@@ -2065,6 +2066,7 @@ impl Session {
         let mut e = engine(project, library, rate, mode, inst, kind != Kind::Preview);
         // Playback loops: a pattern on its bar line, the song at its end (back to the start).
         e.set_looping(song);
+        if song && mode == PlayMode::Song && project.arrangement().is_none_or(|a|a.clips.is_empty()) { e.empty_song_transport(); }
         if kind == Kind::Live {
             e.clear_schedule();
         }

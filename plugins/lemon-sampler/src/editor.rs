@@ -62,6 +62,14 @@ impl SamplerEditor {
 impl Editor for SamplerEditor {
     fn spawn(&self, parent: ParentWindowHandle, context: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
         let scale = f32::from_bits(self.scale.load(Ordering::Relaxed));
+        let handle = match &parent {
+            ParentWindowHandle::Win32Hwnd(hwnd) => *hwnd as usize,
+            ParentWindowHandle::X11Window(window) => *window as usize,
+            ParentWindowHandle::AppKitNsView(view) => *view as usize,
+            #[allow(unreachable_patterns)]
+            _ => 0,
+        };
+        self.shared.editor_parent.store(handle, Ordering::Relaxed);
         match parent {
             #[cfg(windows)]
             ParentWindowHandle::Win32Hwnd(hwnd) => {
@@ -415,7 +423,7 @@ enum Drag {
     KeyScroll { x0: f32, s0: f32, ratio: f32 },
     Keys,
     /// The sample sounding at its root note while the waveform is held (`held`).
-    Wave,
+    Wave { origin: (f32,f32), moved: bool },
     Ruler { from: i32 },
     Overview { track: Rect, grab: f64 },
     Loop { which: u8, both: bool, x0: f32, s0: f32, e0: f32 },
@@ -657,7 +665,7 @@ impl Logic {
                     // A press plays the sample at its own pitch (the root note) until the button is let go.
                     let root = (self.vals.plain("root") as i32).clamp(0, 127) as u8;
                     self.held = Some((root, 100));
-                    self.drag = Some(Drag::Wave);
+                    self.drag = Some(Drag::Wave { origin: (x,y), moved: false });
                     return vec![Act::Note(root, 100, true), Act::Repaint];
                 }
             }
@@ -744,6 +752,9 @@ impl Logic {
     /// Mouse move (not locked). Returns the acts (repaint when something changed).
     pub fn moved(&mut self, x: f32, y: f32, _m: Mods) -> Vec<Act> {
         self.view.mouse = Some((x, y));
+        if let Some(Drag::Wave { origin, moved }) = self.drag.as_mut() {
+            *moved = (x-origin.0).abs().max((y-origin.1).abs()) > 5.0 && (x < 0.0 || y < 0.0 || x >= view::W as f32 || y >= view::H as f32);
+        }
         match self.drag.clone() {
             Some(Drag::Slider { id, track }) => {
                 self.set(&id, (x - track.x) / track.w);
@@ -814,7 +825,7 @@ impl Logic {
                 self.hint_for(&ids[0]);
                 vec![Act::Repaint]
             }
-            Some(Drag::Knob { .. } | Drag::Wave) => vec![],
+            Some(Drag::Knob { .. } | Drag::Wave { .. }) => vec![],
             None => {
                 let h = self.hover_hint(x, y);
                 let changed = h != self.hint;
@@ -848,9 +859,12 @@ impl Logic {
     pub fn up(&mut self, _btn: Btn) -> Vec<Act> {
         self.view.pressed = None;
         let mut acts = vec![Act::Repaint];
+        if matches!(self.drag, Some(Drag::Wave { moved: true, .. })) {
+            crate::sample_drop::released(&self.shared, &self.params);
+        }
         match self.drag.take() {
             Some(Drag::Knob { id } | Drag::Slider { id, .. }) => self.end(&id),
-            Some(Drag::Keys | Drag::Wave) => {
+            Some(Drag::Keys | Drag::Wave { .. }) => {
                 if let Some((k, _)) = self.held.take() {
                     acts.push(Act::Note(k, 0, false));
                 }
@@ -1706,15 +1720,16 @@ mod win32 {
                     0
                 }
                 WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
+                    let acts = w.logic.up(Btn::Left);
                     w.unlock();
                     ReleaseCapture();
-                    let acts = w.logic.up(Btn::Left);
                     w.run(acts);
                     0
                 }
                 WM_CAPTURECHANGED => {
                     // Another window took the mouse (not this one capturing again): end the drag.
                     if w.logic.dragging() && lp as HWND != hwnd {
+                        if let Some(super::Drag::Wave { moved, .. }) = &mut w.logic.drag { *moved = false; }
                         w.unlock();
                         let acts = w.logic.up(Btn::Left);
                         w.run(acts);

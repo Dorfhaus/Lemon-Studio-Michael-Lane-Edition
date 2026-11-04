@@ -21,7 +21,7 @@ pub(crate) const PREVIEW_LIMIT: std::time::Duration = std::time::Duration::from_
 impl App {
     pub(crate) fn browser_auto_hide(&mut self,x:f32,y:f32) {
         let s=&mut self.state;
-        let enabled=s.show_browser && view::opt(s,view::OPT_AUTOHIDE);
+        let enabled=!s.native_detached.contains(&crate::app::Win::Browser) && s.show_browser && view::opt(s,view::OPT_AUTOHIDE);
         let width=s.browser_w.min(s.screen.0/2.).max(crate::views::BROWSER_W);
         let hidden=if !enabled {false} else if s.browser_auto_hidden {!(x<=8. && y>=crate::views::work_y(s))}
             else {s.browser_hovered && x>width && s.playlist.popup.is_none() && !s.browser_search_focus && !s.feature_votes.focus && s.feature_votes.forum.focus==0 && self.drag.is_none()};
@@ -158,6 +158,16 @@ impl App {
         self.invalidate();
         let s = &mut self.state;
         match c {
+            BCmd::Detach => {
+                if s.native_detached.contains(&crate::app::Win::Browser) {
+                    s.native_detached.retain(|w| *w != crate::app::Win::Browser);
+                } else {
+                    s.native_detached.push(crate::app::Win::Browser);
+                }
+                s.browser_auto_hidden = false;
+                s.show_browser = true;
+                s.playlist.popup = None;
+            }
             BCmd::StarterPack => crate::starter_pack::act(self,1),
             BCmd::AddFolder => {let row=s.browser_folders.len();self.search_folder_pick(row);}
             BCmd::ConfigureFolders => self.open_settings(crate::views::settings::FILE),
@@ -252,7 +262,7 @@ impl App {
     /// Whether the mouse is over the docked browser.
     pub(crate) fn over_browser(&self) -> bool {
         let (x, y) = self.mouse;
-        self.state.show_browser && x < crate::views::browser_w(&self.state) && y >= crate::views::work_y(&self.state)
+        self.state.show_browser && (self.state.native_view.is_none() || self.state.native_view == Some(crate::app::Win::Browser)) && x >= 0. && y < self.state.screen.1 && x < crate::views::browser_w(&self.state) && y >= crate::views::work_y(&self.state)
     }
 
     /// Whether typed letters belong to the browser search (the typing keyboard leaves them alone).
@@ -266,6 +276,13 @@ impl App {
         let shift = self.shift;
         let focus = self.state.browser_search_focus;
         let over = self.over_browser() || focus;
+        if over && !ctrl && !alt && !shift && matches!(key, Key::Named(NamedKey::ArrowRight)) {
+            let rows = view::rows(&self.state);
+            if let Some(Item::Sample(path)) = rows.iter().find(|r| Some(&r.key) == self.state.browser_sel.as_ref()).map(|r| &r.item) {
+                crate::browser_preview::retrigger(self, path);
+                return true;
+            }
+        }
         if over && !ctrl && !alt && !shift && matches!(self.state.browser_tab, 0 | 3) {
             if let Key::Named(k @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) = key {
                 self.browser_sample_step(*k == NamedKey::ArrowDown);
@@ -729,6 +746,7 @@ pub enum BCmd {
     AddFolder,
     StarterPack,
     ConfigureFolders,
+    Detach,
     Find(isize),
     Toggle(&'static str),
     /// Navigation history back (-1) / forward (1).
@@ -867,6 +885,7 @@ pub fn options_menu(s: &crate::app::State) -> Vec<PItem> {
             b(if crate::starter_pack::busy(){"Cancel Starter Pack download"}else{"Download Starter Pack"},BCmd::StarterPack),
         ]),
         PItem::sub("Audio preview",vec![t("Show preview panel",view::OPT_PANEL),t("Play full sample / track",view::OPT_PREVIEW)]),
+        b(if s.native_detached.contains(&crate::app::Win::Browser) {"Dock Browser"} else {"Detach Browser"}, BCmd::Detach),
         PItem::sub("Appearance",vec![t("Auto-hide browser",view::OPT_AUTOHIDE),t("Search box on top",view::OPT_TOP),t("High contrast text",view::OPT_CONTRAST)]),
         PItem::sub("Search",vec![find("Find previous","F2",-1),find("Find next","F3",1),PItem::sep(),t("Type to filter",view::OPT_TYPE),t("Show parent folders",view::OPT_PARENTS),t("Include folders",view::OPT_FOLDERS)]),
         PItem::sub("Navigation",vec![b("Back",BCmd::History(-1)),b("Forward",BCmd::History(1)),PItem::sep(),b("Collapse folders",BCmd::Collapse).key("Ctrl+Up"),b("Refresh folders",BCmd::Reread).key("Ctrl+R")]),
@@ -1019,6 +1038,16 @@ mod favorite_tests {
         assert!(app.drag.is_none());
         assert!(app.browser_key(&Key::Named(NamedKey::ArrowUp), false, false));
         assert!(app.state.browser_preview.path.as_ref().unwrap().ends_with("Sample000.wav"));
+        app.state.browser_preview.position=1.0;
+        assert!(app.browser_key(&Key::Named(NamedKey::ArrowRight),false,false));
+        assert_eq!(app.state.browser_preview.position,0.0);
+        app.shift=true;
+        let row=app.state.selected_channel;
+        assert!(app.browser_key(&Key::Named(NamedKey::ArrowDown),false,false));
+        assert!(app.state.project.channels[row].sample_path.as_ref().unwrap().ends_with("Sample001.wav"));
+        assert!(app.browser_key(&Key::Named(NamedKey::ArrowUp),false,false));
+        assert!(app.state.project.channels[row].sample_path.as_ref().unwrap().ends_with("Sample000.wav"));
+        app.shift=false;
         let (track, thumb) = view::scrollbar(&app.state).unwrap();
         app.browser_scroll_drag(track.bottom() + 500., thumb.h / 2.);
         assert_eq!(app.state.browser_scroll, view::max_scroll(&app.state));

@@ -888,6 +888,26 @@ pub fn auto_zoom(s: &mut State, grid: Rect) {
     center_keys(s, grid.h);
 }
 
+/// Frame every note in the displayed channel, including notes past a pattern marker.
+pub fn fit_notes(s: &mut State, grid: Rect) {
+    let channel = channel(s);
+    let mut window = None;
+    for note in notes(s).iter().filter(|n| Some(n.channel) == channel) {
+        let end = note.position.saturating_add(note.length.max(1) as u32);
+        let (start, stop, low, high) = window.unwrap_or((note.position, end, note.key, note.key));
+        window = Some((start.min(note.position), stop.max(end), low.min(note.key), high.max(note.key)));
+    }
+    let Some((start, stop, low, high)) = window else { auto_zoom(s, grid); return; };
+    let ppq = f32::from(s.project.ppq.max(4));
+    let margin = ppq / 4.0;
+    let left = (start as f32 - margin).max(0.0);
+    s.piano.px_per_beat = ((grid.w.max(1.0) - 1.0).max(1.0) * ppq / (stop as f32 + margin - left).max(1.0)).min(1600.0);
+    s.piano.row_h = (grid.h / f32::from(high-low+3)).floor().clamp(1.0, MAX_ROW);
+    center_keys(s, grid.h);
+    s.piano.scroll_x = left;
+    s.piano.zoom_back = None;
+}
+
 pub fn clamp_scroll(s: &mut State, view_h: f32) {
     let max = (visible_key_list(s).len() as f32 * s.piano.row_h - view_h).max(0.0);
     s.piano.scroll_y = s.piano.scroll_y.clamp(0.0, max).round();

@@ -23,6 +23,7 @@ use crate::views;
 
 /// The Playlist, Mixer and Piano roll (`State::wins`) and their keys.
 const WINS: [(Win, &str); 3] = [(Win::Playlist, "window_playlist"), (Win::Mixer, "window_mixer"), (Win::PianoRoll, "window_piano_roll")];
+const DETACHABLE: [(Win, &str); 4] = [WINS[0], WINS[1], WINS[2], (Win::Browser,"window_browser")];
 const RACK: &str = "window_channel_rack";
 const PERF: &str = "window_plugin_performance";
 const TAPPER: &str = "window_tempo_tapper";
@@ -66,8 +67,9 @@ pub fn restore(s: &mut State) {
         Some("traditional")=>crate::mixer::TRADITIONAL+s.mixer.traditional_layout,
         _=>crate::mixer::WIDE,
     });
-    s.native_detached=WINS.iter().filter(|(_,k)|get(&format!("{k}_detached")).as_deref()==Some("1")).map(|(w,_)|*w).collect();
-    for (w,k) in WINS {if s.native_detached.contains(&w)&&get(&format!("{k}_detached_open")).as_deref()==Some("1"){s.raise(w);}}
+    s.native_detached=DETACHABLE.iter().filter(|(_,k)|get(&format!("{k}_detached")).as_deref()==Some("1")).map(|(w,_)|*w).collect();
+    if s.native_detached.contains(&Win::Browser) { s.show_browser = get("window_browser_detached_open").as_deref()!=Some("0"); }
+    for (w,k) in DETACHABLE {if s.native_detached.contains(&w)&&get(&format!("{k}_detached_open")).as_deref()==Some("1"){s.raise(w);}}
     for (w, key) in WINS {
         let (Some(i), Some([x, y, rw, rh, max, mini])) = (w.slot(), numbers(key)) else { continue };
         if rw > 0.0 && rh > 0.0 {
@@ -112,7 +114,7 @@ pub fn apply_startup_layout(s: &mut State) {
 pub fn save(s: &State) {
     write("mixer_view",if s.mixer.layout==crate::rack_mixer::VIEW {"channel-strip"}else if crate::mixer::traditional(s) {"traditional"} else if s.mixer.layout==crate::mixer::COMPACT {"compact"} else {"full"});
     write("mixer_traditional_layout",&s.mixer.traditional_layout.to_string());
-    for (w,k) in WINS {write(&format!("{k}_detached"),if s.native_detached.contains(&w){"1"}else{"0"});write(&format!("{k}_detached_open"),if s.shown(w){"1"}else{"0"});}
+    for (w,k) in DETACHABLE {write(&format!("{k}_detached"),if s.native_detached.contains(&w){"1"}else{"0"});write(&format!("{k}_detached_open"),if s.shown(w){"1"}else{"0"});}
     for (w, key) in WINS {
         if let Some(i) = w.slot() {
             let ws = s.wins[i];
@@ -300,8 +302,8 @@ pub fn project_snapshot(s:&State,plugins:&crate::plugins::Plugins)->serde_json::
         if let (Some(pos),Some(d))=(pos,plugins.descriptor(key)){editors.push(serde_json::json!({"key":key,"uid":d.uid(),"position":[pos.0,pos.1],"detached":h.window.as_ref().map_or(h.detached,|w|w.detached()),"open":h.window.is_some()}));}
     }
     #[cfg(not(windows))] let _=plugins;
-    let detached:Vec<_>=WINS.iter().map(|(w,_)|s.native_detached.contains(w)).collect();
-    let frames:Vec<_>=WINS.iter().map(|(w,_)|s.native_frames.iter().find(|(k,_)|k==w).map(|(_,f)|serde_json::json!([f.pos.0,f.pos.1,f.size.0,f.size.1,f.max]))).collect();
+    let detached:Vec<_>=DETACHABLE.iter().map(|(w,_)|s.native_detached.contains(w)).collect();
+    let frames:Vec<_>=DETACHABLE.iter().map(|(w,_)|s.native_frames.iter().find(|(k,_)|k==w).map(|(_,f)|serde_json::json!([f.pos.0,f.pos.1,f.size.0,f.size.1,f.max]))).collect();
     serde_json::json!({"version":1,"windows":wins,"rack":[s.rack_pos.0,s.rack_pos.1,s.rack_size.0,s.rack_size.1,s.shown(Win::ChannelRack)],"editors":editors,"detached":detached,"frames":frames})
 }
 pub fn write_project_layout(file:&mut os_flp::FlpFile,value:serde_json::Value){
@@ -317,11 +319,11 @@ fn project_layout(s:&State)->Option<serde_json::Value>{
 }
 pub fn restore_project_layout(s:&mut State){
     let Some(v)=project_layout(s)else{return};
-    if let Some(flags)=v["detached"].as_array().filter(|a|a.len()==WINS.len()) {
+    if let Some(flags)=v["detached"].as_array().filter(|a|a.len()==WINS.len() || a.len()==DETACHABLE.len()) {
         s.native_layout_generation=s.native_layout_generation.wrapping_add(1);
-        s.native_detached=WINS.iter().zip(flags).filter(|(_,on)|on.as_bool()==Some(true)).map(|((w,_),_)|*w).collect();
+        s.native_detached=DETACHABLE.iter().zip(flags).filter(|(_,on)|on.as_bool()==Some(true)).map(|((w,_),_)|*w).collect();
         s.native_frames.clear();
-        for (i,(w,_)) in WINS.iter().enumerate(){let a=&v["frames"][i];
+        for (i,(w,_)) in DETACHABLE.iter().enumerate(){let a=&v["frames"][i];
             let pos=|n:usize|a[n].as_i64().and_then(|v|i32::try_from(v).ok()).filter(|v|v.unsigned_abs()<100000);
             let size=|n:usize|a[n].as_u64().filter(|v|*v>0&&*v<=32768).map(|v|v as u32);
             if let (Some(x),Some(y),Some(width),Some(height))=(pos(0),pos(1),size(2),size(3)){s.native_frames.push((*w,MainWin{pos:(x,y),size:(width,height),max:a[4].as_bool().unwrap_or(false)}));}

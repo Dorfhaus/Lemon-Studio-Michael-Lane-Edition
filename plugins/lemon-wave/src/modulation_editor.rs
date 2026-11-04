@@ -81,7 +81,7 @@ impl ModEditor {
         let now=std::time::Instant::now();
         if let Some(Gesture::Route { x, y, .. }) = *self.gesture.lock().unwrap() {
             // No labels or drag instructions: motion carries the feedback.
-            canvas.fill_rect(os_ui::Rect::new(16.,794.,1148.,24.),crate::design::color(0x101319));
+            canvas.fill_rect(os_ui::Rect::new(16.,962.,1548.,24.),crate::design::color(0x101319));
             let beat=(self.animation_clock.elapsed().as_secs_f32()*7.).sin()*0.5+0.5;
             let mut trail=self.trail.lock().unwrap();
             trail.retain(|(_,_,at)|now.duration_since(*at).as_secs_f32()<0.16);
@@ -103,7 +103,7 @@ impl ModEditor {
             if t>=1. { *connected=None; }
             else if let Some(h)=hits.iter().find(|h|SPEC.index(h.t.id()).and_then(mod_target)==Some(target)) {
                 let cx=h.r.cx();
-                let cy=if matches!(h.t,lemon_small_fx::view::Target::Knob(_)) {h.r.y+25.} else {h.r.cy()};
+                let cy=h.r.cy();
                 let success=crate::design::color(0x73dacc);
                 canvas.stroke_circle(cx,cy,23.+10.*t,2.*(1.-t)+0.3,success.with_alpha((210.*(1.-t)) as u8));
                 canvas.fill_circle(cx,cy,22.,success.with_alpha((28.*(1.-t)) as u8));
@@ -130,18 +130,19 @@ impl ModEditor {
             for i in 0..4 {if view::lfo_tab(i).contains(x,y) {self.params.lfo_tab.store(i,Ordering::Relaxed);return true;}}
             let env=self.params.env_tab.load(Ordering::Relaxed).min(1);
             let nodes=view::envelope_nodes(env,|k|self.params.base.v(k) as f32);
-            if let Some((key,second,_,_))=nodes.into_iter().find(|(_,_,px,py)|(x-px).hypot(y-py)<9.) {
+            if !view::detail_open(&self.params,5) {if let Some((key,second,_,_))=nodes.into_iter().find(|(_,_,px,py)|(x-px).hypot(y-py)<9.) {
                 let release=if env==0 {RELEASE} else {ENV_RELEASE};
                 *self.envelope_context.lock().unwrap()=context.cloned();
                 *self.gesture.lock().unwrap()=Some(Gesture::Envelope {key,second,x,y,start:self.params.base.v(key) as f32,other:second.map(|k|self.params.base.v(k) as f32).unwrap_or(0.),direction:if key==release {-1.} else {1.}});
                 return true;
             }
         }
+        }
         let selected=self.params.lfo_tab.load(Ordering::Relaxed).min(3);
         for i in 0..4 {
             if page==0 && i!=selected {continue;}
             let graph=if page==0 {view::synth_lfo_graph()} else {view::lfo_graph(i)};
-            if graph.contains(x, y) {
+            if graph.contains(x, y) && !(page==0 && view::detail_open(&self.params,6)) {
                 let before = self.params.curves.read().unwrap().samples[i];
                 let point = self.point(i, x, y);
                 self.params.curves.write().unwrap().draw(i, point, point);

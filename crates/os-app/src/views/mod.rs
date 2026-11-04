@@ -88,7 +88,7 @@ pub const WORK_Y: f32 = 83.0;
 /// Top of the workspace and the browser now: the window's top while the toolbar is hidden (spec: ui/toolbar-menu.md
 /// §5), else the top band's bottom (`band_h`).
 pub fn work_y(s: &State) -> f32 {
-    if s.toolbar.hidden { 0.0 } else { band_h(s) }
+    if s.toolbar.hidden || s.native_view == Some(Win::Browser) { 0.0 } else { band_h(s) }
 }
 
 /// Display scale of the main window's top band (the toolbar rows, `WORK_Y` tall in its own px for two rows) for a
@@ -101,13 +101,17 @@ pub fn toolbar_scale(main: f32) -> f32 {
 /// The window's px per px of the top band at the last paint's scale: 1 at Toolbars scaling Main.
 pub fn band_k(s: &State) -> f32 {
     let main = s.ui_scale.max(0.01);
-    toolbar_scale(main) / main
+    let preferred = toolbar_scale(main) / main;
+    if s.toolbar_required_width > 0.0 && s.screen.0 > 0.0 {
+        return preferred.min(s.screen.0 / s.toolbar_required_width).max(preferred * 0.8);
+    }
+    preferred
 }
 
 /// Height of the top band in the window's px (shown or not): its rows' (`toolbar::Layout::band_h`, `WORK_Y` for two)
 /// at its scale.
 pub fn band_h(s: &State) -> f32 {
-    s.bar.layout.band_h() * band_k(s)
+    toolbar::display_layout(s).band_h() * band_k(s)
 }
 
 /// `r` in px `k` times as big.
@@ -119,8 +123,8 @@ pub fn scale_rect(r: Rect, k: f32) -> Rect {
 fn placed(s: &State) -> Vec<crate::toolbar::Placed> {
     // Reuse the measured room left by the fixed right-side actions. Painting,
     // invalidation and pointer mapping must use exactly the same layout.
-    let width=s.toolbar_content_width.get();
-    crate::toolbar::place(&toolbar::visible_layout(s), if width>0. {width} else {s.screen.0/band_k(s)}, s.bar.editing)
+    let width = s.screen.0 / band_k(s);
+    toolbar::placements(s, width)
 }
 
 /// How far toolbar panel `p` is from its home (`toolbar::Panel::home`); `None` when it is not on the toolbar.
@@ -163,6 +167,8 @@ pub const BROWSER_W: f32 = 209.0;
 /// Width of the docked browser incl. the splitter, as dragged (`State::browser_w`), at most half the window (spec:
 /// ui/browser.md §9).
 pub fn browser_w(s: &State) -> f32 {
+    if s.native_view == Some(Win::Browser) { return s.screen.0; }
+    if s.native_detached.contains(&Win::Browser) { return 0.0; }
     if s.browser_auto_hidden {return 8.;}
     s.browser_w.min(s.screen.0 / 2.0).max(BROWSER_W)
 }
@@ -196,7 +202,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     // fills the workspace, so windows below it are covered and not painted.
     let docked_at = s.z.iter().rposition(|&w| s.is_max(w));
     // Each part is skipped by a repaint that misses it (`Ui::part`).
-    if s.show_browser && s.native_view.is_none() {
+    if s.show_browser && (s.native_view == Some(Win::Browser) || (s.native_view.is_none() && !s.native_detached.contains(&Win::Browser))) {
         let r = Rect::new(0.0, top, browser_w(s), h - top);
         ui.part(Seg::Browser, r, |ui| browser::paint(ui, s, r));
     }
@@ -240,7 +246,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     if !s.toolbar.hidden && s.native_view.is_none() {
         // At Toolbars scaling (spec: ui/ui-scaling.md §1): the band works in its own px, `k` of the window's each, so
         // it is `w / k` of them wide; what doesn't fit is left out (`toolbar::room`).
-        let scale = toolbar_scale(ui.c.scale);
+        let scale = ui.c.scale * band_k(s);
         ui.part(Seg::Toolbar, Rect::new(0.0, 0.0, w, band_h(s)), |ui| ui.scaled(scale, |ui, k| toolbar::paint(ui, s, f, w / k)));
     }
     // The floating hint bar, over every window (spec: ui/toolbar-menu.md §4).
@@ -251,7 +257,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     // The toolbar editor's palette goes over the windows, which docked plugin windows leave free like any overlay (spec:
     // ui/toolbar-menu.md §8).
     if s.bar.editing && !s.toolbar.hidden {
-        let scale = toolbar_scale(ui.c.scale);
+        let scale = ui.c.scale * band_k(s);
         ui.scaled(scale, |ui, k| toolbar::paint_palette(ui, s, f, w / k));
     }
     if let Some(m) = s.menu_open {

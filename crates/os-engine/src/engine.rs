@@ -2007,6 +2007,15 @@ impl Engine {
         for (_, playback) in &mut self.mpe { playback.chase_notes = on; }
     }
 
+    /// Let live Song playback advance on an empty arrangement without the pattern fallback.
+    pub fn empty_song_transport(&mut self) {
+        self.triggers.clear();
+        self.mpe.clear();
+        self.next_trigger = 0;
+        self.late.clear();
+        self.end_tick = 0;
+    }
+
     /// Drop the scheduled notes: the engine only plays live notes (`note_on`).
     pub fn clear_schedule(&mut self) {
         self.triggers.clear();

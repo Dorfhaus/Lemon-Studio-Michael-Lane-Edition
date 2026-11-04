@@ -3,6 +3,19 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-04",
+      "title": "Lemon Wave chords, Night Shift presets and sampler workflows \u00b7 public build 2026110401",
+      "changes": [
+        "Lemon Wave adds a playable six-octave keyboard, scale-aware chords and a tempo-synced arpeggiator for both mouse and MIDI input.",
+        "Explore Lemon Wave's Night Shift factory bank, save and browse categorized user presets, and build and audition wavetables from marked recordings.",
+        "Drag the Lemon Sampler waveform to the Browser to save a new edited WAV in Favorites. The Browser can also detach into a movable, resizable window. Right Arrow replays the highlighted sample, and Shift+Up/Down sends samples to the selected sampler channel.",
+        "In the Piano Roll, Ctrl+right-click fits the notes, middle-dragging the preview keyboard adjusts lane height, and scrolling over the labelled snap control changes grid resolution.",
+        "Song mode can run across an empty Playlist. Click BPM to type a tempo, or drag to adjust it. Press D in a channel's context menu to delete that channel with undo.",
+        "The main toolbar shrinks and wraps when the window narrows, keeping navigation visible. The Channel Rack has a step-pattern icon and the compact hint field sits on the right.",
+        "On macOS, Waves channel strips in the mixer scale proportionally with the mixer height, with pointer controls mapped to the displayed editor."
+      ]
+    },
+    {
       "date": "2026-11-03",
       "title": "Feedback inbox, channel controls and piano-roll improvements \u00b7 public build 2026110307",
       "changes": [

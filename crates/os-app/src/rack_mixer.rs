@@ -63,7 +63,7 @@ pub fn detach(s:&mut State,n:u16,k:u8){if slot(s,n)!=Some(k){return;}s.mixer.rac
 fn bind(s:&mut State,n:u16,k:u8){s.mixer.rack_auto_width.remove(&n);s.mixer.rack_min_height.remove(&n);s.mixer.rack_pages.remove(&n);if let Some(old)=slot(s,n){detach(s,n,old);}if let Some(m)=mixer::track_mut(s,n){m.rack_strip=Some(RackStrip{slot:k,native_bypassed:m.strip_bypassed,eq_on:m.slot_on[10]});m.strip_bypassed=true;m.slot_on[10]=false;m.slot_on[k as usize]=true;m.slot_mix[k as usize]=1.;}s.piano.dirty=true;}
 fn save(app:&mut App,tracks:&[u16])->Result<Vec<mixer::ChannelCopy>,String>{app.store_builtin_states();crate::project_plugins::store_hosted(&mut app.state.project,&app.plugins)?;Ok(tracks.iter().filter_map(|n|mixer::channel_copy(&app.state,*n)).collect())}
 fn record(app:&mut App,old:Vec<mixer::ChannelCopy>){crate::history::record(&mut app.state,"Channel strip mixer",crate::history::Snap::RackStrips(old));}
-#[cfg(windows)]
+#[cfg(any(windows,target_os="macos"))]
 fn validate(app:&mut App,t:u16,k:u8)->Result<(),String>{
     let owner=if app.state.native_view==Some(Win::Mixer){app.rack_parent}else{app.plugins.owner};
     if owner==0{return Ok(());}
@@ -81,7 +81,7 @@ fn choose(app:&mut App,n:u16,index:usize,all:bool,state:Option<Vec<u8>>)->Result
     if dest.is_empty(){return Err("No other insert channels to fill.".into());}
     let old=save(app,&tracks)?;let mut made=Vec::new();
     for &(t,k) in &dest {if let Err(e)=app.plugins.create_rack_effect(t,k,index,state.as_deref()){for (t,k) in made{app.plugins.drop_key(crate::plugins::fx_key(t,k));}return Err(format!("Could not load {}: {e}. Existing channels preserved.",desc.name));}made.push((t,k));
-        #[cfg(windows)] if let Err(e)=validate(app,t,k){for (t,k) in made{app.plugins.drop_key(crate::plugins::fx_key(t,k));}return Err(e);}
+        #[cfg(any(windows,target_os="macos"))] if let Err(e)=validate(app,t,k){for (t,k) in made{app.plugins.drop_key(crate::plugins::fx_key(t,k));}return Err(e);}
     }
     record(app,old);
     for &(t,k) in &dest {let r=crate::project_plugins::plugin_ref(&desc,app.plugins.state(crate::plugins::fx_key(t,k)).unwrap_or_default());let p=if desc.format==os_host::Format::Native {os_model::SlotPlugin{name:desc.id.clone(),state:r.state}}else{os_model::SlotPlugin{name:os_flp::wrapper::WRAPPER.into(),state:os_flp::wrapper::encode(None,&r)}};mixer::track_mut(&mut app.state,t).ok_or("The destination mixer channel no longer exists.")?.slots[k as usize]=Some(p);bind(&mut app.state,t,k);}
@@ -101,15 +101,15 @@ fn report(app:&mut App,n:u16,result:Result<String,String>)->Option<String>{
 }
 pub fn run(app:&mut App,c:Command)->Option<String>{
     if let Command::Menu(n)=c {app.state.playlist.popup=Some(Popup{x:app.mouse.0,y:app.mouse.1,items:menu(&app.state,n),sub:None,scroll:[0;2],cascade:vec![]});app.invalidate();return None;}
-    if let Command::Page(n,d)=c{#[cfg(windows)] if let Some(k)=slot(&app.state,n){if let Some(e)=app.plugins.hosted.get_mut(&crate::plugins::fx_key(n,k)).and_then(|h|h.rack_editor.as_mut()){e.page_by(d);}}app.invalidate();return None;}
+    if let Command::Page(n,d)=c{#[cfg(any(windows,target_os="macos"))] if let Some(k)=slot(&app.state,n){if let Some(e)=app.plugins.hosted.get_mut(&crate::plugins::fx_key(n,k)).and_then(|h|h.rack_editor.as_mut()){e.page_by(d);}}app.invalidate();return None;}
     if app.state.rec.recording()||app.state.rec.audio{return Some("Stop recording before changing channel strips.".into());}
     let out=match c {
         Command::Page(..)=>None,
         Command::Choose(n,i,all)=>{let result=choose(app,n,i,all,None);report(app,n,result)},
         Command::CopyAll(n)=>{let k=slot(&app.state,n)?;let key=crate::plugins::fx_key(n,k);let d=app.plugins.descriptor(key)?;let i=app.plugins.effects.iter().position(|a|a.desc.id==d.id&&a.desc.format==d.format)?;if let Some(h)=app.plugins.hosted.get(&key){if let Ok(mut p)=h.plugin.lock(){p.idle();}}let Some(state)=app.plugins.state(key)else{return Some("The rack could not save its settings; nothing was copied.".into())};let result=choose(app,n,i,true,Some(state));report(app,n,result)},
-        Command::Existing(n,k)=>{if k==10{return None;}app.sync_effects();app.sync_wrapped();if !app.plugins.hosted.contains_key(&crate::plugins::fx_key(n,k)){return Some("Wait for that effect to load first.".into());}let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};if !eligible_slot(&app.state,n,k){return Some("Choose a single vertical channel strip.".into());}#[cfg(windows)] if let Err(e)=validate(app,n,k){return Some(e);}record(app,old);#[cfg(plugin_windows)] app.plugins.close_window(crate::plugins::fx_key(n,k));bind(&mut app.state,n,k);mixer::set_layout(&mut app.state,VIEW);None},
+        Command::Existing(n,k)=>{if k==10{return None;}app.sync_effects();app.sync_wrapped();if !app.plugins.hosted.contains_key(&crate::plugins::fx_key(n,k)){return Some("Wait for that effect to load first.".into());}let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};if !eligible_slot(&app.state,n,k){return Some("Choose a single vertical channel strip.".into());}#[cfg(any(windows,target_os="macos"))] if let Err(e)=validate(app,n,k){return Some(e);}record(app,old);#[cfg(plugin_windows)] app.plugins.close_window(crate::plugins::fx_key(n,k));bind(&mut app.state,n,k);mixer::set_layout(&mut app.state,VIEW);None},
         Command::Remove(n)=>{let k=slot(&app.state,n)?;let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};record(app,old);detach(&mut app.state,n,k);None},
-        Command::Retry(n)=>{#[cfg(windows)]if let Some(k)=slot(&app.state,n){app.plugins.close_window(crate::plugins::fx_key(n,k));}None},
+        Command::Retry(n)=>{#[cfg(any(windows,target_os="macos"))]if let Some(k)=slot(&app.state,n){app.plugins.close_window(crate::plugins::fx_key(n,k));}None},
         Command::Width(w)=>{let width=f32::from(w.clamp(96,192));app.state.mixer_scroll*=width/app.state.mixer.rack_width;app.state.mixer.rack_width=width;None},
         Command::Menu(_)=>None,
     };app.invalidate();out
