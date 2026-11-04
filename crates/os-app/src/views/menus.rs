@@ -289,10 +289,12 @@ const OPTIONS: &[Item] = &[
     head("CPU meter"),
     it("Compact", "").on().radio(false),
     it("Classic FL-style (CPU and MB)", "").on().radio(false),
+    it("Lemon live monitor", "").on().radio(true),
 ];
 
-pub const OPT_CPU_COMPACT: usize = OPTIONS.len()-2;
-pub const OPT_CPU_CLASSIC: usize = OPTIONS.len()-1;
+pub const OPT_CPU_COMPACT: usize = OPTIONS.len()-3;
+pub const OPT_CPU_CLASSIC: usize = OPTIONS.len()-2;
+pub const OPT_CPU_COMBINED:usize=OPTIONS.len()-1;
 
 const TOOLS_A: &[Item] = &[
     it("Browser find...", "Ctrl+F"),
@@ -577,8 +579,8 @@ fn mark_of(s: &State, menu: usize, item: &Item) -> Mark {
     if let (Mark::Radio(_), Some(v)) = (item.mark, menu_view(menu, item.label)) {
         return Mark::Radio(s.plugdb.prefs.menu_view == v);
     }
-    if menu==OPTIONS_MENU && matches!(item.label,"Compact"|"Classic FL-style (CPU and MB)") {
-        return Mark::Radio(crate::settings_file::flag("toolbar_cpu_classic",false)==(item.label!="Compact"));
+    if menu==OPTIONS_MENU && matches!(item.label,"Compact"|"Classic FL-style (CPU and MB)"|"Lemon live monitor") {
+        return Mark::Radio(if crate::settings_file::flag("toolbar_cpu_combined",true){item.label=="Lemon live monitor"}else{item.label==if crate::settings_file::flag("toolbar_cpu_classic",false){"Classic FL-style (CPU and MB)"}else{"Compact"}});
     }
     match (item.mark, menu == VIEW) {
         // The browser is a panel of its own, shown by its own switch.
@@ -692,7 +694,7 @@ pub fn organized_items(s:&State,menu:usize)->Vec<crate::playlist::PItem> {
   0=>vec![("",vec![0,1,2]),("Save",vec![4,5,6,7,8]),("Import / export",vec![11,12,13,14,15]),("Project maintenance",vec![9,17])],
   PATTERNS=>vec![("Find empty pattern",vec![0,1,2]),("Edit pattern",vec![4,5,6,7,8,9,10,12,13,14]),("Arrange",vec![16,17,19]),("Render",vec![20,21,22])],
   VIEW=>vec![("",(1..=11).collect()),("Window layout",(14..=20).collect()),("Browser shortcuts",(22..all.len()).collect())],
-  OPTIONS_MENU=>vec![("Settings",(1..=6).collect()),("CPU meter",vec![OPT_CPU_COMPACT,OPT_CPU_CLASSIC]),("Project",vec![8,9]),("MIDI",vec![13,14,15]),("Recording / transport",(17..OPT_CPU_COMPACT-1).collect())],
+  OPTIONS_MENU=>vec![("Settings",(1..=6).collect()),("CPU meter",vec![OPT_CPU_COMPACT,OPT_CPU_CLASSIC,OPT_CPU_COMBINED]),("Project",vec![8,9]),("MIDI",vec![13,14,15]),("Recording / transport",(17..OPT_CPU_COMPACT-1).collect())],
   TOOLS_MENU=>vec![("Recording",vec![1,8,9]),("Parameters",vec![15,16]),("Audio clips",vec![26,27,35]),("Project cleanup",vec![23,24,30,31,32]),("",vec![18,19]),("Plugin windows",vec![33,34])],
   _=>vec![("",(0..all.len()).collect())],
  };
@@ -1176,7 +1178,8 @@ pub fn clock_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
     let old=crate::settings_file::flag("toolbar_cpu_classic",false);
     let visible=crate::settings_file::flag("toolbar_cpu_visible",true);
     let mut canvas=os_ui::Canvas::new(1600,800,1.).unwrap();
-    for (style,width) in [(OPT_CPU_CLASSIC,crate::app::CPU_RECT.w),(OPT_CPU_COMPACT,48.)] {
+    let combined=crate::settings_file::flag("toolbar_cpu_combined",true);
+    for (style,width) in [(OPT_CPU_COMBINED,239.),(OPT_CPU_CLASSIC,crate::app::CPU_RECT.w),(OPT_CPU_COMPACT,48.)] {
         app.menu_item(OPTIONS_MENU,style);
         app.paint(&mut canvas,None);
         let rows=organized_items(&app.state,OPTIONS_MENU);
@@ -1184,6 +1187,7 @@ pub fn clock_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
         assert!(menu.children.iter().any(|r|r.cmd==crate::playlist::Cmd::MainMenu(OPTIONS_MENU,style) && r.mark==crate::playlist::Mark::Radio(true)));
         assert!(app.hits.iter().any(|h|h.action==Action::CpuPanel && (h.rect.w-width*crate::views::band_k(&app.state)).abs()<1.));
     }
+    crate::settings_file::set_flag("toolbar_cpu_combined",combined);
     crate::settings_file::set_flag("toolbar_cpu_classic",old);
     crate::settings_file::set_flag("toolbar_cpu_visible",visible);
  }

@@ -162,6 +162,7 @@ impl Hosted {
 pub enum Request {
     AraPlayback(usize,os_host::PlaybackRequest),
     BrowseSample(usize),
+    LocateSample(usize),
     Close(usize),
     ToggleOn(usize),
     Volume(usize, f64),
@@ -270,6 +271,7 @@ pub struct Plugins {
     /// The preset file each instance last loaded or saved (spec: plugins/presets.md), by `hosted` key.
     pub presets: BTreeMap<usize, PathBuf>,
     /// Presets dropped where a new instance is being made: they load once it is hosted (`presets::pending_tick`).
+    pub preview_jobs: Vec<crate::presets::PreviewJob>,
     pub preset_waits: Vec<(usize, PathBuf, std::time::Instant)>,
     /// Plugins (uids) whose file the last scan no longer found: not listed, kept so indices stay valid.
     pub missing: HashSet<String>,
@@ -1005,10 +1007,8 @@ impl Plugins {
         let w = FrameWindow::new(owner, info, (560.0, 437.0), scale, pos, h.detached)?;
         #[cfg(target_os="macos")]
         if h.name=="Lemon Wave" {w.set_editor_zoom(wave_zoom());}
-        // Mixer effects have no channel strip (spec: ui/mixer.md §7).
-        if row >= FX_KEY {
-            w.set_strip(false);
-        }
+        // Open on the plugin itself. The gear still opens instrument settings on demand.
+        w.set_strip(false);
         // The editor takes the frame's scale (on Linux the X server's, not the main window's).
         let k = w.scale();
         // The instance is locked only while its editor opens: the audio thread skips an instance it cannot lock, so
@@ -1217,6 +1217,7 @@ impl Plugins {
             let row = self.hosted.iter().find(|(_, h)| h.window.as_ref().is_some_and(|w| w.area() as isize == area)).map(|(&r, _)| r);
             match (row, m) {
                 (Some(row), crate::plugin_window::LinkMsg::Note(k, v, on)) => out.push(Request::Note(row, k, v, on)),
+                (Some(row), crate::plugin_window::LinkMsg::LocateSample) => out.push(Request::LocateSample(row)),
                 (Some(row), crate::plugin_window::LinkMsg::BrowseSample) => out.push(Request::BrowseSample(row)),
                 (Some(row), crate::plugin_window::LinkMsg::Automate(i)) => out.push(Request::Automate(row, i)),
                 (_, crate::plugin_window::LinkMsg::Audio(_)) => out.extend(os_hostlink::take_audio().into_iter().map(|(p, ch)| Request::Audio(p, ch))),

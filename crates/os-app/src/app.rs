@@ -254,6 +254,8 @@ pub enum Action {
     WinResize(Win, u8),
     /// Browser tree row (index into `views::browser::rows`); press selects / toggles / starts a drag.
     BrowserRow(usize),
+    GenericValue(usize,usize),
+    GenericPresets(usize),
     /// Browser tab 0..5 (spec: ui/browser.md §1).
     BrowserTab(usize),
     BrowserPreview(u8),
@@ -646,6 +648,7 @@ pub enum Seg {
     Toolbar,
     /// The playlist's clip source list (inside `Win(Playlist)`: a scroll of the grid leaves it alone).
     PlPicker,
+    MixerStrip(u16),
 }
 
 /// What each part registered and where it drew in the last paint, so a partial repaint can keep the hits of the parts
@@ -908,6 +911,8 @@ pub enum Drag {
     NoteMove { x0: f32, y0: f32, orig: Vec<(usize, Note)> },
     NoteResize { x0: f32, orig: Vec<(usize, Note)> },
     NoteErase,
+    EraseSelectedPending(f32,f32),
+    SettingsRouteDrag(&'static str,f32),
     /// Mute tool swipe: every note touched gets `on` (the first note's new state, §9).
     NoteMute { on: bool },
     /// Paint tool: notes back to back on `key` from `start`, `len` apart (§9).
@@ -2711,7 +2716,7 @@ impl App {
         #[cfg(plugin_windows)]
         if let Some(row) = self.state.pending_open.take().filter(|r| self.state.hosted_rows.contains(r)) {
             if let Some(info) = channel_info(&self.state.project, row) {
-                match self.plugins.open_window(row, info) {
+                if !self.open_generic_editor(row) {match self.plugins.open_window(row, info) {
                     Ok(()) => {
                         self.state.raise(Win::Hosted(row));
                         self.select_window_track(row);
@@ -2720,7 +2725,7 @@ impl App {
                         self.state.message = Some(format!("Plugin: {e}"));
                         self.invalidate();
                     }
-                }
+                }}
             }
         }
         // Plugin housekeeping on every platform (callbacks, parameter flushes, restarts, rate changes); the plugin
@@ -2942,6 +2947,11 @@ impl App {
                             self.transport.note_off(row, u16::from(key));
                         }
                         continue;
+                    }
+                    Request::LocateSample(row) => {
+                        if let Some(path)=self.plugins.sampler_path(row).or_else(||self.state.project.channels.get(row)?.sample_path.clone()){
+                            self.locate_browser_sample(std::path::PathBuf::from(crate::plugins::resolve_sample(&path)));
+                        }
                     }
                     Request::BrowseSample(row) => {if row<self.state.project.channels.len() && !self.modal_open(){crate::rack::run(self,crate::rack::RCmd::LoadSample(row));}},
                     Request::Automate(row, index) => {
@@ -4069,6 +4079,7 @@ impl App {
             || self.transport.playing()
             || matches!(self.drag, Some(Drag::SongPosHold { .. }))
             || self.state.monitor.active()
+            || !self.plugins.preview_jobs.is_empty()
             || self.state.mixer.meters.iter().any(|m| m.active())
             || self.loading()
             || self.plugin_windows_busy()
@@ -4196,8 +4207,10 @@ impl App {
             // Scope / analyzer / peak bars: from the audio tap; repaint just the monitor when it changed.
             // The monitor advances at its own refresh rate, however often we tick.
             let (tp, rate) = (&self.transport, self.transport.sample_rate());
+            self.state.monitor.combined=self.state.toolbar_actions.combined() && !self.state.monitor.debug;
             if self.state.monitor.update(std::time::Instant::now(), rate, || tp.take_peaks(), |b| tp.tap(b)) {
                 self.damage_band(MONITOR_RECT);
+                if self.state.toolbar_actions.combined() && let Some(r)=self.hits.iter().find(|h|h.action==Action::CpuPanel).map(|h|h.rect){self.damage_rect(r.outset(2.));}
             }
         }
         if let Some(e) = self.transport.take_error() {
@@ -4232,7 +4245,9 @@ impl App {
                 }
             }
             if self.state.cpu.update(now, load, voices, dropouts) {
-                self.damage_rect(Rect::new(0.,0.,self.state.screen.0,views::work_y(&self.state)));
+                if let Some(rect) = self.hits.iter().find(|h| h.action == Action::CpuPanel).map(|h| h.rect) {
+                    self.damage_rect(rect.outset(2.0));
+                }
                 let (x, y) = self.mouse;
                 if self.top_hit(x, y).is_some_and(|h| h.action == Action::CpuPanel) {
                     self.hint = Cow::Owned(self.state.cpu.hint());
@@ -5339,6 +5354,7 @@ impl App {
             #[cfg(windows)]
             SAct::Check(k) if k == views::settings::ASSOCIATE_CHECK => self.assoc_click(),
             // A time division's value box: the mouse wheel changes it (`wheel_act`).
+            SAct::Number(label @ ("Browser preview track"|"Metronome track")) => self.drag=Some(Drag::SettingsRouteDrag(label,self.mouse.1)),
             SAct::Number(label) => self.state.message = Some(format!("{label}: the mouse wheel changes it")),
             // Checks and buttons outside `settings::LIVE` are drawn greyed out with an `Action::Placeholder` hit instead.
             SAct::Check(k) => self.state.message = Some(off_text(k)),
@@ -5465,6 +5481,7 @@ impl App {
 
     /// Mouse moved; returns whether a repaint is needed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        let previous_mouse=self.mouse;
         if crate::plugin_picker::mouse_move(self,x,y) { return true; }
         self.browser_auto_hide(x,y);
         self.mouse = (x, y);
@@ -5569,7 +5586,18 @@ impl App {
                     self.drag_notes(x0, 0.0, &orig, true);
                     self.state.piano.dirty = true;
                 }
-                Drag::NoteErase => self.erase_at(x, y),
+                Drag::NoteErase => self.erase_notes_between(previous_mouse,(x,y)),
+                Drag::EraseSelectedPending(x0,y0) => {
+                    if (x-x0).hypot(y-y0)>=3. {
+                        piano::snapshot_as(&mut self.state,"Piano roll delete note");
+                        self.drag=Some(Drag::NoteErase);
+                        self.erase_notes_between((x0,y0),(x,y));
+                    }
+                }
+                Drag::SettingsRouteDrag(label,anchor) => {
+                    let delta=((anchor-y)/7.) as i32;
+                    if delta!=0 {self.settings_number(label,delta);self.drag=Some(Drag::SettingsRouteDrag(label,anchor-7.*delta as f32));}
+                }
                 Drag::NoteMute { on } => self.mute_at(x, y, on),
                 Drag::NotePaint { key, start, len } => self.paint_notes(key, start, len),
                 Drag::Marquee { x0, y0, base } => {
@@ -6745,7 +6773,7 @@ impl App {
         }
         if let Some(Action::PianoNote(i)) = action.as_ref() {
             if self.state.piano.selection(self.state.pattern,piano::channel(&self.state)).contains(i) {
-                self.state.playlist.popup=Some(crate::piano_tools::selected_menu(&self.state,x,y));
+                self.drag=Some(Drag::EraseSelectedPending(x,y));
                 return self.invalidate();
             }
         }
@@ -6817,6 +6845,10 @@ impl App {
     }
 
     fn release(&mut self) {
+        if let Some(Drag::EraseSelectedPending(x,y))=self.drag {
+            self.state.playlist.popup=Some(crate::piano_tools::selected_menu(&self.state,x,y));
+            self.invalidate();
+        }
         if matches!(self.drag, Some(Drag::Tempo { moved: false, .. })) {
             self.drag = None;
             self.pressed = None;
@@ -7046,20 +7078,24 @@ impl App {
     }
 
     /// Delete this channel's note under (x, y), if any.
-    fn erase_at(&mut self, x: f32, y: f32) {
+    fn erase_at(&mut self, x:f32,y:f32){self.erase_notes_between((x,y),(x,y));}
+
+    fn erase_notes_between(&mut self, from:(f32,f32),to:(f32,f32)) {
         let Some(g) = self.piano_geom() else { return };
-        if !g.grid.contains(x, y) {
-            return;
-        }
         let ch = piano::channel(&self.state);
-        let hit = piano::notes(&self.state)
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, n)| Some(n.channel) == ch && g.note_rect(n).is_some_and(|r| r.contains(x, y)))
-            .map(|(i, _)| i);
-        if let Some(i) = hit {
-            piano::delete(&mut self.state, vec![i]);
+        let hits:Vec<_>=piano::notes(&self.state).iter().enumerate().filter_map(|(i,n)|{
+            if Some(n.channel)!=ch{return None;}
+            let r=g.note_rect(n)?.intersect(&g.grid);
+            if r.is_empty(){return None;}
+            let (mut lo,mut hi)=(0.0_f32,1.0_f32);
+            for (a,b,min,max) in [(from.0,to.0,r.x,r.right()),(from.1,to.1,r.y,r.bottom())]{
+                if a==b {if a<min || a>=max{return None;}}
+                else {let (u,v)=((min-a)/(b-a),(max-a)/(b-a));lo=lo.max(u.min(v));hi=hi.min(u.max(v));}
+            }
+            (lo<=hi).then_some(i)
+        }).collect();
+        if !hits.is_empty() {
+            piano::delete(&mut self.state,hits);
             self.state.piano.dirty = true;
             self.damage_piano();
         }
@@ -7881,8 +7917,12 @@ impl App {
                 let s = &mut self.state;
                 if let Some(ch) = piano::channel(s) {
                     let all = piano::notes(s).iter().enumerate().filter(|(_, n)| n.channel == ch).map(|(i, _)| i).collect();
+                    let manual=s.piano.range;
                     s.piano.select(s.pattern, ch, all);
-                    s.piano.range = Some((0, piano::pattern_end(s)));
+                    let bar=s.project.bar_ticks().max(1);
+                    let end=piano::notes(s).iter().filter(|n|n.channel==ch)
+                        .map(|n|n.position.saturating_add(piano::shown_len(s,n))).max();
+                    s.piano.range=manual.or_else(||end.map(|v|(0,v.max(1).div_ceil(bar).saturating_mul(bar))));
                 }
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("t") => self.toggle_typing(),
@@ -8279,6 +8319,7 @@ impl App {
                     }
                 }
                 // Paint on a note: drags that one note like Draw (no group move).
+                Tool::Paint if self.shift => {},
                 _ => s.piano.clear_selection(),
             }
         }
@@ -8301,7 +8342,7 @@ impl App {
                 let Some(&n) = piano::notes(s).get(i) else { return };
                 piano::snapshot(s);
                 let sel = s.piano.selection(s.pattern, Some(ch));
-                let idx = if sel.contains(&i) && tool.moves_groups() {
+                let idx = if sel.contains(&i) && (tool.moves_groups() || (tool==Tool::Paint && self.shift)) {
                     sel
                 } else {
                     s.piano.clear_selection();
@@ -8784,6 +8825,12 @@ impl App {
                 piano::center_keys(s, self.piano_grid.map_or(700.0, |g| g.h));
             }
             Action::RackMixer(_) => {}
+            Action::GenericValue(key,index)=>crate::typein::open(&mut self.state,crate::typein::Target::Param(key,index),self.mouse),
+            Action::GenericPresets(key)=>{
+                let items=crate::presets::items(self,key,true);
+                self.state.playlist.popup=Some(crate::playlist::Popup{x:self.mouse.0,y:self.mouse.1,items,sub:None,scroll:[0;2],cascade:vec![]});
+                self.invalidate();
+            }
             Action::RackAdd => {
                 let at = self.mouse;
                 self.open_plugin_menu(crate::plugin_menu::Target::Gen(None), at);
@@ -9308,7 +9355,8 @@ impl App {
     pub(crate) fn menu_item(&mut self, menu: usize, item: usize) {
         use views::menus::*;
         match (menu, item) {
-            (OPTIONS_MENU, OPT_CPU_COMPACT | OPT_CPU_CLASSIC) => {
+            (OPTIONS_MENU, OPT_CPU_COMPACT | OPT_CPU_CLASSIC | OPT_CPU_COMBINED) => {
+                crate::settings_file::set_flag("toolbar_cpu_combined",item==OPT_CPU_COMBINED);
                 crate::settings_file::set_flag("toolbar_cpu_classic",item==OPT_CPU_CLASSIC);
                 crate::settings_file::set_flag("toolbar_cpu_visible",true);
                 self.invalidate();
@@ -10122,6 +10170,61 @@ mod tests {
         crate::history::undo(&mut a.state);assert!(piano::controls(&a.state).is_empty());
         // Clicking the grid returns keyboard editing to notes.
         a.ctrl=true;a.piano_click(&Action::PianoGrid);assert!(!a.state.piano.event_focus);
+    }
+
+    #[test]
+    fn audio_router_numbers_drag_both_directions() {
+        use crate::views::settings::{AUDIO,SAct};
+        let mut app=App::new(None);
+        app.state.project=test_project();
+        app.open_settings(AUDIO);
+        let mut canvas=Canvas::new(1920,1080,1.).unwrap();
+        frame(&mut app,&mut canvas,None);
+        for pref in [&crate::prefs::BROWSER_PREVIEW_TRACK,&crate::prefs::METRONOME_TRACK] {
+            let old=crate::prefs::number(pref);
+            crate::prefs::set_number(pref,0);
+            let r=hit_rect(&app,&Action::Settings(SAct::Number(pref.label)));
+            app.mouse_move(r.cx(),r.cy());
+            app.mouse_down();
+            app.mouse_move(r.cx(),r.cy()-21.);
+            assert_eq!(crate::prefs::number(pref),3);
+            app.mouse_move(r.cx(),r.cy()-7.);
+            app.mouse_up();
+            assert_eq!(crate::prefs::number(pref),1);
+            crate::prefs::set_number(pref,old);
+        }
+    }
+
+    #[test]
+    fn brush_shift_copies_selection_and_fast_erase_crosses_notes() {
+        let mut app=App::new(None);
+        app.state.project=test_project();
+        app.state.z=vec![Win::PianoRoll];
+        app.state.piano.tool=Tool::Paint;
+        let ch=piano::channel(&app.state).unwrap();
+        let first=piano::add_note(&mut app.state,ch,0,60);
+        let second=piano::add_note(&mut app.state,ch,96,60);
+        app.state.piano.select(app.state.pattern,ch,vec![first,second]);
+        let mut canvas=Canvas::new(1920,1080,1.).unwrap();
+        frame(&mut app,&mut canvas,None);
+        let g=app.piano_geom().unwrap();
+        let r=g.note_rect(&piano::notes(&app.state)[first]).unwrap();
+        let y=r.y+r.h*0.5;
+        app.shift=true;
+        app.mouse_move(r.x+3.,y);
+        app.mouse_down();
+        app.mouse_move(g.x_of(240.)+3.,y);
+        app.mouse_up();
+        let notes=piano::notes(&app.state);
+        assert_eq!(notes.len(),4);
+        assert!(notes.iter().any(|n|n.position==0) && notes.iter().any(|n|n.position==96));
+        app.shift=false;
+        frame(&mut app,&mut canvas,None);
+        app.mouse_move(r.x+3.,y);
+        app.mouse_down_right();
+        app.mouse_move(g.x_of(480.),y);
+        app.mouse_up();
+        assert!(piano::notes(&app.state).is_empty());
     }
 
     #[test]
@@ -14681,9 +14784,10 @@ mod tests {
         click(&mut app, &mut canvas, button);
         assert!(app.state.playlist.popup.as_ref().is_some_and(|p| p.items.iter().any(|i| i.cmd == pl::Cmd::TrackAutomation(0, Some(a)))));
         app.state.playlist.popup = None;
-        let had_cpu = app.state.bar.layout.has(crate::toolbar::Panel::Cpu);
+        let had_cpu = app.hits.iter().any(|h| h.action == Action::CpuPanel);
         app.toolbar_switch(views::toolbar::Switch::CpuMemory);
-        assert_ne!(app.state.bar.layout.has(crate::toolbar::Panel::Cpu), had_cpu);
+        frame(&mut app, &mut canvas, None);
+        assert_ne!(app.hits.iter().any(|h| h.action == Action::CpuPanel), had_cpu);
         let grid = os_ui::Rect::new(300.0, 140.0, 1200.0, 800.0);
         pl::run(&mut app, pl::Cmd::TrackAutomation(0, Some(a)));
         let g = pl::PGeom::new(&app.state, grid);
@@ -16949,6 +17053,18 @@ mod tests {
 
         /// Delete with nothing selected, Ctrl+A's time selection with Ctrl+B and Ctrl+D, Ctrl+Enter (§4 rules 3, 4, 12).
         #[test]
+        fn select_and_duplicate_ignore_other_channels_lengths(){
+            let Some((mut app,_c))=setup() else{return;};
+            let ch=piano::channel(&app.state).unwrap();
+            let note=os_model::Note{length:24,..os_model::Note::step(ch,48)};
+            piano::pattern_mut(&mut app.state).notes=vec![note,os_model::Note{channel:ch+1,position:1400,..note}];
+            app.state.piano.clear_selection();
+            letter(&mut app,'a',CTRL,1);let bar=app.state.project.bar_ticks();
+            assert_eq!(app.state.piano.range,Some((0,bar)));
+            letter(&mut app,'d',0,1);
+            assert!(piano::notes(&app.state).iter().any(|n|n.channel==ch && n.position==bar+48));
+        }
+        #[test]
         fn delete_select_all_and_ctrl_enter() {
             let Some((mut app, _c)) = setup() else { return };
             named(&mut app, NamedKey::Delete, 0, 1);
@@ -18514,6 +18630,12 @@ mod tests {
         app.state.z = vec![Win::ChannelRack];
         let mut canvas = Canvas::new(1280, 900, 1.).unwrap();
         frame(&mut app, &mut canvas, None);
+        let step=hit_rect(&app,&Action::Step(0,0));
+        let next=hit_rect(&app,&Action::Step(0,1));
+        app.mouse_move((step.right()+next.x)*0.5,step.cy());
+        assert_eq!(app.top_hit(app.mouse.0,app.mouse.1).map(|h|&h.action),Some(&Action::Swallow));
+        app.mouse_down();app.mouse_up();app.mouse_down_right();app.mouse_up();
+        assert!(!app.state.plugin_picker.open && app.state.playlist.popup.is_none());
         let rack = views::rack::rect(&app.state);
         let mut empty = Vec::new();
         for y in ((rack.y + 30.) as i32..(rack.bottom() - 4.) as i32).step_by(8) {

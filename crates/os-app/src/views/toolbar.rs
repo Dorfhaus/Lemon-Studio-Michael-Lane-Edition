@@ -176,11 +176,13 @@ impl ActionSizes {
             feedback: canvas.text_width(Font::new(11), "Report a bug").ceil() + 12.0,
             hint: if hint { Panel::Hint.width() + 6.0 } else { 0.0 },
             cpu: if !crate::settings_file::flag("toolbar_cpu_visible", true) { 0.0 }
+                 else if crate::settings_file::flag("toolbar_cpu_combined",true) { 245. }
                  else if crate::settings_file::flag("toolbar_cpu_classic",false) { crate::app::CPU_RECT.w+6.0 }
                  else { 54.0 },
         }
     }
 
+    pub fn combined(self)->bool{self.cpu==245.}
     pub fn width(self) -> f32 {
         self.tesla + self.cpu + self.hint + 37.0 + self.update + self.donate + self.feedback + 24.0 + 32.0 + 104.0
     }
@@ -265,7 +267,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
 
     {
         let cr=Rect::new(width-actions_w+2.,8.,48.,24.);
-        if mini_cpu_w > 54.0 {
+        if sizes.combined() {live_monitor(ui,s,Rect::new(cr.x,3.,mini_cpu_w-6.,34.));}
+        else if mini_cpu_w > 54.0 {
             let a=At{dx:cr.x-crate::app::CPU_RECT.x,dy:0.};
             classic_cpu(ui,s,a);
         } else if show_cpu {ui.c.fill_rrect(cr,3.,t.sunken);
@@ -707,6 +710,83 @@ fn monitor(ui: &mut Ui, c: &Ctx) {
 
 /// CPU panel (spec: ui/main-window.md §13): audio load (bar, percent, recent history or the Misc counts), memory,
 /// voices (or frames per second), dropouts. The hint is the reading in words (`App::tick`).
+fn live_monitor(ui: &mut Ui, s: &State, r: Rect) {
+    let t = ui.t;
+    ui.hit(r, Action::CpuPanel, s.cpu.hint());
+    ui.c.fill_rrect(r, 4., t.sunken);
+    ui.c.stroke_rrect(r, 4., 1., t.toolbar_line);
+    let font = Font::new(11);
+    let reading = &s.cpu.now;
+    ui.c.text(font, r.x + 5., r.y + 2., t.text_dim, "Audio load");
+    ui.c.text(font, r.x + 5., r.y + 17., t.text_dim, "Memory");
+    ui.c.text_right(
+        font,
+        r.x + 99.,
+        r.y + 2.,
+        t.text,
+        &format!("{}%", reading.load),
+    );
+    let memory = reading
+        .mem_mb
+        .map_or_else(|| "— MB".to_string(), |m| format!("{m} MB"));
+    ui.c.text_right(font, r.x + 99., r.y + 17., t.text, &memory);
+    if reading.dropouts > 0 {
+        ui.c.text(
+            Font::new(9),
+            r.x + 102.,
+            r.y + 4.,
+            t.meter_clip,
+            &format!("!{}", reading.dropouts.min(9999)),
+        );
+    }
+    let plot = Rect::span(r.x + 128., r.right() - 21., r.y + 3., r.bottom() - 3.);
+    let grid = t.toolbar_line.with_alpha(120);
+    for i in 0..7 {
+        let x = plot.x + plot.w * i as f32 / 6.;
+        ui.c.line(x, plot.y, x, plot.bottom(), 1., grid);
+    }
+    ui.c.line(plot.x, plot.cy(), plot.right(), plot.cy(), 1., grid);
+    let mut last = None;
+    for (i, &(lo, hi)) in s.monitor.wave.iter().enumerate() {
+        let x = plot.x + i as f32 * plot.w / (crate::monitor::COLS - 1) as f32;
+        let y = plot.cy() - (lo + hi).clamp(-2., 2.) * plot.h * 0.25;
+        if let Some((px, py)) = last {
+            ui.c.line(px, py, x, y, 1., os_ui::Color::rgb(0xffdf44));
+        }
+        last = Some((x, y));
+    }
+    for ch in 0..2 {
+        let level = s.monitor.meter_pos(s.monitor.meter_db[ch]);
+        let peak = s.monitor.meter_pos(s.monitor.hold[ch].0);
+        for i in 0..10 {
+            let mark = (i + 1) as f32 / 10.;
+            let active = level >= mark || (peak >= mark && peak < mark + 0.1);
+            let ink = if !active {
+                grid
+            } else if i >= 8 {
+                t.meter_high
+            } else {
+                os_ui::Color::rgb(0x98d752)
+            };
+            ui.c.fill_rect(
+                Rect::new(
+                    r.right() - 17. + 7. * ch as f32,
+                    r.bottom() - 10. - 2.2 * i as f32,
+                    5.,
+                    2.,
+                ),
+                ink,
+            );
+        }
+        ui.c.text_center(
+            Font::new(7),
+            Rect::new(r.right() - 18. + 7. * ch as f32, r.bottom() - 8., 7., 8.),
+            t.text_dim,
+            if ch == 0 { "L" } else { "R" },
+        );
+    }
+}
+
 fn classic_cpu(ui:&mut Ui,s:&State,a:At) {
     let t=ui.t;
     let cpu = a.r(crate::app::CPU_RECT);
@@ -774,7 +854,7 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
     }
     let layout = menus::bar_layout(ui.c);
     for (i, (m, (x0, x1, width))) in menus::MENUS.iter().zip(layout).enumerate() {
-        let title = m.title;
+        let title = if i==menus::HELP_MENU && ui.c.size().0 < 1300. {"…"} else {m.title};
         let r = a.r(Rect::new(x0 - 3.0, 47.0, x1 - x0 + 6.0, 29.0));
         let hov = ui.hit(r, Action::Menu(i), title);
         let open = s.menu_open == Some(i) && !c.preview;

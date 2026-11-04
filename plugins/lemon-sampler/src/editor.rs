@@ -1948,6 +1948,7 @@ mod win32 {
                         repaint = true;
                     }
                     Act::Locate => {
+                        if os_hostlink::to_host(self.hwnd as isize,os_hostlink::Cmd::BrowseSample,1)==1 {continue;}
                         let p = self.params.sample_path.read().map(|p| p.clone()).unwrap_or_default();
                         if !p.is_empty() {
                             let args = wide(&format!("/select,\"{p}\""));
@@ -2777,6 +2778,7 @@ mod gui {
                         self.dirty = true;
                     }
                     Act::Locate => {
+                        if self.link.to_host(Cmd::BrowseSample,1)==1 {continue;}
                         // The sample's folder in the file manager (on macOS a Finder window with the sample picked).
                         let p = self.params.sample_path.read().map(|p| p.clone()).unwrap_or_default();
                         if let Some(dir) = std::path::Path::new(&p).parent().filter(|d| !p.is_empty() && d.is_dir()) {

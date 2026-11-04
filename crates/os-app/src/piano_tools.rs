@@ -118,6 +118,7 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
     edit.push(PItem::sub("Send Selected Notes To...",vec![PItem::sub("Move to channel",destinations(false)),PItem::sub("Copy to channel",destinations(true))]));
     edit.extend([PItem::sep(),k("Shift left","Left",false,true,false,"Shift+Left"),k("Shift right","Right",false,true,false,"Shift+Right"),k("Transpose up","Up",false,true,false,"Shift+Up"),k("Transpose down","Down",false,true,false,"Shift+Down"),k("Octave up","Up",true,false,false,"Ctrl+Up"),k("Octave down","Down",true,false,false,"Ctrl+Down"),item("Mute",NCmd::Mute(true)).key("Alt+M"),item("Unmute",NCmd::Mute(false)).key("Alt+Shift+M")]);
     let check=|label,key,default|item(label,NCmd::View(key)).mark(Mark::Check(view_on(key,default)));
+    edit.push(check("D duplicates notes (typing keyboard off)","piano_d_duplicate",true));
     let mut helpers=group("View");helpers.retain(|i|!matches!(i.cmd,Cmd::Piano(NCmd::AddMarker)));
     helpers.extend([PItem::new("Key, scale and highlighting...",Cmd::Harmony(crate::harmony::HCmd::Menu(10))),check("Note grid highlights","piano_grid_highlights",true)]);
     let items=vec![
@@ -127,7 +128,7 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
         PItem::sub("Select",vec![k("Select all","a",true,false,false,"Ctrl+A"),k("Deselect","d",true,false,false,"Ctrl+D"),k("Invert selection","i",false,true,false,"Shift+I"),k("Select by color","c",false,true,false,"Shift+C"),k("Select random","r",false,true,false,"Shift+R")]),
         PItem::sub("Snap",crate::piano_snap::snap_menu(s,x,y).items),
         PItem::sub("Note length",crate::piano_snap::lengths_menu(x,y).items),
-        PItem::sub("Draw mode",[(piano::Tool::Draw,"Pencil","P"),(piano::Tool::Paint,"Brush","B"),(piano::Tool::Slice,"Slice","C"),(piano::Tool::Select,"Select","E"),(piano::Tool::Delete,"Delete","D"),(piano::Tool::Mute,"Mute","T"),(piano::Tool::Zoom,"Zoom","Z"),(piano::Tool::Playback,"Playback","Y")].into_iter().map(|(tool,label,key)|item(label,NCmd::Tool(tool)).key(key).mark(Mark::Radio(s.piano.tool==tool))).collect()),
+        PItem::sub("Draw mode",[(piano::Tool::Draw,"Pencil","P"),(piano::Tool::Paint,"Brush","B"),(piano::Tool::Slice,"Slice","C"),(piano::Tool::Select,"Select","E"),(piano::Tool::Delete,"Delete",if view_on("piano_d_duplicate",true){""}else{"D"}),(piano::Tool::Mute,"Mute","T"),(piano::Tool::Zoom,"Zoom","Z"),(piano::Tool::Playback,"Playback","Y")].into_iter().map(|(tool,label,key)|item(label,NCmd::Tool(tool)).key(key).mark(Mark::Radio(s.piano.tool==tool))).collect()),
         PItem::sub("View",vec![PItem::sub("Keyboard style",vec![item("FL 11 style",NCmd::KeyboardStyle(true)).mark(Mark::Radio(classic_keyboard())),item("Piano-shaped",NCmd::KeyboardStyle(false)).mark(Mark::Radio(!classic_keyboard()))]),item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
         PItem::sub("Helpers",helpers),
         PItem::sub("Time markers",vec![item("Add time marker",NCmd::AddMarker).key("Alt+T")]),
@@ -195,6 +196,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
         Key::Character(c) if ctrl && !alt && is(c, "u") => NCmd::QuickChop,
         Key::Character(c) if ctrl && !alt && is(c, "g") => NCmd::Glue,
         Key::Character(c) if ctrl && !alt && is(c, "b") => NCmd::Duplicate,
+        Key::Character(c) if !ctrl && !alt && !shift && is(c,"d") && !app.typing_on() && view_on("piano_d_duplicate",true) => NCmd::Duplicate,
         Key::Character(c) if shift && !ctrl && !alt && is(c, "d") => NCmd::DiscardLengths,
         Key::Character(c) if alt && !ctrl && is(c, "m") => NCmd::Mute(!shift),
         Key::Character(c) if alt && !ctrl && is(c, "q") => NCmd::Dialog(crate::piano_dlg::Tool::Quantize),

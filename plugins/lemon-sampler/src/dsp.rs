@@ -268,6 +268,7 @@ struct Voice {
     /// The note's own pan (−1..1) and its filter offsets in knob units, from the host per note (CLAP note expression
     /// PAN, per-note modulation of the filter knobs; spec: audio/voice-levels.md).
     note_pan: f64,
+    drive:f32,
     mod_x: f32,
     mod_y: f32,
     age: u64,
@@ -705,7 +706,7 @@ impl Engine {
             key_step,
             tune: 0.0,
             note_pan: 0.0,
-            mod_x: 0.0,
+            drive:0.,mod_x: 0.0,
             mod_y: 0.0,
             age: 0,
             off: None,
@@ -780,6 +781,9 @@ impl Engine {
     }
 
     /// The note's filter offsets in knob units (per-note modulation of MOD X / MOD Y), also while it sounds.
+    pub fn note_drive(&mut self,id:i32,amount:f32) {
+        for voice in self.voices.iter_mut().filter(|v|v.id==Some(id)){voice.drive=amount.clamp(0.,1.);}
+    }
     pub fn modulate(&mut self, id: i32, mod_x: Option<f32>, mod_y: Option<f32>) {
         for v in self.voices.iter_mut().filter(|v| v.id == Some(id)) {
             if let Some(x) = mod_x {
@@ -881,9 +885,9 @@ impl Engine {
                 self.end(&v);
             }
         }
-        // The reader tops up the rings the block read from.
+        // Retry a starved reader once per block. Healthy streams wake it only when a chunk is free.
         if let Src::Disk(d) = &s {
-            if self.voices.iter().any(|v| v.feed.active()) {
+            if self.voices.iter().any(|v| v.gap > 0 && v.feed.active()) {
                 d.disk().wake();
             }
         }
@@ -1027,6 +1031,7 @@ fn render_voice(
                     }
                 },
             };
+            if v.drive>0. {let gain=1.+15.*v.drive;l=(l*gain).clamp(-1.,1.);r=(r*gain).clamp(-1.,1.);}
             l = v.filt.run(0, j, l);
             r = v.filt.run(1, j, r);
             // The fades act on the signal before the gains (spec: audio/declick.md "Where the fades sit"). FL works on

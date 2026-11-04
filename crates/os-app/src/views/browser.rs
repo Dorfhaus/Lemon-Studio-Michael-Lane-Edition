@@ -921,6 +921,24 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         };
         icons::draw(ui.c, row.icon, Rect::new(x + 6.0, y + 3.0, 17.0, 17.0), ic);
         let (f, w) = (os_ui::Font::new(17), bw - 13.0 - x - 27.0);
+        let w=if let Item::Param(key,index)=row.item {
+            if s.params.generic_editor==Some(key) {
+                let width=(w*0.42).clamp(25.,65.);
+                let value=Rect::new(rect.right()-width-12.,y+2.,width,rh-4.);
+                if let Some(list)=s.params.lists.get(&key) && let Some(entry)=list.params.get(index){
+                    let v=list.values.borrow().get(&entry.id).copied().unwrap_or(entry.default);
+                    ui.c.fill_rrect(value,3.,t.sunken);
+                    ui.c.text_center(os_ui::Font::new(11),value,t.text,&format!("{:.1}%",100.*v));
+                    if !entry.read_only{ui.hit(value,Action::GenericValue(key,index),"Edit parameter value");}
+                }
+                (w-width-12.).max(0.)
+            }else{w}
+        }else if s.params.generic_editor.is_some_and(|key|row.key==parameter_node_key(key) || crate::params::node_key(s,key).as_ref()==Some(&row.key)) {
+            let button=Rect::new(rect.right()-71.,y+2.,58.,rh-4.);
+            ui.c.fill_rrect(button,3.,t.button_hi);ui.c.text_center(os_ui::Font::new(11),button,t.text,"Presets");
+            ui.hit(button,Action::GenericPresets(s.params.generic_editor.unwrap()),"Plugin presets");
+            (w-72.).max(0.)
+        }else{w};
         let over = ui.c.text_width(f, &row.label) - w;
         // Hovered, a label that does not fit scrolls (§9) rather than being cut.
         if hov && over > 0.0 {

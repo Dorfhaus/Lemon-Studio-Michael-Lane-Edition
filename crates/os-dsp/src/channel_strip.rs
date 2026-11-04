@@ -12,6 +12,7 @@ pub struct ChannelStrip {
     pre: f32,
     pre_last: [f32; 2],
     drive_mix: [f32; 4],
+    tape: Tape,
     dc_x: [f32; 2],
     dc_y: [f32; 2],
     gate_env: f32,
@@ -47,6 +48,7 @@ impl ChannelStrip {
             amount: target[1],
             pre: target[2],
             pre_last: [0.; 2],
+            tape: Tape::new(rate),
             drive_mix: std::array::from_fn(|i| if i == settings.get(6).copied().unwrap_or(0).min(3) as usize {1.} else {0.}),
             dc_x: [0.; 2],
             dc_y: [0.; 2],
@@ -83,6 +85,7 @@ impl ChannelStrip {
         self.gate_hold = old.gate_hold;
         self.gate_amount = old.gate_amount;
         if self.rate == old.rate {
+            self.tape.clone_from(&old.tape);
             self.tame = old.tame.clone();
             self.deess = old.deess.clone();
         }
@@ -133,6 +136,7 @@ impl ChannelStrip {
             return;
         }
         let smooth = 1. - (-1. / (self.rate * 0.02)).exp();
+        let profile_smooth = 1. - (-1. / (self.rate * 0.04)).exp();
         let dc = (-2. * std::f32::consts::PI * 8. / self.rate).exp();
         for f in buf.chunks_exact_mut(2) {
             self.pre += (self.target[2] - self.pre) * smooth;
@@ -140,15 +144,23 @@ impl ChannelStrip {
             let kind=((self.target[6]*65535.).round() as usize).min(3);
             for (i,w) in self.drive_mix.iter_mut().enumerate() {
                 let goal=if i==kind {1.}else{0.};
-                *w+=(goal-*w)*smooth;
+                *w+=(goal-*w)*profile_smooth;
                 if (*w-goal).abs()<0.00001 {*w=goal;}
             }
+            // Ease both ends of a profile change so delayed tape transients enter gradually.
+            let weights = self.drive_mix.map(|w| w * w * (3. - 2. * w));
+            let total: f32 = weights.iter().sum();
+            let tape_weight = weights[1];
+            let tape=if tape_weight>0. {
+                self.tape.frame([f[0],f[1]],self.rate,self.pre)
+            }else{[0.;2]};
             for (c, x) in f.iter_mut().enumerate() {
                 let v=(*x*drive).clamp(-40.,40.);
                 let last=self.pre_last[c];
                 self.pre_last[c]=v;
                 let mut shaped=0.;
-                for (mode,weight) in self.drive_mix.iter().copied().enumerate().filter(|(_,w)|*w>0.) {
+                for (mode,weight) in weights.iter().map(|w| w / total).enumerate().filter(|(_,w)|*w>0.) {
+                    if mode==1 {shaped+=weight*tape[c];continue;}
                     let bias=if mode==0 {0.12*self.pre}else{0.};
                     let a=v+bias;
                     let b=last+bias;
@@ -255,6 +267,44 @@ impl ChannelStrip {
         }
     }
 }
+/// Stereo-linked capstan wow and flutter, record saturation, head loss and shaped hiss.
+#[derive(Clone,Debug)]
+struct Tape {
+    delay:Vec<[f32;2]>, write:usize, phase:[f64;2], tone:[f32;2], rng:u32, noise:f32, activity:f32,
+    tone_coeff:f32, release:f32,
+}
+impl Tape {
+    fn new(rate:u32)->Self{
+        let rate=rate.max(1) as f32;
+        Self{delay:vec![[0.;2];(rate*0.004).ceil() as usize+3],write:0,phase:[0.,0.],tone:[0.;2],
+            rng:0x53ab9107,noise:0.,activity:0.,tone_coeff:1.-(-std::f32::consts::TAU*11200./rate).exp(),release:(-1./(0.09*rate)).exp()}
+    }
+    fn frame(&mut self,input:[f32;2],rate:f32,amount:f32)->[f32;2]{
+        let distance=rate*(0.0018+amount*(0.00065*self.phase[0].sin() as f32+0.000055*self.phase[1].sin() as f32));
+        for (phase,hz) in self.phase.iter_mut().zip([0.71,5.17]){
+            *phase+=std::f64::consts::TAU*hz/f64::from(rate);
+            if *phase>=std::f64::consts::TAU{*phase%=std::f64::consts::TAU;}
+        }
+        self.delay[self.write]=input;
+        let len=self.delay.len();
+        let i=(self.write+len-distance as usize)%len;
+        let j=(i+len-1)%len;
+        self.write=(self.write+1)%len;
+        self.rng=self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
+        let noise=(self.rng>>8) as f32/8388608.-1.;
+        self.activity=(self.activity*self.release).max((input[0].abs().max(input[1].abs())*64.).min(1.));
+        let hiss=(noise-self.noise*0.72)*0.00025*self.activity;
+        self.noise=noise;
+        std::array::from_fn(|ch|{
+            let sample=self.delay[i][ch]+distance.fract()*(self.delay[j][ch]-self.delay[i][ch]);
+            let drive=1.+4.*amount;
+            let mag=(sample*drive).tanh()/drive;
+            self.tone[ch]+=self.tone_coeff*(mag-self.tone[ch]);
+            self.tone[ch]+hiss
+        })
+    }
+}
+
 /// Lightweight waveshaping characters, not circuit/tape-machine emulations.
 pub const DRIVE_TYPES: [&str;4] = ["Tube", "Tape", "Soft", "Clip"];
 fn drive_curve(mode:usize,x:f32)->f32 {
@@ -407,7 +457,7 @@ mod expanded_tests {
                 assert!(tail.iter().all(|x|x.is_finite()&&x.abs()<1.));
                 let delta:Vec<_>=tail.iter().zip(&baseline).map(|(x,y)|x-y).collect();
                 assert!(delta[0].abs()<0.001);
-                assert!(delta.windows(2).all(|w|(w[1]-w[0]).abs()<0.001),"type change itself must be smoothed");
+                assert!(delta.windows(2).all(|w|(w[1]-w[0]).abs()<0.001),"type change itself must be smoothed: mode {mode} rate {rate}, peak {:?}",delta.windows(2).enumerate().map(|(i,w)|(i,(w[1]-w[0]).abs())).max_by(|a,b|a.1.total_cmp(&b.1)));
                 rendered.push(b);
             }
             for a in 0..4 {for b in a+1..4 {

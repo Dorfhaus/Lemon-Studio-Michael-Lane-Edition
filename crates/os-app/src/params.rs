@@ -29,6 +29,7 @@ pub struct Entry {
     pub name: String,
     /// Hidden parameters keep their index but are not listed (spec §1).
     pub hidden: bool,
+    pub read_only:bool,
     /// The default value (normalized) and the number of steps (0 = continuous), for "Set..." (§5.2).
     pub default: f64,
     pub steps: u32,
@@ -58,6 +59,7 @@ pub enum Tweak {
 /// What the app knows about plugin parameters.
 #[derive(Debug, Default)]
 pub struct ParamUi {
+    pub generic_editor:Option<usize>,
     pub capture_armed: bool,
     capture_pending: std::collections::BTreeSet<usize>,
     /// By hosted key (`plugins::Plugins::hosted`).
@@ -368,8 +370,8 @@ impl App {
             if stale {
                 let params = (0..count)
                     .map(|i| match p.param_info(i) {
-                        Some(info) => Entry { id: info.id, name: info.name, hidden: info.hidden, default: info.default, steps: info.steps },
-                        None => Entry { id: u32::MAX, name: String::new(), hidden: true, default: 0.0, steps: 0 },
+                        Some(info) => Entry { id: info.id, name: info.name, hidden: info.hidden, read_only:info.read_only, default: info.default, steps: info.steps },
+                        None => Entry { id: u32::MAX, name: String::new(), hidden: true, read_only:true, default: 0.0, steps: 0 },
                     })
                     .collect();
                 let values=(0..count).filter_map(|i|{let id=p.param_info(i)?.id;Some((id,p.param_value(id)?))}).collect();
@@ -556,6 +558,15 @@ impl App {
         (!ok).then(|| "The plugin did not take the value".to_string())
     }
 
+    pub(crate) fn open_generic_editor(&mut self,key:usize)->bool{
+        let no_editor=self.plugins.hosted.get(&key).is_some_and(|h|h.plugin.lock().is_ok_and(|p|!p.has_editor()));
+        if !no_editor{return false;}
+        self.state.params.generic_editor=Some(key);
+        self.state.message=self.browse_params(key);
+        self.invalidate();
+        true
+    }
+
     /// "Browse parameters" (spec §6): the browser shows the instance's parameters in the Current project tab.
     pub(crate) fn browse_params(&mut self, key: usize) -> Option<String> {
         self.params_tick();
@@ -627,7 +638,7 @@ mod tests {
         assert_eq!(target_of(s, fx_key(2, 3), 35), Some(target::slot_param(2, 3, 35)));
         assert_eq!(key_of(s, Target::ChannelParam(ch, 7)), Some((0, 7)));
         assert_eq!(key_of(s, Target::SlotParam(2, 3, 35)), Some((fx_key(2, 3), 35)));
-        let cutoff = Entry { id: 9, name: "Cutoff".into(), hidden: false, default: 1.0, steps: 0 };
+        let cutoff = Entry { id: 9, name: "Cutoff".into(), hidden: false, read_only:false, default: 1.0, steps: 0 };
         s.params.lists.insert(0, List { plugin: Weak::<Mutex<Dummy>>::new(), params: vec![cutoff], seen: crate::plugins::Look::never(), values:Default::default(),gestures:Default::default() });
         assert_eq!(clip_name(s, 0, 0), "Lead - Cutoff");
         // Last tweaked keeps the two newest, newest first, without repeats.
@@ -1033,6 +1044,24 @@ mod tests {
         assert_eq!(a.state.history.len(),2);crate::history::undo(&mut a.state);assert_eq!(param_value(&a.state,key,0),Some(0.8));
         a.params_tick();assert_eq!(a.state.history.len(),2,"host undo must not produce editor history");
     }
+    #[test]
+    fn generic_editor_exposes_values_and_plugin_programs() {
+        let (mut app,key)=eq_app();
+        let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        let plugin=CapturePlugin{desc,events:Default::default(),value:0.2};
+        app.plugins.hosted.insert(key,crate::plugins::Hosted::new(Arc::new(Mutex::new(plugin))));
+        assert!(app.open_generic_editor(key));
+        assert!(app.state.show_browser && app.state.params.has_params(key));
+        assert_eq!(param_value(&app.state,key,0),Some(0.2));
+        assert!(set_param_value(&app.state,key,0,0.4));
+        assert_eq!(param_value(&app.state,key,0),Some(0.4));
+        let items=crate::presets::items(&app,key,true);
+        let program=crate::presets::PCmd::Native(key,0,1);
+        assert!(items.iter().any(|row| row.cmd==crate::playlist::Cmd::Preset(program.clone()) && row.label=="Bright"));
+        crate::presets::run(&mut app,program);
+        app.params_tick();
+        assert_eq!(param_value(&app.state,key,0),Some(0.8));
+    }
     struct CapturePlugin { desc: os_host::Descriptor, events: Arc<Mutex<Vec<os_host::ParamEvent>>>, value:f64 }
     impl os_engine::Instrument for CapturePlugin {
         fn note_on(&mut self, _: u32, _: u8, _: f32) {}
@@ -1043,6 +1072,12 @@ mod tests {
         fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
     }
     impl os_host::Plugin for CapturePlugin {
+        fn programs(&self)->Vec<(u32,u32,String)>{vec![(0,1,"Bright".into())]}
+        fn select_program(&mut self,selector:u32,index:u32)->bool{
+            if (selector,index)!=(0,1){return false;}
+            self.value=0.8;
+            true
+        }
         fn desc(&self) -> &os_host::Descriptor {
             &self.desc
         }

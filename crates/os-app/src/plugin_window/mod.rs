@@ -63,6 +63,7 @@ pub fn moved_to(p: (i32, i32), from: [i32; 4], to: [i32; 4], keep: (i32, i32)) -
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkMsg {
     BrowseSample,
+    LocateSample,
     /// Hint or page changed: poll the link now.
     Changed,
     /// Preview note from the plugin's keyboard: key, velocity, on.
@@ -98,6 +99,7 @@ pub fn take_link() -> Vec<(isize, LinkMsg)> {
                 }
                 os_hostlink::Cmd::Automate => LinkMsg::Automate(arg.max(0) as usize),
                 os_hostlink::Cmd::Audio => LinkMsg::Audio(arg != 0),
+                os_hostlink::Cmd::BrowseSample if arg==1 => LinkMsg::LocateSample,
                 os_hostlink::Cmd::BrowseSample => LinkMsg::BrowseSample,
                 _ => LinkMsg::Changed,
             };

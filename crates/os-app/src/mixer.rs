@@ -1971,6 +1971,7 @@ impl App {
         }
         #[cfg(plugin_windows)]
         {
+            if self.open_generic_editor(key){return;}
             let info = fx_info(&self.state.project, &self.state.mixer, key);
             match info.map(|i| self.plugins.open_window(key, i)) {
                 Some(Ok(())) => {

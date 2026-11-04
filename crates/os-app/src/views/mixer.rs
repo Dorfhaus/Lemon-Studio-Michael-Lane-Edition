@@ -203,7 +203,12 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         end+=w;
     }
     for &(n,left) in &visible {
-        strip(ui, s, n as u16, left, bottom, f, &ly);
+        if s.mixer.layout == mx::WIDE {
+            let bounds=Rect::new(left,client.y,channel_width(s,n),client.h);
+            ui.part(crate::app::Seg::MixerStrip(n as u16),bounds,|ui|strip(ui,s,n as u16,left,bottom,f,&ly));
+        } else {
+            strip(ui,s,n as u16,left,bottom,f,&ly);
+        }
     }
     // Narrow boundary targets reveal an insertion button only while hovered.
     for &(n,x) in &visible {

@@ -33,7 +33,8 @@ pub fn cursor(app: &App) -> Option<Cursor> {
                 Tool::Zoom=>PlTool::Zoom, Tool::Playback=>PlTool::Playback,
             }};
         if app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint){return Some(Cursor::EwResize);}
-        return Some(Cursor::Playlist(tool,3));
+        let copying=app.shift && matches!(app.drag,Some(crate::app::Drag::NoteMove{..}));
+        return Some(Cursor::Playlist(tool,if copying{4}else{3}));
     }
     if app.hover != Some(Action::PlaylistArea) { return None; }
     if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::SweepErase{..}))){return Some(Cursor::Playlist(PlTool::Delete,3));}
@@ -87,6 +88,11 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
         }
         pixel[3]=alpha as u8;
     }}
+    if phase==4 {
+        let mark=Rect::new(19.,17.,12.,13.);
+        c.fill_rrect(mark,2.,Color::rgb(0x28251c));
+        c.fill_polygon(&[(25.,18.),(30.,23.),(27.,23.),(27.,28.),(23.,28.),(23.,23.),(20.,23.)],Color::rgb(0xffda50));
+    }
     Some(c)
 }
 pub fn cursor_source(tool: PlTool, phase: u8, scale: f32) -> Option<winit::window::CustomCursorSource> {

@@ -445,6 +445,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             ui.hit(block.intersect(&rows_clip), Action::RackRoll(i), "Piano roll preview - click to open the Piano roll");
         } else {
             let row_len = rk::row_len(s, i);
+            ui.hit(Rect::span(step_x0-1.,steps_right,ry,ry+ROW_H).intersect(&rows_clip),Action::Swallow,"Step sequencer");
             ui.c.push_clip(step_area);
             for k in first_step..(first_step + steps_shown + 1) {
                 let sr = Rect::new(step_x0 + STEP_W * k as f32 - sx, ry + 4.0, 13.0, 19.0);

@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.04.8",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.04.8",
-  "notes": "- Choose Compact or Classic FL-style under Options > CPU meter. Classic shows audio load, load history and memory in MB.\n- Drag Playlist track headers to reorder tracks, Shift-drag to select a range, and dissolve a folder from its menu. Collapsed folders occupy one row and expanded tracks have clearer separation.\n- The Playlist Brush selects clips as you paint them and can erase across multiple clips with a right drag. The Playlist now shares the Piano Roll play-start marker and has a lightly tinted overview scrollbar.\n- Smaller tool cursors now appear in both the Playlist and Piano Roll, including detached editors. The Channel Rack right-click menu offers fills every 2, 4 or 8 steps.\n- In both mixer layouts, pause briefly between tracks to reveal the insert button. Track insertion supports Undo. Active FX buttons in the traditional mixer have darker lettering.\n- Select a routed sidechain input from the effect wrapper wrench tab. VST2 effects with auxiliary audio inputs now receive the sidechain signal.\n- Lemon Wave has a Drag to size handle. Fixed resize gestures being canceled during editor refreshes and added Windows resize cursors.\n- Hosted instruments now receive stopped transport during audition. Linux VST2 editors receive the host display connection, and overlapping Windows plugin editors repaint newly exposed areas sooner.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.04.9",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.04.9",
+  "notes": "- The Lemon live monitor groups audio load, memory use and underruns with a triggered master-output oscilloscope and stereo peak meters. Compact and classic meter layouts remain selectable.\n- Clone (Complete) creates independent channel and pattern copies, including instrument state, note expression, channel automation and matching Playlist placements. Undo and redo restore the musical parts.\n- The Piano Roll marks scale roots on the keyboard. Select All follows the focused channel, and D can duplicate notes when typing-to-play is off. Shift-dragging with Brush copies a selection, and right-drag erases notes across fast pointer moves.\n- Lemon Sampler supports per-note drive. Browser auditions offer boost and clipping, and the sampler locate button reveals the source in the Browser. Saved instrument presets can be auditioned using rendered middle-C previews.\n- New synth windows open with settings collapsed. Step gaps ignore clicks. Drag the metronome and browser preview destinations vertically in Audio Settings. Mixer assignment reuses an existing recording lane.\n- Tape saturation adds wow, flutter and signal-dependent hiss. Streamed sampler playback and partial mixer repainting use less processing.\n- Plugins without a native interface expose their controls in the Browser. Preset menus include programs advertised by VST2, VST3 and CLAP plugins. Help stays accessible through an overflow button on narrow toolbars.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.04.8.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110408/Lemon-Studio-Windows-Setup-2026.11.04.8.exe",
-      "sha256": "68a9c8ee3f2f3d5538bcc61925626eb979d5fa09afede7eddf49649f4baadb00"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.04.9.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110409/Lemon-Studio-Windows-Setup-2026.11.04.9.exe",
+      "sha256": "443f0eba401c2017daca38a7bca54b658273652c8a1a9f5610e5da9c8a4cbf6b"
     },
     {
-      "name": "Lemon-Studio-Source-2026110408.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110408/Lemon%20Studio%20Source.zip",
-      "sha256": "bfdb4799ffbf3cf263f073e074412e8a85e056f288e0ff0f9a0b7510b55d2f82"
+      "name": "Lemon-Studio-Source-2026110409.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110409/Lemon%20Studio%20Source.zip",
+      "sha256": "73aa846ff77bd0be2beab487a99bff469bed1eaa78d2cdc152f4c8faa99af88c"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110408.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110408/Lemon-Studio-Linux-x86_64-2026110408.tar.gz",
-      "sha256": "32a791cd2c3bc9d72f8f400fc37044e31d59f783dc3722c61c8675cffef047f2"
+      "name": "Lemon-Studio-Linux-x86_64-2026110409.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110409/Lemon-Studio-Linux-x86_64-2026110409.tar.gz",
+      "sha256": "a693f6db710d88a351eea1da491724a8a8cb3cc6fb9e6dd0db14d94bfa79f9bc"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110408.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110408/Lemon-Studio-Mac-arm64-2026110408.dmg",
-      "sha256": "f3fa48717523cc669cc2f6450a7498415627ecaabcd78dad5edf5e1b0d197b59"
+      "name": "Lemon-Studio-Mac-arm64-2026110409.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110409/Lemon-Studio-Mac-arm64-2026110409.dmg",
+      "sha256": "c152ea247e08f952c4d19d8240cdb40a5bb4c99477832c5af14f45ef1547991f"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110408.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110408/Lemon-Studio-Source-Mac-arm64-2026110408.zip",
-      "sha256": "d2077d3d26477b2842e239f2e55657fc9be08f15d069f7fbc352c6891cd86593"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110409.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110409/Lemon-Studio-Source-Mac-arm64-2026110409.zip",
+      "sha256": "8f25e64681b4a26e6a13aca1e1b7a0758d83dc5816bb09439ccb10032c915c01"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110408.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110408/Lemon-Studio-Mac-x86_64-2026110408.dmg",
-      "sha256": "7715c6b76cf5c19c7a3a181e8910349c7ae789cbd91a248958454948130d1df4"
+      "name": "Lemon-Studio-Mac-x86_64-2026110409.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110409/Lemon-Studio-Mac-x86_64-2026110409.dmg",
+      "sha256": "de5f3c02b75a09e6c08495f0c76c97c72e9a5a12fd49fd6d6fbe07edc38b67a4"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110408.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110408/Lemon-Studio-Source-Mac-x86_64-2026110408.zip",
-      "sha256": "d7a33158bdb722635f598ae34078e7f9b12021f49602c8fff20ec31b4fc4b272"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110409.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110409/Lemon-Studio-Source-Mac-x86_64-2026110409.zip",
+      "sha256": "bd8e8575fc3974daaa7d488bbbdfc3e667a9892287eac72693234a3dce0c42bb"
     }
   ]
 }

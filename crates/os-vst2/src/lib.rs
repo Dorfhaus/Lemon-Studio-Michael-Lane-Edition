@@ -941,6 +941,21 @@ impl Plugin {
 }
 
 impl os_host::Plugin for Plugin {
+    fn programs(&self)->Vec<(u32,u32,String)> {
+        let count=self.inst.num_programs().clamp(0,16384);
+        (0..count).map(|i|{
+            let mut buf=[0u8;256];
+            // effGetProgramNameIndexed: query without switching the live instrument.
+            self.inst.dispatch(29,i,0,buf.as_mut_ptr().cast(),0.);
+            let name=text(&buf);
+            (0,i as u32,if name.is_empty(){format!("Program {}",i+1)}else{name})
+        }).collect()
+    }
+    fn select_program(&mut self,_:u32,index:u32)->bool{
+        if index>=self.inst.num_programs().max(0) as u32{return false;}
+        self.inst.dispatch(op::SET_PROGRAM,0,index as isize,std::ptr::null_mut(),0.);
+        true
+    }
     fn mpe_support(&self)->u8{1}
     fn desc(&self) -> &Descriptor {
         &self.desc

@@ -46,6 +46,7 @@ use clap_sys::version::{clap_version_is_compatible, CLAP_VERSION};
 use os_engine::voices::VoiceLedger;
 
 mod context_menu;
+mod preset_discovery;
 mod params;
 
 /// A plugin a library offers (the hosting layer's descriptor, format `Clap`).
@@ -548,6 +549,7 @@ const NAMED_VOICES: usize = 512;
 /// mod Y as per-note modulation of these parameters (id, the span of its range) where it has them.
 #[derive(Clone, Copy, Default)]
 struct NoteParams {
+    drive:Option<u32>,
     mods: [Option<(u32, f64)>; 2],
 }
 
@@ -691,6 +693,7 @@ pub struct Plugin {
     pvals: Vec<clap_event_param_value>,
     /// Changes the plugin reported (its editor): gesture begin / end and values, plain.
     param_out: Vec<OutEv>,
+    program_bank: std::sync::OnceLock<Vec<preset_discovery::Preset>>,
     _lib: Arc<Library>,
 }
 
@@ -911,6 +914,7 @@ impl Plugin {
                 processed: false,
                 pvals: Vec::with_capacity(params::MAX_AUTO + 64),
                 param_out: Vec::new(),
+                program_bank: Default::default(),
                 _lib: lib.clone(),
             })
         }
@@ -1166,6 +1170,7 @@ impl Plugin {
                         continue;
                     }
                     let n = CStr::from_ptr(info.name.as_ptr()).to_string_lossy();
+                    if n=="Per-note drive"{np.drive=Some(info.id);continue;}
                     let k = if n == os_host::NOTE_MOD_X {
                         0
                     } else if n == os_host::NOTE_MOD_Y {
@@ -1510,6 +1515,10 @@ impl Plugin {
                         });
                         seq.push(Seq::Expr(self.exprs.len() - 1));
                     }
+                    if let Some(param)=np.drive && e.levels.drive>0.{
+                        self.mods.push(param_mod(e.time,param,id,e.key,f64::from(e.levels.drive)));
+                        seq.push(Seq::Mod(self.mods.len()-1));
+                    }
                     let own = [e.levels.mod_x, e.levels.mod_y];
                     let mut sent = [0.0; 2];
                     for k in 0..2 {
@@ -1681,6 +1690,14 @@ impl Plugin {
 
 // The hosting layer's view of a CLAP instance (the inherent methods above do the work).
 impl os_host::Plugin for Plugin {
+    fn programs(&self) -> Vec<(u32, u32, String)> {
+        self.program_bank.get_or_init(|| preset_discovery::discover(self)).iter().enumerate()
+            .map(|(i, preset)| (0, i as u32, preset.name.clone())).collect()
+    }
+    fn select_program(&mut self, _:u32, index:u32) -> bool {
+        self.program_bank.get().and_then(|bank| bank.get(index as usize))
+            .is_some_and(|preset| preset_discovery::load(self, preset))
+    }
     fn mpe_support(&self)->u8{if self.bend.is_none(){2}else{1}}
     fn desc(&self) -> &Descriptor {
         &self.desc
@@ -2247,7 +2264,7 @@ mod tests {
         let mut p = Plugin::new(&lib, &lib.plugins[0].id).unwrap();
         assert!(os_host::Plugin::activate(&mut p, 48000));
         let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
-        let own = os_engine::NoteLevels { pan: 0.5, mod_x: 0.25, mod_y: -0.5 };
+        let own = os_engine::NoteLevels { drive:0., pan: 0.5, mod_x: 0.25, mod_y: -0.5 };
         // Off: a plain note.
         p.note_start(3, 60, 0.8, 0.0, own);
         p.process_fx(48000, &mut l, &mut r);
@@ -2256,7 +2273,7 @@ mod tests {
         assert!(p.use_note_levels());
         assert!(p.note_levels.is_some_and(|n| n.mods == [None, None]));
         let param = os_host::Plugin::param_info(&p, 0).unwrap().id;
-        p.note_levels = Some(NoteParams { mods: [Some((param, 2.0)), None] });
+        p.note_levels = Some(NoteParams { drive:None, mods: [Some((param, 2.0)), None] });
         p.channel_levels(os_engine::ChannelLevels { mod_x: 0.25, ..Default::default() });
         p.note_start(5, 61, 0.8, 0.0, own);
         p.process_fx(48000, &mut l, &mut r);

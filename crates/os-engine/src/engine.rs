@@ -604,6 +604,7 @@ impl ChannelState {
 
 #[derive(Debug, Clone, Copy)]
 struct Voice {
+    drive:f32,
     origin: Option<ClipOrigin>,
     channel: usize,
     pos: f64,
@@ -1488,7 +1489,7 @@ impl Engine {
                     key: n.key,
                     end: (n.len > 0).then_some(n.tick + n.len),
                     velocity: n.velocity,
-                    levels: crate::NoteLevels::of_bytes(n.pan, n.mod_x, n.mod_y),
+                    levels: crate::NoteLevels { drive:f32::from(n.drive)/127., ..crate::NoteLevels::of_bytes(n.pan, n.mod_x, n.mod_y) },
                     from,
                     start,
                     buf: 0,
@@ -2113,7 +2114,7 @@ impl Engine {
         };
         self.note_off_one(channel, key); // retrigger
         self.voices.push(Voice {
-            origin: None,
+            drive:0.,origin: None,
             channel,
             pos: 0.0,
             step,
@@ -3327,7 +3328,7 @@ impl Engine {
         let gain = self.channels[t.channel].start_gain_via(t.vel, t.pan, layer);
         let serial = self.channels[t.channel].serial;
         self.voices.push(Voice {
-            origin: t.origin,
+            drive:t.levels.drive,origin: t.origin,
             channel: t.channel,
             pos: t.from,
             step: t.rate,
@@ -4049,6 +4050,7 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
             }
             (l as f32, r as f32)
         };
+        let (l,r)=if v.drive>0.{let gain=1.+15.*v.drive;((l*gain).clamp(-1.,1.),(r*gain).clamp(-1.,1.))}else{(l,r)};
         if let Some(r) = glide {
             // The volume parameter glides linearly and the volume law applies to it; the pan glides linearly
             // in the left / right gains (spec: audio/pattern-controls.md).
@@ -4332,6 +4334,7 @@ fn processing_order(tracks: &[MixTrack]) -> Vec<usize> {
 /// A scheduled note on the song's tick line.
 #[derive(Debug, Clone, Copy)]
 struct Sched {
+    drive:u8,
     expression:u32,
     expression_len:u64,
     release:u8,
@@ -4364,7 +4367,7 @@ struct Sched {
 impl Sched {
     fn note(tick: u64, n: &os_model::Note) -> Self {
         Sched {
-            expression:n.expression,
+            drive:n.drive,expression:n.expression,
             expression_len:u64::from(n.length),
             release:n.release,
             origin: None,
@@ -4645,7 +4648,7 @@ fn schedule(project: &Project, mode: PlayMode, report: &mut EngineReport) -> (Ve
                         // An audio clip plays its channel's sample from the window start (milliseconds), cut at the clip end.
                         Some(ChannelKind::AudioClip | ChannelKind::Sampler) => {
                             let from_s = c.window.map_or(0.0, |w| w.0.max(0.0) / 1000.0);
-                            out.push(Sched { expression:0, expression_len:0, release:64, origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: usize::from(ch), key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
+                            out.push(Sched { drive:0,expression:0, expression_len:0, release:64, origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: usize::from(ch), key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
                         }
                         Some(ChannelKind::Automation) => {}
                         _ => report.automation_clips_ignored += 1,
@@ -5909,11 +5912,11 @@ mod tests {
         e.set_instrument(0, log.clone());
         e.render_all(480);
         let got = log.lock().unwrap().0.clone();
-        let half = crate::NoteLevels { pan: 0.5, mod_x: 0.5, mod_y: -0.5 };
+        let half = crate::NoteLevels { drive:0., pan: 0.5, mod_x: 0.5, mod_y: -0.5 };
         let centred = crate::NoteLevels::of_bytes(64, 128, 128);
         assert_eq!(centred, crate::NoteLevels::default());
         assert_eq!(got, vec![(60, half), (62, centred)]);
-        assert_eq!(crate::NoteLevels::of_bytes(0, 0, 255), crate::NoteLevels { pan: -1.0, mod_x: -1.0, mod_y: 127.0 / 128.0 });
+        assert_eq!(crate::NoteLevels::of_bytes(0, 0, 255), crate::NoteLevels { drive:0., pan: -1.0, mod_x: -1.0, mod_y: 127.0 / 128.0 });
     }
 
     /// Records what a layer's child is given, by frame: note ons (velocity), offs, chokes and tunings (semitones); it

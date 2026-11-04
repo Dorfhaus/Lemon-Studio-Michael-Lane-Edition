@@ -118,6 +118,9 @@ impl App {
                         crate::community_samples::fetch(s,&row.key);
                         crate::browser_preview::dismiss(self);
                     } else { self.preview_sample(path); }
+                } else if let Item::Preset(path)=&row.item {
+                    let preview=crate::presets::preview_path(std::path::Path::new(path));
+                    if preview.is_file(){self.preview_sample(&preview.to_string_lossy());}else{crate::browser_preview::dismiss(self);}
                 } else {crate::browser_preview::dismiss(self);}
                 let s = &mut self.state;
                 s.browser_scroll = s.browser_scroll.min(view::max_scroll(s));
@@ -153,7 +156,10 @@ impl App {
         if let Item::Sample(path) = &row.item {
             if self.state.browser_tab==view::EXCHANGE_BUTTON && !std::path::Path::new(path).is_file(){crate::community_samples::fetch(&mut self.state,&row.key);}else{self.preview_sample(path);}
         }
-        else { crate::browser_preview::dismiss(self); }
+        else if let Item::Preset(path)=&row.item {
+            let preview=crate::presets::preview_path(std::path::Path::new(path));
+            if preview.is_file(){self.preview_sample(&preview.to_string_lossy());}else{crate::browser_preview::dismiss(self);}
+        }else { crate::browser_preview::dismiss(self); }
         reveal(&mut self.state);
         self.invalidate();
     }
@@ -542,6 +548,53 @@ impl App {
     }
 
     /// A folder dropped on the window becomes an All-tab root, opened and selected (spec §6).
+    pub(crate) fn locate_browser_sample(&mut self, path: std::path::PathBuf) {
+        if !path.is_file() {
+            self.state.message = Some(format!("Sample file unavailable: {}", path.display()));
+            self.invalidate();
+            return;
+        }
+        let Some(folder) = path.parent() else { return };
+        let s = &mut self.state;
+        s.show_browser = true;
+        s.browser_auto_hidden = false;
+        s.browser_tab = 0;
+        s.browser_search.clear();
+        if view::opt(s, view::OPT_SINGLE_FOLDER) {
+            s.browser_single_folder = Some(folder.into());
+        }
+        let roots = view::library_roots(s);
+        let root = roots
+            .into_iter()
+            .filter(|r| path.starts_with(r))
+            .max_by_key(|r| r.components().count())
+            .unwrap_or_else(|| {
+                let p = folder.to_owned();
+                if !s.browser_folders.contains(&p) {
+                    s.browser_folders.push(p.clone());
+                }
+                p
+            });
+        let base = if view::opt(s, view::OPT_SINGLE_FOLDER) {
+            folder
+        } else {
+            root.as_path()
+        };
+        let mut key = view::disk_key(base);
+        if let Ok(relative) = path.strip_prefix(base) {
+            for part in relative.components() {
+                s.browser_open.insert(key.clone());
+                key.push('/');
+                key.push_str(&part.as_os_str().to_string_lossy());
+            }
+        }
+        *s.browser_index.borrow_mut() = Default::default();
+        s.browser_dirs.borrow_mut().remove(folder);
+        s.browser_sel = Some(key);
+        reveal(s);
+        self.invalidate();
+    }
+
     pub(crate) fn add_browser_folder(&mut self, path: std::path::PathBuf) {
         let s = &mut self.state;
         if !s.browser_folders.contains(&path) {

@@ -1219,6 +1219,8 @@ impl ControlPoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Note {
+    /// Independent Lemon Sampler voice drive, 0 (bypass) to 127.
+    pub drive:u8,
     /// Immutable per-note expression record; zero means no expression.
     pub expression:u32,
     pub position: u32,
@@ -1314,7 +1316,7 @@ impl Note {
     /// A step-sequencer step with default parameters.
     pub fn step(channel: u16, position: u32) -> Self {
         Note {
-            expression:0,
+            drive:0,expression:0,
             position,
             length: 0,
             channel,

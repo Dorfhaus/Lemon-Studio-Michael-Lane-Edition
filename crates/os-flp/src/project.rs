@@ -854,7 +854,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_pattern_speeds(file,&mut p);
     read_marker_colors(file,&mut p);
     read_clip_fx_owners(file,&mut p);
-    read_mpe(file,&mut p);
+    read_note_drive(file,&mut p);read_mpe(file,&mut p);
     for c in &file.chunks {if c.tag==Tag(*b"LSHK") {if let ChunkBody::Raw(d)=&c.body {if d.len()==4&&d[0]==1&&d[1]<12&&(67..=88).contains(&d[2]) {p.harmony=Some((d[1],d[2],d[3]&31));}}}}
     Ok(p)
 }
@@ -1365,7 +1365,7 @@ fn decode_note(r: &[u8]) -> Note {
     let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
     Note {
-        expression:0,
+        drive:0,expression:0,
         position: u32_at(0),
         channel: u16_at(6),
         length: u32_at(8),
@@ -3283,7 +3283,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_pattern_speeds(project,file);
     write_marker_colors(project,file);
     write_clip_fx_owners(project,file);
-    write_mpe(project,file);
+    write_note_drive(project,file);write_mpe(project,file);
     Ok(())
 }
 
@@ -3821,7 +3821,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_pattern_speeds(project,&mut file);
     write_marker_colors(project,&mut file);
     write_clip_fx_owners(project,&mut file);
-    write_mpe(project,&mut file);
+    write_note_drive(project,&mut file);write_mpe(project,&mut file);
     Ok(file)
 }
 
@@ -6727,6 +6727,49 @@ fn read_clip_fx_owners(file:&FlpFile,p:&mut Project){
 }
 
 // Native MPE extension. Legacy FL note records remain unchanged.
+const NOTE_DRIVE: Tag = Tag(*b"LSND");
+fn write_note_drive(p: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|c| c.tag != NOTE_DRIVE);
+    let mut data = Vec::new();
+    for pat in p
+        .patterns
+        .iter()
+        .filter(|pat| pat.notes.iter().any(|n| n.drive > 0))
+    {
+        let mut sorted: Vec<_> = pat.notes.iter().collect();
+        sorted.sort_by_key(|n| n.position);
+        for (i, n) in sorted.into_iter().enumerate().filter(|(_, n)| n.drive > 0) {
+            data.extend(pat.number.to_le_bytes());
+            data.extend((i as u32).to_le_bytes());
+            data.push(n.drive);
+        }
+    }
+    if !data.is_empty() {
+        file.chunks.push(Chunk {
+            tag: NOTE_DRIVE,
+            body: ChunkBody::Raw(data),
+        });
+    }
+}
+fn read_note_drive(file: &FlpFile, p: &mut Project) {
+    for chunk in file.chunks.iter().filter(|c| c.tag == NOTE_DRIVE) {
+        if let ChunkBody::Raw(bytes) = &chunk.body {
+            for r in bytes.chunks_exact(7) {
+                let pat = u16::from_le_bytes([r[0], r[1]]);
+                let i = u32::from_le_bytes(r[2..6].try_into().unwrap()) as usize;
+                if let Some(n) = p
+                    .patterns
+                    .iter_mut()
+                    .find(|x| x.number == pat)
+                    .and_then(|x| x.notes.get_mut(i))
+                {
+                    n.drive = r[6].min(127);
+                }
+            }
+        }
+    }
+}
+
 const MPE_DATA:Tag=Tag(*b"LSME");
 fn write_mpe(p:&Project,file:&mut FlpFile){
  file.chunks.retain(|c|c.tag!=MPE_DATA);

@@ -376,6 +376,7 @@ pub fn pattern_length(s: &State, n: u16) -> u32 {
 /// last three edit the pattern's channel control points.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lane {
+    Drive,
     Velocity,
     Pan,
     Release,
@@ -404,22 +405,23 @@ const CTRL_MAX: i32 = 12800;
 
 impl Lane {
     /// Menu order: note properties (the first `NOTE_LANES`), then channel controls.
-    pub const ALL: [Lane; 10] = [
+    pub const ALL: [Lane; 11] = [
         Lane::Pan,
         Lane::Velocity,
         Lane::Release,
         Lane::Cutoff,
         Lane::Resonance,
         Lane::FinePitch,
-        Lane::Repeat,
+        Lane::Repeat,Lane::Drive,
         Lane::ChanPan,
         Lane::ChanVolume,
         Lane::ChanPitch,
     ];
-    pub const NOTE_LANES: usize = 7;
+    pub const NOTE_LANES: usize = 8;
     /// Dimmed name over the panel.
     pub fn name(self) -> &'static str {
         match self {
+            Lane::Drive => "Note drive",
             Lane::Velocity => "Velocity",
             Lane::Pan => "Pan",
             Lane::Release => "Release",
@@ -435,6 +437,7 @@ impl Lane {
     /// Entry in the Control menu.
     pub fn menu_name(self) -> &'static str {
         match self {
+            Lane::Drive => "Note drive (Sampler)",
             Lane::Velocity => "Note velocity",
             Lane::Pan => "Note pan",
             Lane::Release => "Note release",
@@ -468,6 +471,7 @@ impl Lane {
             Lane::Cutoff => n.mod_x,
             Lane::Resonance => n.mod_y,
             Lane::FinePitch => n.fine_pitch,
+            Lane::Drive => n.drive,
             Lane::Repeat => n.repeat,
             _ => 0,
         }
@@ -480,6 +484,7 @@ impl Lane {
             Lane::Cutoff => n.mod_x = v,
             Lane::Resonance => n.mod_y = v,
             Lane::FinePitch => n.fine_pitch = v,
+            Lane::Drive => n.drive=v.min(127),
             Lane::Repeat => n.repeat = v,
             _ => {}
         }
@@ -490,6 +495,7 @@ impl Lane {
             Lane::Velocity | Lane::Pan | Lane::Release => 128.0,
             Lane::Cutoff | Lane::Resonance => 256.0,
             Lane::FinePitch => 240.0,
+            Lane::Drive => 127.,
             Lane::Repeat => 14.0,
             _ => 1.0,
         }

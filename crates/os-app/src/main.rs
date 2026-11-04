@@ -1620,6 +1620,10 @@ fn screenshot(args: &[String]) {
     }
     app.state.z = match view.as_str() {
         "mixer" => vec![app::Win::Mixer],
+        "traditional-mixer" => {
+            mixer::set_layout(&mut app.state,mixer::TRADITIONAL);
+            vec![app::Win::Mixer]
+        }
         "piano" => vec![app::Win::PianoRoll],
         "none" => vec![],
         _ => vec![app::Win::Playlist],

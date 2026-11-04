@@ -413,6 +413,7 @@ pub enum PCmd {
     Load(usize, PathBuf),
     /// Load the next (+1) / previous (-1) preset of the plugin.
     Step(usize, i32),
+    Native(usize,u32,u32),
     /// Store the instance's state in a new preset file (a save dialog in the plugin's folder).
     #[cfg_attr(not(windows), allow(dead_code))]
     SaveAs(usize),
@@ -482,6 +483,11 @@ pub fn items(app: &App, key: usize, nested: bool) -> Vec<PItem> {
         v.push(PItem::head("Factory"));
     }
     v.extend(rows(app, key, &fac, nested));
+    if let Some(hosted)=app.plugins.hosted.get(&key) && let Ok(plugin)=hosted.plugin.lock(){
+        let programs=plugin.programs();
+        if !programs.is_empty(){v.push(PItem::head("Plugin programs"));}
+        v.extend(programs.into_iter().map(|(selector,index,name)|PItem::new(name,Cmd::Preset(PCmd::Native(key,selector,index)))));
+    }
     if v.is_empty() {
         v.push(PItem::new("(no presets)", Cmd::Nothing).off());
     }
@@ -522,6 +528,11 @@ pub fn popup(app: &App, key: usize, x: f32, y: f32) -> Popup {
 /// Runs a preset command; returns the status message.
 pub fn run(app: &mut App, c: PCmd) -> Option<String> {
     let msg = match c {
+        PCmd::Native(key,id,index)=>{
+            let loaded=app.plugins.hosted.get(&key)?.plugin.lock().ok()?.select_program(id,index);
+            if loaded{app.plugins.presets.remove(&key);app.plugins.mark_edited(key);app.state.params.lists.remove(&key);app.invalidate();}
+            Some(if loaded {"Plugin program loaded"}else{"Plugin declined the program"}.into())
+        }
         PCmd::Load(key, path) => load_into(app, key, &path),
         PCmd::Step(key, dir) => {
             let h = header(app, key)?;
@@ -643,6 +654,7 @@ pub fn save_channel_drop(app:&mut App,row:usize)->Option<String>{
     let path=free_file(&dir,&name);
     let result=(||->std::io::Result<()>{std::fs::create_dir_all(&dir)?;let mut f=std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;f.write_all(&encode(&h,&state))?;f.sync_all()})();
     if let Err(e)=result{return Some(format!("Preset not saved: {e}"));}
+    queue_preview(app,row,&path,&state);
     app.plugins.set_preset(row,Some(path.clone()));
     app.browser_cmd(crate::browser::BCmd::Reread);
     app.state.browser_tab=4;app.state.browser_search.clear();
@@ -663,6 +675,7 @@ pub fn save_chosen(app: &mut App, key: usize, target: PathBuf) -> Option<String>
     let target = with_ext(target);
     Some(match save(&target, &h, &state) {
         Ok(()) => {
+            queue_preview(app,key,&target,&state);
             app.plugins.set_preset(key, Some(target.clone()));
             format!("Saved preset {}", shown_name(&target))
         }
@@ -707,6 +720,8 @@ pub fn rename_chosen(app: &mut App, key: usize, old: PathBuf, target: PathBuf) -
     }
     Some(match std::fs::rename(&old, &target) {
         Ok(()) => {
+            for job in &mut app.plugins.preview_jobs{if job.path==preview_path(&old){job.path=preview_path(&target);}}
+            let _=std::fs::rename(preview_path(&old),preview_path(&target));
             if app.plugins.presets.get(&key) == Some(&old) {
                 app.plugins.set_preset(key, Some(target.clone()));
             }
@@ -720,6 +735,7 @@ pub fn rename_chosen(app: &mut App, key: usize, old: PathBuf, target: PathBuf) -
 pub fn delete_chosen(app: &mut App, key: usize, path: PathBuf) -> Option<String> {
     Some(match std::fs::remove_file(&path) {
         Ok(()) => {
+            app.plugins.preview_jobs.retain(|job|job.path!=preview_path(&path));let _=std::fs::remove_file(preview_path(&path));
             if app.plugins.presets.get(&key) == Some(&path) {
                 app.plugins.set_preset(key, None);
             }
@@ -809,7 +825,94 @@ pub fn dropped(app: &mut App, path: &Path) -> Option<String> {
 }
 
 /// Presets dropped where a new instance was made load once it is hosted (or are given up after [`WAIT`]).
+pub struct PreviewJob {
+    path: PathBuf,
+    plugin: os_host::SharedPlugin,
+    audio: Vec<f32>,
+    blocks: usize,
+}
+pub(crate) fn preview_path(p: &Path) -> PathBuf {
+    p.with_extension("ospreset.preview.wav")
+}
+fn queue_preview(app: &mut App, key: usize, path: &Path, state: &[u8]) {
+    if key >= crate::plugins::FX_KEY {
+        return;
+    }
+    let sidecar = preview_path(path);
+    app.plugins.preview_jobs.retain(|job| job.path != sidecar);
+    let _ = std::fs::remove_file(&sidecar);
+    let Some(desc) = app.plugins.descriptor(key) else {
+        return;
+    };
+    let Some(entry) = app
+        .plugins
+        .available
+        .iter()
+        .find(|a| a.desc.uid() == desc.uid())
+    else {
+        return;
+    };
+    let Ok(plugin) = entry.lib.clone().create(&desc.id) else {
+        return;
+    };
+    if !plugin
+        .lock()
+        .is_ok_and(|mut p| p.load_state(state) && p.activate(44100))
+    {
+        return;
+    }
+    app.plugins.preview_jobs.push(PreviewJob {
+        path: sidecar,
+        plugin,
+        audio: Vec::with_capacity(196608),
+        blocks: 0,
+    });
+}
+fn render_preview(job: &mut PreviewJob) -> bool {
+    let Ok(mut p) = job.plugin.lock() else {
+        return true;
+    };
+    p.idle();
+    // Warm the independent instance, then send middle C and allow a release tail.
+    for _ in 0..8 {
+        if job.blocks == 16 {
+            p.note_on(0, 60, 0.78);
+        }
+        if job.blocks == 112 {
+            p.note_off(0, 60);
+        }
+        let mut left = [0.; 512];
+        let mut right = [0.; 512];
+        p.process(44100, &mut left, &mut right);
+        if job.blocks >= 16 {
+            for (l, r) in left.into_iter().zip(right) {
+                job.audio.extend([l, r]);
+            }
+        }
+        job.blocks += 1;
+    }
+    if job.blocks < 208 {
+        return false;
+    }
+    if job.audio.iter().all(|x| x.is_finite()) && job.audio.iter().any(|v| v.abs() > 0.00001) {
+        let temp = job.path.with_extension("wav.pending");
+        if let Ok(file) = std::fs::File::create(&temp) {
+            let mut out = std::io::BufWriter::new(file);
+            use std::io::Write;
+            if os_engine::wav::write_f32_stereo(&mut out, 44100, &job.audio).is_ok()
+                && out.flush().is_ok()
+            {
+                drop(out);
+                let _ = std::fs::rename(&temp, &job.path);
+            }
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+    true
+}
+
 pub fn pending_tick(app: &mut App) {
+    if let Some(job)=app.plugins.preview_jobs.first_mut() && render_preview(job){app.plugins.preview_jobs.remove(0);}
     if app.plugins.preset_waits.is_empty() {
         return;
     }
@@ -1058,6 +1161,17 @@ mod tests {
     }
 
     /// Save, list, step and load through a hosted Lemon Sampler: the state goes through the hosting layer and back.
+    #[test]
+    fn saved_instrument_preview_renders_middle_c(){
+        let (mut app,dir,_guard)=hosted_sampler("audition");
+        let index=app.plugins.index_of(crate::osc3::LEMON_TRIO).unwrap();
+        app.plugins.create(0,index).unwrap();
+        let file=dir.join("Trio.ospreset");let _=save_chosen(&mut app,0,file.clone());
+        for _ in 0..32{pending_tick(&mut app);}
+        let sound=os_engine::sample::load_shared(&preview_path(&file)).unwrap();
+        assert!(sound.frames()>44100 && sound.left.iter().any(|v|v.abs()>0.01));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn presets_of_a_hosted_plugin() {
         let (mut app, dir, _env) = hosted_sampler("hosted");

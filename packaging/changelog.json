@@ -4,6 +4,19 @@
   "sections": [
     {
       "date": "2026-11-04",
+      "title": "Live output monitor, complete channel cloning and sampler editing \u00b7 public build 2026110409",
+      "changes": [
+        "The Lemon live monitor groups audio load, memory use and underruns with a triggered master-output oscilloscope and stereo peak meters. Compact and classic meter layouts remain selectable.",
+        "Clone (Complete) creates independent channel and pattern copies, including instrument state, note expression, channel automation and matching Playlist placements. Undo and redo restore the musical parts.",
+        "The Piano Roll marks scale roots on the keyboard. Select All follows the focused channel, and D can duplicate notes when typing-to-play is off. Shift-dragging with Brush copies a selection, and right-drag erases notes across fast pointer moves.",
+        "Lemon Sampler supports per-note drive. Browser auditions offer boost and clipping, and the sampler locate button reveals the source in the Browser. Saved instrument presets can be auditioned using rendered middle-C previews.",
+        "New synth windows open with settings collapsed. Step gaps ignore clicks. Drag the metronome and browser preview destinations vertically in Audio Settings. Mixer assignment reuses an existing recording lane.",
+        "Tape saturation adds wow, flutter and signal-dependent hiss. Streamed sampler playback and partial mixer repainting use less processing.",
+        "Plugins without a native interface expose their controls in the Browser. Preset menus include programs advertised by VST2, VST3 and CLAP plugins. Help stays accessible through an overflow button on narrow toolbars."
+      ]
+    },
+    {
+      "date": "2026-11-04",
       "title": "Playlist editing, mixer routing and classic CPU meter \u00b7 public build 2026110408",
       "changes": [
         "Choose Compact or Classic FL-style under Options > CPU meter. Classic shows audio load, load history and memory in MB.",

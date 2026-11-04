@@ -173,6 +173,15 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     lit.extend(f.sounding.iter().filter(|&&(c, _)| Some(c) == ch).map(|&(_, k)| i32::from(k)));
     ui.live(Live::Sounding, l.keys);
     keyboard(ui, &l, &g, &lit);
+    if s.piano.harmony.shade || s.piano.harmony.scale_only {
+        ui.c.push_clip(l.keys);
+        for &key in &g.keys {
+            if key.rem_euclid(12)==i32::from(s.piano.harmony.root) {
+                ui.c.fill_rect(Rect::new(l.keys.right()-3.,g.y_of(key),2.,(g.row-1.).max(1.)),ui.t.accent);
+            }
+        }
+        ui.c.pop_clip();
+    }
     grid(ui, s, &l, timeline, range);
 
     // Notes: ghosts of the other channels first (when shown, Alt+V), then this channel's (§5).
@@ -841,7 +850,7 @@ fn lane_menu(ui: &mut Ui, s: &State, l: &Layout, k: f32) {
     const ROW: f32 = 19.0;
     const HEAD: f32 = 16.0;
     let (w0, w1) = (170.0, 124.0);
-    let h = HEAD + 7.0 * ROW;
+    let h = HEAD + Lane::NOTE_LANES as f32 * ROW;
     let win_h = ui.c.size().1;
     let r = Rect::new((l.label.x + 9.0) / k, ((l.label.y + 24.0) / k).min(win_h - h - 8.0), w0 + w1 + 6.0, h + 4.0);
     ui.c.fill_rect(r, t.menu_pop);

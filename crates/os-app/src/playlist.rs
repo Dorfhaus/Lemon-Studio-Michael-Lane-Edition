@@ -809,6 +809,20 @@ impl Rows {
         // On the drawing grid, so tops and heights add up exactly (`PGeom::xs64`).
         let row_h = snap(f64::from(s.playlist.row_h.clamp(ROW_MIN, ROW_MAX)));
         let mut top = Vec::with_capacity(usize::from(TRACKS) + 1);
+        // Only automation projected onto another lane can hide a populated row.
+        let mut projected = [false; TRACKS as usize];
+        let mut local = [false; TRACKS as usize];
+        if !s.playlist.automation_owners.is_empty() {
+            for clip in clips(s) {
+                let row = usize::from(clip.track);
+                if row >= local.len() { continue; }
+                if matches!(clip.source, ClipSource::Channel(ch) if s.playlist.automation_owners.get(&ch).is_some_and(|&owner|owner!=clip.track)){
+                    projected[row]=true;
+                } else {
+                    local[row]=true;
+                }
+            }
+        }
         let (mut y, mut collapsed) = (0.0, false);
         for t in 0..usize::from(TRACKS) {
             top.push(y);
@@ -817,8 +831,7 @@ impl Rows {
             if !grouped {
                 collapsed = tr.is_some_and(|x| x.collapsed);
             }
-            let cs: Vec<_> = clips(s).iter().filter(|c| usize::from(c.track) == t).collect();
-            let folded = !cs.is_empty() && cs.iter().all(|c| matches!(c.source, ClipSource::Channel(ch) if s.playlist.automation_owners.get(&ch).is_some_and(|row| usize::from(*row) != t)));
+            let folded = projected[t] && !local[t];
             y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { row_h };
         }
         top.push(y);
