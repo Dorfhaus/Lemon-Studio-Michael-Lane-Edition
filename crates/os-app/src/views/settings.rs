@@ -734,6 +734,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             ]),
             gf("Miscellaneous", false, vec![
                 Check("Auto name channels", true),
+                Check(crate::prefs::ROUTE_RACK_SAMPLES.label, false),
                 Check("Auto name effect slots", false),
                 Check("Auto zip empty channels", false),
                 Check("Auto select linked modules", true),
@@ -828,7 +829,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             .chain(st.unreadable.map(|_| g("", vec![ThemeWarn])))
             .chain([
                 gf("Adjustments", false, vec![ThemeKnobs]),
-                g("Options", vec![Check(NOTE_COLORS_CHECK, s.fl_theme().override_clips)]),
+                g("Options", vec![Check(NOTE_COLORS_CHECK, s.fl_theme().override_clips), Check(crate::prefs::BRIGHT_PLAYLIST_CLIPS.label,false)]),
                 g(
                     "",
                     vec![Buttons(vec![("Load theme...", 110.0), ("Reset", 64.0), (SAVE_PRESET, 100.0), (THEME_UNDO, 64.0), (THEME_REDO, 64.0)])],

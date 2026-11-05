@@ -216,6 +216,7 @@ pub enum FrameEvent {
     PresetStep(i32),
     /// A Misc tab value changed (spec: ui/plugin-window.md "Misc tab").
     Misc(crate::misc_page::M, f32),
+    CutSelf,
     /// A Misc tab list (chord list, number box values) or knob menu: the app opens it at this screen point.
     MiscMenu(crate::misc_page::M, i32, i32),
     SidechainMenu(i32,i32),
@@ -1220,12 +1221,7 @@ impl State {
             }
             (Btn::Left, Hit::ArpDir(i)) => misc_set(self, M::ArpDir, f32::from(i)),
             (Btn::Left, Hit::TrackTab(k)) => self.misc_ui.track_key = k,
-            (Btn::Left, Hit::CutSelf) => {
-                // The channel cuts itself: cut and cut-by the same group (spec: ui/plugin-window.md "Misc tab").
-                let g = if vals.get(M::Cut) >= 1.0 { vals.get(M::Cut) } else { 1.0 };
-                misc_set(self, M::Cut, g);
-                misc_set(self, M::CutBy, g);
-            }
+            (Btn::Left, Hit::CutSelf) => self.events.push(FrameEvent::CutSelf),
             (Btn::Left, Hit::Reset) => {
                 misc_set(self, M::Root, 60.0);
                 misc_set(self, M::Fine, 0.0);

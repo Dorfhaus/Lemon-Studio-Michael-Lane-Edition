@@ -292,10 +292,11 @@ impl App {
     }
 
     /// A scan ended: its results are kept, the lists updated in place, the hint bar says what changed.
-    fn apply_scan(&mut self, cache: Cache) {
+    pub(crate) fn apply_scan(&mut self, cache: Cache) {
         let report = db::compare(&self.state.plugdb.cache, &cache);
         cache.save();
         self.plugins.merge(&cache);
+        self.retry_scanned_wrappers();
         let db = &mut self.state.plugdb;
         db.cache = cache;
         db.progress = None;

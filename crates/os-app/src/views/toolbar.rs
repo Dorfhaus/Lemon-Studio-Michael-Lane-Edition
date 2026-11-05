@@ -838,6 +838,11 @@ fn utilities(ui: &mut Ui, c: &Ctx) -> bool {
     let button = c.a.r(btn(1209.0, 4.0));
     if button.right() > c.fit { return false; }
     tool_button(ui, button, Icon::SaveRender, false, Action::MenuItem(0, menus::FILE_EXPORT), "Export audio... (Ctrl+R)");
+    if !c.s.bar.layout.rows.iter().flatten().any(|panel| *panel == Panel::Modes) {
+        let keyboard = c.a.r(btn(1242.0, 4.0));
+        if keyboard.right() > c.fit { return false; }
+        tool_button(ui, keyboard, Icon::TypingKeyboard, c.s.toggles.contains(&"typing"), Action::Typing, TYPING_HINT);
+    }
     true
 }
 
@@ -941,10 +946,12 @@ fn song_pos(ui: &mut Ui, c: &Ctx) {
 /// Mode buttons (spec: ui/main-window.md §3). Typing keyboard, auto scrolling (spec: ui/auto-scrolling.md), step edit
 /// (spec: ui/step-edit.md), enable groups (spec: ui/enable-groups.md) and multilink (spec: ui/remote-control.md §4)
 /// work.
+const TYPING_HINT: &str = "Typing keyboard to piano (Ctrl+T) - right-click for key and scale";
+
 fn modes(ui: &mut Ui, c: &Ctx) -> bool {
     let (a, s) = (c.a, c.s);
     for (i, (icon, hint)) in [
-        (Icon::TypingKeyboard, "Typing keyboard to piano keyboard (Ctrl+T)"),
+        (Icon::TypingKeyboard, TYPING_HINT),
         (Icon::AutoScroll, "Auto scrolling - right-click for continuous scrolling"),
         (Icon::StepEdit, "Step editing (Ctrl+E)"),
         (Icon::Link, "Enable groups (Shift+Alt+G)"),

@@ -111,21 +111,25 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let hot=ui.hit(b,Action::PlTool(tool),tool.hint());
         let ink=tool_face(ui,b,s.playlist.tool==tool,hot);icons::draw(ui.c,icon,b.inset(2.),ink);
     }
-    let b=Rect::new(r.x+145.,ty,49.,18.);
+    let stretch=Rect::new(r.x+137.,ty,20.,18.);
+    let hot=ui.hit(stretch,Action::PlStretch,"Stretch (Shift+M): drag a clip edge to stretch its contents");
+    let ink=tool_face(ui,stretch,s.playlist.stretch,hot);
+    icons::draw(ui.c,Icon::StretchBand,stretch.inset(2.),ink);
+    let b=Rect::new(r.x+167.,ty,49.,18.);
     let active=s.playlist.tool==pl::PlTool::Comp;
     let hot=ui.hit(b,Action::PlTool(if active {pl::PlTool::Paint}else{pl::PlTool::Comp}),if active {"Comping mode: on (G); click to exit"}else{"Comping mode: off (G); click to enable"});
     let ink=tool_face(ui,b,active,hot);
     ui.c.stroke_rrect(b,3.,1.,if active {t.accent}else{t.text_dim});
     ui.c.text_center(Font::new(11),b,ink,"COMP");
-    for x in [139.,200.,260.] {ui.c.line(r.x+x,ty+3.,r.x+x,ty+15.,1.,t.text_faint);}
-    let b=Rect::new(r.x+207.,ty,47.,18.);
+    for x in [161.,222.,282.] {ui.c.line(r.x+x,ty+3.,r.x+x,ty+15.,1.,t.text_faint);}
+    let b=Rect::new(r.x+229.,ty,47.,18.);
     let hot=ui.hit(b,Action::PlClips,"Clips: patterns, audio clips and automation clips");
     let ink=tool_face(ui,b,false,hot);ui.c.text(Font::new(12),b.x+3.,b.y+1.,ink,"Clips");
     let (x,y)=(b.right()-6.,b.cy());ui.c.fill_polygon(&[(x-3.,y-1.),(x+3.,y-1.),(x,y+2.)],ink);
     let font=Font::new(12);
-    let arr_w=(ui.c.text_width(font,&arr)+23.).min(180.).min((r.w-267.-68.).max(0.));
+    let arr_w=(ui.c.text_width(font,&arr)+23.).min(180.).min((r.w-289.-68.).max(0.));
     if arr_w>24. {
-        let b=Rect::new(r.x+267.,ty,arr_w,18.);
+        let b=Rect::new(r.x+289.,ty,arr_w,18.);
         let hot=ui.hit(b,Action::PlArrangement,format!("Arrangement: {arr}"));
         let ink=tool_face(ui,b,false,hot);
         ui.c.text_clip(font,b.x+5.,b.y+1.,(b.w-18.).max(0.),ink,&arr);
@@ -263,9 +267,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // Clips reaching the painted part of the grid (a scrolled-in strip is a small part, see `App::playlist_scrolled`);
     // a clip draws inside its own rect.
     // Paint the source clips first, automation second regardless of saved clip ordering.
+    let bright_clips=crate::prefs::check(&crate::prefs::BRIGHT_PLAYLIST_CLIPS);
     for automation in [false,true] {
         for (i,c) in pl::clips(s).iter().enumerate() {
-            if (pl::source_kind(s,c.source)==PickKind::Automation)==automation && ui.c.visible(g.clip_rect(c).outset(2.0)) {clip_paint(ui,s,&g,i,c);}
+            if (pl::source_kind(s,c.source)==PickKind::Automation)==automation && ui.c.visible(g.clip_rect(c).outset(2.0)) {clip_paint(ui,s,&g,i,c,bright_clips);}
         }
     }
     for live in &s.mixer.recording.live {
@@ -635,7 +640,7 @@ fn offset(c: Color, d: i16) -> Color {
 
 /// One clip (§2): a near-black outline with rounded top corners, the title strip (pattern clips neutral, audio and
 /// automation clips in their channel's colour), the body in the track's colour, then the content.
-fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
+fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, bright_clips: bool) {
     let take=crate::comping::parent(s,c.track).is_some();
     let muted=c.muted && !take;
     let t = ui.t;
@@ -675,7 +680,8 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
     let dim = |col: Color| if track_on { col } else { col.mix(t.grid, 0.5) };
     // Body colour: the track's colour, else the source's (§2 "Body colour source").
     let color = pl::track_info(s, c.track).and_then(|t| t.color).or_else(|| pl::source_color(s, c.source)).map(rgb);
-    let darken = |c: Color| c.mix(ui.t.s(0x000000), 0.55);
+    let brighter = bright_clips && track_on && !muted && !selected;
+    let darken = |c: Color| c.mix(ui.t.s(0x000000), if brighter {0.22} else {0.55});
     let tint = pl::clip_tint(s, c.source).map(rgb);
 
     // Title strip: (edge rows, highlight row, gradient top, gradient bottom, text).
@@ -686,17 +692,22 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip) {
         let m = cc(t, MUTED_TITLE);
         (m.shade(-0.2), m, m, m, cc(t, MUTED_TEXT), cc(t, DEFAULT_BODY))
     } else {
-        let body = color.map_or(cc(t, DEFAULT_BODY), darken);
+        let neutral=cc(t,if brighter { TITLE_TOP } else { DEFAULT_BODY });
+        let body = color.map_or(neutral, darken);
         match (kind, tint) {
             (PickKind::Audio | PickKind::Automation, Some(c)) => {
                 (offset(c, -42), offset(c, -8), offset(c, -17), offset(c, -26), cc(t, TITLE_TEXT), body)
+            }
+            _ if brighter && color.is_some() => {
+                let accent=color.unwrap_or(t.clip).mix(cc(t,TITLE_TOP),0.25);
+                (accent.shade(-0.3),accent,accent.shade(-0.10),accent.shade(-0.18),cc(t,TITLE_TEXT),body)
             }
             _ => (cc(t, CLIP_BORDER), cc(t, TITLE_TOP), cc(t, TITLE_TOP), cc(t, TITLE_BOTTOM), cc(t, TITLE_TEXT), body),
         }
     };
     // Outline (rounded at the top only); a clip a few pixels wide keeps its colours to its edges.
     let outline = dim(t.s(0x03090d));
-    let body_alpha=|c:Color| c.with_alpha(48);
+    let body_alpha=|c:Color| c.with_alpha(if brighter {112} else {48});
     let narrow = r.w < 8.0;
     let lemon = super::lemon(ui);
     // Rect fills with the top corners knocked out (cheaper than rounded paths for hundreds of clips).

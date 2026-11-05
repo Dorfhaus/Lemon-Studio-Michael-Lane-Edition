@@ -118,7 +118,7 @@ pub const TOOLBARS_SCALING: Combo = Combo {
 pub const COLORFUL_WAVEFORMS: Combo =
     Combo { key: "colorful_waveforms", label: "Colorful waveforms", choices: &["Off", "Color map", "Multiband"], default: 0 };
 
-pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Full mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 0 };
+pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Full mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 2 };
 
 /// General ▸ Language: how note names read (`crate::note_names`; FL asks for a restart, Lemon Studio renames at once).
 /// Spec: ui/settings-choices.md "Note names and Black notes".
@@ -168,7 +168,10 @@ pub const SELECT_FIRST_CHANNEL: Check =
 /// General ▸ Miscellaneous: opening the piano roll zooms on the pattern and the channel's notes (`crate::piano::auto_zoom`).
 pub const AUTO_ZOOM_PIANO: Check = Check { key: "auto_zoom_piano", label: "Auto zoom in piano roll", default: false };
 
-/// General ▸ Miscellaneous: thin editor scroll bars without arrow buttons (`crate::views::small_scrollbars`).
+/// Theme option for clip display only; project and source colors remain untouched.
+pub const BRIGHT_PLAYLIST_CLIPS: Check = Check { key: "bright_playlist_clips", label: "Brighter Playlist clips", default: false };
+
+/// General: thin editor scroll bars without arrow buttons.
 pub const SMALL_SCROLLBARS: Check = Check { key: "small_scrollbars", label: "Small scrollbars in editors", default: false };
 
 /// General ▸ Miscellaneous: a pattern switch zips the channels with nothing in the new pattern (`App::pattern_tick`).
@@ -223,6 +226,7 @@ pub const HIDE_PLUGIN_TOOLBAR: Check =
 /// General ▸ Miscellaneous: a sample or channel preset loaded into an existing channel renames the channel after the
 /// file (`rack::auto_name`); off, the channel keeps its name. Spec: ui/settings-choices.md "Miscellaneous: naming,
 /// detached plugins and startup".
+pub const ROUTE_RACK_SAMPLES: Check = Check { key: "route_rack_samples", label: "Auto-route Channel Rack samples to mixer inserts", default: false };
 pub const AUTO_NAME_CHANNELS: Check = Check { key: "auto_name_channels", label: "Auto name channels", default: true };
 
 /// General ▸ Miscellaneous: a preset loaded into an effect renames its mixer slot after the preset
@@ -516,6 +520,7 @@ pub const CHECKS: &[&Check] = &[
     &SELECT_FIRST_CHANNEL,
     &AUTO_ZOOM_PIANO,
     &SMALL_SCROLLBARS,
+    &BRIGHT_PLAYLIST_CLIPS,
     &AUTO_ZIP_EMPTY,
     &MONO_PAINTING,
     &AUTO_CROSSFADES_NEW,
@@ -527,6 +532,7 @@ pub const CHECKS: &[&Check] = &[
     &ROUTE_EDGE_SCROLL,
     &HIDE_PLUGIN_TOOLBAR,
     &AUTO_NAME_CHANNELS,
+    &ROUTE_RACK_SAMPLES,
     &AUTO_NAME_EFFECT_SLOTS,
     &DETACH_NEW,
     &DETACHED_WITH_MAIN,
@@ -1066,7 +1072,7 @@ main_gui_scaling = 200%
         let mut canvas = Canvas::new(1366, 768, 1.0).unwrap();
         let mut app = App::new(None);
         app.open_settings(settings::THEME);
-        assert_eq!(choice(&MIXER_STYLE), "Original");
+        assert_eq!(choice(&MIXER_STYLE), "Analog");
         for index in [1, 2, 0] {
             app.paint(&mut canvas, None);
             let control = app.hits.iter().rev().find(|h| matches!(

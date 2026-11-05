@@ -160,10 +160,13 @@ pub fn saved_opts()->std::collections::HashSet<&'static str> {
     }).collect()
 }
 pub fn tabs(s:&State)->Vec<(usize,Icon,&'static str)> {
-    let mut tabs=vec![(0,Icon::Wave,"Samples"),(3,Icon::Star,"Favorites"),(5,Icon::Download,"Plugin Downloads"),(6,Icon::Vote,"Feature voting")];
-    {
-        tabs.insert(1, (EXCHANGE_BUTTON, Icon::Exchange, "Community Samples"));
-    }
+    let mut tabs = vec![
+        (0, Icon::Wave, "Samples"),
+        (3, Icon::Star, "Favorites"),
+        (EXCHANGE_BUTTON, Icon::Exchange, "Community Samples"),
+        (5, Icon::Download, "Plugin Downloads"),
+        (6, Icon::Vote, "Feature voting"),
+    ];
     for (key,id,icon,label) in [(OPT_PROJECT,1,Icon::Page,"Current project"),(OPT_PLUGINS,2,Icon::Plug,"Plugin database"),(OPT_PRESETS,4,Icon::FilePreset,"Plugin presets"),(OPT_PARAMETERS,PARAMETERS_TAB,Icon::Slide,"Parameters")] {
         if opt(s,key) || s.browser_tab==id {tabs.push((id,icon,label));}
     }
@@ -176,7 +179,15 @@ pub fn opt(s: &State, k: &str) -> bool {
 
 /// Whether `row` matches the search text `q` (lower case), spec §5.
 pub fn matches(s: &State, row: &Row, q: &str) -> bool {
-    !q.is_empty() && (opt(s, OPT_FOLDERS) || row.open.is_none()) && row.label.to_lowercase().contains(q)
+    if q.is_empty() || (!opt(s, OPT_FOLDERS) && row.open.is_some()) { return false; }
+    if row.label.to_lowercase().contains(q) { return true; }
+    let Item::Sample(path) = &row.item else { return false };
+    if s.browser_tags.is_empty() { return false; }
+    let tags = s.browser_tags.get(path).or_else(|| {
+        if std::path::Path::new(path).is_absolute() { return None; }
+        s.browser_tags.get(&crate::plugins::resolve_sample(path))
+    });
+    tags.is_some_and(|names| names.iter().any(|tag| tag.to_lowercase().contains(q)))
 }
 
 /// A node is open when the user opened it, or always while searching (search covers the whole tree).
@@ -1049,9 +1060,13 @@ fn search_box(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.stroke_rrect(r, 3.0, 1.0, t.browser_search);
     }
     let f = os_ui::Font::new(14);
-    let text_w = r.w - 26.0;
+    let edit_tags=s.browser_tag_edit.is_some();
+    let label_w=if edit_tags { 34. } else { 0. };
+    if edit_tags { ui.c.text_clip(f,r.x+5.,r.y+1.,label_w,t.accent,"Tags:"); }
+    let text_w = (r.w - 26.0-label_w).max(1.);
     // Show the end of a long query.
-    let mut shown: &str = &s.browser_search;
+    let mut shown: &str = s.browser_tag_edit.as_ref().map_or(s.browser_search.as_str(),|(_,text)|text.as_str());
+    if s.browser_tag_edit.is_some(){ui.c.stroke_rrect(r,3.,1.,t.accent);}
     while ui.c.text_width(f, shown) > text_w && !shown.is_empty() {
         let cut = shown.char_indices().nth(1).map_or(shown.len(), |(i, _)| i);
         shown = &shown[cut..];
@@ -1059,10 +1074,10 @@ fn search_box(ui: &mut Ui, s: &State, r: Rect) {
     if shown.is_empty() && !s.browser_search_focus {
         ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==6 {"Search suggestions..."}else if s.browser_tab==5 {"Search plugins..."}else if s.browser_tab==PARAMETERS_TAB {"Search parameters..."}else{"Search samples..."});
     } else {
-        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.glyph, shown);
+        ui.c.text_clip(f, r.x + 5.0+label_w, r.y + 1.0, text_w, t.glyph, shown);
     }
     if s.browser_search_focus {
-        let cx = r.x + 6.0 + ui.c.text_width(f, shown);
+        let cx = r.x + 6.0 + label_w+ui.c.text_width(f, shown);
         ui.c.fill_rect(Rect::new(cx, r.y + 4.0, 1.0, r.h - 8.0), t.glyph);
     }
 }

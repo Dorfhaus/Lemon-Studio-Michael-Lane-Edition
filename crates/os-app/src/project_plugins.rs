@@ -261,7 +261,12 @@ fn same_file(a: &std::path::Path, b: &str) -> bool {
 /// The plugin of `list` a wrapped plugin names: the same format and class id, else the same file and name, else the
 /// same format and name, else the same name (a copy in another format, which does not get the saved state:
 /// [`switched_format`]).
-pub fn find(list: &[Available], r: &PluginRef) -> Option<usize> {
+#[cfg(test)]
+fn find(list: &[Available], r: &PluginRef) -> Option<usize> {
+    find_installed(list, r, &std::collections::HashSet::new())
+}
+
+fn find_installed(list: &[Available], r: &PluginRef, missing: &std::collections::HashSet<String>) -> Option<usize> {
     let format = Format::parse(&r.format);
     let tests: [&dyn Fn(&Descriptor) -> bool; 4] = [
         &|d| !r.id.is_empty() && Some(d.format) == format && d.id.eq_ignore_ascii_case(&r.id),
@@ -269,7 +274,7 @@ pub fn find(list: &[Available], r: &PluginRef) -> Option<usize> {
         &|d| Some(d.format) == format && d.name == r.name,
         &|d| d.name == r.name,
     ];
-    tests.iter().find_map(|t| list.iter().position(|a| t(&a.desc)))
+    tests.iter().find_map(|t| list.iter().position(|a| t(&a.desc) && !missing.contains(&a.desc.uid())))
 }
 
 /// When `d`, found for wrapped plugin `r`, is its copy in another format: what the hint bar says about it ("Kars (VST2
@@ -315,11 +320,26 @@ pub fn slot_title(s: &SlotPlugin) -> String {
 }
 
 impl crate::app::App {
+    /// Reconsider missing project slots once after the refreshed catalog contains a match.
+    pub(crate) fn retry_scanned_wrappers(&mut self) {
+        let project = &self.state.project;
+        self.wrap_failed.retain(|&key| {
+            let reference = match fx_of(key) {
+                Some((track, slot)) => project.mixer.iter().find(|m| m.index == track)
+                    .and_then(|m| m.slots.get(slot as usize)?.as_ref()).and_then(wrapped_slot)
+                    .map(|r| (&self.plugins.effects, r)),
+                None => project.channels.get(key).and_then(wrapped_channel).map(|r| (&self.plugins.available, r)),
+            };
+            let retry = reference.is_some_and(|(list, r)| find_installed(list, &r, &self.plugins.missing).is_some());
+            if retry { self.missing.wrapped.remove(&key); }
+            !retry
+        });
+    }
+
     /// Hosts the wrapped plugins of an opened project (spec: flp/events/plugins.md §4): each wrapped channel and slot
     /// whose plugin is found starts from the state the file holds, or from its defaults when only a copy in another
     /// format is found (the hint bar names those; a save keeps the file's wrapper for them until they are changed,
-    /// `Hosted::stand_in`). A plugin that is not found keeps its saved data (written back unchanged) and is not looked
-    /// for again.
+    /// `Hosted::stand_in`). A plugin that is not found keeps its saved data (written back unchanged) until the next scan finds it.
     pub(crate) fn sync_wrapped(&mut self) {
         use crate::plugins::fx_key;
         let mut added = (false, false);
@@ -332,7 +352,7 @@ impl crate::app::App {
             if self.past_deadline() {
                 break;
             }
-            let made = find(&self.plugins.available, &r).map(|i| {
+            let made = find_installed(&self.plugins.available, &r, &self.plugins.missing).map(|i| {
                 let other = switched_format(&self.plugins.available[i].desc, &r);
                 let state = other.is_none().then_some(r.state.as_slice());
                 (other, self.plugins.create_with(row, i, state))
@@ -352,11 +372,11 @@ impl crate::app::App {
                 }
                 Some((_, Err(e))) => {
                     self.wrap_failed.push(row);
-                    missing.push(format!("{} ({e})", r.name));
+                    missing.push((row, format!("{} ({e})", r.name)));
                 }
                 None => {
                     self.wrap_failed.push(row);
-                    missing.push(r.name);
+                    missing.push((row, r.name));
                 }
             }
         }
@@ -372,7 +392,7 @@ impl crate::app::App {
             if self.past_deadline() {
                 break;
             }
-            let made = find(&self.plugins.effects, &r).map(|i| {
+            let made = find_installed(&self.plugins.effects, &r, &self.plugins.missing).map(|i| {
                 let other = switched_format(&self.plugins.effects[i].desc, &r);
                 let state = other.is_none().then_some(r.state.as_slice());
                 (other, self.plugins.create_effect(t, k, i, state))
@@ -387,11 +407,11 @@ impl crate::app::App {
                 }
                 Some((_, Err(e))) => {
                     self.wrap_failed.push(fx_key(t, k));
-                    missing.push(format!("{} ({e})", r.name));
+                    missing.push((fx_key(t, k), format!("{} ({e})", r.name)));
                 }
                 None => {
                     self.wrap_failed.push(fx_key(t, k));
-                    missing.push(r.name);
+                    missing.push((fx_key(t, k), r.name));
                 }
             }
         }
@@ -403,8 +423,8 @@ impl crate::app::App {
         }
         let mut parts = Vec::new();
         if !missing.is_empty() {
-            self.missing.add_plugins(&missing);
-            parts.push(format!("Plugins not found (kept in the project): {}", name_list(self.missing.plugins.clone(), 6)));
+            self.missing.wrapped.extend(missing.iter().cloned());
+            parts.push(format!("Plugins not found (kept in the project): {}", name_list(self.missing.plugin_names(), 6)));
         }
         if !switched.is_empty() {
             let names = name_list(switched, 4);
@@ -670,10 +690,14 @@ mod tests {
 
         // Reopened: both plugins are hosted again with their state.
         let mut b = App::new(None);
-        b.plugins.available = crate::plugins::builtin();
-        b.plugins.effects = crate::plugins::builtin_effects();
         b.open(path.clone());
         b.sync_wrapped();
+        assert!(b.wrap_failed.contains(&row) && b.wrap_failed.contains(&fx_key(3, 2)));
+        b.plugins.available = crate::plugins::builtin();
+        b.plugins.effects = crate::plugins::builtin_effects();
+        b.apply_scan(crate::plugin_db::Cache::default());
+        b.sync_wrapped();
+        assert!(b.missing.plugin_names().is_empty());
         assert!(b.state.hosted_rows.contains(&row), "{:?}", b.state.message);
         assert_eq!(b.plugins.sampler_path(row).as_deref(), Some("C:/samples/one.wav"));
         assert_eq!(b.plugins.eq_file_state(fx_key(3, 2)), Some(fl));

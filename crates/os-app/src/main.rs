@@ -30,6 +30,7 @@ mod audio_bench;
 #[cfg(test)]
 mod open_bench;
 mod browser;
+mod browser_files;
 mod community_samples;
 mod community_service;
 mod browser_preview;
@@ -144,6 +145,9 @@ mod project_plugins;
 mod presets;
 mod misc;
 mod misc_page;
+mod typing_layout;
+mod sample_route;
+mod clip_normalize;
 mod note_names;
 mod save_form;
 mod scroll_speed;

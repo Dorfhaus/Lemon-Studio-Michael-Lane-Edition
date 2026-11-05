@@ -66,6 +66,7 @@ pub enum Snap {
     MixerInsert { n:u16,remove:bool,previous:u16,selection:Vec<u16> },
     MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     ChannelRoute(usize,u16),
+    SampleRoute { sample: Box<Snap>, route: u16, name: Option<String>, insert: Option<bool> },
     InstrumentLanes(Vec<(u16,u16,u16,u16)>),
     /// Pattern `number`'s notes, control points and length (the piano roll, the step sequencer).
     Pattern { number: u16, notes: Vec<Note>, controls: Vec<ControlPoint>, length: Option<u32> },
@@ -76,6 +77,7 @@ pub enum Snap {
     /// Mixer track `.0`'s volume fader (0..1, the fader law; `None`: the track's default).
     Fader(u16, Option<f64>),
     TrackColor(u16,Option<os_model::Rgb>),
+    CutGroups(u16,u32,u32),
     Effects(u16, bool, bool),
     AllEffects(bool),
     StripProfile(u16,u16),
@@ -379,6 +381,7 @@ impl Snap {
             Snap::Playlist(_) => Snap::Playlist(Box::new(crate::playlist::capture(s))),
             Snap::Knob(id, _) => Snap::Knob(*id, knob_value(s, *id)),
             // A track or an instance gone since is left as the step has it (`put` does nothing then).
+            Snap::CutGroups(id,_,_) => s.project.channel(*id).map_or_else(||self.clone(),|c| Snap::CutGroups(*id,c.misc.cut,c.misc.cut_by)),
             Snap::TrackColor(t,_) => Snap::TrackColor(*t,crate::mixer::track(s,*t).and_then(|m|m.color)),
             Snap::Fader(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::Fader(*t, m.volume)),
             Snap::RackStrips(v) => Snap::RackStrips(v.iter().filter_map(|c|crate::mixer::channel_copy(s,c.track.index)).collect()),
@@ -415,6 +418,11 @@ impl Snap {
             },
             Snap::Timebase(_) => Snap::Timebase(Box::new(Timebase::now(s))),
             Snap::Info(_) => Snap::Info(Box::new(s.project.info.clone())),
+            Snap::SampleRoute { sample, route, insert, .. } => Snap::SampleRoute {
+                sample: Box::new(sample.now(s)), route: *route,
+                name: crate::mixer::track(s, *route).and_then(|m| m.name.clone()),
+                insert: insert.map(|remove| !remove),
+            },
             Snap::ChannelRoute(row,_) => Snap::ChannelRoute(*row,s.project.channels.get(*row).map_or(0,|c|c.mixer_track)),
             Snap::Several(v) => Snap::Several(v.iter().map(|x| x.now(s)).collect()),
         }
@@ -463,7 +471,9 @@ impl Snap {
             | Snap::MixerInsert{..}
             | Snap::MixerMove{..}
             | Snap::InstrumentLanes(..)
+            | Snap::SampleRoute { .. }
             | Snap::ChannelRoute(..)
+            | Snap::CutGroups(..)
             | Snap::TrackColor(..)
             | Snap::Fader(..)
             | Snap::Ara(..)
@@ -531,6 +541,7 @@ impl Snap {
             Snap::Ara(row,plugin,state) => {if let Some(ch)=s.project.channels.get_mut(row){ch.plugin=plugin;ch.plugin_state=state;}},
             Snap::Playlist(p) => crate::playlist::restore(s, *p),
             Snap::Knob(id, v) => set_knob_value(s, id, v),
+            Snap::CutGroups(id,cut,by) => if let Some(c)=s.project.channels.iter_mut().find(|c|c.index==id) {c.misc.cut=cut;c.misc.cut_by=by;},
             Snap::TrackColor(t,col) => {if let Some(m)=crate::mixer::track_mut(s,t){m.color=col;}},
             Snap::Fader(t, v) => {
                 if let Some(m) = crate::mixer::track_mut(s, t) {
@@ -635,6 +646,14 @@ impl Snap {
                 }
                 (s.rack.groups, s.rack.filter, s.rack.unsorted_at) = (groups, filter, unsorted_at);
                 (s.rack.sel, s.selected_channel) = (sel, selected);
+            }
+            Snap::SampleRoute { sample, route, name, insert } => {
+                let selection = (s.selected_mixer, s.mixer.sel.clone());
+                if insert == Some(false) { crate::mixer::add_track(s, Some(route)); }
+                sample.put(s);
+                if insert == Some(true) { crate::mixer::undo_insert(s, route); }
+                else if let Some(track) = crate::mixer::track_mut(s, route) { track.name = name; }
+                (s.selected_mixer,s.mixer.sel) = selection;
             }
             Snap::ChannelRoute(row,t) => {if let Some(c)=s.project.channels.get_mut(row){c.mixer_track=t;}},
             Snap::Several(v) => v.into_iter().rev().for_each(|x| x.put(s)),

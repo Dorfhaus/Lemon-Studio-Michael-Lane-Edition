@@ -77,6 +77,7 @@ fn all_menu(s: &State, x: f32, y: f32) -> Popup {
         PItem::new("Key and scale...",Cmd::Harmony(crate::harmony::HCmd::Menu(10))),
         item("Quick quantize", Quantize { strength: 100, starts_only: false }).key("Ctrl+Q"),
         item("Quick quantize start times", Quantize { strength: 100, starts_only: true }).key("Shift+Q"),
+        item("Quick quantize start times (50%)", Quantize { strength: 50, starts_only: true }),
         item("Quantize...", Dialog(Tool::Quantize)).key("Alt+Q"),
         item("Glue", Glue).key("Ctrl+G"),
         item("Quick legato", Legato).key("Ctrl+L"),

@@ -192,7 +192,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
 
     // Fixed master strip; inserts scroll immediately beside it.
     let master_header=Rect::new(r.x,ly.y(HEAD_Y0),width,HEAD_Y1-HEAD_Y0+1.);
-    if s.mixer.layout==mx::WIDE {console_skin::plate(ui,master_header);}else{ui.c.fill_rect(master_header,ui.t.s(0x2b2e30));}
+    if s.mixer.layout==mx::WIDE {
+        let tint = s.project.mixer.iter().find(|m| m.index == 0).and_then(|m| m.color).map(super::rgb);
+        number_plate(ui, master_header, tint);
+    }else{ui.c.fill_rect(master_header,ui.t.s(0x2b2e30));}
     ui.c.text_center(console_font(ui,s,14),Rect::new(r.x,ly.y(HEAD_Y0),width,21.),ui.t.text,"M");
     let lemon = super::lemon(ui);
     let area = Rect::new(r.x + 9.0 + width, client.y, strips.w - 9.0 - width, client.h);
@@ -447,6 +450,15 @@ fn meter_bar(ui: &mut Ui, x: f32, w: f32, bottom: f32, db: f32, hold: f32, cfg: 
     }
 }
 
+fn number_plate(ui: &mut Ui, rect: Rect, tint: Option<Color>) {
+    console_skin::plate(ui, rect);
+    if matches!(ui.mixer_finish, Finish::CleanModern | Finish::Analog) {
+        if let Some(color) = tint {
+            ui.c.fill_rrect(rect.inset(1.5), 2., color.with_alpha(62));
+        }
+    }
+}
+
 /// One strip; `left` is its left edge (44 px pitch). Columns: knobs at +22, meter / fader at +32,
 /// name and small controls at +12 (spec §7).
 fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, ly: &Ly) {
@@ -490,7 +502,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     if n != 0 {
         let hr = Rect::new(left, ly.y(HEAD_Y0), width, ly.y(HEAD_Y1) - ly.y(HEAD_Y0) + 1.0);
         if full {
-            console_skin::plate(ui,hr);
+            number_plate(ui, hr, tint);
             if ui.mixer_finish==Finish::Original {
                 original::screw(ui,hr.x+7.,hr.cy());
                 original::screw(ui,hr.right()-7.,hr.cy());
@@ -567,10 +579,11 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let standard=n!=0 && track.is_some_and(|m|m.channel_layout==0);
     let control_x=if vertical {sx}else if n==0 {kx}else{kx+6.};
     let enabled = track.is_none_or(|m| m.enabled);
-    let led_x=control_x+if full {28.}else{0.};
+    let led_x=control_x+if full {23.}else{0.};
+    let hit_radius=if full {8.5} else {7.};
     let led_y=ly.y(if full {PAN_Y}else{LED_Y});
-    ui.hit(Rect::new(led_x - 7.0, led_y - 7.0, 14.0, 14.0), Action::Mix(MHit::Led(n)), "Mute / solo");
-    if console {if full {console_skin::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),4.);} else {analog::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),4.);}}else{led(ui, control_x, ly.y(LED_Y), enabled);}
+    ui.hit(Rect::new(led_x-hit_radius,led_y-hit_radius,2.*hit_radius,2.*hit_radius), Action::Mix(MHit::Led(n)), "Mute / solo");
+    if console {if full {console_skin::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),5.);} else {analog::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),4.);}}else{led(ui, control_x, ly.y(LED_Y), enabled);}
     if full {ui.c.text_center(console_font(ui,s,9),Rect::new(control_x-17.,ly.y(PAN_Y)-25.,34.,12.),Color::rgb(0xc5cccf),"PAN");}
     let pan = KnobId::MixPan(n);
     ui.hit(Rect::new(control_x - 14.0, ly.y(PAN_Y) - 14.0, 28.0, 28.0), Action::Knob(pan), s.knob_text(pan));

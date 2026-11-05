@@ -1456,6 +1456,7 @@ pub fn open_box(s: &mut State, b: RBox, at: (f32, f32)) {
 /// Commands of the rack's popup menus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RCmd {
+    CutSelf(usize),
     PitchFollow(usize),
     Consolidate(usize),
     BounceWet(usize),
@@ -1712,7 +1713,11 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         it("Fill each 8 steps", RCmd::Fill(r, 8)),
     ]);
     items.extend(crate::instrument_stack::menu(s,r));
-    if sampler { items.push(it("Load sample...", RCmd::LoadSample(r))); }
+    if sampler {
+        items.push(it("Load sample...", RCmd::LoadSample(r)));
+        let misc=s.project.channels[r].misc;
+        items.push(it("Cut itself",RCmd::CutSelf(r)).mark(Mark::Check(misc.cut!=0 && misc.cut==misc.cut_by)));
+    }
     items.extend([
         PItem::sep(),
         it("Piano roll", RCmd::PianoRoll(r)).key("F7").mark(Mark::Check(piano_on)),
@@ -1917,7 +1922,7 @@ pub fn sample_chosen(app: &mut App, r: usize, p: std::path::PathBuf) {
     // With Copy used samples to the project folder: the sample's copy in the data folder (`data_folder::adopt`).
     let path = crate::data_folder::adopt(s, &p.to_string_lossy());
     if r < s.project.channels.len() {
-        crate::history::load_sample(s, r);
+        crate::sample_route::begin(s, Some(r), &p);
     }
     if let Some(ch) = s.project.channels.get_mut(r) {
         auto_name(ch, &p);
@@ -2018,6 +2023,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
             paste_at(s, sel.first().copied().unwrap_or(s.selected_channel));
             None
         }
+        RCmd::CutSelf(r) => crate::misc::cut_self(app,r),
         RCmd::Fill(r, n) => {
             snapshot(s);
             fill_each(s, r, n);

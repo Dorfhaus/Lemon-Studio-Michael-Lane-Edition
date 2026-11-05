@@ -4,6 +4,19 @@
   "sections": [
     {
       "date": "2026-11-05",
+      "title": "Optional sample routing and batch clip normalization \u00b7 public build 2026110502",
+      "changes": [
+        "Select audio clips in the Playlist and use Normalize audio clips to enter a sample peak, RMS or integrated LUFS target. Each clip gets its own gain adjustment in one undoable edit.",
+        "Settings > General > Miscellaneous now offers automatic mixer routing for Channel Rack samples. It starts off. Enable it to use an empty insert or add one while preserving existing routing and Playlist recordings.",
+        "The Playlist gain handle now adjusts selected audio clips together by the same decibel amount. Pencil right-drag erases across clips, and the pulled-elastic-band Stretch tool sits beside Select.",
+        "Analog is the default full mixer style for new preferences. Clean Modern and Analog show a subtle track color behind the insert number, and the full mixer mute buttons are larger and inset.",
+        "Cut itself assigns an individual group to each sampler. The Browser keeps Favorites next to Samples and adds sample editor, slicer, file and searchable tag actions.",
+        "Right-click Typing Keyboard to Piano to choose a key and scale independently of the Piano Roll. Rescanning can reconnect missing project instruments and mixer effects with their saved settings.",
+        "Playlist display options include waveform detail, and the Piano Roll can quantize note starts at half strength."
+      ]
+    },
+    {
+      "date": "2026-11-05",
       "title": "Mixer themes and faster editing \u00b7 public build 2026110501",
       "changes": [
         "Original, Clean Modern and Analog are available in Options > Theme settings > Full mixer style. Original is the default, with colored molded knobs, ribbed faders and cream VU meters behind curved glass.",

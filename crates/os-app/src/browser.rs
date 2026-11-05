@@ -295,6 +295,25 @@ impl App {
     /// Browser keys (spec §4, §5); returns whether the key was used.
     pub(crate) fn browser_key(&mut self, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> bool {
         use winit::keyboard::{Key, NamedKey};
+        if self.state.browser_tag_edit.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape)=>{self.state.browser_tag_edit=None;self.state.browser_search_focus=false;}
+                Key::Named(NamedKey::Enter)=>{
+                    let (path,text)=self.state.browser_tag_edit.take().unwrap();
+                    let mut tags:Vec<String>=Vec::new();
+                    for name in text.split(',').map(str::trim).filter(|t|!t.is_empty()){
+                        if !tags.iter().any(|t|t.eq_ignore_ascii_case(name)){tags.push(name.into());}
+                    }
+                    if tags.is_empty(){self.state.browser_tags.remove(&path);}else{self.state.browser_tags.insert(path,tags);}
+                    save_tags(&self.state);self.state.browser_search_focus=false;
+                }
+                Key::Named(NamedKey::Backspace)=>{self.state.browser_tag_edit.as_mut().unwrap().1.pop();}
+                Key::Character(c) if !ctrl && !alt=>{let v=&mut self.state.browser_tag_edit.as_mut().unwrap().1;if v.len()<1024{v.push_str(c);}}
+                Key::Named(NamedKey::Space)=>{self.state.browser_tag_edit.as_mut().unwrap().1.push(' ');}
+                _=>{}
+            }
+            self.invalidate();return true;
+        }
         let shift = self.shift;
         let focus = self.state.browser_search_focus;
         let over = self.over_browser() || focus;
@@ -673,10 +692,70 @@ impl App {
                 }
             }
             RowCmd::Preview => self.preview_sample(&sample?),
-            RowCmd::Send => return send_sample(s, &sample?, &row.label),
-            RowCmd::NewChannel => self.sample_to_channel(sample?, None),
+            RowCmd::Send => {
+                let p=sample?;
+                let target=sample_target(s);
+                if s.project.channels.get(target).is_some_and(|ch|ch.kind.is_sampler()){
+                    return send_sample_to(s,target,&p,&row.label);
+                }
+                let ok=self.plugins.browser_sample_to_plugin(target,&crate::plugins::resolve_sample(&p));
+                return Some(if ok {"Sample sent to plugin".into()} else {"The selected plugin did not accept this sample".into()});
+            }
+            RowCmd::NewChannel => {self.sample_to_channel(sample?,None); if !self.alt {self.open_channel_window(self.state.selected_channel);}}
+            RowCmd::Instrument(index) => {
+                let path=crate::plugins::resolve_sample(&sample?);
+                if let Err(e)=os_engine::sample::load_shared(std::path::Path::new(&path)){return Some(format!("Cannot load sample: {e}"));}
+                crate::plugin_menu::add_generator(self,index,None);
+                if let Some((row,i))=self.state.pending_plugin {self.state.browser_plugin_sample=Some((row,i,path));}
+            }
+            RowCmd::AudioEditor => return self.browser_audio_editor(&crate::plugins::resolve_sample(&sample?)),
+            RowCmd::PitchEditor => {
+                let mut items: Vec<_> = crate::ara::choices(self).iter().enumerate()
+                    .map(|(i, editor)| PItem::new(editor.name.clone(), Cmd::Browser(BCmd::Row(RowCmd::PitchWith(i)))))
+                    .collect();
+                if items.is_empty() { items.push(PItem::head("No ARA pitch editors found")); }
+                items.push(PItem::new("Scan for ARA editors...", Cmd::AraScan));
+                self.state.playlist.popup = Some(crate::playlist::Popup {
+                    x: self.mouse.0, y: self.mouse.1, items, sub: None, scroll: [0; 2], cascade: Vec::new(),
+                });
+            }
+            RowCmd::WarpEditor|RowCmd::PitchWith(_) => {
+                let path=crate::plugins::resolve_sample(&sample?);
+                let tick=s.playlist.pos;
+                let ci=match crate::playlist::import_audio_clip(&mut self.state,&path,0,tick) {Ok(ci)=>ci,Err(e)=>return Some(e.into())};
+                self.state.raise(crate::app::Win::Playlist);
+                if let RowCmd::PitchWith(index) = c { return crate::ara::choose(self, ci, index); }
+                return crate::warp::open(self,ci).err();
+            }
+            RowCmd::ParentFolder => {let p=std::path::PathBuf::from(crate::plugins::resolve_sample(&sample?));open_folder(p.parent()?);}
+            RowCmd::Trash => {
+                let path=std::path::PathBuf::from(crate::plugins::resolve_sample(&sample?));
+                use crate::dialog::{Kind,Msg,Then,Answer};
+                self.show_msg(Msg::new(Kind::Question,"Delete sample",vec![(format!("Move {} to the system trash?",path.display()),false)],&[Answer::Yes,Answer::Cancel],Then::TrashBrowserSample(path)));
+            }
+            RowCmd::ShellMenu => {
+                #[cfg(windows)] {
+                    let path=crate::plugins::resolve_sample(&sample?);
+                    let result=crate::browser_files::shell_menu(std::path::Path::new(&path));
+                    reread(s);
+                    return result.err();
+                }
+            }
+            RowCmd::EditTags(add) => {
+                let key=crate::plugins::resolve_sample(&sample?);
+                let mut text=s.browser_tags.get(&key).map_or_else(String::new,|v|v.join(", "));
+                if add && !text.is_empty(){text.push_str(", ");}
+                s.browser_tag_edit=Some((key,text));s.browser_search_focus=true;
+                return Some("Sample tags: separate with commas; Enter saves, Esc cancels".into());
+            }
+            RowCmd::ToggleTag(i) => {
+                let tag=tag_list(s).get(i)?.clone();let key=crate::plugins::resolve_sample(&sample?);
+                let v=s.browser_tags.entry(key).or_default();
+                if v.contains(&tag){v.retain(|t|t!=&tag);}else{v.push(tag);}
+                save_tags(s);
+            }
             RowCmd::OpenFolder => open_folder(&row.path?),
-            RowCmd::ShowInFolder => crate::theme_library::show_in_folder(&row.path?),
+            RowCmd::ShowInFolder => crate::theme_library::show_in_folder(&sample.as_ref().map(|p|std::path::PathBuf::from(crate::plugins::resolve_sample(p))).or(row.path)?),
             // File ▸ Browser extra search folders, the root's Browser name selected for typing.
             RowCmd::Rename => {
                 let i = s.browser_folders.iter().position(|f| Some(f) == row.path.as_ref())?;
@@ -684,7 +763,7 @@ impl App {
                 self.search_folder_cell(i, crate::search_folders::Col::Name);
             }
             RowCmd::Favorite => {
-                let path = row.path?;
+                let path = sample.as_ref().map(|p|std::path::PathBuf::from(crate::plugins::resolve_sample(p))).or(row.path)?;
                 let mut paths = favorites();
                 if paths.contains(&path) { paths.retain(|p| p != &path); } else { paths.push(path); }
                 crate::prefs::set_text("browser_favorites", &serde_json::to_string(&paths).unwrap_or_default());
@@ -693,6 +772,43 @@ impl App {
             RowCmd::Remove => return Some(remove_root(s, &row.path?)),
         }
         None
+    }
+}
+
+pub(crate) fn load_tags()->std::collections::BTreeMap<String,Vec<String>> {
+    crate::prefs::text("browser_sample_tags").and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+fn save_tags(s:&crate::app::State) {
+    if let Ok(text)=serde_json::to_string(&s.browser_tags){crate::prefs::set_text("browser_sample_tags",&text);}
+}
+fn tag_list(s:&crate::app::State)->Vec<String>{
+    s.browser_tags.values().flatten().cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+}
+impl App {
+    fn browser_audio_editor(&mut self,path:&str)->Option<String>{
+        let file=std::path::Path::new(path);
+        let wav=file.extension().is_some_and(|ext|ext.eq_ignore_ascii_case("wav"));
+        let sample=wav.then(||std::fs::read(file).ok().and_then(|b|tesla::wav::read(&b).ok())).flatten().or_else(||{
+            let s=os_engine::sample::load_shared(file).ok()?;
+            Some(tesla::sample::Sample::from_channels(s.rate,vec![s.left.clone(),s.right.clone()],tesla::sample::Format::Float32))
+        });
+        let Some(sample)=sample else {return Some("Unable to read this audio file".into())};
+        if self.tesla_for_recording(0, |s| { s.sample = sample; s.path = path.into(); }) {
+            Some(format!("Opened {} in Tesla", file.display()))
+        } else {
+            self.state.message.clone()
+        }
+    }
+    pub(crate) fn browser_trash_sample(&mut self,path:&std::path::Path) {
+        self.state.message=Some(match crate::browser_files::trash(path) {
+            Ok(())=>{
+                self.state.browser_tags.remove(&path.to_string_lossy().into_owned());save_tags(&self.state);
+                let mut f=favorites();f.retain(|p|p!=path);
+                crate::prefs::set_text("browser_favorites",&serde_json::to_string(&f).unwrap_or_default());
+                reread(&mut self.state);format!("Moved {} to trash",path.display())
+            }
+            Err(e)=>e,
+        }); self.invalidate();
     }
 }
 
@@ -858,6 +974,8 @@ pub enum RowCmd {
     Preview,
     Send,
     NewChannel,
+    AudioEditor, WarpEditor, PitchEditor, PitchWith(usize), Instrument(usize),
+    ParentFolder, Trash, EditTags(bool), ToggleTag(usize), ShellMenu,
     /// A disk folder opened in the system's file manager; a disk file shown there, selected in its folder.
     OpenFolder,
     ShowInFolder,
@@ -920,9 +1038,33 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
             ]);
         }
         Item::Sample(_) => {
-            let send = r("Send to selected channel", RowCmd::Send);
-            let sampler = s.project.channels.get(s.selected_channel).is_some_and(|c| c.kind.is_sampler());
-            items.extend([r("Preview", RowCmd::Preview), if sampler { send } else { send.off() }, r("Add to channel rack", RowCmd::NewChannel)]);
+            let send = r("Send to selected channel or focused plugin", RowCmd::Send);
+            let target=sample_target(s);
+            let accepts=s.project.channels.get(target).is_some_and(|c| c.kind.is_sampler()) || s.hosted_rows.contains(&target) || target>=crate::plugins::FX_KEY;
+            items.extend([if accepts {send} else {send.off()},r("Open in new channel",RowCmd::NewChannel),
+                r("Preview",RowCmd::Preview),PItem::sep(),r("Edit in audio editor (Tesla)",RowCmd::AudioEditor),
+                r("Edit in pitch corrector (ARA)...",RowCmd::PitchEditor),r("Edit in time warper...",RowCmd::WarpEditor),
+                r("Open in new sampler channel",RowCmd::NewChannel)]);
+            for e in &s.plugdb.lists.gens {
+                let name=e.name.to_lowercase();
+                let chop=name=="lemon chop";
+                let ext=cfg!(windows) && ["fruity granulizer","fruity slicer","slicex"].iter().any(|n| name==*n);
+                if chop||ext {items.push(PItem::new(format!("Open in new {} channel",e.label),Cmd::Browser(BCmd::Row(RowCmd::Instrument(e.index)))));}
+            }
+            let mut system=vec![r("Open parent folder",RowCmd::ParentFolder),r("Locate file",RowCmd::ShowInFolder),r("Delete file...",RowCmd::Trash)];
+            if cfg!(windows) {system.insert(0,r("Windows shell menu...",RowCmd::ShellMenu));}
+            items.push(PItem::sub("System",system));
+            if let Item::Sample(ref path)=row.item {
+                let key=crate::plugins::resolve_sample(path);
+                let tagged=s.browser_tags.get(&key);
+                let fav=favorites().contains(&std::path::PathBuf::from(&key));
+                let mut tags=vec![r("Favorite",RowCmd::Favorite).mark(crate::playlist::Mark::Check(fav)),PItem::sep()];
+                for (i,tag) in tag_list(s).into_iter().enumerate(){
+                    tags.push(PItem::new(tag.clone(),Cmd::Browser(BCmd::Row(RowCmd::ToggleTag(i)))).mark(crate::playlist::Mark::Check(tagged.is_some_and(|v|v.contains(&tag)))));
+                }
+                tags.extend([r("Add tags...",RowCmd::EditTags(true)),r("Edit tags...",RowCmd::EditTags(false))]);
+                items.push(PItem::sub("Tags",tags));
+            }
         }
         Item::Generator(index) => items.push(PItem::new("Add to channel rack", Cmd::Plugin(crate::plugin_menu::PlugCmd::Generator { index, after: None }))),
         Item::Effect(index) => items.push(PItem::new("Add to selected mixer track", Cmd::Plugin(crate::plugin_menu::PlugCmd::Effect { index, slot: None }))),
@@ -935,7 +1077,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
         }
         Item::None | Item::File(_) | Item::Param(..) => {}
     }
-    if let Some(path) = &row.path {
+    if let Some(path) = row.path.as_ref().filter(|_| !matches!(row.item,Item::Sample(_))) {
         sep(&mut items);
         items.push(r(if favorites().contains(path) { "Remove from Favorites" } else { "Add to Favorites" }, RowCmd::Favorite));
         items.push(if row.open.is_some() { r(FILE_MANAGER[0], RowCmd::OpenFolder) } else { r(FILE_MANAGER[1], RowCmd::ShowInFolder) });
@@ -1063,14 +1205,19 @@ fn send(s: &mut crate::app::State, dir: isize) -> Option<String> {
 
 /// Sample `path` (shown as `label`) into the selected channel, which takes the file's name while "Auto name channels"
 /// is on (`rack::auto_name`). One history step (`history::load_sample`).
+fn sample_target(s:&crate::app::State)->usize {
+    match s.z.last() {Some(crate::app::Win::Hosted(row))=>*row,_=>s.selected_channel}
+}
 fn send_sample(s: &mut crate::app::State, path: &str, label: &str) -> Option<String> {
-    let row = s.selected_channel;
+    send_sample_to(s,s.selected_channel,path,label)
+}
+fn send_sample_to(s:&mut crate::app::State,row:usize,path:&str,label:&str)->Option<String>{
     if !s.project.channels.get(row)?.kind.is_sampler() {
         return Some("The selected channel is not a sampler".into());
     }
     // With Copy used samples to the project folder: the sample's copy in the data folder (`data_folder::adopt`).
     let path = crate::data_folder::adopt(s, path);
-    crate::history::load_sample(s, row);
+    crate::sample_route::begin(s, Some(row), std::path::Path::new(&path));
     let ch = &mut s.project.channels[row];
     crate::rack::auto_name(ch, std::path::Path::new(&path));
     crate::rack::read_tags(ch, std::path::Path::new(&path));
@@ -1092,6 +1239,38 @@ mod tests {
         assert_eq!(parse_width("width=wide\n"), crate::views::BROWSER_W);
         assert_eq!(parse_width(""), crate::views::BROWSER_W);
     }
+    #[test]
+    fn sample_menu_tags_and_editors_use_the_selected_file() {
+        use winit::keyboard::{Key, NamedKey};
+        let folder = std::env::temp_dir().join(format!("lemon-sample-menu-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("tone.wav");
+        let mut wav = Vec::new();
+        os_engine::wav::write_f32_stereo_header(&mut wav, 48000, 4800).unwrap();
+        wav.resize(wav.len() + 4800 * 8, 0);
+        std::fs::write(&file, wav).unwrap();
+        let mut app = App::new(None);
+        app.add_browser_folder(folder.clone());
+        let row = view::rows(&app.state).into_iter().find(|r| r.label == "tone.wav" || matches!(&r.item, Item::Sample(p) if std::path::Path::new(p) == file)).unwrap();
+        app.state.browser_sel = Some(row.key.clone());
+        app.browser_row_cmd(RowCmd::EditTags(false));
+        assert!(app.browser_key(&Key::Character("Dry, Kick, dry".into()), false, false));
+        assert!(app.browser_key(&Key::Named(NamedKey::Enter), false, false));
+        assert_eq!(load_tags()[file.to_str().unwrap()], ["Dry", "Kick"]);
+        assert!(view::matches(&app.state, &row, "kick"));
+        app.browser_row_cmd(RowCmd::PitchEditor);
+        assert!(app.state.playlist.popup.is_some());
+        app.state.playlist.popup = None;
+        let count = crate::playlist::clips(&app.state).len();
+        assert_eq!(app.browser_row_cmd(RowCmd::WarpEditor), None);
+        assert_eq!(crate::playlist::clips(&app.state).len(), count + 1);
+        assert!(matches!(app.state.dialogs.last().map(|d| &d.body), Some(crate::dialog::Body::Warp(_))));
+        app.browser_row_cmd(RowCmd::Trash);
+        assert!(file.exists());
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
+
 }
 
 /// Favorites are paths, so folders and samples keep working after a restart.
@@ -1217,13 +1396,18 @@ mod favorite_tests {
     fn browser_menu_restores_tabs_and_auto_hide() {
         let mut app=App::new(None);
         app.state.show_browser=true;
-        assert_eq!(view::tabs(&app.state).len(),4);
+        let tab_ids = |state: &crate::app::State| view::tabs(state).into_iter().map(|tab| tab.0).collect::<Vec<_>>();
+        let fixed = [0, 3, view::EXCHANGE_BUTTON, 5, 6];
+        assert_eq!(tab_ids(&app.state), [fixed.as_slice(), &[4]].concat());
+        app.browser_cmd(BCmd::Toggle(view::OPT_PRESETS));
+        assert_eq!(tab_ids(&app.state), fixed);
         app.browser_act(&Action::BrowserMenu);
         assert!(app.state.playlist.popup.is_some());
         for key in [view::OPT_PROJECT,view::OPT_PLUGINS,view::OPT_PRESETS] {app.browser_cmd(BCmd::Toggle(key));}
-        assert_eq!(view::tabs(&app.state).len(),7);
+        let expanded = [fixed.as_slice(), &[1, 2, 4]].concat();
+        assert_eq!(tab_ids(&app.state), expanded);
         let restarted=App::new(None);
-        assert_eq!(view::tabs(&restarted.state).len(),7);
+        assert_eq!(tab_ids(&restarted.state), expanded);
         for (tab,label) in [(1,"Current project"),(2,"Plugin database"),(4,"Plugin presets")] {
             app.browser_act(&Action::BrowserTab(tab));
             assert!(view::rows(&app.state).iter().any(|r|r.label==label && r.open==Some(true)));

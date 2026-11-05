@@ -201,6 +201,7 @@ pub enum Request {
     DropFile(usize, PathBuf),
     /// A Misc tab value changed (spec: ui/plugin-window.md "Misc tab").
     Misc(usize, crate::misc_page::M, f32),
+    CutSelf(usize),
     /// A Misc tab list asks for its menu at this screen point.
     MiscMenu(usize, crate::misc_page::M, i32, i32),
     /// A strip knob of channel row `.0` asks for its menu at this screen point.
@@ -376,7 +377,7 @@ struct LazyLibrary {
     path: PathBuf,
     format: os_host::Format,
     plugins: Vec<Descriptor>,
-    real: OnceLock<Result<Arc<dyn Library>, String>>,
+    real: OnceLock<Arc<dyn Library>>,
 }
 
 impl Library for LazyLibrary {
@@ -389,7 +390,14 @@ impl Library for LazyLibrary {
     }
 
     fn create(self: Arc<Self>, id: &str) -> Result<SharedPlugin, String> {
-        let real = self.real.get_or_init(|| load_file(&self.path, self.format)).clone()?;
+        // A missing dependency can become available after a rescan. Cache successful loads only.
+        let real = match self.real.get() {
+            Some(lib) => lib.clone(),
+            None => {
+                let lib = load_file(&self.path, self.format)?;
+                self.real.get_or_init(|| lib).clone()
+            }
+        };
         if !real.plugins().iter().any(|d| d.id == id) {
             return Err(format!("{} no longer offers this plugin: scan for plugins again", self.path.display()));
         }
@@ -898,6 +906,19 @@ impl Plugins {
         self.load_chop_sample(row, path) || (sampler && self.load_sample(row, path))
     }
 
+    pub(crate) fn browser_sample_to_plugin(&mut self,row:usize,path:&str)->bool {
+        if self.load_chop_sample(row,path) {return true;}
+        #[cfg(windows)]
+        if let Some((hwnd,_))=self.window_of(row) {
+            use windows_sys::Win32::{Foundation::RECT,UI::WindowsAndMessaging::GetWindowRect};
+            let mut r:RECT=unsafe {std::mem::zeroed()};
+            if unsafe {GetWindowRect(hwnd as _,&mut r)}!=0 {
+                return self.drop_file(row,(r.left+r.right)/2,(r.top+r.bottom)/2,path,false);
+            }
+        }
+        false
+    }
+
     /// Closes every window and drops every instance (a new or opened project).
     pub fn clear(&mut self) {
         self.pending_scales.clear();
@@ -1337,6 +1358,7 @@ impl Plugins {
                         FrameEvent::Presets(x, y) => Request::Presets(row, x, y),
                         FrameEvent::PresetStep(d) => Request::PresetStep(row, d),
                         FrameEvent::DropFile(p) => Request::DropFile(row, p),
+                        FrameEvent::CutSelf => Request::CutSelf(row),
                         FrameEvent::Misc(m, v) => Request::Misc(row, m, v),
                         FrameEvent::MiscMenu(m, x, y) => Request::MiscMenu(row, m, x, y),
                         FrameEvent::KnobMenu(k, x, y) => {
@@ -4226,8 +4248,19 @@ mod chop_drop_tests {
         let state=app.plugins.state(row).unwrap();let state:serde_json::Value=serde_json::from_slice(&state[8..]).unwrap();
         let doc:Document=serde_json::from_str(state["fields"]["chop-document"].as_str().unwrap()).unwrap();
         assert_eq!(doc.path,second.to_string_lossy());assert!(doc.cues.iter().all(|c|!c.enabled));assert!(doc.stems.iter().all(String::is_empty));
+        // Imported files start without pads. Map a cue before playing a MIDI pad.
+        let mut mapped = doc;
+        mapped.cues[0] = lemon_chop::params::Cue {
+            start: 0., end: 0.08, enabled: true, ..Default::default()
+        };
+        let mut state = state;
+        state["fields"]["chop-document"] = serde_json::json!(serde_json::to_string(&mapped).unwrap());
+        let payload = serde_json::to_vec(&state).unwrap();
+        let mut bytes = (payload.len() as u64).to_le_bytes().to_vec();
+        bytes.extend(payload);
+        app.plugins.create_with(row, app.plugins.index_of("Lemon Chop").unwrap(), Some(&bytes)).unwrap();
         let instrument=app.plugins.hosted[&row].plugin.clone();let until=std::time::Instant::now()+std::time::Duration::from_secs(5);let mut peak=0f32;
-        while std::time::Instant::now()<until {std::thread::sleep(std::time::Duration::from_millis(40));let mut i=instrument.lock().unwrap();i.note_on(0,127,1.);let(mut l,mut r)=([0.;512],[0.;512]);i.process(48000,&mut l,&mut r);peak=l.iter().fold(peak,|a,b|a.max(b.abs()));if peak>0.01{break;}}
+        while std::time::Instant::now()<until {std::thread::sleep(std::time::Duration::from_millis(40));let mut i=instrument.lock().unwrap();i.note_on(0,36,1.);let(mut l,mut r)=([0.;512],[0.;512]);i.process(48000,&mut l,&mut r);peak=l.iter().fold(peak,|a,b|a.max(b.abs()));if peak>0.01{break;}}
         assert!(peak>0.01,"dropped source is decoded and audible, not just saved as a path");
         app.plugins.clear();drop(instrument);let _=std::fs::remove_file(file);let _=std::fs::remove_file(second);let _=std::fs::remove_dir(dir);
     }

@@ -33,6 +33,7 @@ pub struct Missing {
     /// Plugins the project names that are not installed or did not start (`project_plugins::sync_wrapped`,
     /// `host_native`), each once.
     pub plugins: Vec<String>,
+    pub wrapped: std::collections::BTreeMap<usize, String>,
     /// The project was opened and the box has not been considered yet: it is, once the project has loaded.
     pub pending: bool,
     /// A Find samples... search running.
@@ -40,6 +41,10 @@ pub struct Missing {
 }
 
 impl Missing {
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.plugins.iter().chain(self.wrapped.values()).cloned().collect()
+    }
+
     /// Adds plugin names (each once; "Serum (error text)" counts as its own entry).
     pub fn add_plugins(&mut self, names: &[String]) {
         for n in names {
@@ -77,6 +82,7 @@ pub fn search_folders(s: &State, picked: &[PathBuf]) -> Vec<PathBuf> {
 pub fn opened(app: &mut App) {
     app.missing.picked.clear();
     app.missing.plugins.clear();
+    app.missing.wrapped.clear();
     app.missing.search = None;
     app.missing.pending = true;
     apply(app);
@@ -118,11 +124,11 @@ fn listed(mut names: Vec<String>) -> String {
 
 /// The project has loaded: the box lists its missing samples and plugins, once per opened project (none: no box).
 pub fn loaded(app: &mut App) {
-    if !std::mem::take(&mut app.missing.pending) {
+    if (app.sweep.is_some() && !app.wrap_failed.is_empty()) || !std::mem::take(&mut app.missing.pending) {
         return;
     }
     let samples: Vec<String> = missing_samples(&app.state).iter().map(|(_, p)| file_name(p).to_string()).collect();
-    let plugins = app.missing.plugins.clone();
+    let plugins = app.missing.plugin_names();
     if samples.is_empty() && plugins.is_empty() {
         return;
     }

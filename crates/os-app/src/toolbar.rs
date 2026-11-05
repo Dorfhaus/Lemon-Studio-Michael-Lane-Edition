@@ -171,7 +171,7 @@ impl Panel {
         match self {Panel::Hint=>return 130.0,Panel::Recording=>return 168.0,_=>{}}
         if matches!(self, Panel::Monitor | Panel::Cpu | Panel::Tools) { return 0.0; }
         if self == Panel::Utilities {
-            return 39.0;
+            return 72.0;
         }
         if crate::settings_file::flag("declutter_toolbar", false) {
             match self { Panel::Tools => return 35.0, _ => {} }
