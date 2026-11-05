@@ -36,7 +36,7 @@ impl Tool {
             "4" => Tool::Mute,
             "5" => Tool::Slice,
             "s" => Tool::Select,
-            "z" => Tool::Zoom,
+            "z" => Tool::mouse_up,
             "b" => Tool::Playback,
             _ => return None,
         })
