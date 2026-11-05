@@ -2246,6 +2246,72 @@ mod tests {
         None
     }
 
+    /// Exercise the real CLAP process/restart lifecycle, not just the EQ filter.
+    #[test]
+    fn lemon_eq_spectral_live_enable_keeps_audio_after_host_restart() {
+        use os_engine::HostedEffect as _;
+        use os_host::Plugin as _;
+        let entry = &lemon_parametric_eq_2::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void;
+        let lib = unsafe { Library::from_entry(entry, Path::new("Lemon Parametric EQ.clap")) }.unwrap();
+        for (rate, frames, harsh) in [(44100,64,false),(48000,64,false),(48000,512,false),(96000,128,false),(192000,512,false),(48000,64,true)] {
+            let mut p = Plugin::new(&lib, &lib.plugins[0].id).unwrap();
+            assert!(p.activate(rate));
+            assert_eq!(p.latency_now, 0, "ordinary EQ keeps its original latency");
+            let set = |p: &mut Plugin, name: &str, value: f64| {
+                let info = (0..p.param_count()).filter_map(|i|p.param_info(i)).find(|i|i.name==name).unwrap_or_else(||panic!("missing {name}"));
+                assert!(p.set_param(info.id, (value-info.min)/(info.max-info.min)));
+            };
+            let enable = |p: &mut Plugin, on: bool| {
+                if harsh {set(p,"De-harsh",if on {4.} else {0.});}
+                else {set(p,"Band 4 Range",-6.);set(p,"Band 4 auto dynamics",1.);set(p,"Band 4 spectral",f64::from(on));}
+                p.idle();
+            };
+            let mut sample = 0usize;
+            let (mut restarts,mut quiet,mut peak) = (0,0,0f32);
+            let (mut l,mut r) = (vec![0f32;frames],vec![0f32;frames]);
+            for block in 0..500 {
+                if block==40 || block==260 {enable(&mut p,true);}
+                if block==220 {enable(&mut p,false);}
+                for x in &mut l {
+                    *x=0.25*(std::f64::consts::TAU*220.*sample as f64/f64::from(rate)).sin() as f32
+                      +0.1*(std::f64::consts::TAU*4100.*sample as f64/f64::from(rate)).sin() as f32;
+                    sample+=1;
+                }
+                r.copy_from_slice(&l);
+                p.process_fx(rate,&mut l,&mut r);
+                p.idle();
+                restarts+=usize::from(!p.processing);
+                if block>100 {
+                    let rms=(l.iter().map(|v|v*v).sum::<f32>()/frames as f32).sqrt();
+                    if rms<0.01 {quiet+=1;}
+                    for &x in &l {assert!(x.is_finite());peak=peak.max(x.abs());}
+                }
+            }
+            let delay=if rate>=176400 {4096} else if rate>=88200 {2048} else {1024};
+            eprintln!("{rate}Hz/{frames}, deharsh={harsh}: restarts={restarts}, quiet={quiet}, peak={peak}, latency={}",p.latency_now);
+            assert_eq!(quiet,0,"repeating spectral silence at {rate}/{frames}");
+            assert!(restarts<=1,"spectral restart loop: {restarts}");
+            assert!(peak>0.1&&peak<0.6);
+            assert_eq!(p.latency_now,delay);
+            // A saved spectral/de-harsh project must report the correct delay on activation,
+            // before its first audio block, then keep it through stop/reset/reactivation.
+            let state=p.save_state().unwrap();
+            let mut recalled=Plugin::new(&lib,&lib.plugins[0].id).unwrap();
+            assert!(recalled.load_state(&state));
+            assert!(recalled.activate(rate));
+            assert_eq!(recalled.latency_now,delay);
+            for _ in 0..2 {
+                for block in 0..100 {
+                    l.fill(0.2);r.fill(-0.2);
+                    recalled.process_fx(rate,&mut l,&mut r);recalled.idle();
+                    assert!(recalled.processing,"saved EQ restarted repeatedly");
+                    if block*frames>delay as usize*2 {assert!(l.iter().all(|x|x.is_finite()&&x.abs()>0.15&&x.abs()<0.3));}
+                }
+                recalled.deactivate();assert!(recalled.activate(rate));assert_eq!(recalled.latency_now,delay);
+            }
+        }
+    }
+
     /// The built-in Lemon Parametric EQ, linked into the test binary.
     fn lemon_eq() -> os_host::SharedPlugin {
         let entry = &lemon_parametric_eq_2::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void;

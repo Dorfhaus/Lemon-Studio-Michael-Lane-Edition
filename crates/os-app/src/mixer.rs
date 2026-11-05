@@ -448,7 +448,7 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
         },
         MHit::Jump(..)=>None,
         MHit::Strip(n) | MHit::InsertBoundary(n) => {
-            select(s, n, ctrl);
+            if !ctrl&&is_selected(s,n){s.mixer.sel=selected(s);s.selected_mixer=n;}else{select(s,n,ctrl);}
             if shift {
                 start_rename(s, n, at);
             }
@@ -514,15 +514,9 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
             None
         }
         MHit::Effects(n) => {
-            select(s, n, ctrl);
-            let enabled = track(s, n)?.slots_enabled;
-            crate::history::record(s, "Mixer effects bypass", crate::history::Snap::Effects(n, enabled, s.mixer.all_fx_bypassed));
-            let was_global = s.mixer.all_fx_bypassed;
-            s.mixer.all_fx_bypassed = false;
-            let m = track_mut(s, n)?;
-            m.slots_enabled = was_global || !m.slots_enabled;
-            changed(s);
-            None
+            let group=if is_selected(s,n){selected(s)}else{select(s,n,ctrl);selected(s)};let enabled=track(s,n)?.slots_enabled;let global=s.mixer.all_fx_bypassed;
+            let snaps=group.iter().filter_map(|t|track(s,*t).map(|m|crate::history::Snap::Effects(*t,m.slots_enabled,global))).collect();crate::history::record(s,"Selected mixer effects",crate::history::Snap::Several(snaps));s.mixer.all_fx_bypassed=false;
+            for t in group{if let Some(m)=track_mut(s,t){m.slots_enabled=global||!enabled;}}changed(s);None
         }
         MHit::Unroute(dst) => {
             let cur = s.selected_mixer;
@@ -726,10 +720,9 @@ pub fn solo(s: &mut State, n: u16) {
 /// previous state after solo" on, to the states from before the first solo (a solo moved to another track keeps them;
 /// spec: ui/settings-choices.md "Miscellaneous").
 pub fn solo_with(s: &mut State, n: u16, alt: bool) {
-    let mut keep = reach(s, n, true);
-    if alt {
-        keep.extend(reach(s, n, false));
-    }
+    let group=if is_selected(s,n){selected(s)}else{vec![n]};
+    let mut keep=Vec::new();for t in group{keep.extend(reach(s,t,true));if alt{keep.extend(reach(s,t,false));}}
+    keep.sort_unstable();keep.dedup();
     keep.push(0);
     let soloed = audible_set(s, &keep);
     // A solo still in effect (the last solo's set, untouched since) keeps the states saved when it started.
@@ -1117,6 +1110,17 @@ pub fn reorder(s: &mut State, from: u16, to: u16, remember: bool) {
     if remember { sync_playlist_order(s,from.min(to),from.max(to)); }
 }
 
+/// Stable block movement of the selected inserts, retaining routing and plugin identity.
+pub fn reorder_selected(s:&mut State,from:u16,to:u16){
+ if from==0||to==0||from>inserts(s)||to>inserts(s)||s.rec.audio||s.rec.recording()||!s.mixer.recording.live.is_empty(){return;}
+ let mut group=if is_selected(s,from){selected(s)}else{vec![from]};group.retain(|t|*t>0&&*t<=inserts(s));group.sort_unstable();group.dedup();if group.contains(&to){return;}
+ let mut order:Vec<_>=(1..=inserts(s)).filter(|t|!group.contains(t)).collect();let Some(at)=order.iter().position(|t|*t==to)else{return};let at=at+usize::from(to>from);order.splice(at..at,group);
+ let arrangements=s.project.arrangements.clone();let lanes=s.project.instrument_lanes.clone();
+ let mut current:Vec<_>=(1..=inserts(s)).collect();let mut moves=Vec::new();let(mut lo,mut hi)=(inserts(s),1);
+ for i in 0..order.len(){if current[i]==order[i]{continue;}let j=current.iter().position(|t|*t==order[i]).unwrap();let(a,b)=((j+1)as u16,(i+1)as u16);moves.push((b,a));reorder(s,a,b,false);let v=current.remove(j);current.insert(i,v);lo=lo.min(a.min(b));hi=hi.max(a.max(b));}
+ if !moves.is_empty(){sync_playlist_order(s,lo,hi);moves.reverse();crate::history::record(s,"Move selected mixer tracks",crate::history::Snap::MixerMoves{moves,arrangements,lanes});}
+}
+
 /// Reorder linked rows as whole groups. Mixed-instrument rows and unrelated rows stay in place.
 fn sync_playlist_order(s:&mut State,lo:u16,hi:u16) {
     use os_model::ClipSource;
@@ -1154,14 +1158,7 @@ fn sync_playlist_order(s:&mut State,lo:u16,hi:u16) {
 }
 
 /// Swaps track `n` with its neighbour (`d` = -1 left, +1 right), §6.1 Move left / right.
-fn move_track(s: &mut State, n: u16, d: i32) -> Option<String> {
-    let o = i32::from(n) + d;
-    if n == 0 || o < 1 || o > i32::from(inserts(s)) {
-        return None;
-    }
-    reorder(s,n,o as u16,true);
-    None
-}
+fn move_track(s:&mut State,n:u16,d:i32)->Option<String>{let group=if is_selected(s,n){selected(s)}else{vec![n]};let edge=if d<0{*group.iter().filter(|t|**t>0).min().unwrap_or(&n)}else{*group.iter().max().unwrap_or(&n)};let to=edge as i32+d;if to>=1&&to<=inserts(s)as i32{reorder_selected(s,n,to as u16);}None}
 
 /// Deletes track `n`: later tracks move one left, a default track is added at the end (§6.1 Delete).
 fn delete_track(s: &mut State, n: u16) -> Option<String> {
@@ -2116,6 +2113,13 @@ mod tests {
         crate::history::undo(&mut a.state);assert_eq!(a.state.project.mixer[1],before);
         crate::history::redo(&mut a.state);assert_eq!(a.state.project.mixer[1],expected);
         hit(&mut a,MHit::StripBypass(1));assert_eq!(a.state.project.mixer[1],before);
+    }
+
+    #[test]fn workflow_batch_mixer_move_effects_solo_and_undo(){
+      let mut a=App::new(None);a.state.project=crate::app::test_project();for m in &mut a.state.project.mixer{m.name=Some(format!("T{}",m.index));m.slots_enabled=true;}a.state.selected_mixer=4;a.state.mixer.sel=vec![2,4];
+      hit(&mut a,MHit::Effects(4));assert!(!track(&a.state,2).unwrap().slots_enabled&&!track(&a.state,4).unwrap().slots_enabled);assert_eq!(selected(&a.state).len(),2);crate::history::undo(&mut a.state).unwrap();assert!(track(&a.state,2).unwrap().slots_enabled);
+      solo(&mut a.state,4);assert!(track(&a.state,2).unwrap().enabled&&track(&a.state,4).unwrap().enabled&&!track(&a.state,3).unwrap().enabled);solo(&mut a.state,4);assert!(track(&a.state,3).unwrap().enabled);
+      a.state.project.channels[0].mixer_track=2;run(&mut a,MCmd::MoveRight(4));let names=|a:&App|(1..=6).map(|n|name(&a.state,n)).collect::<Vec<_>>();assert_eq!(names(&a),vec!["T1","T3","T5","T2","T4","T6"]);assert_eq!(a.state.project.channels[0].mixer_track,4);assert_eq!(selected(&a.state).len(),2);crate::history::undo(&mut a.state).unwrap();assert_eq!(names(&a),vec!["T1","T2","T3","T4","T5","T6"]);assert_eq!(a.state.project.channels[0].mixer_track,2);crate::history::redo(&mut a.state).unwrap();assert_eq!(names(&a),vec!["T1","T3","T5","T2","T4","T6"]);
     }
     #[test]
     fn select_mute_solo() {

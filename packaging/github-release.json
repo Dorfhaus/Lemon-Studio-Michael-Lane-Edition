@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.05.4",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.05.4",
-  "notes": "- Make It Fit now combines MiniBPM tempo analysis with Lemon Studio's onset detector and explicit BPM labels, with safeguards for silence, steady tones and ambiguous rhythmic estimates.\n- Select Playlist audio stems and run Make It Fit on a selected reference clip to apply one timing ratio to the selection, preserving clip start positions and using pitch-preserving Pro stretching.\n- Channel Rack sample menus and Lemon Sampler's Time menu now offer tempo detection, Make It Fit, source BPM entry, beat/bar lengths and Reset stretching. Fitting works without a Playlist clip and supports Undo.\n- Piano Roll Stretch is an independent toggle alongside Pencil and Brush. Drag a selected note's right edge to scale the selected notes' timing and lengths; note bodies retain group movement. Right-click empty space to turn Stretch off.\n- The Piano Roll Control/Velocity menu draws above editor frames, opens upward when needed and stays inside the application window, including at larger interface scales.\n- Original, Clean Modern and Analog mixer finishes now also style native Channel Strip mixer controls while preserving hosted third-party plugin appearance.\n- Playlist clip gain handles use clearer pointing-finger cursor feedback. Amplified waveforms stay within the clip audio body and no longer cover clip titles.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.05.5",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.05.5",
+  "notes": "- Lemon EQ has a resizable graph-led glass editor with compact Frequency, Gain and Q controls, independent window dimensions and interface scaling, grouped band editing, Undo/Redo and A/B comparison.\n- Clearly labeled Dynamic and Spectral buttons show each band mode. Right-click bands to switch modes, enter precise values or delete; right-click empty graph space to add regular, dynamic or spectral bands.\n- Dynamic EQ adds automatic or manual threshold, attack and release with an illuminated range ring. Frequency-selective spectral dynamics and De-harsh provide resonance suppression, density and detector tilt controls while retaining the original static EQ path at default settings.\n- Fixed Spectral and De-harsh repeatedly restarting the EQ during live playback, causing silence and glitch noises. Saved spectral settings now restore their processing delay before activation.\n- EQ graph points keep the pointer visible during dragging. Creating a point and immediately grabbing it no longer opens value entry; context-menu deletion supports Undo without renumbering automation.\n- Optional inline Playlist vocal tuning includes direct note and curve editing, live drag audition, expression controls, navigation and a microphone/tuning-fork track button. Improved hand grabs, constrained stretching and recovery after processing failures.\n- Plugin Picker supports multiple selections, bulk favorites and a persistent Blacklist tab with Restore. Hidden plugins stay out of normal selection without deleting files or unloading existing project instances.\n- Playlist tracks support individual saved heights and header resizing. Ctrl-drag selection can start over clips. Mixer track groups move together while preserving routing, effects and automation, and share FX bypass and solo actions.\n- Slimmer editing tool cursors and Alt-click resets for Playlist clip fades and gain.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.05.4.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110504/Lemon-Studio-Windows-Setup-2026.11.05.4.exe",
-      "sha256": "66d778ba2b18f68cb09bb0063be632cde3ec3436ef482618405e371ac205d9a9"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.05.5.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110505/Lemon-Studio-Windows-Setup-2026.11.05.5.exe",
+      "sha256": "fa5fb76fa080db67ed8b8fcb2d9c03cf4c0213a5e5ba61cef90e8528ba73fd48"
     },
     {
-      "name": "Lemon-Studio-Source-2026110504.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110504/Lemon%20Studio%20Source.zip",
-      "sha256": "9b9de349c946f3945e84502b1a5c0281bc84688938c95d7f3f4e81d2b7defeb7"
+      "name": "Lemon-Studio-Source-2026110505.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110505/Lemon%20Studio%20Source.zip",
+      "sha256": "136606faffc11745daabcf49f2c1640ae79a72ba3c526b3dd1ff97c78e0455f9"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110504.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110504/Lemon-Studio-Linux-x86_64-2026110504.tar.gz",
-      "sha256": "64b0b690ed0cdbba1def5c7cf7ad289336d9dcfafa86a5262efbe2b999d7bd42"
+      "name": "Lemon-Studio-Linux-x86_64-2026110505.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110505/Lemon-Studio-Linux-x86_64-2026110505.tar.gz",
+      "sha256": "14e4bf96ae9af3ca5df85922ad85044cadc80ff91b0ee5f7f26c80f99e1b015e"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110504.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110504/Lemon-Studio-Mac-arm64-2026110504.dmg",
-      "sha256": "75758c5b58ebadf8a9a98f55f86c39d52059e7a0268b5a21d64f9eda90c55231"
+      "name": "Lemon-Studio-Mac-arm64-2026110505.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110505/Lemon-Studio-Mac-arm64-2026110505.dmg",
+      "sha256": "e0f8f3eec664fa5f7f83cc66c334fb0e39f5770ca5efaef6c02e5680d9b4d6cd"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110504.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110504/Lemon-Studio-Source-Mac-arm64-2026110504.zip",
-      "sha256": "ac0947d3b82f5a81a876ac4ad827f77aa8336b6ec947a1506d95f47a6d3fef87"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110505.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110505/Lemon-Studio-Source-Mac-arm64-2026110505.zip",
+      "sha256": "5755a1be45d459b0b7e2d014d0d05b03a9f42e35c88734eb50a923f7357d7d06"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110504.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110504/Lemon-Studio-Mac-x86_64-2026110504.dmg",
-      "sha256": "0ffd60ccd1df3513c2e290c829c28576e49f96dd75e33219ca8f50ec2f6eccf6"
+      "name": "Lemon-Studio-Mac-x86_64-2026110505.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110505/Lemon-Studio-Mac-x86_64-2026110505.dmg",
+      "sha256": "2f96d7da48cf3b3ade102ac0a752e694055f71d3f889219f0068f34cfdb5b8cf"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110504.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110504/Lemon-Studio-Source-Mac-x86_64-2026110504.zip",
-      "sha256": "991624f49c29859f1e20c77a726c4a530e8f6792ad2c9a3c2859a03df3ebcc1b"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110505.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110505/Lemon-Studio-Source-Mac-x86_64-2026110505.zip",
+      "sha256": "d67c8cc826e6f5569e5691bcf0829aa2e559fc4bc0e61baf32b9ffcc429ebd25"
     }
   ]
 }

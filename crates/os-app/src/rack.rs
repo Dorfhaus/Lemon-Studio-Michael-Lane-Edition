@@ -852,6 +852,7 @@ pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
         p.channels.iter().enumerate().filter_map(|(pos, c)| map.get(pos).copied().flatten().map(|n| (c.index, n as u16))).collect();
     p.mpe.channels.retain_mut(|v|map.get(usize::from(v.0)).copied().flatten().map(|id|v.0=id as u16).is_some());
     p.clip_fx_channels=p.clip_fx_channels.iter().filter_map(|c|idx.get(c).copied()).collect();
+    p.vocal_edits.retain_mut(|d|idx.get(&d.channel).map(|&id|d.channel=id).is_some());
     let mut chans: Vec<(usize, os_model::Channel)> =
         std::mem::take(&mut p.channels).into_iter().enumerate().filter_map(|(pos, c)| map.get(pos).copied().flatten().map(|n| (n, c))).collect();
     chans.sort_by_key(|(n, _)| *n);
@@ -900,6 +901,7 @@ pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
 /// Apply a new channel order (`order` = old rows top to bottom; rows left out are deleted) to the project, the
 /// app state and the hosted plugins.
 pub fn reorder(app: &mut App, order: &[usize]) {
+    app.vocal_job=None;app.state.playlist.vocal.busy=false;app.state.playlist.vocal.selected.clear();
     let n = app.state.project.channels.len();
     let mut map = vec![None; n];
     for (new, &old) in order.iter().enumerate() {
@@ -988,6 +990,7 @@ pub fn clone_rows(app: &mut App, rows: &[usize]) {
             let root=app.state.project.channels.len();
             let children=os_model::instrument_stack(&app.state.project,r).into_iter().skip(1).collect::<Vec<_>>();
             app.state.project.channels.push(c);
+            crate::vocal::clone_source(&mut app.state,from,root as u16);
             order.push(root);roots.push(root);sources.push((root,r));
             if !children.is_empty(){
                 app.state.project.channels[root].layer_children.clear();
@@ -1255,6 +1258,7 @@ fn clone_complete(app: &mut App, row: usize) -> Option<String> {
         ]),
     );
     s.project.channels.extend(channels);
+    for (&from,&to) in &map {crate::vocal::clone_source(s,from,to);}
     s.project.patterns.extend(patterns);
     s.project.automations.extend(automations);
     s.project.init_controls.extend(init);

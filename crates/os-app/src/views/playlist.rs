@@ -282,6 +282,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         ui.c.stroke_rrect(r,2.,1.2,t.h(0xff5252));
         ui.c.text_clip(Font::new(12),r.x+4.,r.y+1.,(r.w-8.).max(0.),t.text,&format!("REC - {}",live.name));
     }
+    crate::vocal::paint(ui,s,&g);
     // Overlays.
     match s.playlist.overlay {
         Some(Overlay::Comp{clip,a,b}) => {
@@ -1180,8 +1181,8 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     if strip {return;}
     // The LED and "…" keep their distance from the row's bottom when the track height changes (Alt+wheel); short
     // rows drop the "…" and keep the name clear of the LED.
-    let short = g.rows.row_h < pl::ROW_H - 8.0;
-    let led = Rect::new(hr.right() - 19.0, (h - gap - 15.0).max(1.0) + hr.y, 14.0, 14.0);
+    let short = g.rows.base_height(row) < pl::ROW_H - 8.0;
+    let led = Rect::new(hr.right() - 19.0, (g.rows.base_height(row) - gap - 15.0).max(1.0) + hr.y, 14.0, 14.0);
     let auto = Rect::new(led.x, led.y - 17.0, 14.0, 14.0);
     let active = s.playlist.automation_views.get(&row);
     let hint = active.map(|ch| format!("Automation: {} (click to select another)", pl::source_name(s, ClipSource::Channel(*ch)))).unwrap_or_else(|| "Track automation: choose a parameter".into());
@@ -1194,6 +1195,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     ui.hit(led, Action::PlLed(row), "Mute track (right-click / Ctrl+click: solo)");
     let text = if colored.is_some() { ui.t.tx(0xdce8f0) } else { t.text_faint };
     let text = if on || crate::comping::parent(s,row).is_some() { text } else { text.shade(-0.35) };
+    crate::vocal::head(ui,s,row,Rect::new(hr.x+27.,led.y,17.,14.));
     let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
     if !editing {
         let name_w = if short { hr.w - 26.0 } else { hr.w - 4.0 };
@@ -1233,6 +1235,8 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     } else {
         super::led(ui, led.cx(), led.cy(), on);
     }
+    crate::vocal::keys(ui,s,g,row,hr);
+    ui.hit(Rect::new(hr.x,hr.bottom()-3.,hr.w,4.),Action::PlRowResize(row),"Drag to resize this Playlist track");
 }
 
 /// The face behind a title-bar tool icon; returns the icon colour. Lemon: the active tool is a lit rounded square.

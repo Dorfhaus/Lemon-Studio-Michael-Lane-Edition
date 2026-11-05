@@ -156,6 +156,7 @@ mod search_folders;
 mod settings_file;
 mod shortcuts;
 mod warp;
+mod vocal;
 mod smooth;
 mod snap;
 mod song_pos;

@@ -16,6 +16,7 @@ master-assistant = []
 private-master-assistant = ["master-assistant"]
 
 [dependencies]
+libloading = "0.8"
 os-model.workspace = true
 os-dsp.workspace = true
 os-flp.workspace = true

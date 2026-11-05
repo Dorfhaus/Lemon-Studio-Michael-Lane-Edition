@@ -81,7 +81,9 @@ pub fn warp(left:&[f32],right:&[f32],rate:u32,points:&[(usize,usize)])->Result<(
     if points.iter().all(|&(s,d)|s-start==d){return Ok((left[start..start+frames].to_vec(),right[start..start+frames].to_vec()));}
     let (mut l,mut r,mut weights)=(vec![0.;frames],vec![0.;frames],vec![0.;frames]);
     for pair in points.windows(2){
-        let ((a,x),(b,y))=(pair[0],pair[1]);let ratio=(y-x) as f64/(b-a) as f64;
+        let ((a,x),(b,y))=(pair[0],pair[1]);
+        if a==x&&b==y{for j in a..b{l[j]+=left[j];r[j]+=right[j];weights[j]+=1.;}continue;}
+        let ratio=(y-x) as f64/(b-a) as f64;
         if !(0.0625..=16.).contains(&ratio){return Err("Keep each warp segment between 1/16 and 16 times its original duration".into());}
         let pad=(rate as usize/100).min((b-a)/4).max(1);
         let lo=a.saturating_sub(pad);let hi=(b+pad).min(n);

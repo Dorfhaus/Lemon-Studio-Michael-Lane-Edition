@@ -54,6 +54,8 @@ fn accel(label: &str) -> char {
 /// The work that waits for a dialog's answer (`App::dialog_done`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Then {
+    VocalDownload(u16),
+    VocalReanalyse(u16),
     TrashBrowserSample(PathBuf),
     CommunitySample,
     CommunityNewsletter(bool),

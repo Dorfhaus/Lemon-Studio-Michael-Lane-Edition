@@ -102,7 +102,7 @@ const CHANNEL_RACK: TablerIcon = TablerIcon {
 const VOTE: TablerIcon = TablerIcon {filled:false,d:"M 5 12 L 5 21 L 21 21 L 21 12 M 3 12 L 9 12 M 17 12 L 23 12 M 8 5 L 13 2 L 19 10 L 14 14 Z M 11 7 L 14 8 L 15 5"};
 const DOWNLOAD: TablerIcon = TablerIcon { filled: false, d: "M 12 3 L 12 15 M 7 10 L 12 15 L 17 10 M 4 16 L 4 21 L 20 21 L 20 16" };
 
-fn shape(icon: Icon) -> &'static TablerIcon {
+pub(crate) fn shape(icon: Icon) -> &'static TablerIcon {
     match icon {
         Icon::Exchange => &TablerIcon { filled: false, d: "M 3 8 L 20 8 L 15 3 M 21 16 L 4 16 L 9 21" },
         Icon::Vote => &VOTE,

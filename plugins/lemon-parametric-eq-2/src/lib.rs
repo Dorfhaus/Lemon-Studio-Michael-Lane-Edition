@@ -15,7 +15,7 @@ pub mod params;
 pub mod view;
 
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::*;
@@ -30,6 +30,13 @@ pub const SCOPE_LEN: usize = 1 << 15;
 pub struct Shared {
     pub scope: Mutex<Scope>,
     pub rate: AtomicU32,
+    pub dynamics:[AtomicU32;8],
+    pub spectral:[AtomicU32;256],
+    pub trigger:[AtomicU32;7],
+    pub threshold:[AtomicU32;7],
+    pub solo:AtomicI32,
+    pub editor_w:AtomicU32,
+    pub editor_h:AtomicU32,
     /// Set while an editor is open (the audio thread feeds the analyzer only then).
     pub editor_open: AtomicBool,
 }
@@ -46,6 +53,13 @@ impl Default for Shared {
         Shared {
             scope: Mutex::new(Scope { buf: vec![0.0; SCOPE_LEN], pos: 0, written: 0 }),
             rate: AtomicU32::new(44100),
+            editor_w:AtomicU32::new(view::W),
+            editor_h:AtomicU32::new(view::H),
+            solo:AtomicI32::new(-1),
+            spectral:std::array::from_fn(|_|AtomicU32::new(0f32.to_bits())),
+            trigger:std::array::from_fn(|_|AtomicU32::new((-120f32).to_bits())),
+            threshold:std::array::from_fn(|_|AtomicU32::new((-30f32).to_bits())),
+            dynamics:std::array::from_fn(|_|AtomicU32::new(0f32.to_bits())),
             editor_open: AtomicBool::new(false),
         }
     }
@@ -65,6 +79,7 @@ pub struct LemonEq {
     sr: f64,
     /// The original's processing (every mode), and the parameters it was last given as stored values.
     eq: Equalizer,
+    audition:os_engine::effects::eq::dynamic::Audition,
     applied: [i32; PARAMS],
     /// The options read from the state image, and the delay last reported to the host.
     opts: Options,
@@ -84,6 +99,7 @@ impl Default for LemonEq {
             params,
             shared: Arc::new(Shared::default()),
             sr: 44100.0,
+            audition:os_engine::effects::eq::dynamic::Audition::new(44100.),
             eq: Equalizer::new(44100.0, &applied, opts),
             applied,
             opts,
@@ -115,6 +131,7 @@ impl LemonEq {
     fn apply(&mut self) {
         self.read_extra();
         self.eq.set_options(self.opts);
+        let mut dyns=os_engine::effects::eq::dynamic::Config::default();for i in 0..47{dyns.set(i,self.params.live.value(&self.params.dynamic[i]));}self.eq.set_dynamic(dyns);
         let p = self.params.settings(self.opts.mask).params();
         for (i, (&new, old)) in p.iter().zip(self.applied.iter_mut()).enumerate() {
             if new != *old {
@@ -172,12 +189,16 @@ impl Plugin for LemonEq {
 
     fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, ctx: &mut impl InitContext<Self>) -> bool {
         self.sr = f64::from(config.sample_rate);
+        self.audition=os_engine::effects::eq::dynamic::Audition::new(self.sr);
         self.shared.rate.store(config.sample_rate as u32, Ordering::Relaxed);
         self.extra_seen = u64::MAX;
         self.read_extra();
         self.applied = self.params.settings(self.opts.mask).params();
         self.eq = Equalizer::new(self.sr, &self.applied, self.opts);
         self.eq.set_routes(routed::routes(&self.params.extra_copy(),false));
+        // Restore dynamics before reporting latency. CLAP reinitializes after a live delay
+        // change; reporting the static-only delay here causes an endless restart/reset loop.
+        self.apply();
         self.latency = self.eq.latency() as u32;
         ctx.set_latency_samples(self.latency);
         self.feed = Vec::with_capacity(config.max_buffer_size as usize);
@@ -208,7 +229,14 @@ impl Plugin for LemonEq {
             self.feed_scope(&out[0][..len], &out[1][..len]);
         }
         let (left, right) = out.split_at_mut(1);
+        let solo=self.shared.solo.load(Ordering::Relaxed);
+        if (0..7).contains(&solo){let band=self.params.settings(self.opts.mask).bands[solo as usize];self.audition.process(&mut left[0][..len],&mut right[0][..len],band);}
         self.eq.process(&mut left[0][..len], &mut right[0][..len]);
+        if self.shared.editor_open.load(Ordering::Relaxed){
+        for (meter,v) in self.shared.dynamics.iter().zip(self.eq.dynamic_meters()){meter.store(v.to_bits(),Ordering::Relaxed);}
+        for (meter,v) in self.shared.spectral.iter().zip(self.eq.spectral_response()){meter.store(v.to_bits(),Ordering::Relaxed);}
+        let (trigger,threshold)=self.eq.detector_meters();for i in 0..7{self.shared.trigger[i].store(trigger[i].to_bits(),Ordering::Relaxed);self.shared.threshold[i].store(threshold[i].to_bits(),Ordering::Relaxed);}}
+
         if watch && self.monitor.0 == 2 {
             self.feed_scope(&out[0][..len], &out[1][..len]);
         }
@@ -238,3 +266,25 @@ nih_export_clap!(LemonEq);
 #[cfg(not(feature = "linked"))]
 nih_export_vst3!(LemonEq);
 os_plugkit::linked_clap_entry!(LemonEq);
+
+#[cfg(test)]mod dynamic_tests {
+ use super::*;
+ #[test]fn live_automated_dynamic_parameters_reach_audio(){
+  let mut plugin=LemonEq::default();let mut vals=os_plugkit::vals::Vals::new(&*plugin.params,plugin.params.live.clone(),None);
+  vals.edit_plain(&params::freq_id(3),os_engine::effects::eq::freq_pos(1000.) as f32);
+  vals.edit_plain(&params::dynamic_id(12),-12.);vals.edit_plain(&params::dynamic_id(13),-30.);
+  plugin.apply();let input:Vec<_>=(0..44100).map(|i|0.5*(std::f64::consts::TAU*1000.*i as f64/44100.).sin() as f32).collect();let mut l=input.clone();let mut r=input.clone();plugin.eq.process(&mut l,&mut r);
+  assert!(plugin.eq.dynamic_meters()[3]< -10.);let ratio=(l[22050..].iter().map(|v|v*v).sum::<f32>()/input[22050..].iter().map(|v|v*v).sum::<f32>()).sqrt();assert!(ratio<0.4);
+ }
+}
+
+#[cfg(test)]mod spectral_integration_tests{
+ use super::*;
+ #[test]fn spectral_automation_recall_and_native_render_agree(){
+  let mut plugin=LemonEq::default();let mut editor=editor::Logic::new(plugin.params.clone(),plugin.shared.clone(),None);
+  editor.vals.edit_plain(&params::freq_id(3),os_engine::effects::eq::freq_pos(4100.)as f32);editor.vals.edit_plain(&params::dynamic_id(12),-9.);editor.vals.edit_plain(&params::dynamic_id(13),-50.);editor.vals.edit_plain(&params::dynamic_id(43),1.);editor.vals.edit_plain(&params::dynamic_id(37),0.7);
+  let image=params::to_fl(&editor.shown(),&editor.shown_extra());let recalled=params::fl_from_plugin_state(&params::plugin_state_from_fl(&image)).unwrap();assert_eq!(recalled,image);
+  plugin.apply();let mut native=routed::RoutedEq::from_state(&recalled,44100.).unwrap();assert_eq!(plugin.eq.latency(),native.latency());assert_eq!(plugin.eq.latency(),1024);
+  let input:Vec<_>=(0..44100).map(|i|0.4*(std::f64::consts::TAU*4100.*i as f64/44100.).sin()as f32).collect();let mut l=input.clone();let mut r=input.clone();let mut a=input.clone();let mut b=input.clone();plugin.eq.process(&mut l,&mut r);native.process(&mut a,&mut b);assert_eq!(l,a);assert_eq!(r,b);assert!(plugin.eq.dynamic_meters()[3]< -3.);assert!(l[22050..].iter().map(|v|v*v).sum::<f32>()<input[22050..].iter().map(|v|v*v).sum::<f32>()*0.7);
+ }
+}

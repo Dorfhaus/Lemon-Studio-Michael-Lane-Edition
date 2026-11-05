@@ -100,6 +100,9 @@ pub fn load_shared(path: &Path) -> Result<Arc<Sample>, SampleError> {
     Ok(s)
 }
 
+/// Share freshly generated audio with file-backed samplers without decoding its WAV again.
+pub fn remember_shared(path:&Path,sample:Arc<Sample>){if let (Some(stamp),Ok(mut map))=(stamp(path),live().lock()){map.retain(|_,(w,_)|w.strong_count()>0);map.insert(path.to_owned(),(Arc::downgrade(&sample),stamp));}}
+
 /// Decodes a WAV (PCM or Vorbis-in-WAV) / FLAC / Ogg Vorbis / WavPack / MP3 / AIFF file.
 pub fn load(path: &Path) -> Result<Sample, SampleError> {
     let bytes = std::fs::read(path).map_err(|source| SampleError::Io { path: path.to_owned(), source })?;

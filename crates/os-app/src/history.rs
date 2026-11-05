@@ -56,6 +56,7 @@ pub enum Snap {
     ChannelEnabled(usize,bool),
     PitchFollow(usize,bool,i32),
     AudioWarps(Vec<os_model::AudioWarp>),
+    Vocals(Vec<os_model::vocal::Edit>),
     StackLinks(usize,Vec<u16>),
     ClipFxOwners(Vec<u16>),
     MpeConfig(Vec<(u16,os_model::mpe::Config)>),
@@ -64,6 +65,7 @@ pub enum Snap {
     Tempo(f64),
     Ara(usize, Option<String>, Option<Vec<u8>>),
     MixerInsert { n:u16,remove:bool,previous:u16,selection:Vec<u16> },
+    MixerMoves { moves:Vec<(u16,u16)>,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     ChannelRoute(usize,u16),
     SampleRoute { sample: Box<Snap>, route: u16, name: Option<String>, insert: Option<bool> },
@@ -207,6 +209,7 @@ pub struct Settings {
 /// instruments as the delete found them (row, `Plugins::available` index, saved state), hosted again by an undo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
+    pub vocal_edits:Vec<os_model::vocal::Edit>,
     pub mpe_channels:Vec<(u16,os_model::mpe::Config)>,
     pub clip_fx_channels:Vec<u16>,
     pub original_values: std::collections::HashMap<u16, f64>,
@@ -230,6 +233,7 @@ impl Rows {
     pub fn now(s: &State, full: bool, gone: Vec<usize>, back: Vec<(usize, usize, Vec<u8>)>) -> Rows {
         let (p, r) = (&s.project, &s.rack);
         Rows {
+            vocal_edits:p.vocal_edits.clone(),
             mpe_channels:p.mpe.channels.clone(),
             clip_fx_channels:p.clip_fx_channels.clone(),
             original_values: s.playlist.original_values.clone(),
@@ -267,6 +271,7 @@ impl Rows {
         };
         let m = |r: usize| map.get(r).copied().flatten();
         let p = &mut s.project;
+        p.vocal_edits=self.vocal_edits;
         p.mpe.channels=self.mpe_channels;
         p.clip_fx_channels=self.clip_fx_channels;
         (p.channels, p.patterns, p.automations) = (self.channels, self.patterns, self.automations);
@@ -371,9 +376,11 @@ impl Snap {
                 let current=s.project.channels.get(r.row).and_then(|_|s.params.lists.get(&r.row)).and_then(|l|l.plugin.upgrade()).and_then(|p|p.lock().ok()?.save_state()).unwrap_or_else(||blob.clone());
                 Snap::StackInstrument(Box::new(RackSide::now(s,r.row)),*index,current)
             },
+            Snap::Vocals(_)=>Snap::Vocals(s.project.vocal_edits.clone()),
             Snap::AudioWarps(_)=>Snap::AudioWarps(s.project.audio_warps.clone()),
             Snap::Tempo(_) => Snap::Tempo(s.tempo),
             Snap::MixerInsert{n,remove,..}=>Snap::MixerInsert{n:*n,remove:!*remove,previous:s.selected_mixer,selection:s.mixer.sel.clone()},
+            Snap::MixerMoves{moves,..}=>Snap::MixerMoves{moves:moves.iter().rev().map(|(a,b)|(*b,*a)).collect(),arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::InstrumentLanes(_)=>Snap::InstrumentLanes(s.project.instrument_lanes.clone()),
             Snap::Ara(row,..) => Self::ara(s,*row).unwrap_or_else(||self.clone()),
@@ -466,9 +473,11 @@ impl Snap {
             | Snap::ClipFxOwners(..)
             | Snap::StackLinks(..)
             | Snap::StackInstrument(..)
+            | Snap::Vocals(..)
             | Snap::AudioWarps(..)
             | Snap::Tempo(..)
             | Snap::MixerInsert{..}
+            | Snap::MixerMoves{..}
             | Snap::MixerMove{..}
             | Snap::InstrumentLanes(..)
             | Snap::SampleRoute { .. }
@@ -530,6 +539,7 @@ impl Snap {
                 put_rack(s,*r);
                 if back{s.rows_moved.push(((0..s.project.channels.len()).map(Some).collect(),vec![(row,index,blob)]));}
             },
+            Snap::Vocals(v)=>s.project.vocal_edits=v,
             Snap::AudioWarps(v)=>s.project.audio_warps=v,
             Snap::Tempo(v) => s.tempo=v,
             Snap::Pattern { number, notes, controls, length } => {
@@ -559,6 +569,7 @@ impl Snap {
             Snap::RackStrips(v) => {for c in v {crate::mixer::put_channel(s,c);}},
             Snap::MixerChannel(c) => crate::mixer::put_channel(s,*c),
             Snap::MixerInsert{n,remove,previous,selection}=>{if remove {crate::mixer::undo_insert(s,n);}else{crate::mixer::add_track(s,Some(n));}s.selected_mixer=previous;s.mixer.sel=selection;},
+            Snap::MixerMoves{moves,arrangements,lanes}=>{for(from,to)in moves{crate::mixer::reorder(s,from,to,false);}s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
             Snap::MixerMove{from,to,arrangements,lanes}=>{crate::mixer::reorder(s,from,to,false);s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
             Snap::InstrumentLanes(v)=>s.project.instrument_lanes=v,
             Snap::ChannelLayout(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.channel_layout=p;}},
@@ -984,6 +995,7 @@ fn swap(s: &mut State, i: usize) {
 
 /// Undoes the newest done step; its name, or `None` when nothing is done.
 pub fn undo(s: &mut State) -> Option<&'static str> {
+    crate::vocal::history_changed(s);
     let h = &mut s.history;
     if h.done == 0 {
         return None;
@@ -997,6 +1009,7 @@ pub fn undo(s: &mut State) -> Option<&'static str> {
 
 /// Redoes the oldest undone step; its name, or `None` when nothing is undone.
 pub fn redo(s: &mut State) -> Option<&'static str> {
+    crate::vocal::history_changed(s);
     let h = &mut s.history;
     if h.done == h.steps.len() {
         return None;

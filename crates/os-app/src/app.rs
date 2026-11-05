@@ -325,8 +325,10 @@ pub enum Action {
     PlClips,
     PlRuler,
     PlMarkers,
+    Vocal(crate::vocal::Command),
     PlHeader(u16),
     PlTrackGrip(u16),
+    PlRowResize(u16),
     PlLed(u16),
     PlAutomation(u16),
     PlAutomationToggle(u16),
@@ -859,6 +861,9 @@ const PLUGIN_POPUPS: &str = "Menus of detached plugin windows on Linux (dock the
 
 #[derive(Debug, Clone)]
 pub enum Drag {
+    Vocal(crate::vocal::Gesture),
+    VocalNav(crate::vocal::navigation::Navigation),
+    PlRowResize{row:u16,y0:f32,h0:f32},
     WarpMarker(usize),
     /// Settings > MIDI: a handle of the mapping curve window (0 start, 1 middle, 2 end).
     MidiCurve(u8),
@@ -1414,6 +1419,9 @@ pub struct App {
     pub(crate) ai_runtime: Option<crate::ai_control::Runtime>,
     pub(crate) headphone_job: Option<crate::headphones::Job>,
     pub(crate) stem_job: Option<crate::stem_separation::Job>,
+    pub(crate) vocal_job: Option<crate::vocal::Job>,
+    pub(crate) vocal_audition:crate::vocal::audition::State,
+    pub(crate) vocal_audio:Option<std::sync::Arc<os_engine::Sample>>,
     /// macOS: the answer to a Quit, for AppKit (`macos::answer_quit`).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub quit_answer: Option<bool>,
@@ -1679,6 +1687,9 @@ impl App {
             restart_update: false,
             update_status: String::new(),
             stem_job: None,
+            vocal_job:None,
+            vocal_audition:Default::default(),
+            vocal_audio:None,
             headphone_job: None,
             ai_runtime: None,
             quit_answer: None,
@@ -2323,6 +2334,8 @@ impl App {
                 }
             }
             // Cancel and the caption's × change nothing.
+            Then::VocalReanalyse(row)=>{if reply==Reply::Button(Answer::Yes){crate::vocal::reanalyse(self,row);}},
+            Then::VocalDownload(row)=>{if reply==Reply::Button(Answer::Yes){crate::vocal::download(self,row);}},
             Then::StretchClips(rows, method) => {
                 if reply == Reply::Button(Answer::Ok) {
                     crate::rack::set_stretch(self, &rows, method);
@@ -2456,6 +2469,8 @@ impl App {
 
     /// Drops every hosted instance (a new or opened project); `sync_samplers` hosts the new project's samplers.
     pub(crate) fn reset_hosted(&mut self) {
+        crate::vocal::audition::stop(self);self.vocal_audition=Default::default();self.vocal_audio=None;
+        self.vocal_job=None;self.state.playlist.vocal=Default::default();
         self.mpe_release_all();
         self.state.mpe=Default::default();
         self.plugins.clear();
@@ -2681,6 +2696,7 @@ impl App {
         }
         self.scan_tick();
         crate::clip_normalize::tick(self);
+        crate::vocal::tick(self);
         self.loading_tick();
         self.export_tick();
         crate::missing::tick(self);
@@ -5548,7 +5564,19 @@ impl App {
     }
 
     pub(crate) fn top_hit(&self, x: f32, y: f32) -> Option<&Hit> {
-        self.hits.iter().rev().find(|h| h.rect.contains(x, y))
+        let hit=self.hits.iter().rev().find(|h| h.rect.contains(x,y))?;
+        // The open hand extends about 12 logical pixels from its hotspot. A hand touching
+        // a note should grab it; exact body/edge hits and all overlaid controls still win.
+        if self.state.playlist.vocal.tool==crate::vocal::Tool::Main
+            && matches!(hit.action,Action::Vocal(crate::vocal::Command::Grid(_)|crate::vocal::Command::Surface)) {
+            let distance=|r:Rect| {let dx=(r.x-x).max(0.).max(x-r.right());let dy=(r.y-y).max(0.).max(y-r.bottom());dx*dx+dy*dy};
+            if let Some(note)=self.hits.iter().rev().filter(|h| {
+                matches!(h.action,Action::Vocal(crate::vocal::Command::Note(ci,_))
+                    if !matches!(hit.action,Action::Vocal(crate::vocal::Command::Grid(other)) if ci!=other))
+                    && h.win==hit.win && !h.rect.is_empty() && h.rect.outset(12.).contains(x,y)
+            }).min_by(|a,b|distance(a.rect).total_cmp(&distance(b.rect))) {return Some(note);}
+        }
+        Some(hit)
     }
 
     /// Mouse moved; returns whether a repaint is needed.
@@ -6005,6 +6033,9 @@ impl App {
                 Drag::ThemeKnob { i, y0, p0 } => self.theme_knob_drag(i, y0, p0, y),
                 Drag::PickSv(r) => self.picker_sv(r, x, y),
                 Drag::PickHue(r) => self.picker_hue(r, y),
+                Drag::Vocal(_)=>crate::vocal::drag(self,x,y),
+                Drag::PlRowResize{row,y0,h0}=>{crate::playlist::resize_track(&mut self.state,row,h0+y-y0);self.invalidate();},
+                Drag::VocalNav(_)=>crate::vocal::navigation::drag(self,x,y),
                 Drag::WarpMarker(i)=>crate::warp::drag(self,i,x),
                 Drag::Tempo { y0, t0, step, moved } => {
                     self.drag = Some(Drag::Tempo { y0, t0, step, moved: moved || (y-y0).abs() >= 3.0 });
@@ -6432,6 +6463,7 @@ impl App {
 
     /// Cursor for the current hover / drag.
     pub fn cursor(&self) -> Cursor {
+        if matches!(self.drag,Some(Drag::PlRowResize{..}))||matches!(self.hover,Some(Action::PlRowResize(_))){return Cursor::NsResize;}
         if matches!(self.drag,Some(Drag::TrackSize{..})) ||
             (self.resize_cursor && self.hover==Some(Action::Scrollbar(Scroll::PlaylistY))) { return Cursor::NsResize; }
         let win_edges = match (&self.drag, &self.hover) {
@@ -6548,7 +6580,7 @@ impl App {
     fn zoom_set(&mut self, t: Scroll, z: f32) {
         match t {
             Scroll::PianoX => self.state.piano.px_per_beat = z.clamp(6.0, 1600.0),
-            Scroll::PlaylistX => self.state.playlist_bar_w = z.clamp(4.0, crate::playlist::max_zoom()),
+            Scroll::PlaylistX => self.state.playlist_bar_w = z.clamp(4.0, crate::playlist::zoom_limit(&self.state)),
             Scroll::PlaylistY => self.set_rows(t, z),
             _ => {}
         }
@@ -6938,11 +6970,14 @@ impl App {
     }
 
     pub(crate) fn cancel_mouse_audition(&mut self) {
+        crate::vocal::audition::stop(self);
         self.hold_key(None,false);
         if matches!(self.drag,Some(Drag::PianoKeys{..})){self.drag=None;}
     }
 
     pub fn mouse_up(&mut self) {
+        crate::vocal::audition::stop(self);
+        self.state.playlist.vocal.marquee=None;
         self.state.mpe.drag=None;
         if crate::plugin_picker::mouse_up(self) { return; }
         if matches!(self.drag,Some(Drag::Knob{id:crate::knobs::KnobId::Eq(..)|crate::knobs::KnobId::Strip(_,0|3),..})){self.damage_win(Win::Mixer);}
@@ -7018,7 +7053,7 @@ impl App {
         }
         if let Some(Drag::MixSelect{from,to,started,..})=self.drag.clone() {
             self.drag=None;
-            if started {crate::mixer::reorder(&mut self.state,from,to,true);}
+            if started {crate::mixer::reorder_selected(&mut self.state,from,to);}else{crate::mixer::select(&mut self.state,from,false);}
             self.invalidate();return;
         }
         if let Some(Drag::RackMixer{ch,started,m0})=self.drag.clone().filter(|d|matches!(d,Drag::RackMixer{..})) {
@@ -7426,6 +7461,7 @@ impl App {
         if self.menu_wheel(dx, dy, shift) {
             return;
         }
+        if crate::vocal::navigation::wheel(self,dx,dy,shift,ctrl){return;}
         // Scrolling or zooming one window repaints just that window; scrolling the playlist moves its pixels.
         let before = self.damage.clone();
         let s = &self.state;
@@ -7779,7 +7815,7 @@ impl App {
             _ if pl_area && (ctrl || (!shift && matches!(area, Some(Action::PlRuler | Action::PlMarkers)))) => {
                 let gx = self.pl_grid.map_or(481.0, |g| g.x);
                 let bar = (s.playlist_scroll.0 + x - gx) / s.playlist_bar_w;
-                s.playlist_bar_w = (s.playlist_bar_w * 1.25f32.powf(dy + dx)).clamp(4.0, crate::playlist::max_zoom());
+                s.playlist_bar_w = (s.playlist_bar_w * 1.25f32.powf(dy + dx)).clamp(4.0, crate::playlist::zoom_limit(s));
                 s.playlist_scroll.0 = (bar * s.playlist_bar_w - (x - gx)).max(0.0);
                 Some(Win::Playlist)
             }
@@ -7853,6 +7889,7 @@ impl App {
         }
         // Inline playlist edits own shortcuts as well as printable text.
         if self.state.playlist.edit.is_some() { crate::playlist::key(self,key,ctrl,alt); return; }
+        if crate::vocal::key_input(self,key,ctrl,alt){return;}
         // Ctrl+J: Multilink to controllers (spec: ui/remote-control.md §4).
         if let Key::Character(c) = key
             && ctrl
@@ -8198,6 +8235,7 @@ impl App {
         if !self.typing_on() || ctrl || alt || self.shift {
             return false;
         }
+        if crate::vocal::navigation::rect(self).is_some_and(|r|r.contains(self.mouse.0,self.mouse.1))&&self.state.z.last()==Some(&Win::Playlist)&&matches!(code,KeyCode::Digit1|KeyCode::Digit2|KeyCode::Digit3|KeyCode::Digit4|KeyCode::Digit5|KeyCode::Digit6|KeyCode::Digit7|KeyCode::Digit8|KeyCode::Digit9|KeyCode::KeyD|KeyCode::KeyH|KeyCode::KeyZ|KeyCode::KeyF|KeyCode::KeyM|KeyCode::KeyT){return false;}
         if self.state.piano.harmony.open && self.state.z.last()==Some(&Win::PianoRoll){return false;}
         if self.state.z.last()==Some(&Win::PianoRoll) && code==KeyCode::KeyC && self.state.playlist.popup.is_none(){return false;}
         // These playlist shortcuts take priority over the computer-keyboard piano while the playlist is frontmost.
@@ -8523,6 +8561,8 @@ impl App {
                     pl::press_markers(self, g, right);
                 }
             }
+            Action::PlRowResize(row) if right=>{pl::press_header(self,row,true,self.mouse);},
+            Action::PlRowResize(row)=>{crate::playlist::snapshot_as(&mut self.state,"Resize playlist track");let h0=crate::playlist::Rows::new(&self.state).base_height(row);self.drag=Some(Drag::PlRowResize{row,y0:self.mouse.1,h0});},
             Action::PlTrackGrip(t)=>{
                 if right{pl::press_header(self,t,true,self.mouse);}else{
                     if !self.state.playlist.header_selection.contains(&t){self.state.playlist.header_selection=vec![t];}
@@ -8530,6 +8570,7 @@ impl App {
                     self.drag=Some(Drag::Pl(pl::PlDrag::Track{row:t,y0:self.mouse.1,started:false}));self.invalidate();
                 }
             }
+            Action::Vocal(c)=>{if right{crate::vocal::context(self);}else{crate::vocal::command(self,c);}},
             Action::PlHeader(t) => {
                 let at = self.top_hit(self.mouse.0, self.mouse.1).map_or(self.mouse, |h| (h.rect.x, h.rect.y));
                 pl::press_header(self, t, right, at);
@@ -8705,6 +8746,7 @@ impl App {
         }
         let s = &mut self.state;
         match a {
+            Action::Vocal(_)=>{},
             Action::RackStrip(_)=>{},
             Action::PianoGrid | Action::PianoNote(_) | Action::PianoVelocity | Action::PianoKeys | Action::PianoRuler | Action::PianoSplitter | Action::Scrollbar(_) | Action::ScrollStep(..) => {}
             Action::PianoTool(t) => {
@@ -9115,7 +9157,7 @@ impl App {
             | Action::PlClips
             | Action::PlRuler
             | Action::PlMarkers
-            | Action::PlHeader(_) | Action::PlTrackGrip(_)
+            | Action::PlHeader(_) | Action::PlTrackGrip(_) | Action::PlRowResize(_)
             | Action::PlLed(_)
             | Action::PlAutomationToggle(_)
             | Action::PlAutomation(_)
@@ -19603,10 +19645,12 @@ mod tests {
         let body = g.body(&pl::clips(&app.state)[ci]);
         let drag = |app: &mut App, c: &mut Canvas, (x0, y0): (f32, f32), (x1, y1): (f32, f32)| {
             app.mouse_move(x0, y0);
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,crate::playlist_tools::GAIN)),"finger on clip handle");
             app.mouse_down();
             for k in 1..=8 {
                 let f = k as f32 / 8.0;
                 app.mouse_move(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
+                assert!(matches!(app.cursor(),Cursor::Playlist(_,crate::playlist_tools::GAIN)),"finger throughout handle drag");
             }
             app.mouse_up();
             frame(app, c, None);
@@ -19650,6 +19694,33 @@ mod tests {
         assert_eq!(pl::clips(&app.state)[ci+1].gain(), 0.5);
         app.key(&winit::keyboard::Key::Character("z".into()), true, false);
         assert_eq!(pl::clips(&app.state)[ci].fade_in().unwrap().1, 0.0);
+        // Alt-click resets just the touched edge for the selected audio clips.
+        let before=pl::clips(&app.state).to_vec();
+        for out in [false,true]{
+            app.state.playlist.sel=vec![ci,ci+1];
+            let g=pl::PGeom::new(&app.state,app.pl_grid().unwrap());
+            let clip=pl::clips(&app.state)[ci];let body=g.body(&clip);
+            let (left,right)=pl::fade_xs(&app.state,&g,&clip);
+            app.mouse_move(if out{right-3.}else{left+3.},body.y+3.);
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,crate::playlist_tools::GAIN)));
+            app.alt=true;app.mouse_down();assert!(app.drag.is_none());app.mouse_up();app.alt=false;
+            for j in [ci,ci+1]{
+                let clip=pl::clips(&app.state)[j];
+                assert_eq!(if out{clip.stored_fade_out()}else{clip.stored_fade_in()},None);
+                assert_eq!(if out{clip.stored_fade_in()}else{clip.stored_fade_out()},if out{before[j].stored_fade_in()}else{before[j].stored_fade_out()});
+            }
+            assert_eq!(pl::clips(&app.state)[ci+2],before[ci+2]);
+            crate::history::undo(&mut app.state).unwrap();assert_eq!(pl::clips(&app.state),before);
+        }
+        pl::arr_mut(&mut app.state).clips[ci].set_gain(1.8);
+        pl::arr_mut(&mut app.state).clips[ci+1].set_gain(0.4);
+        let before=pl::clips(&app.state).to_vec();
+        app.state.playlist.sel=vec![ci,ci+1];
+        app.mouse_move(body.cx(),body.bottom()-2.);app.alt=true;app.mouse_down();
+        assert!(app.drag.is_none());app.mouse_up();app.alt=false;
+        assert_eq!(pl::clips(&app.state)[ci].gain(),1.);assert_eq!(pl::clips(&app.state)[ci+1].gain(),1.);
+        assert_eq!(pl::clips(&app.state)[ci+2],before[ci+2]);
+        crate::history::undo(&mut app.state).unwrap();assert_eq!(pl::clips(&app.state),before);
         let _ = std::fs::remove_file(&wav);
     }
 
@@ -19843,6 +19914,20 @@ mod tests {
         let _ = std::fs::remove_file(wav);
     }
 
+
+    #[test]fn workflow_batch_mixer_drag_and_alt_arrows(){
+      use winit::keyboard::{Key,NamedKey};
+      use crate::mixer as mx;
+      let mut a=App::new(None);a.state.project=test_project();a.state.z=vec![Win::Mixer];for t in &mut a.state.project.mixer{t.name=Some(format!("T{}",t.index));}
+      let mut c=Canvas::new(1920,1080,1.).unwrap();frame(&mut a,&mut c,None);mx::select(&mut a.state,2,false);mx::select(&mut a.state,4,true);
+      let r=hit_rect(&a,&Action::Mix(mx::MHit::Strip(4)));let dest=hit_rect(&a,&Action::Mix(mx::MHit::Strip(6)));a.mouse_move(r.cx(),r.y+3.);a.mouse_down();assert_eq!(mx::selected(&a.state).len(),2);a.mouse_move(dest.cx(),dest.y+3.);a.mouse_up();assert_eq!((mx::name(&a.state,5),mx::name(&a.state,6)),("T2".into(),"T4".into()));
+      a.key(&Key::Named(NamedKey::ArrowLeft),false,true);assert_eq!((mx::name(&a.state,4),mx::name(&a.state,5)),("T2".into(),"T4".into()));a.key(&Key::Named(NamedKey::ArrowRight),false,true);assert_eq!((mx::name(&a.state,5),mx::name(&a.state,6)),("T2".into(),"T4".into()));assert_eq!(mx::selected(&a.state).len(),2);
+    }
+
+    #[test]fn workflow_batch_ctrl_marquee_and_individual_track_heights(){
+      let mut a=App::new(None);a.state.project=test_project();a.state.screen=(1280.,900.);a.state.raise(Win::Playlist);a.state.wins[Win::Playlist.slot().unwrap()].maxed=true;a.state.playlist_bar_w=240.;let arr=crate::playlist::arr_mut(&mut a.state);arr.clips.clear();for row in 0..3{arr.clips.push(os_model::Clip::new(0,192,row,os_model::ClipSource::Pattern(1)));}let mut c=os_ui::Canvas::new(1280,900,1.).unwrap();a.paint(&mut c,None);let grid=a.pl_grid().unwrap();let g=crate::playlist::PGeom::new(&a.state,grid);let first=g.clip_rect(&crate::playlist::clips(&a.state)[0]);let last=g.clip_rect(&crate::playlist::clips(&a.state)[2]);a.ctrl=true;a.mouse_move(first.cx(),first.cy());a.mouse_down();a.mouse_move(first.cx()+10.,last.bottom()-2.);a.mouse_up();a.ctrl=false;assert_eq!(a.state.playlist.sel.len(),3);assert!(crate::playlist::clips(&a.state).iter().all(|c|c.position==0));
+      a.paint(&mut c,None);let r=hit_rect(&a,&Action::PlRowResize(1));let h=crate::playlist::Rows::new(&a.state).base_height(1);a.mouse_move(r.cx(),r.cy());a.mouse_down();a.mouse_move(r.cx(),r.cy()+71.);a.mouse_up();let rows=crate::playlist::Rows::new(&a.state);assert_eq!(rows.base_height(1),h+71.);assert_eq!(rows.base_height(0),h);assert_eq!(rows.clip_h_for(1),h+68.);let bytes=os_flp::project::create(&a.state.project).unwrap().to_bytes().unwrap();let p=os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();assert_eq!(p.arrangement().unwrap().tracks[1].height,Some(h+71.));crate::history::undo(&mut a.state).unwrap();assert_eq!(crate::playlist::Rows::new(&a.state).base_height(1),h);
+    }
     #[test]
     fn audio_clip_double_click_opens_its_sampler() {
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
@@ -21097,6 +21182,7 @@ mod tests {
         app.state.z = vec![Win::Mixer];
         app.state.show_browser = false;
         for n in 0..8 {
+            app.state.project.mixer[n].slots_enabled=true;
             app.state.project.mixer[n].slots[0] = Some(os_model::SlotPlugin { name: "Test FX".into(), state: vec![1, 2, 3] });
         }
         app.state.project.mixer[2].slots_enabled = false;
@@ -21549,6 +21635,7 @@ mod tests {
     fn mixer_fx_button_bypasses_without_changing_slots() {
         let mut app = App::new(None);
         app.state.project = test_project();
+        app.state.project.mixer[1].slots_enabled=true;
         app.state.z = vec![Win::Mixer];
         app.state.show_browser = false;
         app.state.project.mixer[1].slots[0] = Some(os_model::SlotPlugin { name: "Test FX".into(), state: vec![1, 2, 3] });

@@ -354,6 +354,7 @@ pub enum Cmd {
     TrackDelete(u16),
     TrackColor(u16, Option<Rgb>),
     AllRowHeight(u16,u16),
+    TrackHeight(u16,Option<u16>),
     TrackMuteClips(u16, bool),
     /// "Create automation clip" on a control: target, name, current value 0..1.
     CreateAutomation(u32, String, f64),
@@ -584,6 +585,7 @@ pub struct TextEdit {
 /// A waveform summary for drawing audio clips: min/max per `per` frames (left channel + right mixed).
 pub fn wave_detail()->u8 {crate::prefs::text("playlist_wave_detail").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0).min(2)}
 pub fn max_zoom()->f32 {match wave_detail(){1=>12000.,2=>192000.,_=>600.}}
+pub fn zoom_limit(s:&State)->f32{if s.playlist.vocal.row.is_some(){max_zoom().max(48000.)}else{max_zoom()}}
 
 #[derive(Debug, Clone)]
 pub struct Wave {
@@ -614,6 +616,7 @@ pub(crate) struct RowLinks {
 pub(crate) type Snapshot = (Vec<Clip>, Vec<TimeMarker>, Vec<PlaylistTrack>, Vec<Automation>, Vec<[u32; 4]>, HashMap<u16, f64>, Vec<(u16,u16,u16,u16)>, RowLinks);
 
 pub struct PlaylistState {
+    pub vocal:crate::vocal::View,
     pub tool_changed: Option<std::time::Instant>,
     pub controls: crate::playlist_controls::Controls,
     pub original_values: HashMap<u16, f64>,
@@ -687,6 +690,7 @@ pub struct PlaylistState {
 impl Default for PlaylistState {
     fn default() -> Self {
         PlaylistState {
+            vocal:Default::default(),
             tool_changed: None,
             controls: Default::default(),
             original_values: HashMap::new(),
@@ -806,6 +810,7 @@ pub const STRIP_H: f32 = 6.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
     top: Vec<f32>,
+    base:Vec<f32>,
     pub row_h: f32,
 }
 
@@ -814,6 +819,7 @@ impl Rows {
         let tracks = s.project.arrangement().map(|a| a.tracks.as_slice()).unwrap_or(&[]);
         // On the drawing grid, so tops and heights add up exactly (`PGeom::xs64`).
         let row_h = snap(f64::from(s.playlist.row_h.clamp(ROW_MIN, ROW_MAX)));
+        let mut base=Vec::with_capacity(usize::from(TRACKS));
         let mut top = Vec::with_capacity(usize::from(TRACKS) + 1);
         // Only automation projected onto another lane can hide a populated row.
         let mut projected = [false; TRACKS as usize];
@@ -833,18 +839,21 @@ impl Rows {
         for t in 0..usize::from(TRACKS) {
             top.push(y);
             let tr = tracks.get(t);
+            let height=tr.and_then(|t|t.height).filter(|h|h.is_finite()).unwrap_or(row_h).clamp(ROW_MIN,600.);base.push(height);
             let grouped = t > 0 && tr.is_some_and(|x| x.grouped);
             if !grouped {
                 collapsed = tr.is_some_and(|x| x.collapsed);
             }
             let folded = projected[t] && !local[t];
-            y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { row_h };
+            y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { height+if crate::vocal::expanded(s,t as u16){crate::vocal::EXTRA}else{0.} };
         }
         top.push(y);
-        Rows { top, row_h }
+        Rows { top,base,row_h }
     }
 
     /// A clip's height: its row less the 3 px gap.
+    pub fn base_height(&self,t:u16)->f32{self.base[usize::from(t.min(TRACKS-1))]}
+    pub fn clip_h_for(&self,t:u16)->f32{(self.base_height(t)-3.).max(1.)}
     pub fn clip_h(&self) -> f32 {
         self.row_h - 3.0
     }
@@ -860,7 +869,7 @@ impl Rows {
 
     /// A collapsed group's member: drawn as a strip.
     pub fn strip(&self, t: u16) -> bool {
-        self.height(t) < self.row_h - 0.5
+        self.height(t) < 0.5
     }
 
     /// The track at content height `y`.
@@ -961,7 +970,7 @@ impl PGeom {
         if self.rows.strip(c.track) {
             return Rect::new(x, -100000., 0., 0.);
         }
-        Rect::new(x, self.y_of(c.track), w, self.rows.clip_h())
+        Rect::new(x, self.y_of(c.track), w, self.rows.clip_h_for(c.track))
     }
 
     /// `clip_rect` for drawing: an edge further than 2048 px outside the grid is pulled in to that distance, so every
@@ -979,7 +988,7 @@ impl PGeom {
     /// The body of a clip below its title strip (automation curves, notes, waveforms).
     pub fn body(&self, c: &Clip) -> Rect {
         let r = self.clip_rect(c);
-        Rect::new(r.x, r.y + TITLE_H, r.w, (self.rows.clip_h() - TITLE_H - 1.0).max(1.0))
+        Rect::new(r.x, r.y + TITLE_H, r.w, (self.rows.clip_h_for(c.track) - TITLE_H - 1.0).max(1.0))
     }
 }
 
@@ -1637,6 +1646,7 @@ pub fn clone_clips(s: &mut State, orig: &[(usize, Clip)]) -> Vec<(usize, Clip)> 
     clips(s).iter().enumerate().skip(first).map(|(i, c)| (i, *c)).collect()
 }
 
+pub fn resize_track(s:&mut State,row:u16,height:f32){if let Some(t)=arr_mut(s).tracks.get_mut(row as usize){t.height=Some(height.round().clamp(ROW_MIN,600.));}s.piano.dirty=true;}
 /// Alt+wheel: change the track height by FL's 6 px steps around the track under the mouse (§6).
 pub fn zoom_rows(s: &mut State, grid: Rect, y: f32, notches: f32) {
     let row = s.playlist.row_h + ROW_STEP * notches.round();
@@ -1679,7 +1689,7 @@ pub fn load_view(s: &mut State) {
     s.playlist.row_h = (v.row_px() as f32).clamp(ROW_MIN, ROW_MAX);
     let tpp = v.ticks_per_px();
     if tpp.is_finite() && tpp > 0.0 {
-        s.playlist_bar_w = (f64::from(bar(s)) / tpp).clamp(4.0, f64::from(max_zoom())) as f32;
+        s.playlist_bar_w = (f64::from(bar(s)) / tpp).clamp(4.0, f64::from(zoom_limit(s))) as f32;
         let left = v.left();
         let tpp = f64::from(bar(s)) / f64::from(s.playlist_bar_w);
         s.playlist_scroll.0 = if left.is_finite() { (left / tpp).max(0.0) as f32 } else { 0.0 };
@@ -2010,6 +2020,7 @@ fn apply_track_order(s:&mut State,order:&[u16],root:u16,family:&[u16],automation
     let remap=|r:u16|map.get(r as usize).copied().unwrap_or(r);
     s.playlist.header_selection=s.playlist.header_selection.iter().map(|&t|remap(t)).collect();
     s.playlist.header_anchor=s.playlist.header_anchor.map(remap);
+    s.playlist.vocal.row=s.playlist.vocal.row.map(remap);
     let arr=arr_mut(s);
     let old=arr.tracks.clone();
     arr.tracks=order.iter().enumerate().map(|(i,&r)|PlaylistTrack {number:i as u32+1,..old[r as usize].clone()}).collect();
@@ -2037,6 +2048,7 @@ fn apply_track_order(s:&mut State,order:&[u16],root:u16,family:&[u16],automation
 
 /// Swap two tracks with their clips.
 pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
+    s.playlist.vocal.row=s.playlist.vocal.row.map(|r|if r==a{b}else if r==b{a}else{r});
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
     for v in &mut s.project.instrument_lanes {if v.1==number {if v.2==a{v.2=b;}else if v.2==b{v.2=a;}}}
@@ -2058,6 +2070,7 @@ pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
 pub fn insert_track(s: &mut State, t: u16) {
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let shift = |r:u16| if r>=t {r.saturating_add(1).min(TRACKS-1)} else {r};
+    s.playlist.vocal.row=s.playlist.vocal.row.map(shift);
     s.playlist.automation_last=std::mem::take(&mut s.playlist.automation_last).into_iter().map(|(r,ch)|(shift(r),ch)).collect();
     s.playlist.automation_views=std::mem::take(&mut s.playlist.automation_views).into_iter().map(|(r,ch)|(shift(r),ch)).collect();
     for r in s.playlist.automation_owners.values_mut(){*r=shift(*r);}
@@ -2084,6 +2097,7 @@ pub fn insert_track(s: &mut State, t: u16) {
 
 /// Delete track `t` with its clips (the rest move up).
 pub fn delete_track(s: &mut State, t: u16) {
+    s.playlist.vocal.row=s.playlist.vocal.row.and_then(|r|if r==t{None}else{Some(if r>t{r-1}else{r})});
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
     let gone: Vec<usize> = clips(s).iter().enumerate().filter(|(_, c)| c.track == t).map(|(i, _)| i).collect();
@@ -2163,6 +2177,7 @@ pub fn make_unique(s: &mut State, i: usize) -> Option<u16> {
         // and mixer routing. Its clip window/offset and placement remain untouched.
         let row=s.project.channels.len();
         s.project.channels.push(ch);
+        crate::vocal::clone_source(s,index,next);
         arr_mut(s).clips.get_mut(i)?.source=ClipSource::Channel(next);
         s.playlist.source=Some(ClipSource::Channel(next));
         s.selected_channel=row;
@@ -2189,7 +2204,7 @@ pub fn make_unique(s: &mut State, i: usize) -> Option<u16> {
 fn snapshot_unique(s: &mut State) {
     use crate::history::{Snap,Tail};
     let extra=Snap::Several(vec![Snap::Tail(Box::new(Tail::now(s,s.project.channels.len()))),
-        Snap::Patterns{patterns:s.project.patterns.clone(),current:s.pattern}]);
+        Snap::Patterns{patterns:s.project.patterns.clone(),current:s.pattern},Snap::Vocals(s.project.vocal_edits.clone())]);
     snapshot_with(s,"Make Unique",extra);
 }
 
@@ -2922,6 +2937,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
         PItem::new("Create take lanes / comp", Cmd::CompTrack(t)),
         PItem::new("Rename...", Cmd::TrackRename(t)),
         PItem::sub("Color", colors),
+        PItem::sub("This track height",vec![PItem::new("Use default height",Cmd::TrackHeight(t,None)),PItem::new("Compact",Cmd::TrackHeight(t,Some(32))),PItem::new("Normal",Cmd::TrackHeight(t,Some(48))),PItem::new("Tall",Cmd::TrackHeight(t,Some(100))),PItem::new("Extra tall",Cmd::TrackHeight(t,Some(180)))]),
         PItem::sub("Playlist row height (all tracks)", [
             ("Compact", 32u16), ("Normal", ROW_H as u16), ("Tall", 80), ("Extra tall", 120)
         ].into_iter().map(|(label,height)| PItem::new(label,Cmd::AllRowHeight(t,height))
@@ -3255,8 +3271,10 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
 
     // Ctrl+drag selects in any tool; Ctrl+click toggles a clip (§3).
     if app.ctrl && !right {
+        let base=s.playlist.sel.clone();
         match hit {
             Some(i) => {
+                app.drag=Some(Drag::Pl(PlDrag::Marquee{x0:x,y0:y+s.playlist_scroll.1,base}));
                 // A grouped clip toggles with its group.
                 let group = with_groups(s, vec![i]);
                 if s.playlist.sel.contains(&i) {
@@ -3283,6 +3301,28 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             let targets = if s.playlist.sel.contains(&ci) {
                 s.playlist.sel.iter().copied().filter(|&i| clips(s).get(i).is_some_and(|c| source_kind(s,c.source)==PickKind::Audio)).collect()
             } else { vec![ci] };
+            if alt {
+                if h==Handle::Crossfade {
+                    let a=crossfade(s,&g,ci).map_or(ci,|xf|xf.a);
+                    arr_mut(s).clips[ci].set_fade_in_tension(0.);
+                    arr_mut(s).clips[a].set_fade_out_tension(0.);
+                }else{
+                    for i in targets {
+                        let c=&mut arr_mut(s).clips[i];
+                        match h {
+                            Handle::FadeIn=>{c.set_fade_in(None);c.set_fade_in_tension(0.);},
+                            Handle::FadeOut=>{c.set_fade_out(None);c.set_fade_out_tension(0.);},
+                            Handle::TensionIn=>c.set_fade_in_tension(0.),
+                            Handle::TensionOut=>c.set_fade_out_tension(0.),
+                            Handle::Gain=>c.set_gain(1.),
+                            Handle::Crossfade=>{},
+                        }
+                    }
+                }
+                s.piano.dirty=true;
+                app.hint=Cow::Owned(handle_hint(&clips(s)[ci],h));
+                app.invalidate();return;
+            }
             app.drag = Some(Drag::Pl(match h {
                 Handle::FadeIn => PlDrag::Fade { clip: ci, out: false, targets },
                 Handle::FadeOut => PlDrag::Fade { clip: ci, out: true, targets },
@@ -3736,6 +3776,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
         }
         PlDrag::Marquee { x0, y0, base } => {
             let y0 = y0 - s.playlist_scroll.1;
+            if (x-x0).hypot(y-y0)<3.{return app.invalidate();}
             let r = Rect::span(x0.min(x), x0.max(x)+1., y0.min(y), y0.max(y)+1.);
             s.playlist.overlay = Some(Overlay::Marquee(r));
             let mut sel = base.clone();
@@ -3990,11 +4031,11 @@ fn zoom_to(app: &mut App, grid: Rect, x0: f32, y0: f32) {
     let bar = (g.ppq * 4) as f32;
     if (x1 - x0).abs() < 4.0 {
         let t = g.tick_at(x1);
-        s.playlist_bar_w = (s.playlist_bar_w * 2.0).min(max_zoom());
+        s.playlist_bar_w = (s.playlist_bar_w * 2.0).min(zoom_limit(s));
         s.playlist_scroll.0 = (t / bar * s.playlist_bar_w - (x1 - grid.x)).max(0.0);
     } else {
         let (t0, t1) = (g.tick_at(x0.min(x1)).max(0.0), g.tick_at(x0.max(x1)).max(0.0));
-        s.playlist_bar_w = (grid.w / ((t1 - t0).max(1.0) / bar)).clamp(4.0, max_zoom());
+        s.playlist_bar_w = (grid.w / ((t1 - t0).max(1.0) / bar)).clamp(4.0, zoom_limit(s));
         s.playlist_scroll.0 = t0 / bar * s.playlist_bar_w;
         s.playlist_scroll.1 = (s.playlist_scroll.1 + y0.min(y1) - grid.y).max(0.0);
     }
@@ -4022,7 +4063,7 @@ pub fn zoom_on(s: &mut State, grid: (f32, f32), idx: &[usize]) {
     let (Some(a), Some(b)) = (cs.iter().map(|c| c.position).min(), cs.iter().map(|c| c.end()).max()) else { return };
     let bar = bar(s) as f32;
     let span = ((b - a) as f32 / bar).max(1.0);
-    s.playlist_bar_w = (grid.0 / span).clamp(4.0, max_zoom());
+    s.playlist_bar_w = (grid.0 / span).clamp(4.0, zoom_limit(s));
     s.playlist_scroll.0 = a as f32 / bar * s.playlist_bar_w;
     let top = cs.iter().map(|c| c.track).min().unwrap_or(0);
     // The selected tracks fill the view's height, on FL's 2 px height steps (§5; FL measured only at the maximum).
@@ -4823,14 +4864,14 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::WaveDetail(level) => {
             let center=(s.playlist_scroll.0+grid_w/2.)/s.playlist_bar_w;
             crate::prefs::set_text("playlist_wave_detail",&level.min(2).to_string());
-            s.playlist_bar_w=s.playlist_bar_w.min(max_zoom());
+            s.playlist_bar_w=s.playlist_bar_w.min(zoom_limit(s));
             s.playlist_scroll.0=(center*s.playlist_bar_w-grid_w/2.).max(0.);
             None
         }
         Cmd::ZoomIn | Cmd::ZoomOut => {
             let k = if cmd == Cmd::ZoomIn { 1.25 } else { 0.8 };
             let center = (s.playlist_scroll.0 + grid_w / 2.0) / s.playlist_bar_w;
-            s.playlist_bar_w = (s.playlist_bar_w * k).clamp(4.0, max_zoom());
+            s.playlist_bar_w = (s.playlist_bar_w * k).clamp(4.0, zoom_limit(s));
             s.playlist_scroll.0 = (center * s.playlist_bar_w - grid_w / 2.0).max(0.0);
             None
         }
@@ -5196,7 +5237,9 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             delete_track(s, t);
             None
         }
+        Cmd::TrackHeight(row,height)=>{snapshot_as(s,"Resize playlist track");if let Some(t)=arr_mut(s).tracks.get_mut(row as usize){t.height=height.map(f32::from);}s.piano.dirty=true;None},
         Cmd::AllRowHeight(track,height) => {
+            snapshot_as(s,"Resize all playlist tracks");for t in &mut arr_mut(s).tracks{t.height=None;}
             if let Some(grid)=grid {
                 let rows=Rows::new(s);
                 let anchor=grid.y+rows.top(track)+rows.height(track)*0.5-s.playlist_scroll.1;

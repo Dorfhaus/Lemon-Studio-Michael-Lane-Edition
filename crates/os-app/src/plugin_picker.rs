@@ -4,21 +4,22 @@ use crate::{app::{Action,App,State,Ui,Drag},plugin_menu::{Target,PlugCmd},plugin
 use os_ui::{Rect,Font};
 use winit::keyboard::{Key,NamedKey};
 #[derive(Clone,Copy,Debug,PartialEq)]
-pub enum Hit { Background,Close,Minimize,Sort,SortBy(u8),Choose,Filter(u8),Favorite(bool,usize),Tile(bool,usize),Manage,Clear,Picture(bool,usize),Page(i8),Generate,CancelGeneration,PreviewReport }
+pub enum Hit { BulkFavorite(bool),BulkBlacklist(bool),Background,Close,Minimize,Sort,SortBy(u8),Choose,Filter(u8),Favorite(bool,usize),Tile(bool,usize),Manage,Clear,Picture(bool,usize),Page(i8),Generate,CancelGeneration,PreviewReport }
 #[derive(Clone,Debug)]
 pub struct View {
     pub open:bool, pub target:Target, pub query:String, pub filter:u8,
     pub minimized:bool, pub sort_open:bool, pub last_click:Option<((bool,usize),std::time::Instant)>, pub sort:u8, pub preview_revision:u64,
     pub images:crate::plugin_artwork::Images, pub hovered:Option<(bool,usize)>,
+    pub multi:Vec<(bool,usize)>,pub anchor:Option<usize>,
     pub first:usize, pub selected:usize, pub pending:Option<(Hit,(f32,f32))>,
 }
-impl Default for View {fn default()->Self{Self{minimized:false,sort_open:false,last_click:None,sort:0,preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None}}}
+impl Default for View {fn default()->Self{Self{multi:Vec::new(),anchor:None,minimized:false,sort_open:false,last_click:None,sort:0,preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None}}}
 fn entries(s:&State,effect:bool)->Vec<&Entry>{
     let v=&s.plugin_picker;
     if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
         || (v.filter==1 && effect) || (v.filter==2 && !effect) {return Vec::new();}
     let q=v.query.to_lowercase();
-    let list=if effect{&s.plugdb.lists.fx}else{&s.plugdb.lists.gens};
+    let lists=if v.filter==5{&s.plugdb.blacklisted}else{&s.plugdb.lists};let list=if effect{&lists.fx}else{&lists.gens};
     let mut rows:Vec<_>=list.iter().filter(|e| (v.filter!=3 || e.favorite) && (v.filter!=4 || !e.builtin) && q.split_whitespace().all(|w|
         format!("{} {} {} {}",e.label,e.vendor,e.category,crate::plugin_db::format_label(e.format)).to_lowercase().contains(w))).collect();
     rows.sort_by_cached_key(|e| (match v.sort {1=>e.vendor.to_lowercase(),2=>e.category.to_lowercase(),_=>String::new()},e.label.to_lowercase()));
@@ -37,16 +38,16 @@ fn geometry(s:&State)->(Rect,usize,usize){
     let mut r=Rect::new((w-rw)/2.,(h-rh)/2.+12.,rw,rh);
     let cols=((r.w-40.)/panes(s).len() as f32/212.).floor().max(1.) as usize;
     let count=panes(s).into_iter().map(|fx| entries(s,fx).len()).max().unwrap_or(0);
-    let rows=((r.h-242.)/138.).floor().max(1.) as usize;
+    let rows=((r.h-273.)/138.).floor().max(1.) as usize;
     let rows=rows.min(count.div_ceil(cols).max(2));
-    r.h=r.h.min(242.+138.*rows as f32);
+    r.h=r.h.min(273.+138.*rows as f32);
     r.y=(h-r.h)/2.+12.;
     (r,cols,rows)
 }
 fn max_first(s:&State)->usize{let (_,cols,rows)=geometry(s);entries(s,true).len().max(entries(s,false).len()).div_ceil(cols).div_ceil(rows).saturating_sub(1)*rows}
 pub fn open(app:&mut App,target:Target){
     app.state.menu_open=None;app.state.playlist.popup=None;app.state.plugin_picker=View{open:true,target,sort:crate::prefs::text("picker_sort").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0).min(2),..Default::default()};
-    app.state.plugin_picker.images=crate::plugin_artwork::load(app.state.plugdb.lists.fx.iter().chain(&app.state.plugdb.lists.gens).cloned());
+    app.state.plugin_picker.images=crate::plugin_artwork::load(app.state.plugdb.lists.fx.iter().chain(&app.state.plugdb.lists.gens).chain(&app.state.plugdb.blacklisted.fx).chain(&app.state.plugdb.blacklisted.gens).cloned());
     app.pressed=None;app.invalidate();
 }
 pub fn close(app:&mut App){
@@ -54,7 +55,7 @@ pub fn close(app:&mut App){
     app.hits.retain(|h|!matches!(h.action,Action::PluginPicker(_)));app.invalidate();
 }
 fn choose(app:&mut App,fx:bool,index:usize){
-    if !choices(&app.state).contains(&(fx,index)){return;}
+    if app.state.plugin_picker.filter==5||!choices(&app.state).contains(&(fx,index)){return;}
     let target=app.state.plugin_picker.target;close(app);
     let cmd=match (target,fx){
         (Target::ClipFx(channel,slot),_)=>PlugCmd::ClipFx{channel,slot,index},
@@ -67,28 +68,37 @@ fn choose(app:&mut App,fx:bool,index:usize){
 }
 pub fn act(app:&mut App,hit:Hit){
     match hit{
+        Hit::BulkFavorite(on)|Hit::BulkBlacklist(on)=>{
+            let picked=app.state.plugin_picker.multi.clone();if picked.is_empty(){return;}
+            let uids:Vec<_>=picked.into_iter().filter_map(|(fx,i)|{let p=if fx{app.plugins.effects.get(i)}else{app.plugins.available.get(i)}?;Some(p.desc.uid())}).collect();
+            for uid in uids{let p=&mut app.state.plugdb.prefs;if matches!(hit,Hit::BulkFavorite(_)){if p.is_favorite(&uid)!=on{p.toggle_favorite(&uid);}}else if p.is_hidden(&uid)!=on{p.toggle_hidden(&uid);}}
+            app.state.plugdb.prefs.save();app.state.plugdb.rebuild(&app.plugins);let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.last_click=None;v.selected=0;v.first=0;
+        },
         Hit::Generate=>crate::plugin_previews::start(app),
         Hit::CancelGeneration=>crate::plugin_previews::cancel(),
         Hit::PreviewReport=>crate::plugin_previews::report(app),
-        Hit::Picture(fx,index)=>{let list=if fx{&app.state.plugdb.lists.fx}else{&app.state.plugdb.lists.gens};if let Some(uid)=list.iter().find(|e|e.index==index).map(|e|e.uid.clone()){crate::plugin_artwork::choose(app,uid);}},
+        Hit::Picture(fx,index)=>{let lists=if app.state.plugin_picker.filter==5{&app.state.plugdb.blacklisted}else{&app.state.plugdb.lists};let list=if fx{&lists.fx}else{&lists.gens};if let Some(uid)=list.iter().find(|e|e.index==index).map(|e|e.uid.clone()){crate::plugin_artwork::choose(app,uid);}},
         Hit::Page(direction)=>{let (_,_,rows)=geometry(&app.state);let max=max_first(&app.state);let v=&mut app.state.plugin_picker;v.first=v.first.saturating_add_signed(direction as isize*rows as isize).min(max);},
         Hit::Sort=>app.state.plugin_picker.sort_open=!app.state.plugin_picker.sort_open,
         Hit::Choose=>{if let Some(&(fx,index))=choices(&app.state).get(app.state.plugin_picker.selected){choose(app,fx,index);}}
-        Hit::SortBy(order)=>{let v=&mut app.state.plugin_picker;v.sort_open=false;v.sort=order.min(2);crate::prefs::set_text("picker_sort",&v.sort.to_string());v.first=0;v.selected=0;v.hovered=None;}
+        Hit::SortBy(order)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.sort_open=false;v.sort=order.min(2);crate::prefs::set_text("picker_sort",&v.sort.to_string());v.first=0;v.selected=0;v.hovered=None;}
         Hit::Close=>close(app),
         Hit::Minimize=>{app.state.plugin_picker.minimized=!app.state.plugin_picker.minimized;app.state.plugin_picker.sort_open=false;},
-        Hit::Filter(f)=>{let v=&mut app.state.plugin_picker;if v.target==Target::All || f==0 || f==3 || f==4{v.filter=f;v.first=0;v.selected=0;v.hovered=None;}},
-        Hit::Clear=>{let v=&mut app.state.plugin_picker;v.query.clear();v.first=0;v.selected=0;},
+        Hit::Filter(f)=>{let v=&mut app.state.plugin_picker;if v.target==Target::All || f==0 || f==3 || f==4||f==5{v.multi.clear();v.anchor=None;v.filter=f;v.first=0;v.selected=0;v.hovered=None;}},
+        Hit::Clear=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.clear();v.first=0;v.selected=0;},
         Hit::Favorite(fx,i)=>{
-            let list=if fx{&app.state.plugdb.lists.fx}else{&app.state.plugdb.lists.gens};
-            if let Some(uid)=list.iter().find(|e|e.index==i).map(|e|e.uid.clone()){
+            let list=if fx{&app.plugins.effects}else{&app.plugins.available};
+            if let Some(uid)=list.get(i).map(|e|e.desc.uid()){
                 app.state.plugdb.prefs.toggle_favorite(&uid);app.state.plugdb.prefs.save();app.state.plugdb.rebuild(&app.plugins);
             }
             app.state.plugin_picker.first=app.state.plugin_picker.first.min(max_first(&app.state));
         },
         Hit::Tile(fx,i)=>{
             if let Some(pos)=choices(&app.state).iter().position(|p|*p==(fx,i)) {
-                let v=&mut app.state.plugin_picker;
+                let all=choices(&app.state);let v=&mut app.state.plugin_picker;
+                if app.ctrl{if let Some(k)=v.multi.iter().position(|p|*p==(fx,i)){v.multi.remove(k);}else{v.multi.push((fx,i));}v.anchor=Some(pos);v.selected=pos;v.last_click=None;app.invalidate();return;}
+                if app.shift{let anchor=v.anchor.unwrap_or(v.selected).min(all.len().saturating_sub(1));for &item in &all[anchor.min(pos)..=anchor.max(pos)]{if !v.multi.contains(&item){v.multi.push(item);}}v.selected=pos;v.last_click=None;app.invalidate();return;}
+                v.multi=vec![(fx,i)];v.anchor=Some(pos);
                 let double=v.last_click.is_some_and(|(entry,when)|entry==(fx,i)&&when.elapsed().as_millis()<400);
                 v.selected=pos;v.last_click=Some(((fx,i),std::time::Instant::now()));
                 if double {choose(app,fx,i);}
@@ -125,7 +135,7 @@ pub fn mouse_move(app:&mut App,x:f32,y:f32)->bool{
     }app.hint=hint;}
     app.resize_cursor=false;
     if let Some((Hit::Tile(fx,i),m0))=app.state.plugin_picker.pending{
-        if (x-m0.0).hypot(y-m0.1)>5.{
+        if !app.ctrl&&!app.shift&&app.state.plugin_picker.filter!=5&&(x-m0.0).hypot(y-m0.1)>5.{
             let list=if fx{&app.state.plugdb.lists.fx}else{&app.state.plugdb.lists.gens};
             if let Some(label)=list.iter().find(|e|e.index==i).map(|e|e.label.clone()){
                 close(app);
@@ -153,13 +163,13 @@ pub fn key(app:&mut App,key:&Key,ctrl:bool,alt:bool)->bool{
             let all=choices(&app.state);let (_,cols,rows)=geometry(&app.state);
             let step=match key{Key::Named(NamedKey::ArrowUp)=>-(cols as isize),Key::Named(NamedKey::ArrowDown)=>cols as isize,Key::Named(NamedKey::ArrowLeft)=>-1,_=>1};
             let sel=app.state.plugin_picker.selected.saturating_add_signed(step).min(all.len().saturating_sub(1));
-            app.state.plugin_picker.selected=sel;
+            app.state.plugin_picker.selected=sel;app.state.plugin_picker.multi=all.get(sel).copied().into_iter().collect();app.state.plugin_picker.anchor=Some(sel);
             if let Some(&(fx,i))=all.get(sel){let row=entries(&app.state,fx).iter().position(|e|e.index==i).unwrap_or(0)/cols;
                 let v=&mut app.state.plugin_picker;if row<v.first{v.first=row;}else if row>=v.first+rows{v.first=row+1-rows;}}
         },
-        Key::Named(NamedKey::Backspace)=>{let v=&mut app.state.plugin_picker;v.query.pop();v.first=0;v.selected=0;},
-        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a")=>{act(app,Hit::Clear);},
-        Key::Character(c) if !ctrl && !alt=>{let v=&mut app.state.plugin_picker;for ch in c.chars().filter(|c|!c.is_control()){if v.query.chars().count()<128{v.query.push(ch);}}v.first=0;v.selected=0;},
+        Key::Named(NamedKey::Backspace)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.pop();v.first=0;v.selected=0;},
+        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a")=>{app.state.plugin_picker.multi=choices(&app.state);},
+        Key::Character(c) if !ctrl && !alt=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;for ch in c.chars().filter(|c|!c.is_control()){if v.query.chars().count()<128{v.query.push(ch);}}v.first=0;v.selected=0;},
         _=>{},
     }
     app.invalidate();true
@@ -194,7 +204,7 @@ pub fn paint(ui:&mut Ui,s:&State){
     ui.c.text_clip(Font::light(15,0),r.x+203.,r.y+20.,r.w-260.,ui.t.text_dim,title);
     btn(ui,Rect::new(r.right()-81.,r.y+12.,30.,28.),"−",Hit::Minimize,false);
     btn(ui,Rect::new(r.right()-46.,r.y+12.,30.,28.),"×",Hit::Close,false);
-    let filters:Vec<(u8,&str)>=if v.target==Target::All{vec![(0,"All"),(1,"Instruments"),(2,"Effects"),(3,"Favorites"),(4,"Installed")]}else{vec![(0,"All"),(3,"Favorites"),(4,"Installed")]};
+    let filters:Vec<(u8,&str)>=if v.target==Target::All{vec![(0,"All"),(1,"Instruments"),(2,"Effects"),(3,"Favorites"),(4,"Installed"),(5,"Blacklist")]}else{vec![(0,"All"),(3,"Favorites"),(4,"Installed"),(5,"Blacklist")]};
     let fw=if r.w<850. {63.}else{88.};
     let sw=(r.w-146.-filters.len() as f32*(fw+5.)-38.).max(72.);
     let search=Rect::new(r.x+18.,r.y+54.,sw,33.);
@@ -215,10 +225,10 @@ pub fn paint(ui:&mut Ui,s:&State){
         if list.is_empty(){ui.c.text_clip(Font::new(13),x,r.y+146.,width,ui.t.text_dim,"No matching plugins");}
         for (n,e) in list.iter().skip(v.first*cols).take(rows*cols).enumerate(){
             let card=Rect::new(x+(n%cols) as f32*(cardw+8.),r.y+122.+(n/cols) as f32*138.,cardw,130.);
-            let hover=ui.hit(card,Action::PluginPicker(Hit::Tile(fx,e.index)),format!("{} — select, double-click to add, or drag to {}",e.label,if fx{"the mixer"}else{"the channel rack"}));
+            let hover=ui.hit(card,Action::PluginPicker(Hit::Tile(fx,e.index)),if v.filter==5{format!("{} - select, then Restore to show again",e.label)}else{format!("{} - select, double-click to add, or drag to {}",e.label,if fx{"the mixer"}else{"the channel rack"})});
             let accent=lemon;
             ui.c.fill_rect_gradient(card,Color::rgb(0x2d2e31),Color::rgb(0x202124),9.);
-            if hover||selected==Some((fx,e.index)){ui.c.stroke_rrect(card,9.,if selected==Some((fx,e.index)){2.}else{0.8},accent);}
+            if hover||v.multi.contains(&(fx,e.index)){ui.c.stroke_rrect(card,9.,if v.multi.contains(&(fx,e.index)){2.}else{0.8},accent);}
             let preview=Rect::new(card.x+10.,card.y+8.,card.w-20.,92.);
             if let Some(p)=v.images.get(&e.uid){crate::plugin_artwork::draw(ui,preview,p);}else{fallback(ui,preview,fx);}
             btn(ui,Rect::new(card.right()-30.,card.y+4.,26.,24.),if e.favorite{"♥"}else{"♡"},Hit::Favorite(fx,e.index),e.favorite);
@@ -235,12 +245,16 @@ pub fn paint(ui:&mut Ui,s:&State){
             let x=inspector.x+134.;let w=(inspector.w-390.).max(80.);
             ui.c.text_clip(Font::light(15,0).natural().bold(),x,inspector.y+8.,w,ui.t.text,&e.label);
             ui.c.text_clip(Font::new(11),x,inspector.y+29.,w,ui.t.text_dim,&format!("Category: {}   |   Developer: {}",e.category,e.vendor));
-            ui.c.text_clip(Font::new(10),x,inspector.y+47.,w,ui.t.text_dim,if progress.summary.is_empty(){"Double-click to load · Drag to place"}else{&progress.summary});
-            btn(ui,Rect::new(inspector.right()-186.,inspector.y+17.,100.,32.),"Choose",Hit::Choose,true);
+            ui.c.text_clip(Font::new(10),x,inspector.y+47.,w,ui.t.text_dim,if v.filter==5{"Hidden from picker - select and Restore below"}else if progress.summary.is_empty(){"Ctrl/Cmd-click: toggle - Shift-click: range"}else{&progress.summary});
+            if v.filter!=5{btn(ui,Rect::new(inspector.right()-186.,inspector.y+17.,100.,32.),"Choose",Hit::Choose,true);}
             btn(ui,Rect::new(inspector.right()-78.,inspector.y+17.,69.,32.),"Close",Hit::Close,false);
         }
     }
-    let y=inspector.y-31.;
+    let y=inspector.y-62.;let bulk=inspector.y-31.;
+    btn(ui,Rect::new(r.x+18.,bulk,100.,24.),"Favorite +",Hit::BulkFavorite(true),false);
+    btn(ui,Rect::new(r.x+122.,bulk,100.,24.),"Favorite −",Hit::BulkFavorite(false),false);
+    btn(ui,Rect::new(r.x+226.,bulk,100.,24.),if v.filter==5{"Restore"}else{"Blacklist"},Hit::BulkBlacklist(v.filter!=5),false);
+    ui.c.text_clip(Font::new(10),r.x+335.,bulk+6.,(r.w-355.).max(0.),ui.t.text_dim,&format!("{} selected · Ctrl/Cmd toggle · Shift range · Ctrl+A all",v.multi.len()));
     if cfg!(windows) {
         btn(ui,Rect::new(r.x+18.,y,133.,24.),if progress.running{"Cancel generation"}else{"Generate previews"},if progress.running{Hit::CancelGeneration}else{Hit::Generate},false);
     }
@@ -270,6 +284,13 @@ fn fallback(ui:&mut Ui,r:Rect,fx:bool){
 mod tests{
     use super::*;
     use os_ui::Canvas;
+
+    #[test]fn workflow_batch_plugin_blacklist_and_favorites(){
+      let mut a=app();open(&mut a,Target::All);let picked:Vec<_>=choices(&a.state).into_iter().take(3).collect();assert_eq!(picked.len(),3);a.ctrl=true;for &(fx,i) in &picked{act(&mut a,Hit::Tile(fx,i));}a.ctrl=false;assert_eq!(a.state.plugin_picker.multi.len(),3);act(&mut a,Hit::BulkFavorite(true));for(fx,i)in &picked{let list=if *fx{&a.plugins.effects}else{&a.plugins.available};assert!(a.state.plugdb.prefs.is_favorite(&list[*i].desc.uid()));}
+      a.state.plugin_picker.multi=picked.clone();act(&mut a,Hit::BulkBlacklist(true));for p in &picked{assert!(!choices(&a.state).contains(p));}act(&mut a,Hit::Filter(5));for p in &picked{assert!(choices(&a.state).contains(p));}a.state.plugin_picker.multi=picked.clone();if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){let mut c=Canvas::new(1280,900,1.).unwrap();a.paint(&mut c,None);c.pixmap.save_png(std::path::PathBuf::from(dir).join("plugin-blacklist.png")).unwrap();}let count=a.state.project.channels.len();let p=picked[0];choose(&mut a,p.0,p.1);assert_eq!(a.state.project.channels.len(),count);
+      a.state.plugin_picker.multi=picked.clone();act(&mut a,Hit::BulkBlacklist(false));act(&mut a,Hit::Filter(0));for p in picked{assert!(choices(&a.state).contains(&p));}
+      let bytes=serde_json::to_vec(&a.state.plugdb.prefs).unwrap();let back:crate::plugin_db::Prefs=serde_json::from_slice(&bytes).unwrap();assert_eq!(back,a.state.plugdb.prefs);
+    }
     fn app()->App{let mut a=App::new(None);a.plugins=crate::plugins::Plugins::builtins();a.state.plugdb.rebuild(&a.plugins);a}
     #[test]
     fn plugin_picker_search_favorites_keyboard_and_layout(){

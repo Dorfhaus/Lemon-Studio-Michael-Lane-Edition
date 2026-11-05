@@ -991,6 +991,7 @@ fn strip_process(track:&mut MixTrack,buf:&mut[f32]) {
 }
 
 pub struct Engine {
+    vocal_audition:Option<crate::vocal_audition::Voice>,
     frozen_instrument_rows: Vec<usize>,
     peak_links: Vec<(os_model::PeakLink,f32)>,
     audition: Vec<(u64,usize,u16,u8)>,
@@ -1674,6 +1675,7 @@ impl Engine {
             inst_shapes: Vec::new(),
             next_voice: 0,
             inst_live: Vec::with_capacity(64),
+            vocal_audition:None,
             audition: Vec::new(),audition_held:Vec::new(),audition_frame:0,
             inst_midi: Vec::with_capacity(64),
             inst_events: Vec::with_capacity(64),
@@ -1886,7 +1888,11 @@ impl Engine {
         }
         self.audition.sort_by_key(|n|(n.0,n.3!=0));self.tail_done=false;
     }
+    pub fn vocal_start(&mut self,sample:std::sync::Arc<crate::Sample>,start:usize,end:usize,cents:f32,gain:f32){self.vocal_audition=crate::vocal_audition::Voice::new(sample,start,end,cents,gain,self.rate);self.tail_done=false;}
+    pub fn vocal_tune(&mut self,cents:f32,gain:f32){if let Some(v)=&mut self.vocal_audition{v.tune(cents,gain);}}
+    pub fn vocal_stop(&mut self){if let Some(v)=&mut self.vocal_audition{v.release();}}
     pub fn stop_audition(&mut self) {
+        self.vocal_stop();
         self.audition.clear();
         for (ch,key) in std::mem::take(&mut self.audition_held){self.note_off(ch,key);}
     }
@@ -2235,7 +2241,7 @@ impl Engine {
     /// the first quiet tick at or after its end. An engine that only plays live notes is over while it is silent and
     /// starts again with the next note; one kept awake (`set_awake`) is never over.
     pub fn finished(&self) -> bool {
-        if !self.audition.is_empty() {return false;}
+        if !self.audition.is_empty()||self.vocal_audition.as_ref().is_some_and(|v|v.active()) {return false;}
         let drained = self.out_pos >= self.out.len();
         if self.live_only {
             if self.awake {
@@ -2477,6 +2483,7 @@ impl Engine {
         }
         self.sounding = std::mem::take(&mut old.sounding);
         self.inst_live = std::mem::take(&mut old.inst_live);
+        self.vocal_audition=old.vocal_audition.take();
         self.audition=std::mem::take(&mut old.audition);self.audition_held=std::mem::take(&mut old.audition_held);self.audition_frame=old.audition_frame;
         self.inst_midi = std::mem::take(&mut old.inst_midi);
         // A detached stack member must not retain live notes or a sustain pedal whose
@@ -2970,6 +2977,7 @@ impl Engine {
         for(row,b)in mpe_events{let children=self.channels.get(row).map(|c|c.stack.clone()).unwrap_or_default();self.midi_one(row,b,0.);for child in children{self.midi_one(child,b,0.);}}
 
         self.audition_tick(len);
+        if let Some(v)=&mut self.vocal_audition{v.mix(&mut self.bus[0][..len*2]);if !v.active(){self.vocal_audition=None;}}
         let (channels, w) = (&self.channels, self.sinc_w);
         let bus = &mut self.bus;
         self.voices.retain_mut(|v| render_voice(v, channels, bus, 0, 0, len, w));
@@ -4751,6 +4759,13 @@ mod tests {
         next.process(&mut vec![0.;5000]);assert!(probe.lock().unwrap().held.contains(&62));next.stop_audition();next.process(&mut vec![0.;2000]);assert!(probe.lock().unwrap().held.is_empty());
         let count=probe.lock().unwrap().log.iter().filter(|l|l.1).count();next.process(&mut vec![0.;10000]);assert_eq!(probe.lock().unwrap().log.iter().filter(|l|l.1).count(),count);
         next.note_on(0,70,100);next.audition_notes(&[(0,60,100,0,24000)]);next.process(&mut vec![0.;2000]);next.stop_audition();next.process(&mut vec![0.;2000]);assert_eq!(probe.lock().unwrap().held,vec![70],"stopping preview preserves unrelated live notes");
+    }
+
+    #[test]
+    fn vocal_hold_mixes_through_master_survives_update_and_releases_only_itself(){
+        let mut p=project(vec![],vec![]);p.channels[0].kind=ChannelKind::Plugin;let mut lib=SampleLibrary::default();let probe=Arc::new(std::sync::Mutex::new(Probe{log:vec![],held:vec![],at:0}));let mut e=Engine::new(&p,&mut lib,48000,PlayMode::Pattern(1));e.set_instrument(0,probe.clone());e.clear_schedule();
+        let x:Vec<f32>=(0..24000).map(|i|(i as f32*220.*std::f32::consts::TAU/24000.).sin()*0.2).collect();let sample=Arc::new(crate::Sample{rate:24000,left:x.clone(),right:x});e.note_on(0,70,100);e.vocal_start(sample,0,24000,0.,1.);let mut out=vec![0.;12000];e.process(&mut out);assert!(out.iter().any(|v|v.abs()>0.01),"audition must reach the master output");assert!(!e.finished());e.vocal_tune(700.,1.);
+        let mut next=Engine::new(&p,&mut lib,48000,PlayMode::Pattern(1));next.set_instrument(0,probe.clone());next.clear_schedule();next.continue_from(&mut e);assert!(next.vocal_audition.is_some());next.process(&mut out);assert!(out.iter().any(|v|v.abs()>0.01));next.vocal_stop();next.process(&mut vec![0.;12000]);assert!(next.vocal_audition.is_none());assert!(probe.lock().unwrap().held.contains(&70),"release must preserve unrelated held notes");
     }
 
     /// Records the transport it is given before each block (instrument and effect).

@@ -844,11 +844,12 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_peak_links(file,&mut p);
     read_channel_layouts(file,&mut p);
     read_strip_bypass(file,&mut p);
-    read_track_folders(file,&mut p);
+    read_track_folders(file,&mut p);read_track_heights(file,&mut p);
     read_comp_groups(file, &mut p);
     read_frozen_tracks(file, &mut p);
     read_extra_fx(file, &mut p);
     read_audio_warps(file,&mut p);
+    read_vocals(file,&mut p);
     read_rack_strips(file,&mut p);
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
@@ -1659,6 +1660,7 @@ fn load_pl_track(events: &[Event], t: &PlTrackLoc, enc: TextEnc) -> PlaylistTrac
     let r = events[t.record].data().unwrap_or(&[]);
     let custom = t.color_flag.is_some_and(|i| int(&events[i]) != 0);
     PlaylistTrack {
+        height:None,
         folder:false,
         frozen: None,
         comp: None,
@@ -3273,11 +3275,12 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_peak_links(project,file);
     write_channel_layouts(project,file);
     write_strip_bypass(project,file);
-    write_track_folders(project,file);
+    write_track_folders(project,file);write_track_heights(project,file);
     write_comp_groups(project, file);
     write_frozen_tracks(project, file);
     write_extra_fx(project, file);
     write_audio_warps(project,file);
+    write_vocals(project,file);
     write_rack_strips(project,file);
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
@@ -3811,11 +3814,12 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_peak_links(project,&mut file);
     write_channel_layouts(project,&mut file);
     write_strip_bypass(project,&mut file);
-    write_track_folders(project,&mut file);
+    write_track_folders(project,&mut file);write_track_heights(project,&mut file);
     write_comp_groups(project, &mut file);
     write_frozen_tracks(project, &mut file);
     write_extra_fx(project, &mut file);
     write_audio_warps(project,&mut file);
+    write_vocals(project,&mut file);
     write_rack_strips(project,&mut file);
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
@@ -6789,3 +6793,20 @@ fn read_mpe(file:&FlpFile,p:&mut Project){
  }
  for c in &file.chunks{if c.tag!=MPE_DATA{continue;}let ChunkBody::Raw(d)=&c.body else{continue;};let Some((mut data,links))=parse(d)else{continue;};data.channels.retain(|(id,_)|p.channels.iter().any(|c|c.index==*id));for(pat,index,id)in links{if let Some(n)=p.patterns.iter_mut().find(|p|p.number==pat).and_then(|p|p.notes.get_mut(index)){n.expression=id;}}p.mpe=data;}
 }
+
+fn write_vocals(p:&Project,file:&mut FlpFile){
+ file.chunks.retain(|c|c.tag!=Tag(*b"LSVT"));
+ if !p.vocal_edits.is_empty(){if let Ok(data)=serde_json::to_vec(&p.vocal_edits){file.chunks.push(Chunk{tag:Tag(*b"LSVT"),body:ChunkBody::Raw(data)});}}
+}
+fn read_vocals(file:&FlpFile,p:&mut Project){
+ for c in &file.chunks{if c.tag!=Tag(*b"LSVT"){continue;}let ChunkBody::Raw(data)=&c.body else{continue};
+  if data.len()>64*1024*1024{continue;}
+  if let Ok(edits)=serde_json::from_slice::<Vec<os_model::vocal::Edit>>(data){
+   let mut channels=std::collections::HashSet::new();
+   p.vocal_edits=edits.into_iter().take(1000).filter(|v|v.valid()&&p.channels.iter().any(|c|c.index==v.channel)&&channels.insert(v.channel)).collect();
+  }
+ }
+}
+
+fn read_track_heights(file:&FlpFile,p:&mut Project){for c in &file.chunks{if c.tag!=Tag(*b"LSTH"){continue;}let ChunkBody::Raw(d)=&c.body else{continue};if d.first()!=Some(&1){continue;}for r in d[1..].chunks_exact(8){let arr=u16::from_le_bytes([r[0],r[1]]);let row=u16::from_le_bytes([r[2],r[3]])as usize;let h=f32::from_le_bytes(r[4..8].try_into().unwrap());if h.is_finite()&&(16.0..=600.).contains(&h){if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==arr).and_then(|a|a.tracks.get_mut(row)){t.height=Some(h);}}}}}
+fn write_track_heights(p:&Project,file:&mut FlpFile){file.chunks.retain(|c|c.tag!=Tag(*b"LSTH"));let mut d=vec![1];for a in &p.arrangements{for(i,t)in a.tracks.iter().enumerate(){if let Some(h)=t.height{d.extend(a.number.to_le_bytes());d.extend((i as u16).to_le_bytes());d.extend(h.to_le_bytes());}}}if d.len()>1{file.chunks.push(Chunk{tag:Tag(*b"LSTH"),body:ChunkBody::Raw(d)});}}

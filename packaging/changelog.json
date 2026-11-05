@@ -4,6 +4,21 @@
   "sections": [
     {
       "date": "2026-11-05",
+      "title": "Lemon EQ dynamics, spectral processing and editing improvements \u00b7 public build 2026110505",
+      "changes": [
+        "Lemon EQ has a resizable graph-led glass editor with compact Frequency, Gain and Q controls, independent window dimensions and interface scaling, grouped band editing, Undo/Redo and A/B comparison.",
+        "Clearly labeled Dynamic and Spectral buttons show each band mode. Right-click bands to switch modes, enter precise values or delete; right-click empty graph space to add regular, dynamic or spectral bands.",
+        "Dynamic EQ adds automatic or manual threshold, attack and release with an illuminated range ring. Frequency-selective spectral dynamics and De-harsh provide resonance suppression, density and detector tilt controls while retaining the original static EQ path at default settings.",
+        "Fixed Spectral and De-harsh repeatedly restarting the EQ during live playback, causing silence and glitch noises. Saved spectral settings now restore their processing delay before activation.",
+        "EQ graph points keep the pointer visible during dragging. Creating a point and immediately grabbing it no longer opens value entry; context-menu deletion supports Undo without renumbering automation.",
+        "Optional inline Playlist vocal tuning includes direct note and curve editing, live drag audition, expression controls, navigation and a microphone/tuning-fork track button. Improved hand grabs, constrained stretching and recovery after processing failures.",
+        "Plugin Picker supports multiple selections, bulk favorites and a persistent Blacklist tab with Restore. Hidden plugins stay out of normal selection without deleting files or unloading existing project instances.",
+        "Playlist tracks support individual saved heights and header resizing. Ctrl-drag selection can start over clips. Mixer track groups move together while preserving routing, effects and automation, and share FX bypass and solo actions.",
+        "Slimmer editing tool cursors and Alt-click resets for Playlist clip fades and gain."
+      ]
+    },
+    {
+      "date": "2026-11-05",
       "title": "Tempo fitting, Piano Roll stretching and mixer polish \u00b7 public build 2026110504",
       "changes": [
         "Make It Fit now combines MiniBPM tempo analysis with Lemon Studio's onset detector and explicit BPM labels, with safeguards for silence, steady tones and ambiguous rhythmic estimates.",
