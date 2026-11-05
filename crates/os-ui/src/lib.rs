@@ -1074,6 +1074,38 @@ impl Canvas {
         }
     }
 
+    /// Filter a straight-alpha material sprite over the current clipped surface.
+    /// Used for cached mixer materials; does not bypass damage or viewport clipping.
+    pub fn image_rgba(&mut self, r: Rect, w: usize, h: usize, px: &[u8]) {
+        if w==0 || h==0 || px.len()<w*h*4 {return;}
+        let k=self.scale;
+        for ci in 0..self.clip_count() {
+            let (cx0,cy0,cx1,cy1)=self.clip_at(ci);
+            let x0=((r.x*k).round() as i32).max(cx0);
+            let x1=((r.right()*k).round() as i32).min(cx1);
+            let y0=((r.y*k).round() as i32).max(cy0);
+            let y1=((r.bottom()*k).round() as i32).min(cy1);
+            if x0>=x1 || y0>=y1 {continue;}
+            self.mark(x0,y0,x1,y1);
+            let fx=w as f32/(r.w*k).max(1.);let fy=h as f32/(r.h*k).max(1.);
+            let xs:Vec<_>=(x0..x1).map(|x|taps(x as f32+0.5-r.x*k,fx,w)).collect();
+            let ys:Vec<_>=(y0..y1).map(|y|taps(y as f32+0.5-r.y*k,fy,h)).collect();
+            let pw=self.pixmap.width() as usize;
+            let data=self.pixmap.data_mut();
+            for (iy,ty) in ys.iter().enumerate() {for (ix,tx) in xs.iter().enumerate() {
+                let mut rgba=[0f32;4];
+                for &(sy,wy) in ty {for &(sx,wx) in tx {
+                    let off=(sy*w+sx)*4;let a=px[off+3] as f32/255.;let weight=wx*wy;
+                    for j in 0..3 {rgba[j]+=px[off+j] as f32*a*weight;}
+                    rgba[3]+=a*weight;
+                }}
+                let dest=((y0 as usize+iy)*pw+x0 as usize+ix)*4;
+                for j in 0..3 {data[dest+j]=(rgba[j]+data[dest+j] as f32*(1.-rgba[3])).round().clamp(0.,255.) as u8;}
+                data[dest+3]=(255.*rgba[3]+data[dest+3] as f32*(1.-rgba[3])).round().clamp(0.,255.) as u8;
+            }}
+        }
+    }
+
     fn image_in(&mut self, (cx0, cy0, cx1, cy1): (i32, i32, i32, i32), r: Rect, w: usize, h: usize, px: &[u32]) {
         let k = self.scale;
         let (x0, x1) = (((r.x * k).round() as i32).max(cx0), ((r.right() * k).round() as i32).min(cx1));
@@ -1769,6 +1801,25 @@ mod tests {
         let Ok(mut c) = Canvas::new(24, 1, 1.5) else { return };
         c.image(Rect::new(0.0, 0.0, 16.0, 1.0), 16, 1, &px);
         assert!(c.pixmap.pixels().iter().any(|p| p.red() > 20 && p.red() < 235), "linear when enlarging");
+    }
+
+    #[test]
+    fn material_alpha_filter_preserves_background_and_damage_clip() {
+        let mut c=Canvas::new(4,2,1.).unwrap();
+        c.clear(Color::rgb(0x0000ff));
+        let rgba=[255,0,0,0, 255,255,255,255];
+        c.push_clip(Rect::new(1.,0.,2.,2.));
+        c.image_rgba(Rect::new(0.,0.,4.,2.),2,1,&rgba);
+        c.pop_clip();
+        let px=c.pixmap.pixels();
+        assert_eq!((px[0].red(),px[0].blue()),(0,255));
+        assert_eq!((px[3].red(),px[3].blue()),(0,255));
+        assert!(px[1].red()>0 && px[1].red()<255);
+        assert_eq!(px[1].blue(),255,"transparent red must not fringe the white material");
+        c.clear(Color::rgb(0x0000ff));
+        c.image_rgba(Rect::new(0.,0.,1.,1.),2,1,&rgba);
+        let p=c.pixmap.pixels()[0];
+        assert!((127..=128).contains(&p.red()) && p.blue()==255,"downsampling composites alpha before filtering");
     }
 
     /// `resample` is `image`'s filter into a buffer: the same size copies, half size averages pairs.

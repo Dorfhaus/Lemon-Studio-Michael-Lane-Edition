@@ -3,6 +3,19 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-05",
+      "title": "Mixer themes and faster editing \u00b7 public build 2026110501",
+      "changes": [
+        "Original, Clean Modern and Analog are available in Options > Theme settings > Full mixer style. Original is the default, with colored molded knobs, ribbed faders and cream VU meters behind curved glass.",
+        "Drag a fade handle on a selected Playlist audio clip to edit the same edge across selected audio clips. Each fade respects its clip length and opposite fade. One undo restores the group edit.",
+        "Tape drive adds progressively stronger saturation, pitch drift, flutter and hiss on a single stereo-linked tape path.",
+        "The plugin picker has searchable preview cards, favorites, an Installed filter for external plugins, sorting, a detail panel and a Choose button. Select a card to inspect it, double-click to load it or drag it into place.",
+        "Channel Rack step buttons have raised edges and a recessed active state.",
+        "The Piano Roll displays the current key and scale in separate quick selectors.",
+        "Lemon Sampler opens with its mixer-routing controls visible by default."
+      ]
+    },
+    {
       "date": "2026-11-04",
       "title": "Live output monitor, complete channel cloning and sampler editing \u00b7 public build 2026110409",
       "changes": [

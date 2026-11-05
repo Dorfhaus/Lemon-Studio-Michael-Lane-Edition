@@ -756,6 +756,7 @@ pub struct Entry {
     pub format: Format,
     pub category: &'static str,
     pub favorite: bool,
+    pub builtin: bool,
 }
 
 /// What the plugin menus list: shown plugins only, alphabetical by label.
@@ -786,7 +787,7 @@ fn entries(list: &[Available], prefs: &Prefs, missing: &HashSet<String>) -> Vec<
                 d.vendor.trim().to_string()
             };
             let uid = d.uid();
-            Entry { index: i, name: d.name.clone(), label, favorite: prefs.is_favorite(&uid), uid, vendor, format: d.format, category: category(d) }
+            Entry { builtin: crate::project_plugins::is_builtin(d), index: i, name: d.name.clone(), label, favorite: prefs.is_favorite(&uid), uid, vendor, format: d.format, category: category(d) }
         })
         .collect();
     v.sort_by_key(|e| e.label.to_lowercase());

@@ -88,6 +88,24 @@ pub fn grid_rect(s: &State) -> Rect {
     layout(r, s.piano.split).grid
 }
 
+fn harmony_width(r: Rect) -> f32 {
+    if r.w>=740. {196.} else if r.w>=585. {132.} else {0.}
+}
+
+fn harmony_boxes(ui:&mut Ui,s:&State,x:f32,y:f32,w:f32,h:f32) {
+    let harmony=&s.piano.harmony;
+    let key_w=40.;
+    for (b,text,menu,hint) in [
+        (Rect::new(x,y,key_w,h),crate::harmony::ROOTS[harmony.root as usize],0,"Choose piano roll key"),
+        (Rect::new(x+key_w+3.,y,w-key_w-6.,h),crate::chords::label(harmony.scale),1,"Choose piano roll scale"),
+    ] {
+        ui.hit(b,Action::Harmony(crate::harmony::HCmd::Menu(menu)),hint);
+        super::sunken(ui,b,ui.t.sunken);
+        ui.c.text_clip(Font::new(11),b.x+4.,b.cy()-6.,b.w-13.,ui.t.text,text);
+        os_ui::kit::triangle(ui.c,b.right()-5.,b.cy(),2.5,os_ui::kit::Dir::Down,ui.t.text_dim);
+    }
+}
+
 pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let t = ui.t;
     let channel = s.project.channels.get(s.selected_channel);
@@ -100,10 +118,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // The target channel: name and arrow, orange with a ▾ while hovered (spec: ui/piano-target-channel.md §1).
     let name=format!("Piano roll: {name}");
     let font=Font::new(12);
-    let nx=r.x+if r.w>=550. {437.}else{393.};
+    let nx=r.x+harmony_width(r)+if r.w>=550. {437.}else{393.};
     if r.w>=550. {
         for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),387.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),411.)] {
-            let b=Rect::new(r.x+x,r.y+2.,20.,18.);
+            let b=Rect::new(r.x+harmony_width(r)+x,r.y+2.,20.,18.);
             let hint=format!("{} channel: {}",if label=="M"{"Mute"}else{"Solo"},name);
             let hover=ui.hit(b,Action::PianoCommand(cmd),hint);
             ui.c.fill_rrect(b,3.,if on{t.accent}else if hover{t.button_hi}else{t.sunken});
@@ -123,7 +141,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         return; // collapsed to the title bar
     }
     if s.piano.harmony.open {crate::harmony::paint(ui,s,r);return;}
-    let l = layout(r, s.piano.split);
+    let mut l = layout(r, s.piano.split);
+    if harmony_width(r)==0. && l.overview.w>=180. {
+        let w=134.;
+        harmony_boxes(ui,s,l.overview.x,l.overview.y,w,l.overview.h);
+        l.overview.x+=w;
+        l.overview.w-=w;
+    }
     let g = Geom::new(s, l.grid);
     let ch = channel.map(|c| c.index);
     let pat = s.project.patterns.iter().find(|p| p.number == s.pattern);
@@ -406,13 +430,15 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
     ];
     for (x, icon, hint, action) in items {
         let snap = action == Some(Action::PianoSnapMenu);
-        let offset = if x > 263.0 { 43.0 } else { 0.0 };
+        let offset = if x > 263.0 { 43.0+harmony_width(r) } else { 0.0 };
         let b = Rect::new(ox + x + offset - 9.0, r.y + 2.0, if snap { 61.0 } else { 18.0 }, 18.0);
         if snap {
             ui.hit(b, Action::PianoSnapMenu, crate::piano_snap::hint(s));
             super::sunken(ui, b, t.sunken);
             ui.c.text_center(os_ui::Font::new(11), Rect::new(b.x,b.y,b.w-9.0,b.h), t.text, s.piano.snap.label());
             os_ui::kit::triangle(ui.c,b.right()-5.0,b.cy(),2.5,os_ui::kit::Dir::Down,t.text_dim);
+            let width=harmony_width(r);
+            if width>0. {harmony_boxes(ui,s,b.right()+3.,b.y,width,b.h);}
             continue;
         }
         let Some(action) = action else {
@@ -442,7 +468,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         };
         icons::draw(ui.c, icon, b, c);
     }
-    for x in [337.,397.] {ui.c.line(ox+x,r.y+5.,ox+x,r.y+18.,1.,t.text_faint);}
+    for x in [337.,397.] {let x=x+43.+harmony_width(r);ui.c.line(ox+x,r.y+5.,ox+x,r.y+18.,1.,t.text_faint);}
 }
 
 fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Option<u16>) {

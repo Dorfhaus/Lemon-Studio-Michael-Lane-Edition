@@ -152,8 +152,13 @@ impl ChannelStrip {
             let total: f32 = weights.iter().sum();
             let tape_weight = weights[1];
             let tape=if tape_weight>0. {
+                if !self.tape.active {
+                    self.tape.delay.fill([f[0],f[1]]);
+                    self.tape.tone=[f[0],f[1]];
+                    self.tape.active=true;
+                }
                 self.tape.frame([f[0],f[1]],self.rate,self.pre)
-            }else{[0.;2]};
+            }else{self.tape.active=false;[0.;2]};
             for (c, x) in f.iter_mut().enumerate() {
                 let v=(*x*drive).clamp(-40.,40.);
                 let last=self.pre_last[c];
@@ -175,7 +180,10 @@ impl ChannelStrip {
                 let filtered = shaped - self.dc_x[c] + dc * self.dc_y[c];
                 self.dc_x[c] = shaped;
                 self.dc_y[c] = filtered;
-                *x += (filtered - *x) * self.pre;
+                // Tape carries its own continuously variable wet path. Mixing that path
+                // with undelayed audio produces a comb filter at medium drive.
+                let wet = self.pre + (1.-self.pre)*tape_weight/total;
+                *x += (filtered - *x) * wet;
             }
         }
     }
@@ -270,17 +278,17 @@ impl ChannelStrip {
 /// Stereo-linked capstan wow and flutter, record saturation, head loss and shaped hiss.
 #[derive(Clone,Debug)]
 struct Tape {
-    delay:Vec<[f32;2]>, write:usize, phase:[f64;2], tone:[f32;2], rng:u32, noise:f32, activity:f32,
+    active:bool, delay:Vec<[f32;2]>, write:usize, phase:[f64;2], tone:[f32;2], rng:u32, noise:f32, hiss:f32, activity:f32,
     tone_coeff:f32, release:f32,
 }
 impl Tape {
     fn new(rate:u32)->Self{
         let rate=rate.max(1) as f32;
-        Self{delay:vec![[0.;2];(rate*0.004).ceil() as usize+3],write:0,phase:[0.,0.],tone:[0.;2],
-            rng:0x53ab9107,noise:0.,activity:0.,tone_coeff:1.-(-std::f32::consts::TAU*11200./rate).exp(),release:(-1./(0.09*rate)).exp()}
+        Self{active:false,delay:vec![[0.;2];(rate*0.006).ceil() as usize+3],write:0,phase:[0.,0.],tone:[0.;2],
+            rng:0x53ab9107,noise:0.,hiss:0.,activity:0.,tone_coeff:1.-(-std::f32::consts::TAU*11200./rate).exp(),release:(-1./(0.09*rate)).exp()}
     }
     fn frame(&mut self,input:[f32;2],rate:f32,amount:f32)->[f32;2]{
-        let distance=rate*(0.0018+amount*(0.00065*self.phase[0].sin() as f32+0.000055*self.phase[1].sin() as f32));
+        let distance=rate*amount*amount*(0.00265+0.00175*self.phase[0].sin() as f32+0.00015*self.phase[1].sin() as f32+0.00050*(0.4+self.phase[0]*2.+self.phase[1]).sin() as f32);
         for (phase,hz) in self.phase.iter_mut().zip([0.71,5.17]){
             *phase+=std::f64::consts::TAU*hz/f64::from(rate);
             if *phase>=std::f64::consts::TAU{*phase%=std::f64::consts::TAU;}
@@ -293,14 +301,18 @@ impl Tape {
         self.rng=self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         let noise=(self.rng>>8) as f32/8388608.-1.;
         self.activity=(self.activity*self.release).max((input[0].abs().max(input[1].abs())*64.).min(1.));
-        let hiss=(noise-self.noise*0.72)*0.00025*self.activity;
+        let hiss=(noise-self.noise*0.72)*(0.0004+0.0030*amount)*amount*self.activity;
         self.noise=noise;
+        // Band-limit the hiss and its slew like a tape playback head.
+        let slew=0.00066*amount*48000./rate;
+        self.hiss+=(0.46*(hiss-self.hiss)).clamp(-slew,slew);
+        let hiss=self.hiss;
         std::array::from_fn(|ch|{
             let sample=self.delay[i][ch]+distance.fract()*(self.delay[j][ch]-self.delay[i][ch]);
-            let drive=1.+4.*amount;
-            let mag=(sample*drive).tanh()/drive;
+            let drive=1.+8.*amount;
+            let mag=(sample*drive).tanh()/drive.sqrt();
             self.tone[ch]+=self.tone_coeff*(mag-self.tone[ch]);
-            self.tone[ch]+hiss
+            mag+(self.tone[ch]-mag)*amount+hiss
         })
     }
 }
@@ -464,6 +476,26 @@ mod expanded_tests {
                 let difference=rendered[a].iter().zip(&rendered[b]).map(|(x,y)|(x-y).abs()).sum::<f32>()/dry.len() as f32;
                 assert!(difference>0.0001,"types {a} and {b} must differ: {difference}");
             }}
+        }
+    }
+
+    #[test]
+    fn tape_drive_adds_pitch_motion_without_dry_signal_cancellation() {
+        for amount in [22000u16,65535] {
+            let mut strip=ChannelStrip::new([0,0,amount,0,0,0,1],48000);
+            let mut tone=signal(48000,440.,0.5);
+            strip.pre(&mut tone);
+            let mono:Vec<_>=tone.chunks_exact(2).skip(4800).map(|f|f[0]).collect();
+            let crossings:Vec<_>=mono.windows(2).enumerate().filter(|(_,s)|s[0]<=0. && s[1]>0.)
+                .map(|(i,s)|i as f32-s[0]/(s[1]-s[0])).collect();
+            let mut cents:Vec<_>=crossings.windows(2).map(|c|1200.*(48000./((c[1]-c[0])*440.)).log2()).collect();
+            cents.sort_by(f32::total_cmp);
+            let span=cents[cents.len()*95/100]-cents[cents.len()*5/100];
+            let energies:Vec<_>=mono.chunks_exact(1200).map(rms).collect();
+            let ratio=energies.iter().copied().reduce(f32::min).unwrap()/energies.iter().copied().reduce(f32::max).unwrap();
+            assert!(ratio>0.90,"steady tone should not pulse from dry/wet cancellation: {ratio}");
+            if amount==65535 {assert!(span>35.,"full tape pitch drift should be audible: {span} cents");}
+            eprintln!("Tape drive {amount}: pitch spread {span:.1} cents, minimum/maximum RMS {ratio:.3}");
         }
     }
 

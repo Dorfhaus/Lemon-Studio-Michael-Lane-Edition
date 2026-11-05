@@ -3035,8 +3035,8 @@ pub enum PlDrag {
     Point { ch: u16, clip: usize, i: usize, x0: f32, y0: f32, beat0: f64, v0: f64, lock: Option<bool> },
     Tension { ch: u16, i: usize, y0: f32, t0: f32 },
     /// An audio clip's fade-in (`out` false) or fade-out handle (§9a).
-    Fade { clip: usize, out: bool },
-    FadeTension { clip: usize, out: bool, y0: f32, t0: f32 },
+    Fade { clip: usize, out: bool, targets: Vec<usize> },
+    FadeTension { clip: usize, out: bool, y0: f32, t0: f32, targets: Vec<usize> },
     /// An audio clip's gain handle: dB from where the drag started.
     Gain { clip: usize, y0: f32, db0: f32 },
     /// A crossfade's handle (§9a): later clip `b`, earlier clip `a`, `b`'s gain at the middle when the drag started.
@@ -3260,23 +3260,19 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     }
 
 
-    if tool == PlTool::Select && !right {
-        s.playlist.sel = hit.map_or_else(Vec::new, |i| with_groups(s, vec![i]));
-        app.drag = Some(Drag::Pl(PlDrag::Marquee { x0:x, y0:y+s.playlist_scroll.1, base:Vec::new() }));
-        app.invalidate();
-        return;
-    }
-
     // Audio clip handles: fades, fade tensions, gain (§9a).
     if let (Some(ci), false) = (hit, right) {
         if let Some(h) = handle_at(s, &g, ci, x, y) {
             snapshot(s);
             let c = clips(s)[ci];
+            let targets = if s.playlist.sel.contains(&ci) {
+                s.playlist.sel.iter().copied().filter(|&i| clips(s).get(i).is_some_and(|c| source_kind(s,c.source)==PickKind::Audio)).collect()
+            } else { vec![ci] };
             app.drag = Some(Drag::Pl(match h {
-                Handle::FadeIn => PlDrag::Fade { clip: ci, out: false },
-                Handle::FadeOut => PlDrag::Fade { clip: ci, out: true },
-                Handle::TensionIn => PlDrag::FadeTension { clip: ci, out: false, y0: y, t0: c.fade_in_tension() },
-                Handle::TensionOut => PlDrag::FadeTension { clip: ci, out: true, y0: y, t0: c.fade_out_tension() },
+                Handle::FadeIn => PlDrag::Fade { clip: ci, out: false, targets },
+                Handle::FadeOut => PlDrag::Fade { clip: ci, out: true, targets },
+                Handle::TensionIn => PlDrag::FadeTension { clip: ci, out: false, y0: y, t0: c.fade_in_tension(), targets },
+                Handle::TensionOut => PlDrag::FadeTension { clip: ci, out: true, y0: y, t0: c.fade_out_tension(), targets },
                 Handle::Gain => PlDrag::Gain { clip: ci, y0: y, db0: 20.0 * c.gain().log10() },
                 Handle::Crossfade => {
                     let a = crossfade(s, &g, ci).map_or(ci, |xf| xf.a);
@@ -3287,6 +3283,13 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             app.invalidate();
             return;
         }
+    }
+
+    if tool == PlTool::Select && !right {
+        s.playlist.sel = hit.map_or_else(Vec::new, |i| with_groups(s, vec![i]));
+        app.drag = Some(Drag::Pl(PlDrag::Marquee { x0:x, y0:y+s.playlist_scroll.1, base:Vec::new() }));
+        app.invalidate();
+        return;
     }
 
     // Automation points: drag, add, menu (Draw / Paint / Select tools) (§8).
@@ -3575,7 +3578,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
         _ if stretching => None,
         PlDrag::Move { orig, .. } | PlDrag::ResizeL { orig, .. } | PlDrag::ResizeR { orig, .. } => Some(orig.iter().map(|&(i, _)| i).collect()),
         PlDrag::Slip { i, .. } => Some(vec![*i]),
-        PlDrag::Fade { clip, .. } | PlDrag::FadeTension { clip, .. } | PlDrag::Gain { clip, .. } => Some(vec![*clip]),
+        PlDrag::Fade { targets, .. } | PlDrag::FadeTension { targets, .. } => Some(targets.clone()),
+        PlDrag::Gain { clip, .. } => Some(vec![*clip]),
         PlDrag::Crossfade { a, b, .. } => Some(vec![*a, *b]),
         _ => None,
     };
@@ -3766,40 +3770,36 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 s.piano.dirty = true;
             }
         }
-        PlDrag::Fade { clip, out } => {
+        PlDrag::Fade { clip, out, targets } => {
             let Some(c) = clips(s).get(clip).copied() else { return };
             let body = g.body(&c);
             let (fx_in, fx_out) = fade_xs(s, &g, &c);
             // A fade reaches at most to where the other one starts.
             let px = if out { (body.right() - x).clamp(0.0, body.right() - fx_in) } else { (x - body.x).clamp(0.0, fx_out - body.x) };
             let ms = (f64::from(px / g.ppt) * fade_ms_per_tick(s)) as f32;
-            let c = &mut arr_mut(s).clips[clip];
-            let on = (px >= 2.0).then_some(ms);
-            // A fade set with its handle gets its bit (and leaves the automatic crossfades); dragged to nothing, the
-            // edge is theirs again (spec: audio/audio-clips.md "Automatic crossfades").
-            if out {
-                let t = c.fade_out_tension();
-                c.set_fade_out(on.map(|ms| (ms, t)));
-            } else {
-                let t = c.fade_in_tension();
-                c.set_fade_in(on.map(|ms| (ms, t)));
+            for i in targets {
+                let Some(other) = clips(s).get(i).copied() else {continue};
+                let (left,right) = fade_xs(s,&g,&other);
+                let body = g.body(&other);
+                let room = if out {body.right()-left} else {right-body.x};
+                let limit = (f64::from(room.max(0.)/g.ppt)*fade_ms_per_tick(s)) as f32;
+                let on = (px>=2. && limit>0.).then_some(ms.min(limit));
+                let edge=&mut arr_mut(s).clips[i];
+                if out {edge.set_fade_out(on.map(|v|(v,edge.fade_out_tension())));}
+                else {edge.set_fade_in(on.map(|v|(v,edge.fade_in_tension())));}
             }
-            let c = *c;
+            let c=clips(s)[clip];
             app.hint = Cow::Owned(handle_hint(&c, if out { Handle::FadeOut } else { Handle::FadeIn }));
             app.state.piano.dirty = true;
         }
-        PlDrag::FadeTension { clip, out, y0, t0 } => {
+        PlDrag::FadeTension { clip, out, y0, t0, targets } => {
             let t = (t0 + (y0 - y) * TENSION_PER_PX).clamp(-40.0, 40.0);
-            let c = &mut arr_mut(s).clips[clip];
-            // The tension alone: the length and the bit stay (a stored fade without its bit plays with the switch off).
-            if out {
-                if c.stored_fade_out().is_some() {
-                    c.set_fade_out_tension(t);
-                }
-            } else if c.stored_fade_in().is_some() {
-                c.set_fade_in_tension(t);
+            for i in targets {
+                let Some(c)=arr_mut(s).clips.get_mut(i) else {continue};
+                if out && c.stored_fade_out().is_some() {c.set_fade_out_tension(t);}
+                if !out && c.stored_fade_in().is_some() {c.set_fade_in_tension(t);}
             }
-            let c = *c;
+            let c=clips(s)[clip];
             app.hint = Cow::Owned(handle_hint(&c, if out { Handle::TensionOut } else { Handle::TensionIn }));
             app.state.piano.dirty = true;
         }

@@ -1007,8 +1007,8 @@ impl Plugins {
         let w = FrameWindow::new(owner, info, (560.0, 437.0), scale, pos, h.detached)?;
         #[cfg(target_os="macos")]
         if h.name=="Lemon Wave" {w.set_editor_zoom(wave_zoom());}
-        // Open on the plugin itself. The gear still opens instrument settings on demand.
-        w.set_strip(false);
+        // Keep the mixer routing target visible when opening a sample.
+        w.set_strip(row < FX_KEY && h.name == LEMON_SAMPLER);
         // The editor takes the frame's scale (on Linux the X server's, not the main window's).
         let k = w.scale();
         // The instance is locked only while its editor opens: the audio thread skips an instance it cannot lock, so

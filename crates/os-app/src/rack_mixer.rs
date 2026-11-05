@@ -152,7 +152,7 @@ mod tests {
     #[test]fn rack_mixer_picker_only_offers_reviewed_original_strips(){
         let (mut app,index)=setup();let d=&app.plugins.effects[index].desc;
         for (name,vendor) in [("Magma Channel Strip Mono","Waves"),("RChannel Stereo","Waves"),("SSLChannel Stereo","Waves"),("SSLGChannel Mono","Waves"),("SSL EV2 Channel Stereo","Waves"),("GOLD5","Acqua"),("Pro-Q 4","FabFilter"),("NLS Channel Stereo","Waves"),("AudioTrack Mono","Waves"),("Virtual Mix Rack","Slate Digital"),("Scheps Omni Channel 2 Stereo","Waves")] {
-            app.state.plugdb.lists.fx.push(crate::plugin_db::Entry{index,name:name.into(),label:name.into(),uid:d.uid(),vendor:vendor.into(),format:d.format,category:"Effect",favorite:false});
+            app.state.plugdb.lists.fx.push(crate::plugin_db::Entry{builtin:false,index,name:name.into(),label:name.into(),uid:d.uid(),vendor:vendor.into(),format:d.format,category:"Effect",favorite:false});
         }
         let items=menu(&app.state,1);let picker=items.iter().find(|v|v.label=="Choose channel strip").unwrap();
         let labels:Vec<_>=picker.children.iter().flat_map(|v|v.children.iter()).map(|v|v.label.as_ref()).collect();
@@ -242,7 +242,7 @@ mod tests {
     #[test]fn rack_mixer_direct_picker_needs_no_prior_fx_window(){
         let (mut app,index)=setup();let d=&app.plugins.effects[index].desc;
         assert!(vertical_spec(d).is_none());
-        app.state.plugdb.lists.fx.push(crate::plugin_db::Entry{index,name:"Magma Channel Strip Mono".into(),label:"Magma Channel Strip Mono".into(),uid:d.uid(),vendor:"Waves".into(),format:d.format,category:"Effect",favorite:false});
+        app.state.plugdb.lists.fx.push(crate::plugin_db::Entry{builtin:false,index,name:"Magma Channel Strip Mono".into(),label:"Magma Channel Strip Mono".into(),uid:d.uid(),vendor:"Waves".into(),format:d.format,category:"Effect",favorite:false});
         let items=menu(&app.state,1);let choose=items.iter().find(|v|v.label=="Choose channel strip").unwrap();
         assert_eq!(choose.children[0].children[0].label,"Magma Channel Strip Mono");
         app.state.startup_layout_pending=false;app.state.show_browser=false;app.state.z=vec![Win::Mixer];

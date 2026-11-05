@@ -820,6 +820,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             let skins = os_theme::Design::ALL.iter().map(|d| d.name().to_string()).collect();
             let themes = st.themes.iter().map(|(n, _)| n.clone()).collect();
             vec![
+                g("Mixer", vec![combo(crate::prefs::choice(&crate::prefs::MIXER_STYLE), 170.0, crate::prefs::MIXER_STYLE.label)]),
                 g("Skins", vec![Tiles(TileList::Skins, skins, st.skin)]),
                 g("Themes", vec![Tiles(TileList::Themes, themes, st.preset)]),
             ]

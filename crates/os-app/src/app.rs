@@ -750,6 +750,7 @@ impl Ui<'_> { // This code is a part of L e m o n S t u d i o.
 
 /// What views paint with.
 pub struct Ui<'a> {
+    pub mixer_finish: views::mixer::Finish,
     pub c: &'a mut Canvas,
     pub t: &'a Palette,
     hits: &'a mut Vec<Hit>,
@@ -4382,6 +4383,7 @@ impl App {
         self.keep.full = damage.is_none();
         let title = self.title();
         let mut ui = Ui {
+            mixer_finish: views::mixer::Finish::current(),
             c: canvas,
             t: &self.theme.colors,
             hits: &mut self.hits,
@@ -19244,6 +19246,10 @@ mod tests {
         pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, 0).expect("audio clip added");
         let ci = pl::clips(&app.state).len() - 1;
         assert_eq!(pl::clips(&app.state)[ci].gain(), 1.0, "a new audio clip stores gain 1.0");
+        let mut peer=pl::clips(&app.state)[ci];
+        peer.track+=1;
+        pl::arr_mut(&mut app.state).clips.push(peer);
+        app.state.playlist.sel=vec![ci,ci+1];
         frame(&mut app, &mut c, None);
         let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
         let body = g.body(&pl::clips(&app.state)[ci]);
@@ -19265,11 +19271,13 @@ mod tests {
         let (fin, t) = clip.fade_in().expect("a fade-in");
         // The fade ends under the mouse.
         assert!((f64::from(fin) - ms(102.0)).abs() < 2.0, "fade-in {fin} ms vs {}", ms(102.0));
+        assert_eq!(pl::clips(&app.state)[ci+1].fade_in(),clip.fade_in());
         assert_eq!(t, 0.0);
         // Fade-out: the top-right triangle dragged 60 px left.
         drag(&mut app, &mut c, (body.right() - 2.0, body.y + 2.0), (body.right() - 62.0, body.y + 2.0));
         let (fout, _) = pl::clips(&app.state)[ci].fade_out().expect("a fade-out");
         assert!((f64::from(fout) - ms(62.0)).abs() < 2.0, "fade-out {fout} ms");
+        assert_eq!(pl::clips(&app.state)[ci+1].fade_out(),pl::clips(&app.state)[ci].fade_out());
         // Tension: the fade-in's ring dragged up 10 px.
         let (mx, my) = pl::fade_mid(body, body.x, pl::fade_xs(&app.state, &g, &pl::clips(&app.state)[ci]).0, 0.0, false);
         app.mouse_move(mx, my);
@@ -20314,6 +20322,23 @@ mod tests {
     }
 
     #[test]
+    fn piano_toolbar_key_and_scale_open_their_direct_menus() {
+        use crate::harmony::HCmd;
+        let mut app=App::new(None);
+        app.state.z=vec![Win::PianoRoll];
+        let mut canvas=Canvas::new(1280,850,1.).unwrap();
+        for (which,count) in [(0,12),(1,22)] {
+            frame(&mut app,&mut canvas,None);
+            let rect=hit_rect(&app,&Action::Harmony(HCmd::Menu(which)));
+            click(&mut app,&mut canvas,rect);
+            let popup=app.state.playlist.popup.as_ref().unwrap();
+            assert_eq!(popup.items.len(),count);
+            assert_eq!(popup.x,rect.x);
+            app.state.playlist.popup=None;
+        }
+    }
+
+    #[test]
     fn harmony_workspace_shortcut_and_ui() {
         use crate::harmony::{self,HCmd};
         use winit::keyboard::{Key,KeyCode};
@@ -20533,7 +20558,7 @@ mod tests {
         app.state.mixer.layout=crate::mixer::WIDE;
         for (i,t) in app.state.project.mixer.iter_mut().enumerate() {
             t.channel_layout=if i==2 {2}else{1};
-            t.name=Some(match i {0=>"MASTER",1=>"DRUM BUS",2=>"LEAD VOX",3=>"BASS",4=>"GUITARS",5=>"KEYS",6=>"ROOM",_=>"RETURN"}.into());
+            t.name=Some(match i {0=>"MASTER",1=>"DRUMS",2=>"LEAD VOX",3=>"BASS",4=>"GUITARS",5=>"KEYS",6=>"ROOM",_=>"RETURN"}.into());
             t.volume=Some(0.8-(i%4) as f64*0.08);
         }
         app.state.selected_mixer=2;
@@ -20545,17 +20570,67 @@ mod tests {
             let a=0.055+i as f32*0.012;
             crate::meters::Meter{vu:[a,a*0.9],db:[-8.,-10.],hold:[-6.,-8.],..Default::default()}
         }).collect();
-        for (width,height,scale) in [(1920,1080,1.),(1366,768,1.),(1920,1080,1.5)] {
-            let mut c=Canvas::new(width,height,scale).unwrap();frame(&mut app,&mut c,None);
-            let before=hit_rect(&app,&Action::Fader(2));
-            let meter=hit_rect(&app,&Action::Mix(crate::mixer::MHit::Meter(2)));
-            c.pixmap.save_png(dir.join(format!("analog-full-{width}-{height}-{scale}.png"))).unwrap();
-            click(&mut app,&mut c,meter);
-            assert!(app.state.mixer.peak_view.contains(&2));
-            let after=hit_rect(&app,&Action::Fader(2));
-            assert_eq!((before.x,before.y,before.w,before.h),(after.x,after.y,after.w,after.h));
-            click(&mut app,&mut c,meter);
-            assert!(!app.state.mixer.peak_view.contains(&2));
+        for (style_index,style) in crate::prefs::MIXER_STYLE.choices.iter().enumerate() {
+            app.pref_choose(&crate::prefs::MIXER_STYLE,style_index);
+            assert_eq!(crate::prefs::choice(&crate::prefs::MIXER_STYLE), *style);
+            for (width,height,scale) in [(1920,1080,1.),(1366,768,1.),(1920,1080,1.5)] {
+                let mut c=Canvas::new(width,height,scale).unwrap();frame(&mut app,&mut c,None);
+                let before=hit_rect(&app,&Action::Fader(2));
+                for action in [Action::Mix(crate::mixer::MHit::Polarity(2)),Action::Mix(crate::mixer::MHit::Swap(2)),Action::Knob(crate::knobs::KnobId::MixSep(2))] {
+                    let control=hit_rect(&app,&action);
+                    assert!(before.x-control.right()>=14.,"stereo controls must clear the fader: {control:?} {before:?}");
+                    assert_eq!(app.top_hit(control.cx(),control.cy()).unwrap().action,action);
+                }
+                let drum=hit_rect(&app,&Action::Mix(crate::mixer::MHit::Jump(2,crate::mixer::Section::Drums)));
+                let strip=hit_rect(&app,&Action::Mix(crate::mixer::MHit::Strip(2)));
+                assert!(drum.x>=strip.x+2. && drum.right()<=strip.right()-2.);
+                assert!(c.text_width(os_ui::Font::light(8,0).natural(),"DRUM")<=drum.w-4.,"DRUM label must fit inside its button");
+                let meter=hit_rect(&app,&Action::Mix(crate::mixer::MHit::Meter(2)));
+                c.pixmap.save_png(dir.join(format!("{style}-full-{width}-{height}-{scale}.png"))).unwrap();
+                if width == 1366 && style_index != 0 {
+                    let pan = crate::knobs::KnobId::MixPan(2);
+                    let pan_hit = hit_rect(&app, &Action::Knob(pan));
+                    let count_arc = |canvas: &Canvas, left: bool| {
+                        let x = pan_hit.cx() as u32;
+                        let xs = if left {x-14..x-3} else {x+3..x+14};
+                        xs.flat_map(|x| (pan_hit.cy() as u32-14..pan_hit.cy() as u32+14).map(move |y| (x,y)))
+                            .filter(|&(x,y)| {
+                                let c = canvas.pixmap.pixel(x,y).unwrap();
+                                c.red() > 180 && c.green() > 145 && c.blue() < 125
+                            }).count()
+                    };
+                    for (delta,left) in [(220.,true),(-220.,false)] {
+                        app.state.set_knob(pan,0.5);
+                        frame(&mut app,&mut c,None);
+                        assert_eq!((count_arc(&c,true),count_arc(&c,false)),(0,0));
+                        app.mouse_move(pan_hit.cx(),pan_hit.cy());
+                        app.mouse_down();
+                        app.mouse_move(pan_hit.cx(),pan_hit.cy()+delta);
+                        frame(&mut app,&mut c,None);
+                        c.pixmap.save_png(dir.join(format!("{style}-pan-{left}.png"))).unwrap();
+                        assert!(count_arc(&c,left)>2 && count_arc(&c,!left)==0,
+                            "pan arc {style}, requested left={left}, value={}, hit={pan_hit:?}, left/right pixels={}/{}", app.state.knob(pan),count_arc(&c,true),count_arc(&c,false));
+                        app.mouse_up();
+                    }
+                    app.state.set_knob(pan,0.5);
+                    let gate = crate::knobs::KnobId::Strip(2,3);
+                    let g = hit_rect(&app,&Action::Knob(gate));
+                    app.mouse_move(g.cx(),g.cy());
+                    app.mouse_down();
+                    app.mouse_move(g.cx(),g.cy()-150.);
+                    frame(&mut app,&mut c,None);
+                    assert_eq!(app.state.knob(gate),1.);
+                    c.pixmap.save_png(dir.join(format!("{style}-gate-100.png"))).unwrap();
+                    app.mouse_up();
+                    app.state.set_knob(gate,0.);
+                }
+                click(&mut app,&mut c,meter);
+                assert!(app.state.mixer.peak_view.contains(&2));
+                let after=hit_rect(&app,&Action::Fader(2));
+                assert_eq!((before.x,before.y,before.w,before.h),(after.x,after.y,after.w,after.h));
+                click(&mut app,&mut c,meter);
+                assert!(!app.state.mixer.peak_view.contains(&2));
+            }
         }
     }
 
@@ -21087,6 +21162,7 @@ mod tests {
         app.state.project.mixer[2].slots[0] = Some(os_model::SlotPlugin { name: "Taken".into(), state: Vec::new() });
         let index = app.plugins.effects.len() - 1;
         crate::plugin_picker::act(&mut app,crate::plugin_picker::Hit::Tile(true,index));
+        crate::plugin_picker::act(&mut app,crate::plugin_picker::Hit::Choose);
         assert!(app.state.playlist.popup.is_none());
         assert_eq!(crate::mixer::slot_name(&app.state, 2, 1).as_deref(), Some("Test FX"));
         // F8 twice: open, then closed.
@@ -21101,6 +21177,7 @@ mod tests {
         let n = app.state.project.channels.len();
         let osc_index=app.plugins.index_of(crate::osc3::LEMON_TRIO).unwrap();
         crate::plugin_picker::act(&mut app,crate::plugin_picker::Hit::Tile(false,osc_index));
+        crate::plugin_picker::act(&mut app,crate::plugin_picker::Hit::Choose);
         assert_eq!(app.state.project.channels.len(), n + 1);
         assert_eq!(app.state.selected_channel, n);
         assert_eq!(app.state.pending_plugin, Some((n, app.plugins.index_of(crate::osc3::LEMON_TRIO).unwrap())));
