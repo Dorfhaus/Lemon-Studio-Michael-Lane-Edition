@@ -4,6 +4,19 @@
   "sections": [
     {
       "date": "2026-11-05",
+      "title": "Strip Silence and smoother editing \u00b7 public build 2026110503",
+      "changes": [
+        "The Playlist Normalize menu now opens a dialog with an editable target, Apply, Reset and Cancel. Reset restores selected audio clip gains to 0 dB, and both normalization and reset support Undo.",
+        "Strip Silence is available from the audio clip menu. Easy mode chooses levels per clip; Manual offers open and close thresholds, attack, hold, release and look-ahead. Choose internal splits or trimming just the ends.",
+        "Playlist clip drags scroll automatically at the edges. Selected clips stay attached to the pointer while using the wheel, including smooth scrolling.",
+        "Project saves continue when a hosted plugin declines state capture, retaining matching previous settings when available. A visible warning identifies affected plugins and explains when they will reopen at defaults.",
+        "Piano Roll notes and Playlist clips show open and closed hand cursors for grabbing and dragging, plus yellow resize cursors. Placing new notes and clips keeps the drawing cursor to avoid a hand flash.",
+        "The Piano Roll brush can move selected notes together. Channel Rack Piano Roll is first in its reorganized context menu, followed by Plugin Picker. Piano Roll tools are grouped with clearer separators.",
+        "The Channel Rack pan knob draws its yellow arc outward from center and has no colored arc at the centered value."
+      ]
+    },
+    {
+      "date": "2026-11-05",
       "title": "Optional sample routing and batch clip normalization \u00b7 public build 2026110502",
       "changes": [
         "Select audio clips in the Playlist and use Normalize audio clips to enter a sample peak, RMS or integrated LUFS target. Each clip gets its own gain adjustment in one undoable edit.",

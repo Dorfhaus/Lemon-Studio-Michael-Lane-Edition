@@ -43,7 +43,7 @@ impl Tool {
 
     /// Tools whose left-drag on a selected note moves the whole selection (§9).
     pub fn moves_groups(self) -> bool {
-        matches!(self, Tool::Draw | Tool::Select)
+        matches!(self, Tool::Draw | Tool::Paint | Tool::Select)
     }
 }
 

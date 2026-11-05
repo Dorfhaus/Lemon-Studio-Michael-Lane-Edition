@@ -2,7 +2,7 @@
 //! Measure individual Playlist clips before the mixer, then apply one undoable gain edit.
 use crate::{app::App, playlist as pl};
 use os_model::{Arrangement, Channel, Clip, ClipSource, Project};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -45,32 +45,34 @@ pub struct Job {
     rx: mpsc::Receiver<Result<Vec<Option<f32>>, String>>,
 }
 
-fn measure(
-    input: &Input,
-    batch: &Batch,
-    mode: Mode,
+pub(crate) fn analysis_engine(
+    original: Clip,
+    channel: &Channel,
+    path: &str,
+    tempo: f64,
+    ppq: u16,
     library: &mut os_engine::SampleLibrary,
-) -> Result<Option<f64>, String> {
+) -> Result<(os_engine::Engine, u32), String> {
     let sample = library
-        .get(&input.path)
-        .ok_or_else(|| format!("Cannot read {}", input.path))?;
+        .get(&path)
+        .ok_or_else(|| format!("Cannot read {}", path))?;
     let rate = sample.rate;
-    let mut clip = input.clip;
+    let mut clip = original;
     clip.source = ClipSource::Channel(0);
     clip.position = 0;
     clip.track = 0;
     clip.muted = false;
     clip.set_gain(1.);
-    let mut ch = input.channel.clone();
+    let mut ch = channel.clone();
     ch.index = 0;
     ch.mixer_track = 0;
     ch.enabled = true;
     ch.volume = 0.78125;
     ch.pan = 0.;
-    ch.sample_path = Some(input.path.clone());
+    ch.sample_path = Some(path.into());
     let p = Project {
-        ppq: batch.ppq,
-        tempo: Some(batch.tempo),
+        ppq: ppq,
+        tempo: Some(tempo),
         channels: vec![ch],
         arrangements: vec![Arrangement {
             number: 1,
@@ -79,7 +81,26 @@ fn measure(
         }],
         ..Default::default()
     };
-    let mut engine = os_engine::Engine::new(&p, library, rate, os_engine::PlayMode::Song);
+    Ok((
+        os_engine::Engine::new(&p, library, rate, os_engine::PlayMode::Song),
+        rate,
+    ))
+}
+
+fn measure(
+    input: &Input,
+    batch: &Batch,
+    mode: Mode,
+    library: &mut os_engine::SampleLibrary,
+) -> Result<Option<f64>, String> {
+    let (mut engine, rate) = analysis_engine(
+        input.clip,
+        &input.channel,
+        &input.path,
+        batch.tempo,
+        batch.ppq,
+        library,
+    )?;
     let mut peak = 0.0_f64;
     let mut energy = 0.0;
     let mut count = 0_u64;
@@ -89,7 +110,7 @@ fn measure(
         None
     };
     while let Some((audio, tick, _, _, _)) = engine.next_tick() {
-        if tick >= f64::from(clip.length) {
+        if tick >= f64::from(input.clip.length) {
             break;
         }
         match mode {
@@ -267,8 +288,16 @@ mod tests {
         for mode in Mode::ALL {
             a.state.playlist.sel = vec![i, i + 1];
             pl::run(&mut a, pl::Cmd::Normalize(i, mode));
-            a.state.playlist.edit.as_mut().unwrap().text = "-18".into();
-            pl::commit_edit(&mut a.state);
+            if let Some(crate::dialog::Modal {
+                body: crate::dialog::Body::Normalize(f),
+                ..
+            }) = a.state.dialogs.last_mut()
+            {
+                f.target.set("-18");
+            } else {
+                panic!("normalization dialog");
+            }
+            command(&mut a, Command::Apply);
             tick(&mut a);
             let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while a.clip_normalization.is_some() && std::time::Instant::now() < end {
@@ -299,6 +328,220 @@ mod tests {
             assert_eq!(pl::clips(&a.state)[i].gain(), 1.);
             assert_eq!(pl::clips(&a.state)[i + 1].gain(), 0.5);
         }
+        a.state.playlist.sel = vec![i, i + 1];
+        let original = pl::clips(&a.state).to_vec();
+        open(&mut a, i, Mode::Peak).unwrap();
+        let mut canvas = os_ui::Canvas::new(1280, 900, 1.).unwrap();
+        a.paint(&mut canvas, None);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            canvas
+                .pixmap
+                .save_png(std::path::PathBuf::from(dir).join("normalize-dialog.png"))
+                .unwrap();
+        }
+        command(&mut a, Command::Cancel);
+        assert_eq!(pl::clips(&a.state), original);
+        open(&mut a, i, Mode::Peak).unwrap();
+        command(&mut a, Command::Reset);
+        assert_eq!(pl::clips(&a.state)[i].gain(), 1.);
+        assert_eq!(pl::clips(&a.state)[i + 1].gain(), 1.);
+        assert_eq!(pl::clips(&a.state)[i + 2], outside);
+        crate::history::undo(&mut a.state).unwrap();
+        assert_eq!(pl::clips(&a.state), original);
         std::fs::remove_file(file).unwrap();
+    }
+}
+
+pub struct Form {
+    batch: Batch,
+    mode: Mode,
+    target: crate::dialog::Field,
+    message: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Target,
+    Apply,
+    Reset,
+    Cancel,
+}
+
+pub fn open(app: &mut App, index: usize, mode: Mode) -> Result<(), String> {
+    if app.clip_normalization.is_some() {
+        return Err("Clip normalization is already running".into());
+    }
+    let batch = Batch::new(&app.state, index);
+    if batch.inputs.is_empty() {
+        return Err("Select an audio clip to normalize".into());
+    }
+    let mut target = crate::dialog::Field::default();
+    target.set(&mode.default_db().to_string());
+    target.select_all();
+    app.state
+        .dialogs
+        .push(crate::dialog::Modal::new(crate::dialog::Body::Normalize(
+            Form {
+                batch,
+                mode,
+                target,
+                message: String::new(),
+            },
+        )));
+    app.invalidate();
+    Ok(())
+}
+pub fn command(app: &mut App, c: Command) {
+    use crate::dialog::{Body, Modal};
+    if c == Command::Cancel {
+        app.state.dialogs.pop();
+        app.invalidate();
+        return;
+    }
+    let Some(Modal {
+        body: Body::Normalize(f),
+        ..
+    }) = app.state.dialogs.last_mut()
+    else {
+        return;
+    };
+    if c == Command::Target {
+        f.target.select_all();
+        app.invalidate();
+        return;
+    }
+    if c == Command::Apply
+        && !f
+            .target
+            .text
+            .trim()
+            .parse::<f64>()
+            .is_ok_and(|db| db.is_finite() && (-96.0..=0.).contains(&db))
+    {
+        f.message = "Enter a target between -96 and 0.".into();
+        app.invalidate();
+        return;
+    }
+    let Some(Modal {
+        body: Body::Normalize(f),
+        ..
+    }) = app.state.dialogs.pop()
+    else {
+        return;
+    };
+    if !f.batch.current(&app.state) {
+        app.state.message = Some("Clips changed. Reopen Normalize.".into());
+        app.invalidate();
+        return;
+    }
+    if c == Command::Reset {
+        pl::snapshot_as(&mut app.state, "Reset clip gain");
+        let clips = &mut pl::arr_mut(&mut app.state).clips;
+        for input in f.batch.inputs {
+            clips[input.index].set_gain(1.);
+        }
+        app.state.piano.dirty = true;
+        app.state.message = Some("Selected clip gains reset to 0 dB".into());
+    } else {
+        let indices: Vec<_> = f.batch.inputs.iter().map(|v| v.index).collect();
+        app.state.playlist.sel = indices.clone();
+        app.state.playlist.normalize_request =
+            Some((indices[0], f.mode, f.target.text.trim().parse().unwrap()));
+    }
+    app.invalidate();
+}
+pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) {
+    use winit::keyboard::{Key, NamedKey};
+    match key {
+        Key::Named(NamedKey::Escape) => command(app, Command::Cancel),
+        Key::Named(NamedKey::Enter) => command(app, Command::Apply),
+        _ => {
+            if let Some(crate::dialog::Modal {
+                body: crate::dialog::Body::Normalize(f),
+                ..
+            }) = app.state.dialogs.last_mut()
+            {
+                if f.target.len() < 32 || !matches!(key, Key::Character(_)) {
+                    f.target.key(key, ctrl, alt);
+                }
+            }
+            app.invalidate();
+        }
+    }
+}
+pub fn paint(ui: &mut crate::app::Ui, r: os_ui::Rect, f: &Form) {
+    use crate::{app::Action, dialog::DHit};
+    use os_ui::{Color, Font, Rect};
+    let yellow = Color::rgb(0xe8cf62);
+    ui.c.text(
+        Font::new(13),
+        r.x + 20.,
+        r.y + 44.,
+        ui.t.text,
+        &format!("{} selected audio clips", f.batch.inputs.len()),
+    );
+    ui.c.text(
+        Font::new(13),
+        r.x + 20.,
+        r.y + 75.,
+        ui.t.text,
+        f.mode.label().trim_end_matches("..."),
+    );
+    ui.c.text(Font::new(13), r.x + 20., r.y + 116., ui.t.text, "Target");
+    let field = Rect::new(r.x + 150., r.y + 105., r.w - 170., 34.);
+    ui.c.fill_rrect(field, 4., ui.t.sunken);
+    ui.c.stroke_rrect(field, 4., 1., yellow);
+    if f.target.all {
+        ui.c.fill_rrect(field.inset(4.), 2., ui.t.button_hi);
+    }
+    ui.c.text(
+        Font::new(14),
+        field.x + 10.,
+        field.y + 9.,
+        yellow,
+        &f.target.text,
+    );
+    let caret = field.x + 10. + ui.c.text_width(Font::new(14), f.target.before_caret());
+    ui.c.line(caret, field.y + 7., caret, field.bottom() - 7., 1., yellow);
+    ui.hit(
+        field,
+        Action::Dlg(DHit::Normalize(Command::Target)),
+        "Enter a normalization target",
+    );
+    ui.c.text_clip(
+        Font::new(11),
+        r.x + 20.,
+        r.y + 155.,
+        r.w - 40.,
+        ui.t.text_dim,
+        if f.message.is_empty() {
+            "Reset restores selected clip gains to 0 dB."
+        } else {
+            &f.message
+        },
+    );
+    let width = (r.w - 56.) / 3.;
+    for (i, (label, c)) in [
+        ("Reset", Command::Reset),
+        ("Cancel", Command::Cancel),
+        ("Apply", Command::Apply),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rect = Rect::new(
+            r.x + 20. + i as f32 * (width + 8.),
+            r.bottom() - 52.,
+            width,
+            32.,
+        );
+        let on = c == Command::Apply;
+        ui.c.fill_rrect(rect, 4., if on { yellow } else { ui.t.button });
+        ui.c.text_center(
+            Font::new(13),
+            rect,
+            if on { Color::rgb(0x171914) } else { ui.t.text },
+            label,
+        );
+        ui.hit(rect, Action::Dlg(DHit::Normalize(c)), label);
     }
 }

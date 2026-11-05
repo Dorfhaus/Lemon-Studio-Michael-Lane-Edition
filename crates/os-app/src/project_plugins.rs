@@ -93,11 +93,19 @@ pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
 /// the file names, and that the user has not edited, leaves the file's wrapper as it is ([`untouched_stand_in`]).
 pub fn store_hosted(proj: &mut Project, plugins: &Plugins) -> Result<(), String> {
     let mut copy=proj.clone();
-    store_hosted_inner(&mut copy,plugins)?;
+    store_hosted_inner(&mut copy,plugins,false)?;
     *proj=copy;
     Ok(())
 }
-fn store_hosted_inner(proj: &mut Project, plugins: &Plugins) -> Result<(), String> {
+/// Project saves keep working even when a plugin declines state capture.
+pub fn store_for_save(proj: &mut Project, plugins: &Plugins) -> Result<Vec<String>, String> {
+    let mut copy = proj.clone();
+    let warnings = store_hosted_inner(&mut copy, plugins, true)?;
+    *proj = copy;
+    Ok(warnings)
+}
+fn store_hosted_inner(proj: &mut Project, plugins: &Plugins, recover: bool) -> Result<Vec<String>, String> {
+    let mut warnings = Vec::new();
     for key in plugins.hosted.keys().copied().collect::<Vec<_>>() {
         if plugins.hosted.get(&key).is_some_and(|h|h.ara_saved.is_some()){continue;}
         let d = plugins.descriptor(key).ok_or_else(||format!("Plugin {key} is unavailable; previous saved settings preserved"))?;
@@ -107,7 +115,11 @@ fn store_hosted_inner(proj: &mut Project, plugins: &Plugins) -> Result<(), Strin
             if plugins.hosted.get(&key).is_some_and(|h| h.keep_file_state) {
                 continue;
             }
-            let state=plugins.state(key).ok_or_else(||format!("{} could not save its settings",d.name))?;
+            let Some(state) = plugins.state(key) else {
+                if !recover { return Err(format!("{} could not save its settings", d.name)); }
+                warnings.push(format!("{}: previous saved native settings retained", d.name));
+                continue;
+            };
             store_native(proj,key,state);
             continue;
         }
@@ -118,8 +130,26 @@ fn store_hosted_inner(proj: &mut Project, plugins: &Plugins) -> Result<(), Strin
         if untouched_stand_in(proj, plugins, key, &d) {
             continue;
         }
-        let state=plugins.state(key).ok_or_else(||format!("{} could not save its settings; previous saved settings preserved",d.name))?;
-        let r = plugin_ref(&d,state);
+        let r = if let Some(state) = plugins.state(key) {
+            plugin_ref(&d, state)
+        } else {
+            if !recover { return Err(format!("{} could not save its settings; previous saved settings preserved", d.name)); }
+            let previous = match fx_of(key) {
+                None => proj.channels.get(key).and_then(wrapped_channel),
+                Some((t,k)) => proj.mixer.iter().find(|m|m.index==t)
+                    .and_then(|m|m.slots[k as usize].as_ref()).and_then(wrapped_slot),
+            };
+            let identity = plugin_ref(&d, Vec::new());
+            let previous = previous.filter(|r| r.format==identity.format && r.name==identity.name && r.id.eq_ignore_ascii_case(&identity.id) && !r.state.is_empty());
+            let location = fx_of(key).map_or_else(|| format!("channel {}",key+1), |(t,k)|format!("mixer insert {t}, slot {}",k+1));
+            if let Some(previous) = previous {
+                warnings.push(format!("{} ({location}): previous saved settings retained; current changes could not be captured", d.name));
+                previous
+            } else {
+                warnings.push(format!("{} ({location}): current settings could not be captured; the plugin will reopen at its defaults", d.name));
+                identity
+            }
+        };
         match fx_of(key) {
             None => {
                 let Some(ch) = proj.channels.get_mut(key).filter(|c| c.kind == ChannelKind::Plugin) else { continue };
@@ -135,7 +165,7 @@ fn store_hosted_inner(proj: &mut Project, plugins: &Plugins) -> Result<(), Strin
             }
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 /// Whether the built-in effect `d` hosted under `key` plays a slot that `proj` stores as the FL effect it recreates
@@ -923,6 +953,40 @@ mod tests {
             }
             true
         }
+    }
+
+    #[test]
+    fn project_saves_with_a_refusing_bus_effect_and_keeps_its_last_state() {
+        use crate::plugins::{Hosted,fx_key};
+        let file=std::env::temp_dir().join(format!("lemon-save-refusal-{}.lmn",std::process::id()));
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        app.plugins=Plugins::builtins();
+        let mut desc=app.plugins.effects[0].desc.clone();
+        desc.name="Save test effect".into();desc.format=Format::Vst3;desc.id="0123456789ABCDEF0123456789ABCDEF".into();
+        desc.path="C:/Plugins/Save test effect.vst3".into();
+        let key=fx_key(2,0);
+        let plugin:os_host::SharedPlugin=std::sync::Arc::new(std::sync::Mutex::new(NativeStandIn(desc.clone(),vec![9,8,7],true)));
+        app.plugins.hosted.insert(key,Hosted::new(plugin));
+        app.state.project.mixer[2].slots[0]=Some(SlotPlugin{name:desc.name.clone(),state:vec![]});
+        app.plugins.state_fail.insert(key);
+        app.save_to(file.clone());
+        assert!(file.exists(),"{:?}",app.state.message);
+        assert!(app.state.message.as_ref().unwrap().contains("defaults"));
+        let read=|| os_flp::project::load(&os_flp::FlpFile::parse(&std::fs::read(&file).unwrap()).unwrap()).unwrap();
+        let first=read();let reference=wrapped_slot(first.mixer[2].slots[0].as_ref().unwrap()).unwrap();
+        assert_eq!(reference.name,desc.name);assert!(reference.state.is_empty());
+        app.plugins.state_fail.clear();app.state.dialogs.clear();
+        app.save_to(file.clone());
+        let previous=wrapped_slot(read().mixer[2].slots[0].as_ref().unwrap()).unwrap();
+        assert_eq!(previous.state,vec![9,8,7]);
+        app.plugins.state_fail.insert(key);app.state.tempo=151.;app.state.dialogs.clear();
+        app.save_to(file.clone());
+        let saved=read();
+        assert_eq!(saved.tempo,Some(151.));
+        assert_eq!(wrapped_slot(saved.mixer[2].slots[0].as_ref().unwrap()).unwrap(),previous);
+        assert!(app.state.message.as_ref().unwrap().contains("previous saved settings retained"));
+        assert!(!app.state.dialogs.is_empty(),"Manual saves warn visibly");
+        std::fs::remove_file(file).unwrap();
     }
 
     /// A hosted native effect writes its own state into its slot (not wrapped); the file reads it back

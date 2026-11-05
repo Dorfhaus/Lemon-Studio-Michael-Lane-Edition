@@ -6,6 +6,10 @@ use crate::playlist::{self as pl, Cmd, Mark, PItem, PickKind, PlTool, Popup};
 use os_model::{ChannelKind, ClipSource};
 use os_ui::{Canvas, Color, Rect};
 
+pub const GRAB: u8 = 5;
+pub const GRABBING: u8 = 6;
+pub const RESIZE: u8 = 7;
+pub const COPYING: u8 = 8;
 pub const POP_MS: u128 = 180;
 
 pub fn select(s: &mut State, tool: PlTool) {
@@ -23,6 +27,30 @@ pub fn phase(s: &State) -> u8 {
 }
 pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
+    if matches!(app.drag,Some(crate::app::Drag::NotePaint { .. })) {
+        return Some(Cursor::Playlist(PlTool::Paint,3));
+    }
+    if app.placed_cursor_at.is_some() {
+        if matches!(app.hover,Some(Action::PianoGrid|Action::PianoNote(_))) || matches!(app.drag,Some(crate::app::Drag::NoteMove { .. })) {
+            let tool=if app.state.piano.tool==crate::piano::Tool::Paint {PlTool::Paint}else{PlTool::Draw};
+            return Some(Cursor::Playlist(tool,3));
+        }
+        if app.hover==Some(Action::PlaylistArea) || matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::Move { .. }))) {
+            return Some(Cursor::Playlist(app.state.playlist.tool,3));
+        }
+    }
+    // Keep the held gesture visible when the pointer leaves its original note or clip.
+    match &app.drag {
+        Some(crate::app::Drag::NoteMove { .. }) =>
+            return Some(Cursor::Playlist(PlTool::Draw, if app.shift { COPYING } else { GRABBING })),
+        Some(crate::app::Drag::NoteResize { .. }) =>
+            return Some(Cursor::Playlist(PlTool::Draw, RESIZE)),
+        Some(crate::app::Drag::Pl(pl::PlDrag::Move { .. })) =>
+            return Some(Cursor::Playlist(app.state.playlist.tool, if app.shift { COPYING } else { GRABBING })),
+        Some(crate::app::Drag::Pl(pl::PlDrag::ResizeL { .. } | pl::PlDrag::ResizeR { .. })) =>
+            return Some(Cursor::Playlist(app.state.playlist.tool, RESIZE)),
+        _ => {}
+    }
     if matches!(app.hover,Some(Action::PianoGrid|Action::PianoNote(_))) {
         use crate::piano::Tool;
         let tool=if matches!(app.drag,Some(crate::app::Drag::NoteErase)) {PlTool::Delete}
@@ -32,15 +60,34 @@ pub fn cursor(app: &App) -> Option<Cursor> {
                 Tool::Mute=>PlTool::Mute, Tool::Slice=>PlTool::Slice, Tool::Select=>PlTool::Select,
                 Tool::Zoom=>PlTool::Zoom, Tool::Playback=>PlTool::Playback,
             }};
-        if app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint){return Some(Cursor::EwResize);}
+        if app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint|PlTool::Select) && !app.ctrl {
+            return Some(Cursor::Playlist(tool,RESIZE));
+        }
+        if !app.ctrl && matches!(app.hover,Some(Action::PianoNote(_))) && matches!(tool,PlTool::Draw|PlTool::Paint|PlTool::Select) {
+            return Some(Cursor::Playlist(tool,GRAB));
+        }
         let copying=app.shift && matches!(app.drag,Some(crate::app::Drag::NoteMove{..}));
         return Some(Cursor::Playlist(tool,if copying{4}else{3}));
     }
     if app.hover != Some(Action::PlaylistArea) { return None; }
     if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::SweepErase{..}))){return Some(Cursor::Playlist(PlTool::Delete,3));}
     let tool = if app.ctrl { PlTool::Select } else { app.state.playlist.tool };
-    if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::EwResize); }
+    if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::Playlist(tool,RESIZE)); }
 
+    if matches!(tool,PlTool::Draw|PlTool::Paint) && app.drag.is_none() {
+        if let Some(grid)=app.pl_grid() {
+            let g=pl::PGeom::new(&app.state,grid);
+            if let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1) {
+                let clip=pl::clips(&app.state)[i];
+                let automation=matches!(clip.source,ClipSource::Channel(id) if app.state.project.automation(id).is_some());
+                let rect=g.clip_rect(&clip);
+                let menu=app.mouse.0<rect.x+14. && app.mouse.1<rect.y+pl::TITLE_H && rect.w>20.;
+                if !automation && !menu && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1).is_none() {
+                    return Some(Cursor::Playlist(tool,GRAB));
+                }
+            }
+        }
+    }
     Some(Cursor::Playlist(tool, phase(&app.state)))
 }
 
@@ -66,7 +113,21 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
         _ => (4.,4.,6.,6.),
     };
     let r=Rect::new(at_x-tip_x*size/24.,at_y-tip_y*size/24.,size,size);
-    icons::draw(&mut mask,icon,r,Color::rgb(0xffffff));
+    if phase>=GRAB {
+        use os_ui::tabler::TablerIcon;
+        let hand=TablerIcon { filled:false, d: if phase==GRAB {
+            "M 8 12 L 8 5 Q 8 2 10 3 Q 11 3 11 5 L 11 11 L 11 3 Q 11 1 13 2 Q 14 2 14 4 L 14 11 L 14 5 Q 14 3 16 4 Q 17 4 17 6 L 17 12 L 17 8 Q 17 6 19 7 Q 20 7 20 9 L 20 16 Q 20 21 16 22 L 11 22 Q 9 21 7 18 L 3 13 Q 2 10 5 11 L 8 14"
+        } else {
+            "M 7 12 L 7 9 Q 7 7 9 7 Q 11 7 11 9 L 11 11 L 11 8 Q 11 6 13 6 Q 15 6 15 8 L 15 11 L 15 9 Q 15 7 17 8 Q 18 8 18 10 L 18 12 Q 21 11 21 14 L 21 17 Q 21 21 17 22 L 11 22 Q 8 21 6 18 L 3 14 Q 2 11 5 11 L 8 14"
+        }};
+        let rect=Rect::new(4.,3.,24.,24.);
+        if phase==RESIZE {mask.icon(&os_ui::tabler::ARROWS_HORIZONTAL,rect,Color::rgb(0xffffff));}
+        else{mask.icon(&hand,rect,Color::rgb(0xffffff));}
+    } else { icons::draw(&mut mask,icon,r,Color::rgb(0xffffff)); }
+    if phase==4 || phase==COPYING {
+        mask.fill_rrect(Rect::new(19.,17.,12.,13.),2.,Color::rgb(0));
+        mask.fill_polygon(&[(25.,18.),(30.,23.),(27.,23.),(27.,28.),(23.,28.),(23.,23.),(20.,23.)],Color::rgb(0xffffff));
+    }
     let coverage:Vec<u8>=mask.pixmap.pixels().iter().map(|p| p.red().max(p.green()).max(p.blue())).collect();
     let mut c=Canvas::new(px,px,scale).ok()?;
     let radius=scale.round().max(1.) as i32;
@@ -88,17 +149,12 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
         }
         pixel[3]=alpha as u8;
     }}
-    if phase==4 {
-        let mark=Rect::new(19.,17.,12.,13.);
-        c.fill_rrect(mark,2.,Color::rgb(0x28251c));
-        c.fill_polygon(&[(25.,18.),(30.,23.),(27.,23.),(27.,28.),(23.,28.),(23.,23.),(20.,23.)],Color::rgb(0xffda50));
-    }
     Some(c)
 }
 pub fn cursor_source(tool: PlTool, phase: u8, scale: f32) -> Option<winit::window::CustomCursorSource> {
     let c=cursor_canvas(tool,phase,scale)?;
     let bytes: Vec<u8> = c.pixmap.pixels().iter().flat_map(|p| { let p=p.demultiply(); [p.red(),p.green(),p.blue(),p.alpha()] }).collect();
-    let (hx,hy)=hotspot(tool,scale.clamp(0.5,4.0));
+    let (hx,hy)=if phase>=GRAB {let mid=(16.*scale.clamp(0.5,4.)).round() as u16;(mid,mid)}else{hotspot(tool,scale.clamp(0.5,4.0))};
     winit::window::CustomCursor::from_rgba(bytes,c.pixmap.width() as u16,c.pixmap.height() as u16,hx,hy).ok()
 }
 
@@ -130,18 +186,18 @@ mod tests {
     fn native_tool_cursors_are_transparent_and_scale_correctly() {
         for tool in [PlTool::Paint,PlTool::Slice,PlTool::Select] {
             for scale in [1.0,1.5,2.0,4.0] {
-                for phase in 0..4 {
+                for phase in [0,1,2,3,4,GRAB,GRABBING,RESIZE,COPYING] {
                     let c=cursor_canvas(tool,phase,scale).unwrap();
                     let opaque=c.pixmap.pixels().iter().filter(|p| p.alpha()>100).count();
                     assert!(opaque as f32>40.*scale*scale,"{tool:?} phase {phase} scale {scale}: visible tool artwork, not just a hotspot");
                     assert!(c.pixmap.pixels().iter().all(|p| p.red()<=p.alpha() && p.green()<=p.alpha() && p.blue()<=p.alpha()),"valid premultiplied pixels");
                     let (hx,hy)=hotspot(tool,scale);
-                    assert!(c.pixmap.pixels()[usize::from(hy)*c.pixmap.width() as usize+usize::from(hx)].alpha()>0,"the tip stays on the edit position");
+                    if phase<GRAB {assert!(c.pixmap.pixels()[usize::from(hy)*c.pixmap.width() as usize+usize::from(hx)].alpha()>0,"the tip stays on the edit position");}
                     assert_eq!(c.pixmap.pixels().last().unwrap().alpha(),0);
                     assert!(cursor_source(tool,phase,scale).is_some());
-                    if phase==3 && let Ok(dir)=std::env::var("LEMON_CURSOR_PREVIEW_DIR") {
+                    if phase>=3 && let Ok(dir)=std::env::var("LEMON_CURSOR_PREVIEW_DIR") {
                         std::fs::create_dir_all(&dir).unwrap();
-                        c.pixmap.save_png(std::path::Path::new(&dir).join(format!("{tool:?}-{scale}.png"))).unwrap();
+                        c.pixmap.save_png(std::path::Path::new(&dir).join(format!("{tool:?}-{phase}-{scale}.png"))).unwrap();
                     }
                 }
             }

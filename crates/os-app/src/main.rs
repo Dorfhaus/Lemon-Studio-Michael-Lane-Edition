@@ -148,6 +148,7 @@ mod misc_page;
 mod typing_layout;
 mod sample_route;
 mod clip_normalize;
+mod strip_silence;
 mod note_names;
 mod save_form;
 mod scroll_speed;
@@ -1879,6 +1880,9 @@ fn apply_window_cursor(window:&Window, el:&ActiveEventLoop, c:app::Cursor, scale
                 if let Some(i)=index { window.set_cursor(cache[i].3.clone()); return; }
             }
             window.set_cursor(match c {
+                app::Cursor::Playlist(_,playlist_tools::RESIZE) => CursorIcon::EwResize,
+                app::Cursor::Playlist(_,playlist_tools::GRAB) => CursorIcon::Grab,
+                app::Cursor::Playlist(_,playlist_tools::GRABBING | playlist_tools::COPYING) => CursorIcon::Grabbing,
                 app::Cursor::Playlist(..) => CursorIcon::Default,
                 app::Cursor::Default => CursorIcon::Default,
                 app::Cursor::EwResize => CursorIcon::EwResize,

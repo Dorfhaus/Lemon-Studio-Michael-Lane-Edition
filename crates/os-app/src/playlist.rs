@@ -211,6 +211,7 @@ pub enum Mark {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     MainMenu(usize, usize),
+    StripSilence(usize),
     Warp(usize),
     Normalize(usize, crate::clip_normalize::Mode),
     WaveDetail(u8),
@@ -559,7 +560,6 @@ pub enum EditTarget {
     /// Add one every n bars: the base name of "<base> #1", "<base> #2" … (§7a).
     MarkerBase(u32),
     PointValue(u16, usize),
-    Normalize(usize, crate::clip_normalize::Mode),
     PatternName(u16),
     /// Mixer track name (spec: ui/mixer.md §2) and a mixer slot's plugin name (§7).
     MixerName(u16),
@@ -2731,6 +2731,7 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
     ];
     match kind {
         PickKind::Audio => {
+            items.push(PItem::new("Strip silence...",Cmd::StripSilence(i)));
             items.push(PItem::sub("Normalize audio clips", crate::clip_normalize::Mode::ALL.into_iter()
                 .map(|mode| PItem::new(mode.label(), Cmd::Normalize(i,mode))).collect()));
             items.push(PItem::new("Clip effects...",Cmd::ClipEffects(i)));
@@ -3031,7 +3032,7 @@ pub enum PlDrag {
     HeaderRange {anchor:u16,base:Vec<u16>},
     Comp { clip: usize, x0: f32, start: u32 },
     /// `fresh` = the clip was just placed (its undo step stays even without a move).
-    Move { x0: f32, y0: f32, orig: Vec<(usize, Clip)>, fresh: bool },
+    Move { x0: f32, y0: f32, scroll_x: f32, track0: u16, orig: Vec<(usize, Clip)>, fresh: bool },
     ResizeL { x0: f32, orig: Vec<(usize, Clip)> },
     ResizeR { x0: f32, orig: Vec<(usize, Clip)> },
     Slip { x0: f32, i: usize, orig: Clip },
@@ -3466,7 +3467,8 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                     s.playlist.sel.push(i);
                     app.drag = Some(Drag::Pl(PlDrag::Paint { track, start, len: c.length.max(1) }));
                 } else {
-                    app.drag = Some(Drag::Pl(PlDrag::Move { x0: x, y0: y, orig: vec![(i, c)], fresh: true }));
+                    app.placed_cursor_at=Some((x,y));
+                    app.drag = Some(Drag::Pl(PlDrag::Move { x0: x, y0: y, scroll_x: g.scroll_x, track0: g.track_at(y), orig: vec![(i, c)], fresh: true }));
                 }
             }
             Some(i) => {
@@ -3529,7 +3531,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 app.drag = Some(Drag::Pl(match e {
                     -1 => PlDrag::ResizeL { x0: x, orig },
                     1 => PlDrag::ResizeR { x0: x, orig },
-                    _ => PlDrag::Move { x0: x, y0: y, orig, fresh: app.shift },
+                    _ => PlDrag::Move { x0: x, y0: y, scroll_x: g.scroll_x, track0: g.track_at(y), orig, fresh: app.shift },
                 }));
                 // Held without a move, the clips are cloned (Click-and-hold & special gesture functions).
                 if e == 0 && !app.shift {
@@ -3647,11 +3649,11 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 s.playlist.overlay=Some(Overlay::Comp{clip,a:start.min(end),b:start.max(end)});
             }
         }
-        PlDrag::Move { x0, y0, orig, .. } => {
-            let mut dt = snap_delta(s, &g, (x - x0) / g.ppt, alt);
+        PlDrag::Move { x0, scroll_x, track0, orig, .. } => {
+            let mut dt = snap_delta(s, &g, (x - x0 + g.scroll_x - scroll_x) / g.ppt, alt);
             let min_pos = orig.iter().map(|(_, c)| i64::from(c.position)).min().unwrap_or(0);
             dt = dt.max(-min_pos);
-            let dk = i32::from(g.track_at(y)) - i32::from(g.track_at(y0));
+            let dk = i32::from(g.track_at(y)) - i32::from(track0);
             let lo = orig.iter().map(|(_, c)| i32::from(c.track)).min().unwrap_or(0);
             let hi = orig.iter().map(|(_, c)| i32::from(c.track)).max().unwrap_or(0);
             let dk = dk.clamp(-lo, i32::from(TRACKS) - 1 - hi);
@@ -4249,7 +4251,6 @@ pub fn press_led(app: &mut App, t: u16, right: bool) {
 
 pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
     let text = match target {
-        EditTarget::Normalize(_, mode) => mode.default_db().to_string(),
         EditTarget::Tempo => format!("{:.3}", s.tempo),
         EditTarget::TrackName(t) => track_name(s, t),
         EditTarget::ArrangementName => arrangement_name(s),
@@ -4273,13 +4274,6 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
 /// Enter in the text box.
 pub fn commit_edit(s: &mut State) {
     let Some(e) = s.playlist.edit.take() else { return };
-    if let EditTarget::Normalize(i,mode) = e.target {
-        match e.text.trim().parse::<f64>() {
-            Ok(db) if (-96.0..=0.0).contains(&db) => s.playlist.normalize_request = Some((i,mode,db)),
-            _ => s.message = Some("Enter a normalization target between -96 and 0.".into()),
-        }
-        return;
-    }
     if e.target == EditTarget::Tempo {
         let text = e.text.trim();
         if let Ok(bpm) = text.parse::<f64>() {
@@ -4298,7 +4292,7 @@ pub fn commit_edit(s: &mut State) {
     snapshot(s);
     let text = e.text.trim().to_string();
     match e.target {
-        EditTarget::Normalize(..) | EditTarget::Tempo => unreachable!(),
+        EditTarget::Tempo => unreachable!(),
         EditTarget::ArrangementName => {
             if !text.trim().is_empty() {
                 arr_mut(s).name = Some(text.trim().to_string());
@@ -4424,13 +4418,8 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             app.invalidate();
             return None;
         }
-        Cmd::Normalize(i, mode) => {
-            let at = (app.mouse.0.min((app.state.screen.0-160.).max(0.)), app.mouse.1);
-            start_edit(&mut app.state, EditTarget::Normalize(i,mode), at);
-            if let Some(e) = &mut app.state.playlist.edit { e.sel = true; }
-            app.invalidate();
-            return Some(format!("{}: enter target, then press Enter", mode.label()));
-        }
+        Cmd::Normalize(i, mode) => {return crate::clip_normalize::open(app,i,mode).err();}
+        Cmd::StripSilence(i)=>{return crate::strip_silence::open(app,i).err();},
         Cmd::Warp(i)=>{return crate::warp::open(app,i).err();},
         Cmd::PeakLink(c)=>{if let crate::peak_link::Command::Open(t,v)=c {let(x,y)=app.mouse;app.state.playlist.popup=Some(crate::peak_link::popup(&app.state,t,v,x,y));}else{crate::peak_link::run(&mut app.state,c);}app.invalidate();return None;},
         Cmd::Remote(c) => {
@@ -4795,7 +4784,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             snapshot(s);
             (!delete_space(s)).then(|| "Delete space: make a time selection first (right-drag the ruler)".into())
         }
-        Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
+        Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
         Cmd::StretchMode => {
             s.playlist.stretch = !s.playlist.stretch;
             if s.playlist.stretch { crate::playlist_tools::select(s, PlTool::Paint); }

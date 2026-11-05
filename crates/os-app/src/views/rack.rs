@@ -337,9 +337,9 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         }
         // Pan and volume knobs (§11).
         ui.hit(Rect::new(x + 27.0, ry + 5.0, 15.0, 16.0), Action::Knob(KnobId::ChanPan(i)), s.knob_text(KnobId::ChanPan(i)));
-        row_knob(ui, x + 34.5, ry + 13.0, s.knob(KnobId::ChanPan(i)));
+        row_knob(ui, x + 34.5, ry + 13.0, s.knob(KnobId::ChanPan(i)), true);
         ui.hit(Rect::new(x + 44.0, ry + 5.0, 15.0, 16.0), Action::Knob(KnobId::ChanVol(i)), s.knob_text(KnobId::ChanVol(i)));
-        row_knob(ui, x + 51.5, ry + 13.0, s.knob(KnobId::ChanVol(i)));
+        row_knob(ui, x + 51.5, ry + 13.0, s.knob(KnobId::ChanVol(i)), false);
         // Mixer track box (§12).
         if s.rack.show_mixer {
             let mb = Rect::span(x + 66.0, x + 99.0, ry + 1.0, ry + 25.0);
@@ -364,7 +364,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         }
         let px = x + c.name_x - 40.0;
         ui.hit(Rect::new(px, ry + 4.0, 18.0, 20.0), Action::Knob(KnobId::ChanPitch(i)), s.knob_text(KnobId::ChanPitch(i)));
-        row_knob(ui, px + 9.0, ry + 13.0, s.knob(KnobId::ChanPitch(i)));
+        row_knob(ui, px + 9.0, ry + 13.0, s.knob(KnobId::ChanPitch(i)), false);
         let follow = Rect::new(px + 20.0, ry + 5.0, 16.0, 17.0);
         let hov=ui.hit(follow, Action::RackPitchFollow(i), "Global Pitch Follow: toggle without changing the current pitch");
         ui.c.fill_rrect(follow, 3.0, if ch.misc.main_pitch { t.accent } else { t.button_hi });
@@ -528,7 +528,7 @@ fn title_bar(ui: &mut Ui, s: &State, win: Rect, c: Cols, f: &FrameInfo) {
     let ohov = ui.hit(Rect::new(x + 8.0, y + 6.0, 16.0, 17.0), Action::RackOptions, "Channel options");
     ui.c.fill_polygon(&[(x + 14.0, y + 10.5), (x + 18.5, y + 14.0), (x + 14.0, y + 17.5)], if ohov { ui.t.tx(0xffffff) } else { ui.t.tx(0xc2c8cc) });
     ui.hit(Rect::new(x + 29.0, y + 4.0, 22.0, 23.0), Action::Knob(KnobId::MasterPitch), s.knob_text(KnobId::MasterPitch));
-    row_knob(ui, x + 40.0, y + 15.0, s.knob(KnobId::MasterPitch));
+    row_knob(ui, x + 40.0, y + 15.0, s.knob(KnobId::MasterPitch), false);
     ui.c.text(Font::new(8), x + 52.0, y + 3.0, t.text_dim, "Global pitch");
     ui.c.text(Font::new(10), x + 52.0, y + 14.0, t.text, &format!("{:+.2} st", s.project.main_pitch.unwrap_or(0) as f32 / 100.0));
     // Display filter combo (§7, §21).
@@ -808,9 +808,9 @@ fn mini_roll(ui: &mut Ui, block: Rect, notes: &[os_model::Note], ch: u16, per_st
 }
 
 /// Row knob (§3): dark ball, r 7, light pointer from the centre to the rim.
-fn row_knob(ui: &mut Ui, cx: f32, cy: f32, value: f32) {
+fn row_knob(ui: &mut Ui, cx: f32, cy: f32, value: f32, bipolar: bool) {
     let hov = ui.hovering(Rect::new(cx - 7.5, cy - 7.5, 15.0, 15.0));
-    os_ui::kit::knob(ui.c, ui.t, cx, cy, 7.5, value, false, os_ui::kit::KnobLook::Row, os_ui::kit::State::hover(hov));
+    os_ui::kit::knob(ui.c, ui.t, cx, cy, 7.5, value, bipolar, os_ui::kit::KnobLook::Row, os_ui::kit::State::hover(hov));
 }
 
 /// Enable LED (§3: ring r 5, green ball).

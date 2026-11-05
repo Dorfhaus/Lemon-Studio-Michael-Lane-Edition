@@ -419,14 +419,14 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         (283.0, Icon::Note, "Key and scale: drawing and keyboard snapping", Some(Action::Harmony(crate::harmony::HCmd::Menu(10)))),
         (305.0, Icon::Blend, "Chord workspace (Alt+P)", Some(Action::Harmony(crate::harmony::HCmd::Open))),
         (327.0, Icon::Undo, "Undo (Ctrl+Z)", Some(Action::PianoUndo)),
-        (350.0, Icon::Pencil, "Draw (P)", Some(Action::PianoTool(Tool::Draw))),
-        (372.0, Icon::Brush, "Paint (B): drag to paint notes along the row", Some(Action::PianoTool(Tool::Paint))),
-        (402.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
-        (424.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
-        (446.0, Icon::Slice, "Slice (C): drag a line to cut notes", Some(Action::PianoTool(Tool::Slice))),
-        (468.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
-        (490.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
-        (512.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
+        (362.0, Icon::Pencil, "Draw (P)", Some(Action::PianoTool(Tool::Draw))),
+        (384.0, Icon::Brush, "Paint (B): drag to paint notes along the row", Some(Action::PianoTool(Tool::Paint))),
+        (406.0, Icon::Slice, "Slice (C): drag a line to cut notes", Some(Action::PianoTool(Tool::Slice))),
+        (428.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
+        (450.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
+        (472.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
+        (514.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
+        (536.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
     ];
     for (x, icon, hint, action) in items {
         let snap = action == Some(Action::PianoSnapMenu);
@@ -468,7 +468,10 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         };
         icons::draw(ui.c, icon, b, c);
     }
-    for x in [337.,397.] {let x=x+43.+harmony_width(r);ui.c.line(ox+x,r.y+5.,ox+x,r.y+18.,1.,t.text_faint);}
+    for x in [348.,497.] {
+        let x=ox+x+43.+harmony_width(r);
+        ui.c.line(x,r.y+3.,x,r.y+20.,1.5,t.text_dim);
+    }
 }
 
 fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Option<u16>) {

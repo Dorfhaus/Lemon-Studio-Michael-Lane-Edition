@@ -1703,25 +1703,44 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
     let sampler = s.project.channels.get(r).is_some_and(|c| c.kind.is_sampler());
     let piano_on = s.shown(Win::PianoRoll) && s.selected_channel == r;
     let mut items = vec![
+        it("Piano roll", RCmd::PianoRoll(r)).key("F7").mark(Mark::Check(piano_on)),
         PItem::new("Plugin picker - replace instrument...", Cmd::Plugin(PlugCmd::Picker(Target::Replace(r)))),
-        PItem::sub("Insert", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
-        PItem::sub("Replace", crate::plugin_menu::items(s, Target::Replace(r), true)),
+        it("Graph editor", RCmd::Graph(r)),
+        PItem::sep(),
     ];
-    items.extend([PItem::sep(),
-        it("Fill each 2 steps", RCmd::Fill(r, 2)),
-        it("Fill each 4 steps", RCmd::Fill(r, 4)),
-        it("Fill each 8 steps", RCmd::Fill(r, 8)),
-    ]);
-    items.extend(crate::instrument_stack::menu(s,r));
     if sampler {
-        items.push(it("Load sample...", RCmd::LoadSample(r)));
         let misc=s.project.channels[r].misc;
-        items.push(it("Cut itself",RCmd::CutSelf(r)).mark(Mark::Check(misc.cut!=0 && misc.cut==misc.cut_by)));
+        items.extend([
+            it("Load sample...", RCmd::LoadSample(r)),
+            it("Cut itself",RCmd::CutSelf(r)).mark(Mark::Check(misc.cut!=0 && misc.cut==misc.cut_by)),
+            PItem::sep(),
+        ]);
     }
     items.extend([
+        PItem::sub("Insert instrument", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
+        PItem::sub("Replace instrument", crate::plugin_menu::items(s, Target::Replace(r), true)),
+    ]);
+    items.extend(crate::instrument_stack::menu(s,r));
+    let paste = it("Paste", RCmd::Paste(r));
+    items.extend([
         PItem::sep(),
-        it("Piano roll", RCmd::PianoRoll(r)).key("F7").mark(Mark::Check(piano_on)),
-        it("Graph editor", RCmd::Graph(r)),
+        PItem::sub("Pattern editing", vec![
+            it("Cut", RCmd::Cut(r)),
+            it("Copy", RCmd::Copy(r)),
+            if s.rack.clipboard.is_some() { paste } else { paste.off() },
+            PItem::sep(),
+            it("Fill each 2 steps", RCmd::Fill(r,2)),
+            it("Fill each 4 steps", RCmd::Fill(r,4)),
+            it("Fill each 8 steps", RCmd::Fill(r,8)),
+            it("Advanced fill...", RCmd::AdvancedFill(r)),
+            PItem::sep(),
+            it("Rotate left", RCmd::Rotate(r,-1)).key("Shift+Ctrl+Left"),
+            it("Rotate right", RCmd::Rotate(r,1)).key("Shift+Ctrl+Right"),
+        ]),
+        PItem::sub("Consolidate / Bounce to Audio", vec![
+            it("Bounce including mixer effects", RCmd::BounceWet(r)),
+            it("Consolidate (keep mixer live)", RCmd::Consolidate(r)),
+        ]),
         PItem::sep(),
         it("Rename, color and icon...", RCmd::Rename(r)),
         PItem::sub("Color", vec![
@@ -1729,29 +1748,10 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
             it("Random color", RCmd::RandomColor(r)),
         ]),
         PItem::sep(),
-        PItem::sub("Consolidate / Bounce to Audio", vec![it("Bounce including mixer effects", RCmd::BounceWet(r)),it("Consolidate (keep mixer live)", RCmd::Consolidate(r))]),
         it("Clone", RCmd::Clone(r)),
-        it("Clone (Complete)",RCmd::CloneComplete(r)),
+        it("Clone (Complete)", RCmd::CloneComplete(r)),
         it("Delete...", RCmd::Delete(r)).key("D"),
-        PItem::col(),
-        PItem::head("Pattern editing"),
-        it("Cut", RCmd::Cut(r)),
-        it("Copy", RCmd::Copy(r)),
     ]);
-    let paste = it("Paste", RCmd::Paste(r));
-    items.push(if s.rack.clipboard.is_some() { paste } else { paste.off() });
-    items.extend([
-        PItem::sep(),
-        it("Advanced fill...", RCmd::AdvancedFill(r)),
-        PItem::sep(),
-        it("Rotate left", RCmd::Rotate(r, -1)).key("Shift+Ctrl+Left"),
-        it("Rotate right", RCmd::Rotate(r, 1)).key("Shift+Ctrl+Right"),
-    ]);
-    if let Some(at)=items.iter().position(|p|p.col) {
-        let mut editing=items.split_off(at);
-        editing.drain(..2);
-        items.push(PItem::sub("Pattern editing",editing));
-    }
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
@@ -2699,12 +2699,14 @@ mod tests {
         let ch=app.state.project.channels[0].index;
         crate::playlist::arr_mut(&mut app.state).clips=vec![os_model::Clip::new(0,384,0,os_model::ClipSource::Channel(ch))];
         let clip=crate::playlist::clip_menu(&app.state,0,0.,0.);
-        assert!(clip.items.len()<=16);
+        assert!(clip.items.len()<=20);
         for cmd in [Cmd::ClipEffects(0),Cmd::ClipRoute(0),Cmd::SeparateStems(0),Cmd::AraMenu(0),Cmd::Warp(0),Cmd::ClipDelete(0)] {
             assert!(contains(&clip.items,&cmd));
         }
         let channel=channel_menu(&app.state,0,0.,0.);
-        for n in [2,4,8]{assert!(channel.items.iter().any(|p|p.cmd==Cmd::Rack(RCmd::Fill(0,n))));}
+        for n in [2,4,8]{assert!(contains(&channel.items,&Cmd::Rack(RCmd::Fill(0,n))));}
+        assert_eq!(channel.items[0].cmd,Cmd::Rack(RCmd::PianoRoll(0)));
+        assert_eq!(channel.items[1].label,"Plugin picker - replace instrument...");
         assert!(!channel.items.iter().any(|p|p.col));
         assert!(contains(&channel.items,&Cmd::Rack(RCmd::Copy(0))));
     }

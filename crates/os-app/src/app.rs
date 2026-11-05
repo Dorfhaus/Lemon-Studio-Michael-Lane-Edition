@@ -1456,6 +1456,7 @@ pub struct App {
     pub(crate) scan_queued: Option<crate::plugin_db::Mode>,
     /// Wrapped plugin channels (rows) and slots (`fx_key`) whose plugin was not found or did not start (not retried).
     pub(crate) wrap_failed: Vec<usize>,
+    pub(crate) placed_cursor_at: Option<(f32,f32)>,
     /// When the Lemon Trio instances were last looked at for a sample they loaded (`follow_osc3_samples`).
     pub(crate) osc3_look: Option<std::time::Instant>,
     /// Plugin channels (rows) and slots (`fx_key`) naming a native plugin that is not installed or did not start
@@ -1702,6 +1703,7 @@ impl App {
             clip_normalization: None,
             scan_queued: None,
             wrap_failed: Vec::new(),
+            placed_cursor_at: None,
             osc3_look: None,
             native_failed: Vec::new(),
             loading: None,
@@ -1946,6 +1948,9 @@ impl App {
     pub(crate) fn save_to(&mut self, target: PathBuf) {
         if let Some(bytes) = self.write_project(target, &mut |_| {}) {
             self.size_notice(bytes);
+            if let Some(message) = self.state.message.clone().filter(|m|m.starts_with("Saved project. Plugin settings warning:")) {
+                self.tell(crate::dialog::Kind::Warning, "Project saved with plugin settings warning", vec![(message,false)]);
+            }
         }
     }
 
@@ -1997,6 +2002,13 @@ impl App {
         let lacks_playlist = s.file.as_ref().and_then(|f| os_flp::project::load(f).ok()).is_some_and(|p| p.arrangements.is_empty())
             && !s.project.arrangements.is_empty();
         // A project that was not opened from a file gets a new FLP built from the model.
+        let mut proj = s.project.clone();
+        crate::project_info::stamp(s, &mut proj);
+        crate::data_folder::stamp(s, &mut proj);
+        let warnings = match crate::project_plugins::store_for_save(&mut proj, &self.plugins) {
+            Ok(warnings) => warnings,
+            Err(e) => { s.message=Some(format!("Save failed: {e}")); return None; }
+        };
         let mut file = if s.file.is_none() || lacks_playlist {
             // The new file's blocks are the model's channels and mixer tracks in order.
             settle_origins(&mut s.project);
@@ -2004,9 +2016,9 @@ impl App {
             if s.project.arrangements.is_empty() {
                 s.project.arrangements.push(os_flp::project::default_arrangement());
             }
-            let mut first = s.project.clone();
-            if let Err(e)=crate::project_plugins::store_hosted(&mut first, &self.plugins){s.message=Some(format!("Save failed: {e}"));return None;}
-            match os_flp::project::create(&first) {
+            if proj.arrangements.is_empty() { proj.arrangements=s.project.arrangements.clone(); }
+            settle_origins(&mut proj);
+            match os_flp::project::create(&proj) {
                 Ok(f) => f,
                 Err(e) => {
                     s.message = Some(format!("Save failed: {e}"));
@@ -2021,10 +2033,6 @@ impl App {
         let lost = os_flp::project::unsaved_parts(&s.project, &file);
         // Mixer parts the file format mapping does not write yet (spec: ui/mixer.md, Lemon Studio status).
         // Hosted CLAP / VST3 plugins are written as wrapped plugins with their current state (spec: flp/events/plugins.md).
-        let mut proj = s.project.clone();
-        crate::project_info::stamp(s, &mut proj);
-        crate::data_folder::stamp(s, &mut proj);
-        if let Err(e)=crate::project_plugins::store_hosted(&mut proj, &self.plugins){s.message=Some(format!("Save failed: {e}"));return None;}
         edit(&mut proj);
         // Added mixer tracks are written before the hidden last track (spec: flp/events/mixer.md "Adding tracks").
         let result = os_flp::project::apply(&proj, &mut file)
@@ -2048,6 +2056,10 @@ impl App {
             crate::recent::add(&target);
             s.path = Some(target);
             self.mark_saved();
+            if !warnings.is_empty() {
+                let notice = format!("Saved project. Plugin settings warning: {}", warnings.join("; "));
+                self.state.message = Some(notice);
+            }
         }
         result.ok()
     }
@@ -3224,6 +3236,10 @@ impl App {
         }
         let s = self.scrolled.get_or_insert((0.0, 0.0));
         *s = (s.0 + d.0, s.1 + d.1);
+        // A held clip follows content coordinates even when only the viewport moved.
+        if let (Some(Drag::Pl(d @ crate::playlist::PlDrag::Move { .. })), Some(grid)) = (self.drag.clone(), self.pl_grid) {
+            crate::playlist::drag_move(self, d, grid);
+        }
     }
 
     /// The playlist parts a scroll by `d` (logical px) moves, with their move: the grid both ways, the ruler and
@@ -4217,6 +4233,17 @@ impl App {
                 }
             }
         }
+        if edge_due && matches!(self.drag, Some(Drag::Pl(crate::playlist::PlDrag::Move { .. }))) {
+            if let Some(grid) = self.pl_grid {
+                let edge = |pos: f32, lo: f32, hi: f32| {
+                    if pos > hi - 18. { 12. } else if pos < lo + 18. { -12. } else { 0. }
+                };
+                let before = self.state.playlist_scroll;
+                self.scroll_set(Scroll::PlaylistX, before.0 + edge(self.mouse.0, grid.x, grid.right()));
+                self.scroll_set(Scroll::PlaylistY, before.1 + edge(self.mouse.1, grid.y, grid.bottom()));
+                self.playlist_scrolled(before);
+            }
+        }
         crate::stem_separation::tick(self);
         crate::headphones::tick(self);
         crate::browser_preview::tick(self);
@@ -4345,6 +4372,7 @@ impl App {
             }
         }
         crate::warp::poll(self);
+        crate::strip_silence::poll(self);
         self.sample_dialog_preview();
         self.playback_damage();
         self.has_damage()
@@ -5518,6 +5546,9 @@ impl App {
 
     /// Mouse moved; returns whether a repaint is needed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        if self.placed_cursor_at.is_some_and(|(px,py)| (x-px).hypot(y-py)>3.) {
+            self.placed_cursor_at=None;
+        }
         let previous_mouse=self.mouse;
         if crate::plugin_picker::mouse_move(self,x,y) { return true; }
         self.browser_auto_hide(x,y);
@@ -6180,6 +6211,7 @@ impl App {
     }
 
     pub fn mouse_down(&mut self) {
+        self.placed_cursor_at=None;
         if crate::plugin_picker::mouse_down(self) { return; }
         self.invalidate();
         self.hold = None;
@@ -8317,6 +8349,7 @@ impl App {
                     let i = piano::paint_mono(s, i);
                     let len = piano::notes(s)[i].length;
                     s.piano.dirty = true;
+                    self.placed_cursor_at=Some((x,y));
                     self.drag = Some(Drag::NotePaint { key, start, len });
                     let play = self.audition();
                     self.hold_key(Some(key), play);
@@ -8360,8 +8393,8 @@ impl App {
                         s.piano.select(s.pattern, ch, sel);
                     }
                 }
-                // Paint on a note: drags that one note like Draw (no group move).
-                Tool::Paint if self.shift => {},
+                // Painting empty grid creates notes; dragging selected notes preserves the group.
+                Tool::Paint => {},
                 _ => s.piano.clear_selection(),
             }
         }
@@ -8374,6 +8407,7 @@ impl App {
                 let i = piano::paint_mono(s, i);
                 let n = piano::notes(s)[i];
                 s.piano.last_len = n.length;
+                self.placed_cursor_at=Some((x,y));
                 self.drag = Some(Drag::NoteMove { x0: x, y0: y, orig: vec![(i, n)] });
                 let play = self.audition();
                 self.hold_key(Some(i32::from(n.key)), play);
@@ -8384,7 +8418,7 @@ impl App {
                 let Some(&n) = piano::notes(s).get(i) else { return };
                 piano::snapshot(s);
                 let sel = s.piano.selection(s.pattern, Some(ch));
-                let idx = if sel.contains(&i) && (tool.moves_groups() || (tool==Tool::Paint && self.shift)) {
+                let idx = if sel.contains(&i) && tool.moves_groups() {
                     sel
                 } else {
                     s.piano.clear_selection();
@@ -10241,6 +10275,66 @@ mod tests {
     }
 
     #[test]
+    fn editor_hand_cursors_follow_the_actual_drag_gestures() {
+        use crate::playlist as pl;
+        use crate::playlist_tools::{GRAB,GRABBING,RESIZE};
+        let mut app=App::new(None);app.state.project=test_project();app.state.z=vec![Win::PianoRoll];
+        let ch=piano::channel(&app.state).unwrap();
+        let i=piano::add_note(&mut app.state,ch,96,60);
+        let mut canvas=Canvas::new(1920,1080,1.).unwrap();
+        for tool in [Tool::Draw,Tool::Paint,Tool::Select] {
+            app.state.piano.tool=tool;
+            frame(&mut app,&mut canvas,None);
+            let g=app.piano_geom().unwrap();
+            let r=g.note_rect(&piano::notes(&app.state)[i]).unwrap();
+            app.mouse_move(r.cx(),r.cy());
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,GRAB)));
+            app.mouse_down();
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,GRABBING)));
+            app.mouse_up();
+            app.mouse_move(r.right()-1.,r.cy());
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,RESIZE)));
+        }
+        app.state.piano.tool=Tool::Draw;
+        frame(&mut app,&mut canvas,None);
+        let g=app.piano_geom().unwrap();
+        let y=g.note_rect(&piano::notes(&app.state)[i]).unwrap().cy();
+        app.mouse_move(g.x_of(384.),y);
+        let count=piano::notes(&app.state).len();
+        app.mouse_down();
+        assert_eq!(piano::notes(&app.state).len(),count+1);
+        assert_eq!(app.cursor(),Cursor::Playlist(pl::PlTool::Draw,3));
+        app.mouse_up();
+        frame(&mut app,&mut canvas,None);
+        app.mouse_move(app.mouse.0,app.mouse.1);
+        assert_eq!(app.cursor(),Cursor::Playlist(pl::PlTool::Draw,3));
+        app.mouse_move(app.mouse.0+2.,app.mouse.1+4.);
+        assert!(matches!(app.cursor(),Cursor::Playlist(_,GRAB)));
+        app.mouse_down();
+        assert!(matches!(app.cursor(),Cursor::Playlist(_,GRABBING)));
+        app.mouse_up();
+        app.state.z=vec![Win::Playlist];
+        pl::arr_mut(&mut app.state).clips=vec![os_model::Clip::new(384,192,3,os_model::ClipSource::Pattern(1))];
+        for tool in [pl::PlTool::Draw,pl::PlTool::Paint,pl::PlTool::Select] {
+            app.state.playlist.tool=tool;app.state.playlist.last_clip=None;frame(&mut app,&mut canvas,None);
+            let grid=app.pl_grid().unwrap();
+            let g=pl::PGeom::new(&app.state,grid);
+            let r=g.clip_rect(&pl::clips(&app.state)[0]);
+            app.mouse_move(r.cx(),r.cy());
+            if tool==pl::PlTool::Select {
+                assert!(matches!(app.cursor(),Cursor::Playlist(pl::PlTool::Select,_)));
+                app.mouse_down();
+                assert!(matches!(app.drag,Some(Drag::Pl(pl::PlDrag::Marquee{..}))));
+            } else {
+                assert!(matches!(app.cursor(),Cursor::Playlist(_,GRAB)));
+                app.mouse_down();
+                assert!(matches!(app.cursor(),Cursor::Playlist(_,GRABBING)));
+            }
+            app.mouse_up();
+        }
+    }
+
+    #[test]
     fn brush_shift_copies_selection_and_fast_erase_crosses_notes() {
         let mut app=App::new(None);
         app.state.project=test_project();
@@ -10255,6 +10349,17 @@ mod tests {
         let g=app.piano_geom().unwrap();
         let r=g.note_rect(&piano::notes(&app.state)[first]).unwrap();
         let y=r.y+r.h*0.5;
+        app.mouse_move(r.x+3.,y);
+        app.mouse_down();
+        app.mouse_move(g.x_of(240.)+3.,y);
+        app.mouse_up();
+        let notes=piano::notes(&app.state);
+        assert_eq!(notes.len(),2);
+        assert_eq!((notes[first].position,notes[second].position),(240,336));
+        crate::history::undo(&mut app.state).unwrap();
+        assert_eq!((piano::notes(&app.state)[first].position,piano::notes(&app.state)[second].position),(0,96));
+        app.state.piano.select(app.state.pattern,ch,vec![first,second]);
+        frame(&mut app,&mut canvas,None);
         app.shift=true;
         app.mouse_move(r.x+3.,y);
         app.mouse_down();
@@ -13230,7 +13335,7 @@ mod tests {
             crate::dialog::Body::Shortcuts(_) => panic!("Manage shortcuts is on top"),
             crate::dialog::Body::TimeSig(_) => panic!("the time signature dialog is on top"),
             crate::dialog::Body::Project(_) => panic!("a project form is on top"),
-            crate::dialog::Body::ClipFx(..) | crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
+            crate::dialog::Body::Normalize(_) | crate::dialog::Body::StripSilence(_) | crate::dialog::Body::ClipFx(..) | crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
         }
     }
 
@@ -19314,6 +19419,46 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn playlist_drag_follows_wheel_smoothing_and_both_edges() {
+        use crate::playlist as pl;
+        let mut canvas=Canvas::new(1920,1080,1.).unwrap();
+        let (mut app,_,_,_)=ruler_app(&mut canvas);
+        pl::arr_mut(&mut app.state).clips=vec![
+            os_model::Clip::new(384,192,4,os_model::ClipSource::Pattern(1)),
+            os_model::Clip::new(576,192,5,os_model::ClipSource::Pattern(1)),
+        ];
+        app.state.playlist.sel=vec![0,1];
+        app.state.playlist.tool=pl::PlTool::Draw;
+        frame(&mut app,&mut canvas,None);
+        let grid=app.pl_grid().unwrap();
+        let geom=pl::PGeom::new(&app.state,grid);
+        let rect=geom.clip_rect(&pl::clips(&app.state)[0]);
+        app.mouse_move(rect.cx(),rect.cy());
+        app.mouse_down();
+        assert!(matches!(app.drag,Some(Drag::Pl(pl::PlDrag::Move{..}))));
+        crate::prefs::set_slider(&crate::prefs::SMOOTHING,50);
+        let before=app.state.playlist_scroll;
+        app.wheel(0.,-4.,false,false);
+        app.ease_to_end();
+        assert!(app.state.playlist_scroll.1>before.1);
+        let geom=pl::PGeom::new(&app.state,grid);
+        let moved=geom.clip_rect(&pl::clips(&app.state)[0]);
+        assert!((moved.cy()-app.mouse.1).abs()<1.);
+        assert_eq!(pl::clips(&app.state)[1].track,pl::clips(&app.state)[0].track+1);
+        app.mouse_move(grid.right()-2.,grid.bottom()-2.);
+        let before=app.state.playlist_scroll;
+        app.edge_tick=std::time::Instant::now()-std::time::Duration::from_millis(40);
+        app.tick();
+        assert!(app.state.playlist_scroll.0>before.0 && app.state.playlist_scroll.1>before.1);
+        let held=pl::clips(&app.state).to_vec();
+        assert_eq!(held[1].position-held[0].position,192);
+        assert_eq!(held[1].track-held[0].track,1);
+        app.mouse_up();
+        crate::history::undo(&mut app.state).unwrap();
+        assert_eq!((pl::clips(&app.state)[0].position,pl::clips(&app.state)[0].track),(384,4));
+    }
+
     /// Audio clip handles (spec: ui/playlist.md §9a): dragging the fade triangles sets the fades, the tension ring
     /// bends the curve, the gain half-circle changes the gain; one undo step each.
     #[test]
@@ -19863,7 +20008,7 @@ mod tests {
         assert!(matches!(app.cursor(),Cursor::Playlist(PlTool::Paint,_)));
         assert!(!crate::playlist_tools::animating(&app.state),"no brush pointer animation");
         app.resize_cursor=true;
-        assert_eq!(app.cursor(),Cursor::EwResize,"clip edge resizing still has its cursor");
+        assert_eq!(app.cursor(),Cursor::Playlist(PlTool::Paint,pt::RESIZE),"clip edge resizing still has its cursor");
         app.resize_cursor=false;
         pt::select(&mut app.state,PlTool::Slice);
         assert!(matches!(app.cursor(),Cursor::Playlist(PlTool::Slice,_)));
@@ -23733,3 +23878,4 @@ mod workflow_tests {
         assert!(crate::views::browser_w(&app.state)>0.);
     }
 }
+
