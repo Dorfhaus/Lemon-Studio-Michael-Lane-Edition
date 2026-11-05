@@ -680,6 +680,7 @@ unsafe extern "system" fn area_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 }
                 Some(os_hostlink::Cmd::Automate) => LinkMsg::Automate(lp.max(0) as usize),
                 Some(os_hostlink::Cmd::Audio) => LinkMsg::Audio(lp != 0),
+                Some(os_hostlink::Cmd::SampleFit) => LinkMsg::SampleFit(lp),
                 Some(os_hostlink::Cmd::BrowseSample) if lp==1 => LinkMsg::LocateSample,
                 Some(os_hostlink::Cmd::BrowseSample) => LinkMsg::BrowseSample,
                 _ => return 0,

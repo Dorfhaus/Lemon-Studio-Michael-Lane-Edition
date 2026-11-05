@@ -911,6 +911,7 @@ pub enum Drag {
     /// Piano roll: move notes (originals by index), resize their ends, erase, draw velocities.
     NoteMove { x0: f32, y0: f32, orig: Vec<(usize, Note)> },
     NoteResize { x0: f32, orig: Vec<(usize, Note)> },
+    NoteStretch { x0: f32, orig: Vec<(usize, Note)> },
     NoteErase,
     EraseSelectedPending(f32,f32),
     SettingsRouteDrag(&'static str,f32),
@@ -1014,6 +1015,7 @@ pub struct State {
     pub pending_open: Option<usize>,
     /// Samples to load into rows' Lemon Sampler instances on the next tick (browser send, drops on a rack row).
     pub sample_loads: Vec<(usize, String)>,
+    pub sample_tempo_requests: Vec<(usize,u32)>,
     /// Rack rows moved by an undo or redo of a channel delete (`history::Rows`), for the plugin host on the next tick, in
     /// order: each row's new row (`None`: its instance goes), then the instances to host again (row, `Plugins::available`
     /// index, saved state).
@@ -1511,6 +1513,7 @@ impl App {
                 pending_plugin: None,
                 pending_open: None,
                 sample_loads: Vec::new(),
+                sample_tempo_requests: Vec::new(),
                 rows_moved: Vec::new(),
                 retimed: false,
                 file: None,
@@ -2697,6 +2700,9 @@ impl App {
             self.sync_citrus();
             self.sync_native();
         }
+        for (row,bpm) in std::mem::take(&mut self.state.sample_tempo_requests){
+            self.state.message=crate::loop_fit::run_channel(self,row,crate::loop_fit::Fit::Tempo(bpm));
+        }
         for (row, path) in std::mem::take(&mut self.state.sample_loads) {
             if self.state.project.channels.get(row).is_some_and(crate::ara::is){continue;}
             if !self.state.hosted_rows.contains(&row) {
@@ -2997,6 +3003,7 @@ impl App {
                             self.locate_browser_sample(std::path::PathBuf::from(crate::plugins::resolve_sample(&path)));
                         }
                     }
+                    Request::SampleFit(row,code) => {if !self.modal_open(){if let Some(fit)=crate::loop_fit::from_sampler(code){self.state.message=crate::loop_fit::run_channel(self,row,fit);}}},
                     Request::BrowseSample(row) => {if row<self.state.project.channels.len() && !self.modal_open(){crate::rack::run(self,crate::rack::RCmd::LoadSample(row));}},
                     Request::Automate(row, index) => {
                         self.state.message = self.params_automate(row, index);
@@ -5650,6 +5657,29 @@ impl App {
                     }
                     self.state.piano.dirty = true;
                 }
+                Drag::NoteStretch { x0, orig } => {
+                    if let Some(g)=self.piano_geom() {
+                        let unit=crate::piano_snap::unit(&self.state).unwrap_or(1);
+                        let start=orig.iter().map(|(_,n)|n.position).min().unwrap_or(0);
+                        let end=orig.iter().map(|(_,n)|n.position.saturating_add(n.length.max(unit))).max().unwrap_or(start+1);
+                        let span=end.saturating_sub(start).max(1);
+                        let indices:Vec<_>=orig.iter().map(|(i,_)|*i).collect();
+                        let delta=crate::piano_snap::delta(&self.state,&g,end,(x-x0)/g.ppt,self.alt,&indices);
+                        let stretched=(i64::from(span)+delta).clamp(1,i64::from(u32::MAX-start)) as f64;
+                        let ratio=stretched/f64::from(span);
+                        let pattern=piano::pattern_mut(&mut self.state);
+                        for &(i,n) in &orig {
+                            if let Some(note)=pattern.notes.get_mut(i) {
+                                let a=(f64::from(n.position-start)*ratio).round() as u32;
+                                let b=(f64::from(n.position-start)+f64::from(n.length.max(unit)))*ratio;
+                                let b=b.round() as u32;
+                                note.position=start.saturating_add(a);
+                                note.length=b.saturating_sub(a).max(1);
+                            }
+                        }
+                        self.state.piano.dirty=true;self.damage_piano();
+                    }
+                }
                 Drag::NoteResize { x0, orig } => {
                     self.drag_notes(x0, 0.0, &orig, true);
                     self.state.piano.dirty = true;
@@ -6845,6 +6875,11 @@ impl App {
             self.erase_control_points(x, x);
             return;
         }
+        if action==Some(Action::PianoGrid) && self.state.piano.stretch {
+            self.state.piano.stretch=false;
+            self.damage_piano();
+            return;
+        }
         if let Some(Action::PianoNote(i)) = action.as_ref() {
             if self.state.piano.selection(self.state.pattern,piano::channel(&self.state)).contains(i) {
                 self.drag=Some(Drag::EraseSelectedPending(x,y));
@@ -7029,7 +7064,7 @@ impl App {
         if had_overlay {
             self.damage_piano();
         }
-        if matches!(self.drag, Some(Drag::NoteMove { .. } | Drag::NoteResize { .. } | Drag::NoteErase | Drag::NoteMute { .. } | Drag::NotePaint { .. })) {
+        if matches!(self.drag, Some(Drag::NoteMove { .. } | Drag::NoteResize { .. } | Drag::NoteStretch { .. } | Drag::NoteErase | Drag::NoteMute { .. } | Drag::NotePaint { .. })) {
             piano::finish_edit(&mut self.state);
             self.state.piano.dirty = true;
             self.damage_piano();
@@ -8433,7 +8468,9 @@ impl App {
                 let nr = g.note_rect(&n).unwrap_or_default();
                 self.drag = Some(if x >= nr.right() - resize_zone(nr.w) {
                     self.resize_cursor = true;
-                    Drag::NoteResize { x0: x, orig }
+                    if s.piano.stretch && matches!(tool,Tool::Draw|Tool::Paint) {
+                        Drag::NoteStretch { x0:x, orig }
+                    }else{Drag::NoteResize { x0: x, orig }}
                 } else {
                     let play = self.audition();
                     self.hold_key(Some(i32::from(n.key)), play);
@@ -8671,8 +8708,7 @@ impl App {
             Action::RackStrip(_)=>{},
             Action::PianoGrid | Action::PianoNote(_) | Action::PianoVelocity | Action::PianoKeys | Action::PianoRuler | Action::PianoSplitter | Action::Scrollbar(_) | Action::ScrollStep(..) => {}
             Action::PianoTool(t) => {
-                s.piano.tool = t;
-                s.piano.overlay = None;
+                s.piano.choose_tool(t);
             }
             // EDIT > Undo, also the toolbar's Undo button (spec: ui/toolbar-buttons.md §2).
             Action::PianoUndo | Action::Util(Util::Undo) => s.message = crate::history::ctrl_z(s),
@@ -10271,6 +10307,88 @@ mod tests {
             app.mouse_up();
             assert_eq!(crate::prefs::number(pref),1);
             crate::prefs::set_number(pref,old);
+        }
+    }
+
+    #[test]
+    fn piano_control_menu_escapes_editor_clip_and_stays_on_surface() {
+        for (width,height,scale,popup) in [(1280,720,1.,"100%"),(1280,720,1.,"400%"),(1920,1080,2.,"200%")] {
+            let mut app=App::new(None);app.state.project=test_project();app.state.z=vec![Win::PianoRoll];app.state.show_browser=false;
+            let mut c=Canvas::new(width,height,scale).unwrap();let (w,h)=c.size();
+            app.state.wins[Win::PianoRoll.slot().unwrap()]=WinState{rect:Rect::new((w-620.).max(0.),(h-310.).max(90.),610.,300.),maxed:false,mini:false};
+            let index=crate::prefs::POPUPS_SCALING.choices.iter().position(|&p|p==popup).unwrap();
+            app.pref_choose(&crate::prefs::POPUPS_SCALING,index);frame(&mut app,&mut c,None);
+            let button=hit_rect(&app,&Action::PianoLaneMenu);app.mouse_move(button.cx(),button.cy());app.mouse_down();app.mouse_up();
+            frame(&mut app,&mut c,None);
+            if let Ok(dir)=std::env::var("OS_SHOT_DIR") {std::fs::create_dir_all(&dir).unwrap();c.pixmap.save_png(std::path::Path::new(&dir).join(format!("piano-control-{width}-{scale}-{popup}.png"))).unwrap();}
+            for i in 0..piano::Lane::ALL.len() {
+                let row=hit_rect(&app,&Action::PianoLanePick(i));
+                assert!(row.x>=0. && row.y>=0. && row.right()<=w && row.bottom()<=h,"all rows on surface: {row:?} {w}x{h}");
+                assert_eq!(app.top_hit(row.cx(),row.cy()).unwrap().action,Action::PianoLanePick(i));
+                let pixel=c.pixmap.pixel(((row.x+12.)*scale) as u32,((row.cy())*scale) as u32).unwrap();
+                let t=&app.theme.colors;
+                let expected=if piano::Lane::ALL[i]==app.state.piano.lane || (app.hover==Some(Action::PianoLanePick(i)) && row.contains(app.mouse.0,app.mouse.1)) {t.menu_pop_hi}else{t.menu_pop};
+                assert_eq!((pixel.red(),pixel.green(),pixel.blue()),(expected.r,expected.g,expected.b),"menu row {i} at {row:?} must paint: {popup}, canvas scale {}",c.scale);
+            }
+            let last=piano::Lane::ALL.len()-1;let row=hit_rect(&app,&Action::PianoLanePick(last));
+            app.mouse_move(row.cx(),row.cy());app.mouse_down();app.mouse_up();
+            assert_eq!(app.state.piano.lane,piano::Lane::ALL[last]);assert!(!app.state.lane_menu);
+        }
+    }
+
+    #[test]
+    fn piano_stretch_toggle_keeps_drawing_and_group_movement() {
+        use crate::playlist_tools::{GRAB,GRABBING,RESIZE,STRETCH};
+        for base in [Tool::Draw,Tool::Paint] {
+            let mut app=App::new(None);app.state.project=test_project();app.state.z=vec![Win::PianoRoll];
+            app.state.piano.choose_tool(base);
+            let ch=piano::channel(&app.state).unwrap();
+            let first=piano::add_note(&mut app.state,ch,96,60);
+            let second=piano::add_note(&mut app.state,ch,192,64);
+            let outside=piano::add_note(&mut app.state,ch,384,67);
+            for i in [first,second,outside]{piano::pattern_mut(&mut app.state).notes[i].length=48;}
+            let original=piano::notes(&app.state).to_vec();
+            app.state.piano.select(app.state.pattern,ch,vec![first,second]);
+            let mut canvas=Canvas::new(1920,1080,1.).unwrap();frame(&mut app,&mut canvas,None);
+            let button=hit_rect(&app,&Action::PianoTool(Tool::Stretch));
+            app.mouse_move(button.cx(),button.cy());app.mouse_down();app.mouse_up();
+            assert!(app.state.piano.stretch);assert_eq!(app.state.piano.tool,base);
+            let g=app.piano_geom().unwrap();let r=g.note_rect(&piano::notes(&app.state)[first]).unwrap();
+            // The body moves the entire selected group without changing lengths.
+            app.mouse_move(r.cx(),r.cy());assert!(matches!(app.cursor(),Cursor::Playlist(_,GRAB)));
+            app.mouse_down();assert!(matches!(app.drag,Some(Drag::NoteMove{..})));
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,GRABBING)));
+            app.mouse_move(r.cx()+96.*g.ppt,r.cy());app.mouse_up();
+            let notes=piano::notes(&app.state);
+            for i in [first,second] {assert_eq!(notes[i].position,original[i].position+96);assert_eq!(notes[i].length,48);}
+            assert_eq!(notes[outside],original[outside]);crate::history::undo(&mut app.state).unwrap();
+            assert_eq!(piano::notes(&app.state),original);
+            app.state.piano.select(app.state.pattern,ch,vec![first,second]);frame(&mut app,&mut canvas,None);
+            // Only the note's resize edge stretches the group's timing and lengths.
+            app.mouse_move(r.right()-1.,r.cy());assert!(matches!(app.cursor(),Cursor::Playlist(_,STRETCH)));
+            app.mouse_down();assert!(matches!(app.drag,Some(Drag::NoteStretch{..})));
+            app.mouse_move(r.right()-1.+144.*g.ppt,r.cy());app.mouse_up();
+            let notes=piano::notes(&app.state);
+            assert_eq!((notes[first].position,notes[first].length,notes[first].key),(96,96,60));
+            assert_eq!((notes[second].position,notes[second].length,notes[second].key),(288,96,64));
+            assert_eq!(notes[outside],original[outside]);crate::history::undo(&mut app.state).unwrap();
+            assert_eq!(piano::notes(&app.state),original);frame(&mut app,&mut canvas,None);
+            // Toolbar toggle and menu command retain the base tool.
+            app.mouse_move(button.cx(),button.cy());app.mouse_down();app.mouse_up();
+            assert!(!app.state.piano.stretch);assert_eq!(app.state.piano.tool,base);
+            crate::playlist::run(&mut app,crate::playlist::Cmd::Piano(crate::piano_tools::NCmd::Tool(Tool::Stretch)));
+            assert!(app.state.piano.stretch);assert_eq!(app.state.piano.tool,base);
+            // Empty right-click exits Stretch without deleting or changing the drawing tool.
+            app.mouse_move(g.grid.right()-20.,g.grid.bottom()-10.);app.mouse_down_right();app.mouse_up();
+            assert!(!app.state.piano.stretch);assert_eq!(app.state.piano.tool,base);
+            assert_eq!(piano::notes(&app.state),original);
+            assert!(matches!(app.cursor(),Cursor::Playlist(_,0..=3)));
+            app.mouse_move(r.right()-1.,r.cy());assert!(matches!(app.cursor(),Cursor::Playlist(_,RESIZE)));
+            // Stretch remains compatible with placing notes on empty grid.
+            app.act(Action::PianoTool(Tool::Stretch));
+            app.mouse_move(g.grid.right()-20.,g.grid.bottom()-10.);app.mouse_down();app.mouse_up();
+            assert_eq!(piano::notes(&app.state).len(),original.len()+1);
+            assert_eq!(app.state.piano.tool,base);assert!(app.state.piano.stretch);
         }
     }
 
@@ -19515,8 +19633,13 @@ mod tests {
         drag(&mut app, &mut c, (mx, my), (mx, my - 10.0));
         let t = pl::clips(&app.state)[ci].fade_in().unwrap().1;
         assert!((t - 2.8).abs() < 0.01, "tension {t}");
+        // Gain hover and the held gesture use a pointing finger, including beyond the handle.
+        app.mouse_move(body.cx(),body.bottom()-2.);
+        assert!(matches!(app.cursor(),Cursor::Playlist(_,crate::playlist_tools::GAIN)));
+        app.mouse_down();app.mouse_move(body.cx(),body.bottom()-22.);
+        assert!(matches!(app.cursor(),Cursor::Playlist(_,crate::playlist_tools::GAIN)));
+        app.mouse_up();frame(&mut app,&mut c,None);
         // Gain: the half-circle dragged up 20 px = +3 dB.
-        drag(&mut app, &mut c, (body.cx(), body.bottom() - 2.0), (body.cx(), body.bottom() - 22.0));
         let gain = pl::clips(&app.state)[ci].gain();
         assert!((20.0 * gain.log10() - 3.0).abs() < 0.01, "gain {gain}");
         assert!((pl::clips(&app.state)[ci+1].gain() - gain * 0.5).abs() < 0.0001);
@@ -20804,6 +20927,42 @@ mod tests {
                 assert_eq!(pixel.red() > pixel.blue(), r > b);
             }
         }
+    }
+
+    #[test]
+    fn channel_strip_finish_changes_native_controls_without_moving_them() {
+        let mut app=App::new(None);app.state.project=test_project();
+        app.state.z=vec![Win::Mixer];app.state.show_browser=false;
+        app.state.mixer.layout=crate::rack_mixer::VIEW;
+        let mut c=Canvas::new(1920,1080,1.).unwrap();
+        let mut images=Vec::new();let mut targets=None;
+        for style in 0..3 {
+            app.pref_choose(&crate::prefs::MIXER_STYLE,style);frame(&mut app,&mut c,None);
+            let rects=[Action::Fader(1),Action::Knob(crate::knobs::KnobId::MixPan(1)),Action::Mix(crate::mixer::MHit::Effects(1))].map(|a|hit_rect(&app,&a));
+            if let Some(before)=targets {assert_eq!(rects,before);}else{targets=Some(rects);}
+            let f=rects[0];
+            let pixels:Vec<_>=(f.y as u32..f.bottom() as u32).flat_map(|y|(f.x as u32..f.right() as u32).map(move |x|(x,y))).map(|(x,y)|c.pixmap.pixel(x,y).unwrap()).collect();
+            assert!(images.iter().all(|old|*old!=pixels),"each finish must change the native fader deck");images.push(pixels);
+            if let Ok(dir)=std::env::var("OS_SHOT_DIR") {std::fs::create_dir_all(&dir).unwrap();c.pixmap.save_png(std::path::Path::new(&dir).join(format!("strip-finish-{style}.png"))).unwrap();}
+        }
+    }
+
+    #[test]
+    fn boosted_clip_waveform_stays_below_title() {
+        use crate::playlist as pl;
+        let mut c=Canvas::new(1920,1080,1.).unwrap();let (mut app,_,_,_)=ruler_app(&mut c);
+        let wav=std::env::temp_dir().join(format!("lemon-boosted-wave-{}.wav",std::process::id()));
+        // Alternating full-scale peaks exceed the body at high gain in both directions.
+        let samples:Vec<f32>=(0..192000).map(|i|if i/120%2==0 {0.9}else{-0.9}).collect();
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(),48000,&samples).unwrap();
+        pl::add_audio_clip(&mut app.state,&wav.to_string_lossy(),0,0).unwrap();
+        let i=pl::clips(&app.state).len()-1;frame(&mut app,&mut c,None);
+        let g=pl::PGeom::new(&app.state,app.pl_grid().unwrap());let clip=pl::clips(&app.state)[i];
+        let r=g.clip_rect(&clip);let body=g.body(&clip);
+        let header=|c:&Canvas|->Vec<_>{(r.y.ceil() as u32..body.y.floor() as u32).flat_map(|y|(r.x.ceil() as u32+2..r.right().floor() as u32-2).map(move |x|(x,y))).map(|(x,y)|c.pixmap.pixel(x,y).unwrap()).collect()};
+        let before=header(&c);pl::arr_mut(&mut app.state).clips[i].set_gain(10.);frame(&mut app,&mut c,None);
+        assert_eq!(before,header(&c),"boosted waveform must not overwrite the clip title");
+        let _=std::fs::remove_file(wav);
     }
 
     /// Offscreen visual fixture: no window, audio device, or external plugin is opened.

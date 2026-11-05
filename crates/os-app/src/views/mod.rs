@@ -267,6 +267,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     // the time signature dialog's value lists over the dialog.
     let over_dialog = crate::timesig::form_open(s);
     if !s.settings.open && !over_dialog {
+        piano::paint_lane_menu(ui, s);
         playlist::paint_overlays(ui, s);
     }
     rack::paint_fill(ui, s);

@@ -192,7 +192,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
 
     // Fixed master strip; inserts scroll immediately beside it.
     let master_header=Rect::new(r.x,ly.y(HEAD_Y0),width,HEAD_Y1-HEAD_Y0+1.);
-    if s.mixer.layout==mx::WIDE {
+    if matches!(s.mixer.layout, mx::WIDE | crate::rack_mixer::VIEW) {
         let tint = s.project.mixer.iter().find(|m| m.index == 0).and_then(|m| m.color).map(super::rgb);
         number_plate(ui, master_header, tint);
     }else{ui.c.fill_rect(master_header,ui.t.s(0x2b2e30));}
@@ -483,7 +483,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let body = tint.map_or(base, |c| mix(base, c, 0.12));
     let header = tint.map_or(ui.t.s(0x343b40), |c| mix(ui.t.s(0x303639), c, 0.24));
     let lemon = super::lemon(ui);
-    if full {
+    if console {
         console_skin::panel(ui,Rect::new(left,ly.y(HEAD_Y1)+1.,width,bottom-ly.y(HEAD_Y1)-1.),body,selected);
     } else if lemon {
         // Lemon (spec: ui/lemon-design.md §8): each strip is a rounded card on the dark gap colour.
@@ -501,14 +501,14 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     // Header number (insert strips only; the master's "M" sits in the fixed header band).
     if n != 0 {
         let hr = Rect::new(left, ly.y(HEAD_Y0), width, ly.y(HEAD_Y1) - ly.y(HEAD_Y0) + 1.0);
-        if full {
+        if console {
             number_plate(ui, hr, tint);
             if ui.mixer_finish==Finish::Original {
                 original::screw(ui,hr.x+7.,hr.cy());
                 original::screw(ui,hr.right()-7.,hr.cy());
             }
         } else {ui.c.fill_rect(hr,header);}
-        if full && selected {
+        if console && selected {
             if ui.mixer_finish==Finish::Original {
                 original::button(ui,Rect::new(hr.cx()-14.,hr.y+2.,28.,hr.h-4.),true,false,Color::rgb(0x999c76));
             } else {ui.c.stroke_rrect(hr.inset(1.),3.,1.,Color::rgb(0xe4c74f));}
@@ -518,27 +518,27 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
             // A quiet solid selection band replaces fourteen decorative hatch strokes.
             ui.c.fill_rect(hr.inset(2.0), ui.t.s(0x414b50));
         }
-        let c = if selected && lemon && !full { lk::ink_on_lit(ui.t) } else if selected || hov { ui.t.tx(0xe1e8eb) } else { ui.t.tx(0x939fa5) };
+        let c = if selected && lemon && !console { lk::ink_on_lit(ui.t) } else if selected || hov { ui.t.tx(0xe1e8eb) } else { ui.t.tx(0x939fa5) };
         ui.c.text_center(console_font(ui,s,14), Rect::new(left, ly.y(HEAD_Y0), width, 21.0), c, &n.to_string());
     }
 
     if vertical {
         let pane=vertical_rect(left,width,ly);
-        analog::panel(ui,Rect::new(left,pane.bottom()+1.,width,bottom-pane.bottom()-17.),body,selected);
+        console_skin::panel(ui,Rect::new(left,pane.bottom()+1.,width,bottom-pane.bottom()-17.),body,selected);
         let deck=Rect::new(kx-(width-8.).min(112.)/2.,ly.y(LED_Y)-10.,(width-8.).min(112.),bottom-ly.y(LED_Y)-8.);
-        analog::well(ui,deck);
+        console_skin::well(ui,deck);
         crate::rack_mixer::paint_slot(ui,s,n,pane);
         crate::rack_mixer::paint_pager(ui,s,n,pane);
         let name=Rect::new(left+3.,pane.bottom()+18.,width-6.,18.);
-        analog::plate(ui,name);ui.c.push_clip(name);
+        console_skin::plate(ui,name);ui.c.push_clip(name);
         ui.c.text_center(console_font(ui,s,11),name,ui.t.text,&mx::name(s,n));ui.c.pop_clip();
-        if width>110. {analog::screw(ui,name.x+5.,name.cy());analog::screw(ui,name.right()-5.,name.cy());}
+        if width>110. && ui.mixer_finish==Finish::Original {original::screw(ui,name.x+5.,name.cy());original::screw(ui,name.right()-5.,name.cy());}
     } else {
     // Dark head panel (name, LED, pan) with a rounded bottom.
     ui.c.fill_rrect(Rect::new(left + 1.0, ly.y(PANEL_Y0), width - 2.0, ly.y(PANEL_Y1) - ly.y(PANEL_Y0)+if full {5.}else{0.}), 9.0, ui.t.s(0x1d1f21));
     ui.c.fill_rect(Rect::new(left + 1.0, ly.y(PANEL_Y0), width - 2.0, 12.0), ui.t.s(0x1d1f21));
 
-    if full {console_skin::well(ui,Rect::new(left+3.,ly.y(PANEL_Y0)+2.,width-6.,ly.y(PANEL_Y1)-ly.y(PANEL_Y0)+1.));}
+    if console {console_skin::well(ui,Rect::new(left+3.,ly.y(PANEL_Y0)+2.,width-6.,ly.y(PANEL_Y1)-ly.y(PANEL_Y0)+1.));}
     let standard=n!=0 && track.is_some_and(|m|m.channel_layout==0);
     let meter = Rect::new(left + 6.0, ly.y(METER_Y0) + 4.0, width - 12.0,
         (ly.y(METER_Y1) - ly.y(METER_Y0) - 26.0).clamp(38.0, if full {64.0}else{61.6}));
@@ -548,7 +548,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let clipped = s.mixer.meters.get(usize::from(n)).is_some_and(|m| m.hold.iter().any(|&db| db >= 0.0));
     if standard || s.mixer.peak_view.contains(&n) {
         peak_window(ui, meter, s.mixer.meters.get(usize::from(n)), clipped);
-    } else if full {console_skin::vu(ui,meter,levels,clipped,selected);} else { analog_vu(ui, meter, levels, clipped, selected); }
+    } else if console {console_skin::vu(ui,meter,levels,clipped,selected);} else { analog_vu(ui, meter, levels, clipped, selected); }
     let db = levels.map(meters::vu_db);
     ui.hit(meter, Action::Mix(MHit::Meter(n)), format!("Click to switch VU / peak meter | VU L {:+.1} / R {:+.1}", db[0], db[1]));
     let name = track.and_then(|m| m.name.clone()).unwrap_or_else(|| if n == 0 { "Master".into() } else { format!("Insert {n}") });
@@ -562,7 +562,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         ui.c.fill_rect(Rect::new(left + 4.0, ly.y(PANEL_Y1) + 2.0, width - 8.0, 3.0), accent);
     }
     let name_rect = Rect::new(left + 5.0, if standard {ly.y(PANEL_Y0)+5.}else{meter.bottom()+5.}, width - 10.0, 18.0);
-    if full {console_skin::plate(ui,name_rect);}
+    if console {console_skin::plate(ui,name_rect);}
     ui.c.push_clip(name_rect);
     ui.c.text_center(console_font(ui,s,12), name_rect, name_c, &name);
     ui.c.pop_clip();
@@ -583,11 +583,11 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let hit_radius=if full {8.5} else {7.};
     let led_y=ly.y(if full {PAN_Y}else{LED_Y});
     ui.hit(Rect::new(led_x-hit_radius,led_y-hit_radius,2.*hit_radius,2.*hit_radius), Action::Mix(MHit::Led(n)), "Mute / solo");
-    if console {if full {console_skin::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),5.);} else {analog::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),4.);}}else{led(ui, control_x, ly.y(LED_Y), enabled);}
+    if console {if full {console_skin::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),5.);} else {console_skin::lamp(ui,led_x,led_y,enabled,Color::rgb(0xb7d98b),4.);}}else{led(ui, control_x, ly.y(LED_Y), enabled);}
     if full {ui.c.text_center(console_font(ui,s,9),Rect::new(control_x-17.,ly.y(PAN_Y)-25.,34.,12.),Color::rgb(0xc5cccf),"PAN");}
     let pan = KnobId::MixPan(n);
     ui.hit(Rect::new(control_x - 14.0, ly.y(PAN_Y) - 14.0, 28.0, 28.0), Action::Knob(pan), s.knob_text(pan));
-    if console {if full {console_skin::knob(ui,pan,control_x,ly.y(PAN_Y),10.5,s.knob(pan),Color::rgb(0xb5b7a7),ui.hovering(Rect::new(control_x-14.,ly.y(PAN_Y)-14.,28.,28.)));} else {analog::knob(ui,control_x,ly.y(PAN_Y),10.5,s.knob(pan),Color::rgb(0xb5b7a7),ui.hovering(Rect::new(control_x-14.,ly.y(PAN_Y)-14.,28.,28.)));}}else{mixer_knob(ui, control_x, ly.y(PAN_Y), 10.5, 15.0, s.knob(pan), Some(true));}
+    if console {console_skin::knob(ui,pan,control_x,ly.y(PAN_Y),10.5,s.knob(pan),Color::rgb(0xb5b7a7),ui.hovering(Rect::new(control_x-14.,ly.y(PAN_Y)-14.,28.,28.)));}else{mixer_knob(ui, control_x, ly.y(PAN_Y), 10.5, 15.0, s.knob(pan), Some(true));}
 
     // Reverse polarity (⇕) and swap left / right (⇔) buttons, lit when on, then the separation knob (§4).
     // They keep their size and spacing below the fader's top at any mixer height (FL's short mixer stacks them the
@@ -600,7 +600,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     }else{(top + SEP_Y - TRACK_Y0, top + SWAP_Y - TRACK_Y0, top + RING_Y - TRACK_Y0+if console {4.}else{0.})};
     let pr = Rect::new(sx - 8.0, sep_y - 8.0, 16.0, 16.0);
     let hp = ui.hit(pr, Action::Mix(MHit::Polarity(n)), "Reverse polarity");
-    if console {if full {console_skin::signal_switch(ui,pr,pol,hp,false);} else {analog::signal_switch(ui,pr,pol,hp,false);}} else {
+    if console {console_skin::signal_switch(ui,pr,pol,hp,false);} else {
     let mut g = Glyph::new();
     g.polygon(&[(sx - 5.0, sep_y - 1.5), (sx, sep_y - 6.0), (sx + 5.0, sep_y - 1.5)]);
     g.polygon(&[(sx - 5.0, sep_y + 1.5), (sx, sep_y + 6.0), (sx + 5.0, sep_y + 1.5)]);
@@ -608,7 +608,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     }
     let wr = Rect::new(sx - 8.0, swap_y - 8.0, 16.0, 16.0);
     let hw = ui.hit(wr, Action::Mix(MHit::Swap(n)), "Swap left & right channels");
-    if console {if full {console_skin::signal_switch(ui,wr,swp,hw,true);} else {analog::signal_switch(ui,wr,swp,hw,true);}} else {
+    if console {console_skin::signal_switch(ui,wr,swp,hw,true);} else {
     let mut g = Glyph::new();
     g.polygon(&[(sx - 1.0, swap_y - 6.0), (sx - 7.0, swap_y), (sx - 1.0, swap_y + 6.0)]);
     g.polygon(&[(sx + 1.5, swap_y - 6.0), (sx + 7.5, swap_y), (sx + 1.5, swap_y + 6.0)]);
@@ -619,7 +619,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let sep_hit=Rect::new(sx-11.,ring_y-11.,22.,22.);
     ui.hit(if console {sep_hit}else{Rect::new(sx-9.,ring_y-9.,18.,18.)}, Action::Knob(sep), s.knob_text(sep));
     if console {
-        console_knob(full,ui,sep,sx,ring_y,8.,s.knob(sep),Color::rgb(0xa7c4bd),ui.hovering(sep_hit));
+        console_knob(ui,sep,sx,ring_y,8.,s.knob(sep),Color::rgb(0xa7c4bd),ui.hovering(sep_hit));
         // Linked stereo rings identify width without crowding the console face.
         for x in [sx-2.,sx+2.] {ui.c.stroke_circle(x,ring_y+14.,2.6,0.8,Color::rgb(0xa7c4bd));}
     }else{mixer_knob(ui, sx, ring_y, 6.0, 9.5, s.knob(sep), Some(true));}
@@ -662,8 +662,8 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let v = track.and_then(|m| m.volume).unwrap_or(0.8) as f32;
     // max/min, not clamp: a very short window gives track_y1 < top (clamp would panic).
     let hy = if vertical {top+(1.-v.clamp(0.,1.))*(track_y1-top).max(1.)}else{(ly.y(HANDLE_0DB + (0.8 - v) * 274.0)).min(track_y1 - 5.0).max(top + 5.0)};
-    if selected && full && ui.mixer_finish != Finish::Original {
-        let unity_y = ly.y(HANDLE_0DB).min(track_y1 - 5.).max(top + 5.);
+    if selected && console && ui.mixer_finish != Finish::Original {
+        let unity_y = if vertical {top+0.2*(track_y1-top).max(1.)}else{ly.y(HANDLE_0DB).min(track_y1 - 5.).max(top + 5.)};
         ui.c.fill_rect(Rect::new(mx-1.,hy.min(unity_y),2.,(hy-unity_y).abs()), Color::rgb(0xe8c74f));
     } else if selected {
         if lemon {
@@ -673,7 +673,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         }
     }
     let hov = ui.hit(Rect::new(mx - if console {11.}else{9.}, top - if vertical {13.}else{5.}, if console {22.}else{18.}, track_y1 - top + if vertical {26.}else{10.}), Action::Fader(n), mx::level_text("Volume", f64::from(v)));
-    if console {if full {console_skin::fader(ui,mx,hy,selected,hov);} else {analog::fader(ui,mx,hy,selected,hov);}}else{fader_handle(ui, mx, hy, selected, hov);}
+    if console {console_skin::fader(ui,mx,hy,selected,hov);}else{fader_handle(ui, mx, hy, selected, hov);}
 
     // The strip deck keeps recording/FX on the right, clear of the long fader and routing controls.
     let master = n == 0;
@@ -685,7 +685,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let fx_hover = ui.hit(fx_button, Action::Mix(MHit::Effects(n)), if fx_on { "Effects enabled — click to bypass this channel's plugins" } else { "Effects bypassed — click to enable this channel's plugins" });
     ui.c.fill_rrect(fx_button, 3.0, if fx_on { ui.t.a(0x465d49) } else { ui.t.s(0x272d30) });
     ui.c.stroke_rrect(fx_button, 3.0, 1.0, if fx_hover { ui.t.accent } else { ui.t.s(0x64776a) });
-    if console {if full {console_skin::button(ui,fx_button,fx_on,fx_hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x90ae75} else {0xe8c74f}));} else {analog::button(ui,fx_button,fx_on,fx_hover,Color::rgb(0xe8c74f));}}
+    if console {console_skin::button(ui,fx_button,fx_on,fx_hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x90ae75} else {0xe8c74f}));}
     ui.c.text_center(console_font(ui,s,11), fx_button, if console && fx_on {Color::rgb(0x161a1d)}else if fx_on { ui.t.tx(0xe4efd8) } else { ui.t.text_dim }, "FX");
     // One aligned navigation column, visually separate from record arm and FX.
     let navigation_top=ring_y+22.;
@@ -701,7 +701,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         };
         ui.c.fill_rrect(b, 2.0, if hover { ui.t.button_hi } else { ui.t.s(0x252d32) });
         ui.c.stroke_rrect(b, 2.0, 1.0, if hover { ui.t.accent } else { ui.t.s(0x3b474d) });
-    if console {if full {console_skin::button(ui,b,false,hover,Color::rgb(0x91a290));} else {analog::button(ui,b,false,hover,Color::rgb(0x91a290));}}
+    if console {console_skin::button(ui,b,false,hover,Color::rgb(0x91a290));}
         ui.c.text_center(if full {Font::light(8,0).natural()}else{console_font(ui,s,8)}, b, if target.is_some() {ui.t.tx(0xb9c8d0)} else {ui.t.text_dim}, section.label());
     }
     if master {
@@ -712,7 +712,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         let hover = ui.hit(all, Action::Mix(MHit::AllEffects), if on { "Bypass ALL mixer effects (keeps your individual choices)" } else { "Restore ALL mixer effects to your previous choices" });
         ui.c.fill_rrect(all, 3.0, if on { ui.t.a(0x50694a) } else { ui.t.s(0x665037) });
         ui.c.stroke_rrect(all, 3.0, 1.0, if hover { ui.t.accent } else { ui.t.s(0x899182) });
-    if console {if full {console_skin::button(ui,all,on,hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x9caf75} else {0xe8c74f}));} else {analog::button(ui,all,on,hover,Color::rgb(0xe8c74f));}}
+    if console {console_skin::button(ui,all,on,hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x9caf75} else {0xe8c74f}));}
         ui.c.text_center(console_font(ui,s,10), all, if console && on {Color::rgb(0x161a1d)}else{ui.t.tx(0xe4efd8)}, if on { "ALL FX" } else { "FX OFF" });
     }
     if !master {
@@ -721,7 +721,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let rec_hover = ui.hit(record, Action::Mix(MHit::Disk(n)), if armed { "Disarm disk recording" } else { "Arm disk recording (select an input to arm automatically)" });
     ui.c.fill_rrect(record, 3.0, if armed { ui.t.h(0x8f292e) } else { ui.t.s(0x2b3337) });
     ui.c.stroke_rrect(record, 3.0, 1.0, if rec_hover || armed { ui.t.h(0xff6969) } else { ui.t.s(0x667278) });
-    if console {if full {console_skin::button(ui,record,armed,rec_hover,Color::rgb(0xbd6053));} else {analog::button(ui,record,armed,rec_hover,Color::rgb(0xbd6053));}}
+    if console {console_skin::button(ui,record,armed,rec_hover,Color::rgb(0xbd6053));}
     ui.c.fill_circle(record.cx(), record.cy(), 4.5, if armed { ui.t.h(0xff6868) } else { ui.t.h(0xb85858) });
 
     }
@@ -758,7 +758,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let border = if selected { ui.t.accent } else if also { ui.t.accent } else { ui.t.s(0x464f54) };
     ui.c.stroke_rrect(Rect::new(left + 0.75, top + 0.75, width - 1.5, height - 1.5), 0.0, 1.0, border);
     if mx::has_separator(s, n) {
-        if console {if full {console_skin::separator(ui,Rect::new(left,top,6.,height));} else {analog::separator(ui,Rect::new(left,top,6.,height));}}else{ui.c.fill_rect(Rect::new(left, top, 6.0, height), ui.t.s(0x919da3));}
+        if console {console_skin::separator(ui,Rect::new(left,top,6.,height));}else{ui.c.fill_rect(Rect::new(left, top, 6.0, height), ui.t.s(0x919da3));}
     }
 
 }
@@ -772,8 +772,8 @@ fn down_arrow(ui: &mut Ui, kx: f32, ay: f32) {
 /// The send knob from the current track into track `n`, with its level arc (none at zero).
 fn send_knob(ui: &mut Ui, s: &State, n: u16, kx: f32, ky: f32, level: f64) {
     let id = KnobId::Send(s.selected_mixer, n);
-    if s.mixer.layout==mx::WIDE||s.mixer.layout==crate::rack_mixer::VIEW {console_knob(s.mixer.layout==mx::WIDE,ui,id,kx,ky,10.,s.knob(id),Color::rgb(0x9cae84),ui.hovering(Rect::new(kx-13.,ky-13.,26.,26.)));}else{mixer_knob(ui, kx, ky, 10.0, 13.0, s.knob(id), None);}
-    if level > 0.0 && (s.mixer.layout != mx::WIDE || ui.mixer_finish == Finish::Original) {
+    if s.mixer.layout==mx::WIDE||s.mixer.layout==crate::rack_mixer::VIEW {console_knob(ui,id,kx,ky,10.,s.knob(id),Color::rgb(0x9cae84),ui.hovering(Rect::new(kx-13.,ky-13.,26.,26.)));}else{mixer_knob(ui, kx, ky, 10.0, 13.0, s.knob(id), None);}
+    if level > 0.0 && (!matches!(s.mixer.layout,mx::WIDE|crate::rack_mixer::VIEW) || ui.mixer_finish == Finish::Original) {
         // From the knob's zero to its pointer (the arc takes a sweep, not an end angle).
         let sweep = (level as f32).min(1.0) * 1.5 * PI;
         ui.c.arc(kx, ky, 12.5, 0.75 * PI, sweep, 2.0, ui.t.accent);
@@ -1198,8 +1198,7 @@ pub(crate) fn vertical_pane_height(outer:Rect)->f32{{let mut ly=Ly::new(outer);l
 
 pub(crate) fn mixer_height_for_editor(height:f32)->f32{FIXED_H+(height+23.)*(REF_H-FIXED_H)/(490.+289.*(1.-STRIP_FADER_COMPRESSION))}
 
-// The rack and the full mixer share a control layout but have independent finishes.
-fn console_knob(full: bool, ui: &mut Ui, id: KnobId, x:f32, y:f32, r:f32, value:f32, color:Color, hover:bool) {
-    if full { console_skin::knob(ui,id,x,y,r,value,color,hover); }
-    else { analog::knob(ui,x,y,r,value,color,hover); }
+// Native channel-strip and full-mixer controls share the selected finish.
+fn console_knob(ui: &mut Ui, id: KnobId, x:f32, y:f32, r:f32, value:f32, color:Color, hover:bool) {
+    console_skin::knob(ui,id,x,y,r,value,color,hover);
 }

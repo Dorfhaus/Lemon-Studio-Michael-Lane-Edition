@@ -160,6 +160,7 @@ impl Hosted {
 /// What a plugin window asks of the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    SampleFit(usize,isize),
     AraPlayback(usize,os_host::PlaybackRequest),
     BrowseSample(usize),
     LocateSample(usize),
@@ -1237,6 +1238,7 @@ impl Plugins {
         for (area, m) in crate::plugin_window::take_link() {
             let row = self.hosted.iter().find(|(_, h)| h.window.as_ref().is_some_and(|w| w.area() as isize == area)).map(|(&r, _)| r);
             match (row, m) {
+                (Some(row), crate::plugin_window::LinkMsg::SampleFit(code)) => out.push(Request::SampleFit(row,code)),
                 (Some(row), crate::plugin_window::LinkMsg::Note(k, v, on)) => out.push(Request::Note(row, k, v, on)),
                 (Some(row), crate::plugin_window::LinkMsg::LocateSample) => out.push(Request::LocateSample(row)),
                 (Some(row), crate::plugin_window::LinkMsg::BrowseSample) => out.push(Request::BrowseSample(row)),

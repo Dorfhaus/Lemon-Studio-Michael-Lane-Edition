@@ -967,6 +967,8 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     // Colorful waveforms (spec: ui/settings-choices.md "Display: Colorful waveforms (2026-10-16)"): the same shape,
     // each device-pixel column in the colour of the frames it shows; silence keeps the plain colour.
     let tones = colours.filter(|(w, _)| w.on()).and_then(|_| s.playlist.tones(&path));
+    // Boosted peaks may exceed full scale; contain all waveform drawing in the clip body.
+    ui.c.push_clip(br);
     match (colours, tones) {
         (Some((waves, dim)), Some(tones)) => {
             let frames = |d: f64| (w0 + d / ppt * ms_per_tick) * frames_per_ms;
@@ -978,6 +980,7 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
         }
         _ => ui.c.fill_polygon(&outline, col),
     }
+    ui.c.pop_clip();
 }
 
 /// An audio clip's fade curves, and its handles while the mouse is over it (§9a): fade triangles at the top

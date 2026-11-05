@@ -13305,3 +13305,10 @@ its embedded dependencies' notices are preserved in JUCE/LICENSE.md.
 Matching JUCE source: https://github.com/juce-framework/JUCE/tree/8.0.9
 Full AGPLv3 terms: https://www.gnu.org/licenses/agpl-3.0.html
 The mastering VST3 and its corresponding source are included with this edition.
+
+MiniBPM 1.0
+-----------
+Copyright 2012 Particular Programs Ltd.
+https://breakfastquay.com/minibpm/
+GPL version 2 or later; included under GPL version 3.
+Source, integration notes and original licence are in crates/os-app/vendor/minibpm.

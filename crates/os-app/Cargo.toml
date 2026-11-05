@@ -101,3 +101,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFDate", "CFRunLoop"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "objc2", "CGColorSpace", "CGDataProvider", "CGImage", "CGPath"] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAShapeLayer", "CATransform3D", "CATransaction"] }
+
+[build-dependencies]
+cc = "1"

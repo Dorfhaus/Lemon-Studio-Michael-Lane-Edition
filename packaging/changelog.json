@@ -4,6 +4,19 @@
   "sections": [
     {
       "date": "2026-11-05",
+      "title": "Tempo fitting, Piano Roll stretching and mixer polish \u00b7 public build 2026110504",
+      "changes": [
+        "Make It Fit now combines MiniBPM tempo analysis with Lemon Studio's onset detector and explicit BPM labels, with safeguards for silence, steady tones and ambiguous rhythmic estimates.",
+        "Select Playlist audio stems and run Make It Fit on a selected reference clip to apply one timing ratio to the selection, preserving clip start positions and using pitch-preserving Pro stretching.",
+        "Channel Rack sample menus and Lemon Sampler's Time menu now offer tempo detection, Make It Fit, source BPM entry, beat/bar lengths and Reset stretching. Fitting works without a Playlist clip and supports Undo.",
+        "Piano Roll Stretch is an independent toggle alongside Pencil and Brush. Drag a selected note's right edge to scale the selected notes' timing and lengths; note bodies retain group movement. Right-click empty space to turn Stretch off.",
+        "The Piano Roll Control/Velocity menu draws above editor frames, opens upward when needed and stays inside the application window, including at larger interface scales.",
+        "Original, Clean Modern and Analog mixer finishes now also style native Channel Strip mixer controls while preserving hosted third-party plugin appearance.",
+        "Playlist clip gain handles use clearer pointing-finger cursor feedback. Amplified waveforms stay within the clip audio body and no longer cover clip titles."
+      ]
+    },
+    {
+      "date": "2026-11-05",
       "title": "Strip Silence and smoother editing \u00b7 public build 2026110503",
       "changes": [
         "The Playlist Normalize menu now opens a dialog with an editable target, Apply, Reset and Cancel. Reset restores selected audio clip gains to 0 dB, and both normalization and reset support Undo.",

@@ -118,7 +118,7 @@ pub const TOOLBARS_SCALING: Combo = Combo {
 pub const COLORFUL_WAVEFORMS: Combo =
     Combo { key: "colorful_waveforms", label: "Colorful waveforms", choices: &["Off", "Color map", "Multiband"], default: 0 };
 
-pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Full mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 2 };
+pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 2 };
 
 /// General ▸ Language: how note names read (`crate::note_names`; FL asks for a restart, Lemon Studio renames at once).
 /// Spec: ui/settings-choices.md "Note names and Black notes".

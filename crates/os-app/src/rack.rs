@@ -1456,6 +1456,7 @@ pub fn open_box(s: &mut State, b: RBox, at: (f32, f32)) {
 /// Commands of the rack's popup menus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RCmd {
+    FitSample(usize,crate::loop_fit::Fit),
     CutSelf(usize),
     PitchFollow(usize),
     Consolidate(usize),
@@ -1712,6 +1713,7 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         let misc=s.project.channels[r].misc;
         items.extend([
             it("Load sample...", RCmd::LoadSample(r)),
+            {let entry=PItem::sub("Tempo / stretching",crate::loop_fit::channel_items(r));if s.project.channels[r].sample_path.is_some(){entry}else{entry.off()}},
             it("Cut itself",RCmd::CutSelf(r)).mark(Mark::Check(misc.cut!=0 && misc.cut==misc.cut_by)),
             PItem::sep(),
         ]);
@@ -1953,6 +1955,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
                 .start(dir.as_deref().and_then(std::path::Path::parent));
             app.file_dialog(dlg);
         }
+        RCmd::FitSample(r,fit) => return crate::loop_fit::run_channel(app,r,fit),
         RCmd::PianoRoll(r) => {
             app.focus_channel(r);
             app.state.raise(Win::PianoRoll);
@@ -1966,7 +1969,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     }
     let s = &mut app.state;
     let msg = match c {
-        RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
+        RCmd::FitSample(..) | RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
         RCmd::PitchFollow(r) => {crate::rack_controls::toggle_follow(app,r);None}
         RCmd::Graph(r) => {
             s.selected_channel = r;

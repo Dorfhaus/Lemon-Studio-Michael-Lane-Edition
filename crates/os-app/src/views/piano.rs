@@ -118,9 +118,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // The target channel: name and arrow, orange with a ▾ while hovered (spec: ui/piano-target-channel.md §1).
     let name=format!("Piano roll: {name}");
     let font=Font::new(12);
-    let nx=r.x+harmony_width(r)+if r.w>=550. {437.}else{393.};
-    if r.w>=550. {
-        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),387.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),411.)] {
+    let nx=r.x+harmony_width(r)+if r.w>=572. {459.}else{415.};
+    if r.w>=572. {
+        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),409.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),433.)] {
             let b=Rect::new(r.x+harmony_width(r)+x,r.y+2.,20.,18.);
             let hint=format!("{} channel: {}",if label=="M"{"Mute"}else{"Solo"},name);
             let hover=ui.hit(b,Action::PianoCommand(cmd),hint);
@@ -376,9 +376,6 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     super::scrollbar(ui, track, true, s.piano.scroll_y, l.grid.h, g.keys.len() as f32 * g.row, Scroll::PianoY);
 
     velocity_panel(ui, s, &l, &g, notes, ch, &sel);
-    if s.lane_menu {
-        ui.scaled(super::popup_scale(ui.c.scale), |ui, k| lane_menu(ui, s, &l, k));
-    }
     resize_zones(ui, s, Win::PianoRoll, outer);
 }
 
@@ -412,7 +409,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
     let t = ui.t;
     let active = s.piano.tool;
     let ox = r.x - 209.0 + shift;
-    let items: [(f32, Icon, &'static str, Option<Action>); 14] = [
+    let items: [(f32, Icon, &'static str, Option<Action>); 15] = [
         (222.0, Icon::ArrowRight, "Piano roll options", Some(Action::PianoOptions)),
         (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
         (263.0, Icon::Magnet, "", Some(Action::PianoSnapMenu)),
@@ -425,8 +422,9 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         (428.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
         (450.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
         (472.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
-        (514.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
-        (536.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
+        (494.0, Icon::StretchBand, "Stretch toggle: drag note ends to scale selected timing and lengths; drag note bodies to move; right-click empty grid to turn off", Some(Action::PianoTool(Tool::Stretch))),
+        (536.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
+        (558.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
     ];
     for (x, icon, hint, action) in items {
         let snap = action == Some(Action::PianoSnapMenu);
@@ -446,7 +444,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
             icons::draw(ui.c, icon, b, t.text_faint);
             continue;
         };
-        let on = action == Action::PianoTool(active) || (action==Action::Harmony(crate::harmony::HCmd::Menu(10)) && (s.piano.harmony.edit_snap||s.piano.harmony.midi_snap||s.piano.harmony.typing_snap));
+        let on = action == Action::PianoTool(active) || (action==Action::PianoTool(Tool::Stretch) && s.piano.stretch) || (action==Action::Harmony(crate::harmony::HCmd::Menu(10)) && (s.piano.harmony.edit_snap||s.piano.harmony.midi_snap||s.piano.harmony.typing_snap));
         // The magnet's hint names the current snap (spec: ui/piano-snap.md §8).
         let hint: std::borrow::Cow<'static, str> = if action == Action::PianoSnapMenu { crate::piano_snap::hint(s).into() } else { hint.into() };
         let hov = ui.hit(b, action, hint);
@@ -468,7 +466,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         };
         icons::draw(ui.c, icon, b, c);
     }
-    for x in [348.,497.] {
+    for x in [348.,519.] {
         let x=ox+x+43.+harmony_width(r);
         ui.c.line(x,r.y+3.,x,r.y+20.,1.5,t.text_dim);
     }
@@ -872,6 +870,20 @@ fn control_bars(ui: &mut Ui, s: &State, g: &Geom, p: Rect, lane: Lane, ch: Optio
     }
 }
 
+/// Paint after editor frames so the Control menu can extend beyond the Piano Roll.
+pub(super) fn paint_lane_menu(ui: &mut Ui, s: &State) {
+    if !s.lane_menu || !s.z.contains(&Win::PianoRoll)
+        || s.native_view.map_or(s.native_detached.contains(&Win::PianoRoll), |w| w!=Win::PianoRoll) {return;}
+    let (r,_)=super::frame_rects(s,Win::PianoRoll,s.win_rect(Win::PianoRoll));
+    let l=layout(r,s.piano.split);
+    let (w,h)=ui.c.size();
+    // Preserve the chosen popup size where it fits; keep every row available on small surfaces.
+    let scale=super::popup_scale(ui.c.scale)
+        .min(ui.c.scale*(w/316.).max(0.1))
+        .min(ui.c.scale*(h/188.).max(0.1));
+    ui.scaled(scale,|ui,k|lane_menu(ui,s,&l,k));
+}
+
 /// The event panel's Control menu (spec: ui/piano-roll.md §7a): same look as the menu bar dropdowns. `k`: the canvas is
 /// at the Pop-ups scaling, a window position `x` is `x / k` (see `Ui::scaled`).
 fn lane_menu(ui: &mut Ui, s: &State, l: &Layout, k: f32) {
@@ -880,8 +892,12 @@ fn lane_menu(ui: &mut Ui, s: &State, l: &Layout, k: f32) {
     const HEAD: f32 = 16.0;
     let (w0, w1) = (170.0, 124.0);
     let h = HEAD + Lane::NOTE_LANES as f32 * ROW;
-    let win_h = ui.c.size().1;
-    let r = Rect::new((l.label.x + 9.0) / k, ((l.label.y + 24.0) / k).min(win_h - h - 8.0), w0 + w1 + 6.0, h + 4.0);
+    let (win_w,win_h) = ui.c.size();
+    let (width,height)=(w0+w1+6.,h+4.);
+    let below=(l.label.y+24.)/k;
+    let y=if below+height<=win_h-8. {below}else{l.label.y/k-height};
+    let r=Rect::new(((l.label.x+9.)/k).clamp(8.,(win_w-width-8.).max(8.)),
+        y.clamp(8.,(win_h-height-8.).max(8.)),width,height);
     ui.c.fill_rect(r, t.menu_pop);
     ui.c.stroke_rrect(r.inset(1.0), 0.0, 2.0, t.menu_pop_border);
     ui.hit(r, Action::Swallow, "");

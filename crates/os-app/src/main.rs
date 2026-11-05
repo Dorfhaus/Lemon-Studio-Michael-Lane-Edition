@@ -1881,6 +1881,7 @@ fn apply_window_cursor(window:&Window, el:&ActiveEventLoop, c:app::Cursor, scale
             }
             window.set_cursor(match c {
                 app::Cursor::Playlist(_,playlist_tools::RESIZE) => CursorIcon::EwResize,
+                app::Cursor::Playlist(_,playlist_tools::GAIN) => CursorIcon::Pointer,
                 app::Cursor::Playlist(_,playlist_tools::GRAB) => CursorIcon::Grab,
                 app::Cursor::Playlist(_,playlist_tools::GRABBING | playlist_tools::COPYING) => CursorIcon::Grabbing,
                 app::Cursor::Playlist(..) => CursorIcon::Default,

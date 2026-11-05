@@ -22,6 +22,7 @@ pub enum Tool {
     Mute,
     Slice,
     Select,
+    Stretch,
     Zoom,
     Playback,
 }
@@ -103,6 +104,8 @@ pub struct PianoState {
     /// Keys held on the typing keyboard as (channel index, key), lit too (ui/typing-keyboard.md).
     pub typed: Vec<(u16, i32)>,
     pub tool: Tool,
+    /// Stretch selected note timing at note ends while retaining the drawing tool.
+    pub stretch: bool,
     /// Event panel target.
     pub lane: Lane,
     /// Cents at the middle of the channel pitch lane's window (its scroll position, §7b).
@@ -157,6 +160,7 @@ impl Default for PianoState {
             held: None,
             typed: Vec::new(),
             tool: Tool::Draw,
+            stretch: false,
             lane: Lane::Velocity,
             pitch_center: 0,
             overlay: None,
@@ -183,6 +187,16 @@ impl Default for PianoState {
 }
 
 impl PianoState {
+    pub fn choose_tool(&mut self, tool: Tool) {
+        if tool == Tool::Stretch {
+            self.stretch = !self.stretch;
+            if !matches!(self.tool, Tool::Draw | Tool::Paint) { self.tool = Tool::Draw; }
+        } else {
+            self.tool = tool;
+        }
+        self.overlay = None;
+    }
+
     /// Selected note indices (into the pattern's notes) for this pattern and channel.
     pub fn selection(&self, pattern: u16, channel: Option<u16>) -> Vec<usize> {
         match channel {

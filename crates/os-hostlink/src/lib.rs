@@ -70,6 +70,8 @@ pub enum Cmd {
     SetSize = 13,
     /// Plugin -> host: open the sample chooser for this channel (argument 1 reveals its sample in the Browser).
     BrowseSample = 14,
+    /// Plugin -> host: sampler fit command (0 detect, 1 fit, 2 enter BPM, 3 reset, 100+n beats, 1000+n bars, 1000000+source milli-BPM).
+    SampleFit = 15,
 }
 
 impl Cmd {
@@ -89,6 +91,7 @@ impl Cmd {
             12 => Cmd::Resizable,
             13 => Cmd::SetSize,
             14 => Cmd::BrowseSample,
+            15 => Cmd::SampleFit,
             _ => return None,
         })
     }
