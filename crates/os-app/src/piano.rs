@@ -30,14 +30,14 @@ pub enum Tool {
 impl Tool {
     pub fn from_letter(c: &str) -> Option<Tool> {
         Some(match c.to_ascii_lowercase().as_str() {
-            "p" => Tool::Draw,
-            "b" => Tool::Paint,
-            "d" => Tool::Delete,
-            "t" => Tool::Mute,
-            "c" => Tool::Slice,
-            "e" => Tool::Select,
-            "z" => Tool::Zoom,
-            "y" => Tool::Playback,
+            "1" => Tool::Draw,
+            "2" => Tool::Paint,
+            "3" => Tool::Delete,
+            "4" => Tool::Mute,
+            "5" => Tool::Slice,
+            "s" => Tool::Select,
+            "z" => Tool::mouse_up,
+            "b" => Tool::Playback,
             _ => return None,
         })
     }

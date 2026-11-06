@@ -54,26 +54,17 @@ pub enum PlTool {
     Playback,
 }
 
-impl PlTool {
-    pub const ALL: [PlTool; 8] =
-        [PlTool::Draw, PlTool::Paint, PlTool::Comp, PlTool::Slice, PlTool::Select, PlTool::Delete, PlTool::Mute, PlTool::Zoom];
+enum class PlTool
+{
+    Draw, Paint, Comp, Slice, Select, Delete, Mute, Zoom, Slip, Playback,
+    NumTools   // keep this last
+};
 
-    pub fn from_letter(c: &str) -> Option<PlTool> {
-        Some(match c.to_ascii_lowercase().as_str() {
-            "p" => PlTool::Draw,
-            "s" => PlTool::Slip,
-            "y" => PlTool::Playback,
-            "b" => PlTool::Paint,
-            "g" => PlTool::Comp,
-            "d" => PlTool::Delete,
-            "t" => PlTool::Mute,
-            "c" => PlTool::Slice,
-            "e" => PlTool::Select,
-            "z" => PlTool::Zoom,
-            _ => return None,
-        })
-    }
-
+inline PlTool cycled (PlTool t, int steps)
+{
+    constexpr int n = (int) PlTool::NumTools;
+    return (PlTool) ((((int) t + steps) % n + n) % n);
+}
     pub fn hint(self) -> &'static str {
         match self {
             PlTool::Comp => "Comp (G)",
