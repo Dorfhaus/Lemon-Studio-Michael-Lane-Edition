@@ -54,20 +54,17 @@ pub enum PlTool {
     Playback,
 }
 
-impl PlTool {
-    pub const ALL: [PlTool; 10] = [
-        PlTool::Draw, PlTool::Paint, PlTool::Comp, PlTool::Slice, PlTool::Select,
-        PlTool::Delete, PlTool::Mute, PlTool::Zoom, PlTool::Slip, PlTool::Playback,
-    ];
+enum class PlTool
+{
+    Draw, Paint, Comp, Slice, Select, Delete, Mute, Zoom, Slip, Playback,
+    NumTools   // keep this last
+};
 
-    /// steps > 0 = next tool, steps < 0 = previous, wraps around
-    pub fn cycled(self, steps: i32) -> PlTool {
-        let n = Self::ALL.len() as i32;
-        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0) as i32;
-        Self::ALL[(i + steps).rem_euclid(n) as usize]
-    }
+inline PlTool cycled (PlTool t, int steps)
+{
+    constexpr int n = (int) PlTool::NumTools;
+    return (PlTool) ((((int) t + steps) % n + n) % n);
 }
-
     pub fn hint(self) -> &'static str {
         match self {
             PlTool::Comp => "Comp (G)",
