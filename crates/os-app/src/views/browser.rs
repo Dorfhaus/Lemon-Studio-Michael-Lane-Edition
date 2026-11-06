@@ -87,10 +87,12 @@ pub enum Item {
     Channel(usize),
     /// Sample file path.
     Sample(String),
+    Samples(Vec<String>),
     /// A generator (index into `Plugins::available`).
     Generator(usize),
     /// An effect (index into `Plugins::effects`).
     Effect(usize),
+    Effects(Vec<usize>),
     /// A non-audio file in a dropped folder; MIDI files can be dragged to import.
     File(String),
     /// A parameter of a hosted plugin: hosted key, parameter index (spec: plugins/plugin-parameters.md §6).
@@ -901,7 +903,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             _ => row.label.clone(),
         };
         let hov = ui.hit(rect, Action::BrowserRow(i), hint);
-        if sel == Some(row.key.as_str()) || hov {
+        if sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key) || hov {
             ui.c.fill_rect(rect, t.browser_row_hi);
         }
         if s.browser_tab==EXCHANGE_BUTTON {

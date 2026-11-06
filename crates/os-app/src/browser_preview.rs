@@ -123,7 +123,7 @@ pub fn tick(app:&mut App) {
 // Roughly -90 dBFS: remove near-silent ends without cutting normal release tails.
 pub const AUTO_TRIM_THRESHOLD:u32=1;
 pub fn auto_trim()->bool {crate::prefs::text("browser_auto_trim").as_deref()==Some("1")}
-fn trim_bounds(s:&os_engine::Sample)->(usize,usize){
+pub(crate) fn trim_bounds(s:&os_engine::Sample)->(usize,usize){
     let n=s.frames().min(s.right.len());
     let audible=|i:usize| s.left[i].abs().max(s.right[i].abs())>=AUTO_TRIM_THRESHOLD as f32/32768.;
     let Some(a)=(0..n).find(|&i|audible(i)) else{return (0,n)};

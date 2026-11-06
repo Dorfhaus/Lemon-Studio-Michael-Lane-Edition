@@ -26,10 +26,14 @@ impl Windows {
 
     pub fn owns(&self,id:WindowId)->bool {self.panes.iter().any(|p|p.window.id()==id)}
     pub fn prepare_drag(&mut self,app:&mut App) {
-        if app.drag.is_none()||!self.panes.iter().any(|p|Some(p.kind)==app.state.native_input){return;}
+        let external=app.state.sample_drop.external&&app.state.sample_drop.surface.is_some();
+        let target=if external{app.state.sample_drop.surface}else{app.state.native_input};
+        if (!external&&app.drag.is_none())||!self.panes.iter().any(|p|Some(p.kind)==target){return;}
         self.save_main(app);
-        if let Some(p)=self.panes.iter_mut().find(|p|Some(p.kind)==app.state.native_input) {
+        if let Some(p)=self.panes.iter_mut().find(|p|Some(p.kind)==target) {
+            if external {if let (Some((at,_)),Ok(pos))=(crate::screen_state(&p.window),p.window.inner_position()){let scale=crate::ui_scale(&p.window) as f32;p.mouse=((at.0-pos.x) as f32/scale,(at.1-pos.y) as f32/scale);}}
             app.state.native_view=Some(p.kind);app.mouse=p.mouse;set_rack_parent(app,&p.window);app.hover=p.hover.clone();app.paint(&mut p.canvas,None);
+            if external{crate::drop_preview::poll(app);p.window.request_redraw();}
         }
     }
     pub fn save(&self) {for p in &self.panes {layout::save_native(key(p.kind),p.frame);}}
@@ -130,7 +134,10 @@ impl Windows {
                 let used=if let winit::keyboard::PhysicalKey::Code(code)=event.physical_key {app.typing_key(code,pressed,crate::ctrl(p.mods),p.mods.alt_key())}else{false};
                 if pressed&&!used {app.repeat=event.repeat;app.key(&event.logical_key,crate::ctrl(p.mods),p.mods.alt_key());app.repeat=false;}
             }
+            WindowEvent::HoveredFile(path)=>{crate::drop_preview::hover_file(app,path,Some(p.kind));p.window.request_redraw();},
+            WindowEvent::HoveredFileCancelled=>{crate::drop_preview::clear(app);p.window.request_redraw();},
             WindowEvent::DroppedFile(path)=>{
+                crate::drop_preview::clear(app);
                 app.state.native_input=Some(p.kind);
                 let at=crate::screen_state(&p.window).map(|v|v.0);
                 #[cfg(target_os="linux")] let at=at.or_else(crate::plugin_window::pointer);
@@ -162,7 +169,7 @@ fn set_rack_parent(app:&mut App,window:&Window){
 
 // Focus/position/monitor notifications need no hit testing or rasterization.
 fn needs_layout(event:&WindowEvent,drag:bool)->bool {
-    matches!(event,WindowEvent::RedrawRequested|WindowEvent::MouseInput{..}|WindowEvent::MouseWheel{..}|WindowEvent::KeyboardInput{..}|WindowEvent::DroppedFile(_)|WindowEvent::ModifiersChanged(_))
+    matches!(event,WindowEvent::RedrawRequested|WindowEvent::MouseInput{..}|WindowEvent::MouseWheel{..}|WindowEvent::KeyboardInput{..}|WindowEvent::DroppedFile(_)|WindowEvent::HoveredFile(_)|WindowEvent::HoveredFileCancelled|WindowEvent::ModifiersChanged(_))
         ||(drag&&matches!(event,WindowEvent::Focused(false)))
 }
 #[cfg(test)] mod monitor_tests {

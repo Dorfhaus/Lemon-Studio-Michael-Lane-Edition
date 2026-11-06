@@ -967,6 +967,7 @@ pub struct Db {
     pub prefs: Prefs,
     pub cache: Cache,
     pub lists: Lists,
+    pub blacklisted:Lists,
     /// Every table row (`table`); `rows` = these sorted and filtered.
     pub all_rows: Vec<TableRow>,
     pub rows: Vec<TableRow>,
@@ -986,6 +987,7 @@ impl Default for Db {
             prefs: Prefs::default(),
             cache: Cache::default(),
             lists: Lists::default(),
+            blacklisted:Lists::default(),
             all_rows: Vec::new(),
             rows: Vec::new(),
             sort: (Col::Name, false),
@@ -1001,6 +1003,9 @@ impl Db {
     /// Rebuilds the lists and the table from the plugins the host knows.
     pub fn rebuild(&mut self, plugins: &crate::plugins::Plugins) {
         self.lists = lists(&plugins.available, &plugins.effects, &self.prefs, &plugins.missing);
+        let mut visible=self.prefs.clone();visible.hidden.clear();visible.combine=false;
+        self.blacklisted=lists(&plugins.available,&plugins.effects,&visible,&plugins.missing);
+        self.blacklisted.gens.retain(|e|self.prefs.is_hidden(&e.uid));self.blacklisted.fx.retain(|e|self.prefs.is_hidden(&e.uid));
         self.all_rows = table(&plugins.available, &plugins.effects, &self.cache, &self.prefs, &plugins.missing);
         self.refilter();
     }

@@ -71,6 +71,9 @@ mod knobs;
 mod layout;
 mod loading;
 mod missing;
+mod import_report;
+mod drop_preview;
+mod playlist_motion;
 mod zipped;
 mod logo;
 #[cfg(target_os = "macos")]
@@ -100,6 +103,8 @@ mod citrus;
 mod monitor;
 mod params;
 mod piano;
+mod piano_note_mode;
+mod piano_note_properties;
 mod piano_snap;
 mod piano_split;
 mod piano_tools;
@@ -156,6 +161,7 @@ mod search_folders;
 mod settings_file;
 mod shortcuts;
 mod warp;
+mod vocal;
 mod smooth;
 mod snap;
 mod song_pos;
@@ -181,6 +187,7 @@ mod arpeggiate;
 mod tapper;
 mod touch;
 mod record;
+mod record_lead;
 mod recent;
 mod theme_adjust;
 mod theme_library;
@@ -651,7 +658,7 @@ impl Shell {
             edited_sample::finish(&mut self.app);
         }
         // Animate while playing; otherwise repaint a few times a second (peaks, clock).
-        let ms = if self.app.animating() { 16 } else { 100 };
+        let ms = if self.app.animating() || self.app.state.sample_drop.active() { 16 } else { 100 };
         let now = Instant::now();
         let mut wake = now + Duration::from_millis(ms);
         // Unsaved changes were answered (or there were none): the window closes.
@@ -686,6 +693,14 @@ impl Shell {
                 self.pending = true;
             }
             menu_bar::update(views::menus::bar_model(&self.app.state));
+        }
+        if self.app.state.sample_drop.external && self.app.state.sample_drop.surface.is_none() {
+            if let Some(window)=self.window.clone() {
+                if let (Some((at,_)),Ok(pos))=(screen_state(&window),window.inner_position()) {
+                    let (x,y)=self.to_app(&window,f64::from(at.0-pos.x),f64::from(at.1-pos.y));
+                    self.app.mouse_move(x,y);
+                }
+            }
         }
         self.detached.prepare_drag(&mut self.app);
         self.pending |= self.app.tick();
@@ -727,7 +742,7 @@ impl Shell {
                     // Hidden Win32 windows are not guaranteed WM_PAINT delivery. Prepare their
                     // first frames directly through the normal rendering path before showing them.
                     #[cfg(windows)]
-                    if !self.shown {
+                    if !self.shown || (held&&self.app.state.sample_drop.external) {
                         self.window_event(el, w.id(), WindowEvent::RedrawRequested);
                     } else {
                         w.request_redraw();
@@ -1180,9 +1195,11 @@ impl ApplicationHandler for Shell {
                     self.app.playlist_drop_position()
                 }else{None};
                 self.dropped_files.push(path);
+                drop_preview::clear(&mut self.app);
                 window.request_redraw();
             }
-            WindowEvent::HoveredFile(_) => {}
+            WindowEvent::HoveredFile(path) => {drop_preview::hover_file(&mut self.app,path,None);window.request_redraw();}
+            WindowEvent::HoveredFileCancelled => {drop_preview::clear(&mut self.app);window.request_redraw();}
             WindowEvent::Focused(focused) => {
                 // Linux: plugin windows stay above the main window while Lemon Studio is the active application.
                 #[cfg(target_os = "linux")]

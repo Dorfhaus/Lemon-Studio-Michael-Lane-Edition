@@ -510,7 +510,7 @@ pub const CLIPS_SEL_LABEL: &str = "Switch selected audio clip channels to";
 pub fn submenu(menu: usize, label: &str) -> Option<fn(&State) -> Vec<crate::playlist::PItem>> {
     match (menu, label) {
         // spec: ui/midi-files.md §1: FL's Import holds only MIDI file...
-        (0, "Import") => Some(|_| vec![crate::playlist::PItem::new("MIDI file...", crate::playlist::Cmd::MidiImport(false))]),
+        (0, "Import") => Some(|_| vec![crate::playlist::PItem::new("MIDI file...", crate::playlist::Cmd::MidiImport(false)),crate::playlist::PItem::new("Project import report...",crate::playlist::Cmd::ImportReport),crate::playlist::PItem::new("Resolve imported files...",crate::playlist::Cmd::ImportOptions)]),
         // spec: ui/project-templates.md
         (0, "New from template") => Some(crate::project_files::template_items),
         // spec: ui/plugin-menu.md §1: the effects, a pick into the selected mixer track's first empty slot as from F8.

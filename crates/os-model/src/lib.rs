@@ -11,6 +11,7 @@
 pub mod crossfade;
 pub mod mpe;
 pub mod curve;
+pub mod vocal;
 
 /// An RGB color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -36,6 +37,7 @@ pub struct Project {
     /// Audio sources privately owned by individual clip effects chains.
     pub clip_fx_channels: Vec<u16>,
     pub audio_warps:Vec<AudioWarp>,
+    pub vocal_edits:Vec<vocal::Edit>,
     pub peak_links: Vec<PeakLink>,
     /// Native piano harmony key, scale entry and editor/input flags.
     pub harmony: Option<(u8,u8,u8)>,
@@ -1820,6 +1822,8 @@ impl TimeMarker {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistTrack {
+    /// Optional individual lane height in logical pixels.
+    pub height:Option<f32>,
     pub folder:bool,
     /// Original clips retained for reversible instrument freezing. Mixer processing stays live.
     pub frozen: Option<Vec<Clip>>,
@@ -1842,7 +1846,7 @@ pub struct PlaylistTrack {
 impl PlaylistTrack {
     /// Track `number` as a new project has it: unnamed, default colour, on, not grouped.
     pub fn new(number: u32) -> Self {
-        PlaylistTrack { folder:false, frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
+        PlaylistTrack { height:None,folder:false, frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
     }
 }
 

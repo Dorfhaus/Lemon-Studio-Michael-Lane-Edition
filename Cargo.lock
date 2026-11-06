@@ -3019,6 +3019,7 @@ dependencies = [
  "lemon-transient-processor",
  "lemon-wave",
  "libc",
+ "libloading 0.8.9",
  "midir",
  "mp3lame-encoder",
  "objc2 0.6.5",
@@ -3124,6 +3125,9 @@ dependencies = [
 [[package]]
 name = "os-model"
 version = "0.0.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "os-native"

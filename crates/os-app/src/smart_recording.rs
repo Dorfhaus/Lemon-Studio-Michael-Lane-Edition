@@ -52,7 +52,7 @@ impl App {
 
     fn smart_automation_live(&self)->bool {
         Opt::Smart.on() && Opt::Automation.on() && self.state.rec.armed
-            && self.state.rec.count.is_none() && self.transport.playing() && !self.transport.paused()
+            && self.state.rec.count.is_none() && !self.pre_roll_active() && self.transport.playing() && !self.transport.paused()
     }
     pub(crate) fn smart_begin_host(&mut self,a:&Action) {
         if !self.smart_automation_live(){return;}

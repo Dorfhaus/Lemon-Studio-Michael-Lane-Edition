@@ -3,6 +3,59 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-06",
+      "title": "Pre-roll recording, Playlist navigation and Piano Roll editing \u00b7 public build 2026110602",
+      "changes": [
+        "Recording pre-roll plays the existing arrangement before the recording cursor, then begins the take at the intended point. Right-click Recording precount to choose Off, count-in, or pre-roll with 1, 2, 4 or 8 bars. The chosen mode is remembered; pre-roll clamps to the beginning of the song.",
+        "MIDI notes and automation are kept out of the pre-roll section. Audio takes exclude the lead-in and remain aligned with the recording point; stopping before the point leaves no take.",
+        "The Playlist top-right corner now provides a visible track-height zoom control. Drag up/down or use the wheel to resize tracks, and right-click or Alt-click to restore the default height.",
+        "Clicking an empty track-automation chooser no longer opens a thin empty popup; an unavailable automation toggle leaves the clip selection intact.",
+        "Piano Roll overview note previews stay inside the scroll track and no longer draw across the left or right arrow buttons.",
+        "Double-click existing Piano Roll notes to edit slide/glide, portamento, color, velocity, pan, release, pitch, filter controls and length. Selected notes can be edited together with Apply, Cancel and Undo.",
+        "The Piano Roll note-color selector is enabled with 16 visual groups, alongside slide/glide and portamento drawing toggles. Scale Notes Only remains separately accessible.",
+        "Holding Ctrl+B in the Playlist repeatedly duplicates the current clips to the right. New copies remain selected; timeline repeat intervals and Undo are preserved.",
+        "Audio samples dragged from the Browser or a Windows folder show ghost clip previews at their landing positions. Available audio includes length and waveform previews without editing the project during hover.",
+        "Ctrl/Shift multi-selection in the Browser supports dragging several samples into separate available Playlist tracks with previews, and selects the imported clips together.",
+        "Playlist clip movement gains visual smoothing and Events/Markers snapping while retaining group offsets, edge scrolling and Alt snap bypass.",
+        "Updated MLE application icons for Windows, Linux and macOS."
+      ]
+    },
+    {
+      "date": "2026-11-06",
+      "title": "Smoother Lemon EQ, grouped editing and safer FL imports \u00b7 public build 2026110601",
+      "changes": [
+        "Lemon EQ keeps its analyzer refreshing during continuous mouse movement. Timed spectrum analysis, smoother peak drawing and reduced redraw work improve display responsiveness.",
+        "Lemon EQ adds an accessible analyzer Speed menu with resolution, range, tilt and averaging choices. New instances use a slower display; saved analyzer preferences are retained.",
+        "Clearer audition, dynamics and A/B controls, plus optional temporary RMS Level match for comparing EQ changes. Level match is off by default and clears when the editor closes.",
+        "Full-length Playlist pattern clips follow added or deleted Piano Roll notes across arrangements, including Undo and Redo. Manually trimmed and stretched clip lengths are preserved.",
+        "Reversed Lemon Sampler audio is drawn in reverse in the Playlist without modifying the source recording.",
+        "Reset all selected Mixer faders to 0 dB together, and solo selected Mixer tracks from their context menu.",
+        "Selected Playlist track headers support group delete, solo and color changes. Deleting selected folder headers preserves unselected child tracks and supports Undo.",
+        "Drag multiple selected effects from Plugin Picker onto a Mixer channel in picker order. Existing effects and reserved slots are preserved; drops with insufficient room are rejected together.",
+        "Playlist clip-control category buttons remain visible when clicked repeatedly. Audio clip menu icons show a pointing-finger cursor.",
+        "FL project sample recovery handles collected content placeholders without an FL content folder. More-specific relative paths take priority, while duplicate sample names require an explicit choice.",
+        "The first normal Save of a newly imported FLP opens Save As for a Lemon working copy. File > Import adds a persistent compatibility report, full report export and missing-file recovery choices.",
+        "FL plugin substitutes require approval before starting with default settings. Untouched imported presets are retained, deliberate native-plugin edits save correctly, and state-normalization warnings remain in the import report.",
+        "Imported FL Mixer tracks use neutral layouts while saved Lemon layouts are preserved. Edited duplicate effect-control records update consistently.",
+        "The import report identifies unsupported automation links while retaining their data. Older FL project layouts and unidentified automation targets remain compatibility limitations."
+      ]
+    },
+    {
+      "date": "2026-11-05",
+      "title": "Lemon EQ dynamics, spectral processing and editing improvements \u00b7 public build 2026110505",
+      "changes": [
+        "Lemon EQ has a resizable graph-led glass editor with compact Frequency, Gain and Q controls, independent window dimensions and interface scaling, grouped band editing, Undo/Redo and A/B comparison.",
+        "Clearly labeled Dynamic and Spectral buttons show each band mode. Right-click bands to switch modes, enter precise values or delete; right-click empty graph space to add regular, dynamic or spectral bands.",
+        "Dynamic EQ adds automatic or manual threshold, attack and release with an illuminated range ring. Frequency-selective spectral dynamics and De-harsh provide resonance suppression, density and detector tilt controls while retaining the original static EQ path at default settings.",
+        "Fixed Spectral and De-harsh repeatedly restarting the EQ during live playback, causing silence and glitch noises. Saved spectral settings now restore their processing delay before activation.",
+        "EQ graph points keep the pointer visible during dragging. Creating a point and immediately grabbing it no longer opens value entry; context-menu deletion supports Undo without renumbering automation.",
+        "Optional inline Playlist vocal tuning includes direct note and curve editing, live drag audition, expression controls, navigation and a microphone/tuning-fork track button. Improved hand grabs, constrained stretching and recovery after processing failures.",
+        "Plugin Picker supports multiple selections, bulk favorites and a persistent Blacklist tab with Restore. Hidden plugins stay out of normal selection without deleting files or unloading existing project instances.",
+        "Playlist tracks support individual saved heights and header resizing. Ctrl-drag selection can start over clips. Mixer track groups move together while preserving routing, effects and automation, and share FX bypass and solo actions.",
+        "Slimmer editing tool cursors and Alt-click resets for Playlist clip fades and gain."
+      ]
+    },
+    {
       "date": "2026-11-05",
       "title": "Tempo fitting, Piano Roll stretching and mixer polish \u00b7 public build 2026110504",
       "changes": [

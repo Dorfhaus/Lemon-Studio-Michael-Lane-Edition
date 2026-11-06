@@ -413,7 +413,7 @@ impl App {
                 }
             }
             // Automation and host changes establish the next gesture's starting value without making history.
-            if let Some(l)=ui.lists.get_mut(&key){for entry in &l.params {if !l.gestures.contains_key(&entry.id){if let Some(v)=p.param_value(entry.id){l.values.borrow_mut().insert(entry.id,v);}}}}
+            if let Some(l)=ui.lists.get_mut(&key){for entry in &l.params {if !l.gestures.contains_key(&entry.id){if let Some(v)=p.param_value(entry.id){l.values.borrow_mut().insert(entry.id,v);if sampler&&entry.name=="Reverse"{stretch.push((key,entry.name.clone(),v));}}}}}
             // "Create automation clip" picked in the plugin's own menu (CLAP context menu).
             for id in p.take_automation_requests() {
                 if let Some(index) = ui.lists.get(&key).and_then(|l| l.params.iter().position(|x| x.id == id)) {
@@ -430,8 +430,10 @@ impl App {
         // Lemon Sampler's time-stretch knobs are the channel's own settings: the channel takes the editor's edits, so
         // its audio clips get their new length (`playlist::fit_audio`), playback and saving follow (ui/playlist.md §9c).
         // So are its root note page's: the engine applies the main pitch switch.
+        let mut sample_wave_changed=false;
         for (row, name, v) in stretch {
             let Some(ch) = self.state.project.channels.get_mut(row) else { continue };
+            if name=="Reverse"{let bit=os_model::SampleFx::REVERSE;let flags=if v>=0.5{ch.sound.fx.flags|bit}else{ch.sound.fx.flags&!bit};if flags!=ch.sound.fx.flags{ch.sound.fx.flags=flags;self.state.piano.dirty=true;sample_wave_changed=true;}continue;}
             let mut st = ch.sound.stretch;
             let mut misc = ch.misc;
             if crate::plugins::stretch_param(&name, v, &mut st) && st != ch.sound.stretch {
@@ -442,6 +444,7 @@ impl App {
                 self.state.piano.dirty = true;
             }
         }
+        if sample_wave_changed{self.invalidate();}
         if let Some(t) = moved {
             self.state.params.note(t);
             self.tweak_hint();

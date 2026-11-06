@@ -29,7 +29,16 @@ pub fn phase(s: &State) -> u8 {
 }
 pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
-    if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::Gain { .. }))) {
+    if matches!(app.drag,Some(crate::app::Drag::Vocal(_)|crate::app::Drag::VocalNav(_)))||matches!(app.hover,Some(Action::Vocal(crate::vocal::Command::Grid(_)|crate::vocal::Command::Note(..)|crate::vocal::Command::Surface|crate::vocal::Command::Boundary(..)))){
+        use crate::vocal::Tool;let t=app.state.playlist.vocal.tool;
+        if matches!(app.hover,Some(Action::Vocal(crate::vocal::Command::Boundary(..)))){return Some(Cursor::Playlist(PlTool::Slip,RESIZE));}
+        if t==Tool::Main && !matches!(app.drag,Some(crate::app::Drag::Vocal(_)))
+            && !matches!(app.hover,Some(Action::Vocal(crate::vocal::Command::Note(..)))) {
+            return Some(Cursor::Playlist(PlTool::Select,3));
+        }
+        let(tool,phase)=match t{Tool::Draw=>(PlTool::Draw,3),Tool::Split=>(PlTool::Slice,3),Tool::Time|Tool::Attack=>(PlTool::Slip,RESIZE),Tool::Main|Tool::Hand=>(PlTool::Select,if app.drag.is_some(){GRABBING}else{GRAB}),Tool::Zoom=>(PlTool::Zoom,3),_ =>(PlTool::Select,11+crate::vocal::TOOLS.iter().position(|p|*p==t).unwrap_or(0)as u8)};return Some(Cursor::Playlist(tool,phase));
+    }
+    if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::Gain { .. } | pl::PlDrag::Fade { .. } | pl::PlDrag::FadeTension { .. } | pl::PlDrag::Crossfade { .. }))) {
         return Some(Cursor::Playlist(app.state.playlist.tool,GAIN));
     }
     if matches!(app.drag,Some(crate::app::Drag::NotePaint { .. })) {
@@ -82,8 +91,17 @@ pub fn cursor(app: &App) -> Option<Cursor> {
     if !app.ctrl && let Some(grid)=app.pl_grid() {
         let g=pl::PGeom::new(&app.state,grid);
         if let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1)
-            && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1)==Some(pl::Handle::Gain) {
+            && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1).is_some() {
             return Some(Cursor::Playlist(tool,GAIN));
+        }
+        if app.drag.is_none() && !matches!(tool,PlTool::Select|PlTool::Comp)
+            && let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1) {
+            let clip=pl::clips(&app.state)[i];let r=g.clip_rect(&clip);
+            let menu=app.mouse.0<r.x+14. && app.mouse.1<r.y+pl::TITLE_H && r.w>20.;
+            if menu && pl::source_kind(&app.state,clip.source)==PickKind::Audio
+                && !(app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint)) {
+                return Some(Cursor::Playlist(tool,GAIN));
+            }
         }
     }
     if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::Playlist(tool,RESIZE)); }
@@ -127,7 +145,9 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
         _ => (4.,4.,6.,6.),
     };
     let r=Rect::new(at_x-tip_x*size/24.,at_y-tip_y*size/24.,size,size);
-    if phase>=GRAB {
+    if phase>=11 {
+        let t=crate::vocal::TOOLS[usize::from(phase-11).min(crate::vocal::TOOLS.len()-1)];mask.icon_stroke(&crate::vocal::tool_icon(t),Rect::new(4.,3.,24.,24.),Color::rgb(0xffffff),1.55);
+    } else if phase>=GRAB {
         use os_ui::tabler::TablerIcon;
         let hand=TablerIcon { filled:false, d: if phase==GAIN {
             "M 9 12 L 9 4 Q 9 2 11 2 Q 13 2 13 4 L 13 11 L 14 10 Q 15 9 16 11 Q 18 10 19 12 Q 22 12 21 16 L 20 20 Q 19 22 16 22 L 11 22 Q 9 22 7 19 L 4 15 Q 3 13 5 12 Q 6 12 9 15 Z"
@@ -137,10 +157,15 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
             "M 7 12 L 7 9 Q 7 7 9 7 Q 11 7 11 9 L 11 11 L 11 8 Q 11 6 13 6 Q 15 6 15 8 L 15 11 L 15 9 Q 15 7 17 8 Q 18 8 18 10 L 18 12 Q 21 11 21 14 L 21 17 Q 21 21 17 22 L 11 22 Q 8 21 6 18 L 3 14 Q 2 11 5 11 L 8 14"
         }};
         let rect=Rect::new(4.,3.,24.,24.);
-        if phase==STRETCH {icons::draw(&mut mask,Icon::StretchBand,rect,Color::rgb(0xffffff));}
-        else if phase==RESIZE {mask.icon(&os_ui::tabler::ARROWS_HORIZONTAL,rect,Color::rgb(0xffffff));}
-        else{mask.icon(&hand,rect,Color::rgb(0xffffff));}
-    } else { icons::draw(&mut mask,icon,r,Color::rgb(0xffffff)); }
+        if phase==STRETCH {mask.icon_stroke(icons::shape(Icon::StretchBand),rect,Color::rgb(0xffffff),1.55);}
+        else if phase==RESIZE {mask.icon_stroke(&os_ui::tabler::ARROWS_HORIZONTAL,rect,Color::rgb(0xffffff),1.55);}
+        else{mask.icon_stroke(&hand,rect,Color::rgb(0xffffff),1.55);}
+    } else {
+        // Cursor-only weight: toolbar icons keep their existing artwork and stroke.
+        let brush=os_ui::tabler::TablerIcon{filled:false,d:"M 3.0000 21.0000 L 3.3600 17.3600 C 3.5588 15.3498 5.3498 13.5588 7.3600 13.3600 C 9.3702 13.1612 10.8388 14.6298 10.6400 16.6400 C 10.4412 18.6502 8.6502 20.4412 6.6400 20.6400 L 3.0000 21.0000 M 21.0000 3.0000 C 15.6377 4.2467 10.8145 8.2515 8.4340 13.4340 M 21.0000 3.0000 C 19.7533 8.3623 15.7485 13.1855 10.5660 15.5660 M 10.9960 9.3960 C 12.6834 10.0374 13.9626 11.3166 14.6040 13.0040"};
+        let shape=if tool==PlTool::Paint{&brush}else{icons::shape(icon)};
+        mask.icon_stroke(shape,r,Color::rgb(0xffffff),1.55*size/24.);
+    }
     if phase==4 || phase==COPYING {
         mask.fill_rrect(Rect::new(19.,17.,12.,13.),2.,Color::rgb(0));
         mask.fill_polygon(&[(25.,18.),(30.,23.),(27.,23.),(27.,28.),(23.,28.),(23.,23.),(20.,23.)],Color::rgb(0xffffff));
@@ -201,7 +226,7 @@ mod tests {
     use super::*;
     #[test]
     fn native_tool_cursors_are_transparent_and_scale_correctly() {
-        for tool in [PlTool::Paint,PlTool::Slice,PlTool::Select] {
+        for tool in [PlTool::Draw,PlTool::Paint,PlTool::Slice,PlTool::Select,PlTool::Delete,PlTool::Mute,PlTool::Zoom,PlTool::Slip,PlTool::Playback,PlTool::Comp] {
             for scale in [1.0,1.5,2.0,4.0] {
                 for phase in [0,1,2,3,4,GRAB,GRABBING,RESIZE,COPYING,STRETCH,GAIN] {
                     let c=cursor_canvas(tool,phase,scale).unwrap();
@@ -209,7 +234,7 @@ mod tests {
                     assert!(opaque as f32>40.*scale*scale,"{tool:?} phase {phase} scale {scale}: visible tool artwork, not just a hotspot");
                     assert!(c.pixmap.pixels().iter().all(|p| p.red()<=p.alpha() && p.green()<=p.alpha() && p.blue()<=p.alpha()),"valid premultiplied pixels");
                     let (hx,hy)=hotspot(tool,scale);
-                    if phase<GRAB {assert!(c.pixmap.pixels()[usize::from(hy)*c.pixmap.width() as usize+usize::from(hx)].alpha()>0,"the tip stays on the edit position");}
+                    if phase<GRAB && matches!(tool,PlTool::Draw|PlTool::Paint|PlTool::Slice|PlTool::Select|PlTool::Comp) {assert!(c.pixmap.pixels()[usize::from(hy)*c.pixmap.width() as usize+usize::from(hx)].alpha()>0,"the tip stays on the edit position");}
                     assert_eq!(c.pixmap.pixels().last().unwrap().alpha(),0);
                     assert!(cursor_source(tool,phase,scale).is_some());
                     if phase>=3 && let Ok(dir)=std::env::var("LEMON_CURSOR_PREVIEW_DIR") {

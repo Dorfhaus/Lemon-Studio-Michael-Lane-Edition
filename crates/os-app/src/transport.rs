@@ -404,6 +404,9 @@ enum Cmd {
     Update,
     Preview(Box<Project>),
     StopPreview,
+    VocalStart(Box<Project>,Arc<os_engine::Sample>,usize,usize,f32,f32),
+    VocalTune(f32,f32),
+    VocalStop,
     Audition(Box<Project>),
     /// Play a project's playlist once on the preview stream (clip preview).
     PreviewSong(Box<Project>),
@@ -654,6 +657,9 @@ impl Transport {
 
     /// Play pattern 1 of `project` once (a one-note preview project), on its own stream.
     pub fn audition(&self,project:Project){let _=self.tx.send(Cmd::Audition(Box::new(project)));}
+    pub fn vocal_start(&self,p:Project,s:Arc<os_engine::Sample>,a:usize,b:usize,cents:f32,gain:f32){let _=self.tx.send(Cmd::VocalStart(Box::new(p),s,a,b,cents,gain));}
+    pub fn vocal_tune(&self,cents:f32,gain:f32){let _=self.tx.send(Cmd::VocalTune(cents,gain));}
+    pub fn vocal_stop(&self){let _=self.tx.send(Cmd::VocalStop);}
     pub fn stop_preview(&self) {let _=self.tx.send(Cmd::StopPreview);}
 
     pub fn preview(&self, project: Project) {
@@ -1523,6 +1529,14 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     s.feed.wake();
                 }
             }
+            Ok(Cmd::VocalStart(project,sample,a,b,cents,gain))=>{
+                let running=session.as_ref().is_some_and(|s|!s.paused());
+                if !running&&live.is_none(){let p=live_project.as_ref().unwrap_or(&project);match open_live(p,listen,&mut library,&mut device){Ok(s)=>live=Some(s),Err(e)=>report(&shared,e)}}
+                if !running{release_paused(&session);}
+                let target=if running{session.as_ref()}else{live.as_ref()};if let Some(s)=target{if let Ok(mut e)=s.engine.lock(){e.vocal_start(sample,a,b,cents,gain);}s.feed.wake();}
+            },
+            Ok(Cmd::VocalTune(cents,gain))=>{for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.vocal_tune(cents,gain);}s.feed.wake();}},
+            Ok(Cmd::VocalStop)=>{for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.vocal_stop();}s.feed.wake();}},
             Ok(Cmd::StopPreview) => {preview = None;preview_until=None;for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.stop_audition();}s.feed.wake();}},
             Ok(Cmd::Audition(project)) => {
                 let running=session.as_ref().is_some_and(|s|!s.paused());

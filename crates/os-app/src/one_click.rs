@@ -115,6 +115,16 @@ pub(crate) fn devices() -> Vec<(String, bool, u16)> {
 }
 
 impl App {
+    /// Keep the take at its punch-in point while playback starts earlier for pre-roll.
+    pub(crate) fn retarget_audio_take(&mut self,target:u32){
+        if let Some(r)=self.audio_rec.as_mut(){
+            r.start_tick=target;r.last_tick=f64::from(target);
+            r.start_secs=os_engine::laws::tick_to_frame(f64::from(target),self.state.project.ppq.max(1),self.state.project.tick_tempo(self.state.tempo),48000) as f64/48000.;
+            if let Some(d)=r.destination.as_mut(){d.start=target;}
+            for e in &mut r.others{e.destination.start=target;}
+            for d in &mut self.state.mixer.recording.live{d.start=target;}
+        }
+    }
     pub(crate) fn set_audio_destination(&mut self,d:crate::mixer_recording::Destination) {
         if let Some(r)=self.audio_rec.as_mut(){r.start_tick=d.start; r.last_tick=d.start as f64; r.loop_wrapped=false; r.start_secs=os_engine::laws::tick_to_frame(f64::from(d.start),self.state.project.ppq.max(1),self.state.project.tick_tempo(self.state.tempo),48000) as f64/48000.;r.destination=Some(d);}
     }
@@ -233,10 +243,11 @@ impl App {
     /// Every tick: follows where the song's start falls in the input; on stop, pause or disarm finishes the file;
     /// once it is made, places it (spec §2 The take).
     pub(crate) fn one_click_tick(&mut self) {
+        let preroll=self.pre_roll_active();
         let Some(r) = self.audio_rec.as_mut() else { return };
         if !r.ending {
             let t = &self.transport;
-            let live = t.playing() && !t.paused() && self.state.rec.count.is_none();
+            let live = t.playing() && !t.paused() && self.state.rec.count.is_none() && !preroll;
             let device = t.opened();
             if r.input.asio && device.as_ref().is_some_and(|d|d.host==crate::device::ASIO&&d.name==r.input.device&&(r.input.first+u16::from(r.input.stereo)>=d.inputs || r.others.iter().any(|e| e.input.first+u16::from(e.input.stereo)>=d.inputs))) {
                 r.failure=Some("The ASIO driver did not open the selected input. Check Settings > Audio and the interface input configuration".into());
@@ -506,5 +517,26 @@ mod tests {
         let path = std::path::PathBuf::from(&saved.path);
         assert!(path.exists() && path.parent().unwrap().ends_with("Recorded"), "{path:?}");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod preroll_tests{
+    use super::*;
+    #[test]
+    fn lead_fix_audio_excludes_preroll_and_aborted_take(){
+        let _lock=crate::capture::TEST_RECORDING.lock().unwrap_or_else(|e|e.into_inner());
+        let mut a=App::new(None);a.state.project=crate::app::test_project();a.state.project.ppq=96;a.state.project.tempo=Some(120.);a.state.tempo=120.;a.state.song_mode=true;a.state.rec.armed=true;
+        let root=std::env::temp_dir().join(format!("lemon-preroll-test-{}",std::process::id()));a.state.project.data_folder=Some(os_model::DataFolder{choice:os_model::DataFolder::SPECIFIED,folder:root.to_string_lossy().into_owned()});
+        for abort in [false,true]{
+            a.state.playlist.pos=384;a.one_click_begin(Input{device:"Test ASIO".into(),asio:true,first:0,stereo:true},None,false).unwrap();a.retarget_audio_take(384);
+            a.state.rec.preroll=Some(384);a.transport.pretend_at(192.,true);a.transport.pretend_seconds(1.);a.one_click_tick();
+            capture().push(48000,|_,_|0.25);
+            if !abort{a.transport.pretend_at(384.,true);a.transport.pretend_seconds(2.);a.one_click_tick();capture().push(4800,|_,_|0.75);}
+            a.transport.stop();for _ in 0..500{a.one_click_tick();if a.audio_rec.is_none(){break;}std::thread::sleep(std::time::Duration::from_millis(2));}assert!(a.audio_rec.is_none());
+            if !abort{let clip=crate::playlist::clips(&a.state).last().unwrap();assert_eq!(clip.position,384);let os_model::ClipSource::Channel(ch)=clip.source else{panic!()};let path=a.state.project.channel(ch).unwrap().sample_path.as_ref().unwrap();let sample=os_engine::sample::load_shared(std::path::Path::new(path)).unwrap();assert_eq!(sample.frames(),4800);assert!(sample.left.iter().all(|v|*v==0.75));}
+            else{assert!(a.state.message.as_ref().is_some_and(|m|m.contains("Nothing was recorded")));}
+        }
+        assert!(root.starts_with(std::env::temp_dir())&&root.file_name().unwrap().to_string_lossy().starts_with("lemon-preroll-test-"));std::fs::remove_dir_all(root).unwrap();
     }
 }
