@@ -63,7 +63,7 @@ impl App {
                 s.browser_auto_hidden=false;
                 if let Some(label)=match i {1=>Some("Current project"),2=>Some("Plugin database"),4=>Some("Plugin presets"),_=>None} {s.browser_open.insert(format!("{i}:{label}"));}
                 s.browser_search.clear();
-                s.browser_sel = None;
+                s.browser_sel = None;s.browser_samples.clear();s.browser_sample_anchor=None;
                 s.browser_scroll = 0.0;
             }
             Action::BrowserCollapse => {
@@ -96,7 +96,9 @@ impl App {
                         }
                     }
                 }
+                let selection=sample_selection(s,&row,self.ctrl,self.shift);
                 select(s, &row.key);
+                s.browser_samples=selection.0;s.browser_sample_anchor=selection.1;
                 if row.open.is_some() && !s.browser_open.remove(&row.key) {
                     s.browser_open.insert(row.key.clone());
                     if let Some(path)=&row.path {s.browser_dirs.borrow_mut().remove(path);}
@@ -126,7 +128,12 @@ impl App {
                 s.browser_scroll = s.browser_scroll.min(view::max_scroll(s));
                 let midi=matches!(&row.item,Item::File(path) if crate::midi_file::is_midi_path(std::path::Path::new(path)));
                 if midi || !matches!(row.item, Item::None | Item::File(_) | Item::History(_)) {
-                    self.drag = Some(Drag::Browser { item: row.item, label: row.label, m0: self.mouse, started: false });
+                    let mut item=row.item;let mut label=row.label;
+                    if matches!(item,Item::Sample(_)) && s.browser_samples.contains(&row.key) && s.browser_samples.len()>1 {
+                        let paths:Vec<_>=view::rows(s).into_iter().filter(|r|s.browser_samples.contains(&r.key)).filter_map(|r|if let Item::Sample(p)=r.item{Some(p)}else{None}).collect();
+                        if paths.len()>1{label=format!("{} samples",paths.len());item=Item::Samples(paths);}
+                    }
+                    self.drag = Some(Drag::Browser { item, label, m0: self.mouse, started: false });
                 }
             }
             _ => return false,
@@ -437,11 +444,13 @@ impl App {
         if !started && (x - m0.0).hypot(y - m0.1) < DRAG_START {
             return;
         }
-        if !self.state.shown(Win::Playlist) && matches!(item,Item::Sample(_) | Item::File(_))
+        if !self.state.shown(Win::Playlist) && matches!(item,Item::Sample(_) | Item::Samples(_) | Item::File(_))
             && self.top_hit(x,y).is_some_and(|h|h.action==Action::ToggleWin(Win::Playlist)) {
             self.state.raise(Win::Playlist);
             self.invalidate();
         }
+        let paths=match &item{Item::Sample(p)=>vec![p.clone()],Item::Samples(p)=>p.clone(),_=>Vec::new()};
+        if !paths.is_empty(){self.state.sample_drop.start(paths,false,self.state.native_view);crate::drop_preview::poll(self);}
         if !started {
             self.drag = Some(Drag::Browser { item, label: label.clone(), m0, started: true });
         }
@@ -455,8 +464,10 @@ impl App {
     /// Release: drop the dragged item on whatever is under the mouse (spec §3).
     pub(crate) fn browser_drop(&mut self, item: Item, started: bool) {
         self.state.browser_drag = None;
+        self.state.sample_drop.clear();
         self.invalidate();
         if !started {
+            if !self.ctrl&&!self.shift {let key=self.state.browser_sel.clone();self.state.browser_samples.retain(|k|Some(k)==key.as_ref());}
             return;
         }
         // MIDI files use the same destination-aware import as external drops.
@@ -514,6 +525,10 @@ impl App {
                     s.selected_channel = c;
                     s.rack.select_only(c);
                 }
+            }
+            Item::Samples(paths)=>{
+                if let Some((track,tick))=spot{self.import_stems(paths.into_iter().map(Into::into).collect(),track,tick);}
+                else if win==Some(Win::ChannelRack){for path in paths{self.sample_to_channel(path,None);}}
             }
             Item::Sample(path) => {
                 if let Some((track, tick)) = spot {
@@ -1083,7 +1098,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
             let it = PItem::new("Load into selected channel", Cmd::Preset(crate::presets::PCmd::Load(key, p.into())));
             items.push(if s.hosted_rows.contains(&key) { it } else { it.off() });
         }
-        Item::None | Item::File(_) | Item::Param(..) | Item::Effects(_) => {}
+        Item::None | Item::File(_) | Item::Param(..) | Item::Effects(_) | Item::Samples(_) => {}
     }
     if let Some(path) = row.path.as_ref().filter(|_| !matches!(row.item,Item::Sample(_))) {
         sep(&mut items);
@@ -1137,6 +1152,7 @@ fn reread(s: &mut crate::app::State) {
 
 /// Select a row and record it in the navigation history (spec §4).
 pub(crate) fn select(s: &mut crate::app::State, key: &str) {
+    s.browser_samples.clear();s.browser_sample_anchor=Some(key.to_string());
     s.browser_sel = Some(key.to_string());
     if s.browser_hist.get(s.browser_hist_pos).map(String::as_str) != Some(key) {
         let keep = if s.browser_hist.is_empty() { 0 } else { s.browser_hist_pos + 1 };
@@ -1505,4 +1521,22 @@ mod favorite_tests {
   app.state.browser_preview.path=Some("selected.wav".into());app.browser_act(&Action::BrowserTab(3));assert!(!crate::browser_preview::visible(&app.state));
   crate::prefs::set_text("browser_samples_root","");std::fs::remove_dir_all(dir).unwrap();
  }
+}
+
+/// Ctrl toggles individual audio files; Shift extends a contiguous range in visible Browser order.
+fn sample_selection(s:&crate::app::State,row:&view::Row,ctrl:bool,shift:bool)->(std::collections::BTreeSet<String>,Option<String>){
+    let mut selected=s.browser_samples.clone();let anchor=s.browser_sample_anchor.clone().or_else(||s.browser_sel.clone());
+    if !matches!(row.item,Item::Sample(_)){return(Default::default(),Some(row.key.clone()));}
+    if shift {
+        let rows=view::rows(s);let a=anchor.as_ref().and_then(|k|rows.iter().position(|r|&r.key==k));let b=rows.iter().position(|r|r.key==row.key);
+        if !ctrl{selected.clear();}
+        if let (Some(a),Some(b))=(a,b){for r in &rows[a.min(b)..=a.max(b)]{if matches!(r.item,Item::Sample(_)){selected.insert(r.key.clone());}}}
+        else{selected.insert(row.key.clone());}
+        (selected,anchor)
+    }else if ctrl{
+        if !selected.remove(&row.key){selected.insert(row.key.clone());}(selected,Some(row.key.clone()))
+    }else{
+        if !selected.contains(&row.key){selected.clear();selected.insert(row.key.clone());}
+        (selected,Some(row.key.clone()))
+    }
 }

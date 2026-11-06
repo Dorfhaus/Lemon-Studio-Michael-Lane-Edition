@@ -156,29 +156,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // Only a ruler time selection shades the grid, and only its columns (§10).
     let range = s.piano.range.map(|(a, b)| (g.x_of(a as f32), g.x_of(b as f32)));
 
-    // Note-colour tab (§6).
-    let tab = l.tab;
     let lemon = super::lemon(ui);
-    ui.c.fill_rect(tab, t.window_title);
-    let green = t.note_top.mix(t.note_bottom, 0.6);
-    if lemon {
-        // Lemon (spec: ui/lemon-design.md §6): a rounded colour tile instead of the slanted tab.
-        ui.c.fill_rrect(Rect::new(tab.x + 3.0, tab.y + 3.0, tab.w - 6.0, tab.h - 6.0), lk::r_btn(t), green);
-    } else {
-        ui.c.fill_polygon(&[(tab.x, tab.bottom()), (tab.x + 31.0, tab.y), (tab.right(), tab.y), (tab.right(), tab.bottom())], green);
-        ui.c.line(tab.x + 0.5, tab.bottom() - 0.5, tab.x + 31.0, tab.y + 0.5, 1.0, t.note_top.shade(0.15));
-    }
-    let ink = green.shade(-0.3);
-    ui.c.polyline(&[(tab.right() - 15.0, tab.y + 16.0), (tab.right() - 10.0, tab.y + 16.0), (tab.right() - 7.0, tab.y + 7.0), (tab.right() - 3.0, tab.y + 7.0)], 1.6, ink);
-    ui.c.fill_polygon(&[(tab.right() - 4.0, tab.bottom() - 18.0), (tab.right() - 4.0, tab.bottom() - 5.0), (tab.right() - 17.0, tab.bottom() - 5.0)], ink);
-    if s.piano.harmony.shade || s.piano.harmony.scale_only {
-        ui.c.fill_rrect(tab.inset(2.0), 3.0, if s.piano.harmony.scale_only { t.accent } else { t.button_hi });
-        ui.c.text_center(Font::new(9), tab, t.text, "Scale only");
-        ui.hit(tab, Action::Harmony(crate::harmony::HCmd::ScaleOnly), "Scale Notes Only: hide out-of-scale keys without changing MIDI");
-    } else {
-        ui.off(tab, "Note color");
-        ui.veil(tab, t.window_title);
-    }
+    crate::piano_note_mode::paint(ui,s,l.tab);
 
     let active_clip=piano::active_clip(s);
     let song_grid=active_clip.map(|_|Geom::timeline(s,l.grid));
@@ -261,7 +240,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             // Muted (§9): grey body, measured from FL.
             (ui.t.s(0x6d7276), ui.t.s(0x63686c), ui.t.s(0x474a4d), ui.t.tx(0xc4c8cc))
         } else {
-            (t.note_top, t.note_bottom, t.note_rim, t.note_text)
+            if n.group&15==0{(t.note_top,t.note_bottom,t.note_rim,t.note_text)}else{
+                let c=crate::piano_note_mode::color(t,n.group&15);
+                (c.shade(0.08),c.shade(-0.08),c.shade(-0.30),Color::rgb(0x152019))
+            }
         };
         let body = Rect::new(nr.x + 1.0, nr.y + 1.0, (nr.w - 2.0).max(1.0), nr.h - 2.0);
         if lemon {
@@ -493,13 +475,15 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     super::scrollbar(ui, track, false, g.scroll_x * g.ppt, l.grid.w, span * g.ppt, Scroll::PianoX);
     // Mini-map: one dash per note of the channel.
     let dash = t.note_top.mix(t.note_bottom, 0.5);
+    ui.c.push_clip(Rect::new(track.x,track.y+1.,track.w,(track.h-2.).max(0.)));
     for n in notes.iter().filter(|n| Some(n.channel) == ch && crate::piano_tools::view_on("piano_mini_preview",true)) {
         let position=piano::active_clip(s).map_or(n.position as f64,|c|f64::from(c.position)+(f64::from(n.position)-crate::playlist::window(s,&c).0)/c.pattern_rate());
-        let x = o.x + position as f32 / span * o.w;
-        let w = (piano::shown_len(s, n) as f32 / span * o.w).max(1.0);
+        let x = track.x + position as f32 / span * track.w;
+        let w = (piano::shown_len(s, n) as f32 / span * track.w).max(1.0);
         let y = o.y + 3.0 + (1.0 - f32::from(n.key) / TOP_KEY as f32) * (o.h - 7.0);
         ui.c.fill_rect(Rect::new(x, y.round(), w, 1.0), dash);
     }
+    ui.c.pop_clip();
 }
 
 fn ruler(ui: &mut Ui, l: &Layout, g: &Geom, range: Option<(f32, f32)>, marker: u32, markers: &[(u32, String)]) {
@@ -921,5 +905,21 @@ fn lane_menu(ui: &mut Ui, s: &State, l: &Layout, k: f32) {
             ui.c.fill_rect(rr, t.menu_pop_hi);
         }
         ui.c.text(font, rr.x + 20.0, rr.y + 2.0, t.menu_pop_text, lane.menu_name());
+    }
+}
+
+#[cfg(test)]
+mod overview_clip_tests{
+    use super::*;
+    #[test]
+    fn lead_fix_piano_overview_notes_never_paint_over_scroll_arrows(){
+        let mut a=crate::app::App::new(None);a.state.project=crate::app::test_project();a.state.selected_channel=0;a.state.z=vec![Win::PianoRoll];
+        crate::piano::pattern_mut(&mut a.state).notes=vec![Note{length:8192,key:120,..Note::step(0,0)}];
+        let mut c=os_ui::Canvas::new(1280,800,1.).unwrap();
+        crate::prefs::set_text("piano_mini_preview","0");a.invalidate();a.paint(&mut c,None);let mut off=vec![0;1280*800];c.copy_to_xrgb(&mut off);
+        let arrows:Vec<_>=a.hits.iter().filter(|h|matches!(h.action,Action::ScrollStep(crate::app::Scroll::PianoX,_))).map(|h|h.rect).collect();assert_eq!(arrows.len(),2);
+        crate::prefs::set_text("piano_mini_preview","1");a.invalidate();a.paint(&mut c,None);let mut on=vec![0;1280*800];c.copy_to_xrgb(&mut on);assert_ne!(off,on,"mini-preview must actually draw");
+        for r in arrows{for y in r.y as usize..r.bottom() as usize{for x in r.x as usize..r.right() as usize{assert_eq!(off[y*1280+x],on[y*1280+x],"preview touched arrow at {x},{y}");}}}
+        if let Some(out)=std::env::var_os("LEMON_PIANO_OVERVIEW_PREVIEW"){c.pixmap.save_png(out).unwrap();}
     }
 }

@@ -1428,6 +1428,7 @@ pub(crate) fn capture(s: &State) -> Snapshot {
 
 /// Puts an undo state back (undo and redo, `crate::history`).
 pub(crate) fn restore(s: &mut State, (c, m, t, a, st, references, lanes, links): Snapshot) {
+    s.playlist_motion.borrow_mut().clear();
     let arr = arr_mut(s);
     arr.clips = c;
     arr.markers = m;
@@ -1456,15 +1457,37 @@ pub fn clip_at(s: &State, g: &PGeom, x: f32, y: f32) -> Option<usize> {
         .or_else(||clips(s).iter().enumerate().rev().find(|(_,c)|hit(c))).map(|(i,_)|i)
 }
 
-/// The playlist's snap setting with Main read as the global snap (§4). Events and Markers are not available here.
+/// The playlist snap setting; Events and Markers catch nearby clip edges or timeline markers.
+// Event/marker edge catching adapted from upstream Lemon Studio playlist.rs,
+// revision 73e6389821c59ffd5d738f0ca43e926d5ab84a89 (GPL-3.0-or-later).
+const CATCH_PX:f32=7.;
+fn catch(s: &State, g: &PGeom, tick: f32, skip: &[usize]) -> Option<u32> {
+    let targets: Vec<u32> = match s.playlist.snap {
+        EditorSnap::Events => clips(s).iter().enumerate().filter(|(i, _)| !skip.contains(i)).flat_map(|(_, c)| [c.position, c.end()]).collect(),
+        EditorSnap::Markers => markers(s).iter().map(|m| m.position).collect(),
+        _ => return None,
+    };
+    targets.into_iter().map(|t| (t, (t as f32 - tick).abs() * g.ppt)).filter(|&(_, px)| px <= CATCH_PX).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(t, _)| t)
+}
+
+fn snap_edge(s: &State, g: &PGeom, from: u32, dt: f32, alt: bool, skip: &[usize]) -> i64 {
+    match catch(s, g, from as f32 + dt, skip) {
+        Some(c) if !alt => i64::from(c) - i64::from(from),
+        _ => snap_delta(s, g, dt, alt),
+    }
+}
+
 pub fn grid_snap(s: &State) -> Snap {
-    s.playlist.snap.grid(s.global_snap.now).unwrap_or(Snap::Line)
+    s.playlist.snap.grid(s.global_snap.now).unwrap_or(Snap::None)
 }
 
 /// Where a click at `tick` lands (§4): the nearest unit (Cell: the start of the cell it is in), the tick under the
 /// pointer for (none). Alt: no snapping.
 pub fn snap_place(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
     let t = tick.max(0.0);
+    if !alt && let Some(c) = catch(s, g, t, &[]) {
+        return c;
+    }
     let sn = grid_snap(s);
     if alt || sn == Snap::None {
         return t as u32;
@@ -1478,6 +1501,9 @@ fn snap_down(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
     let t = tick.max(0.0) as u32;
     if alt {
         return t;
+    }
+    if let Some(c) = catch(s, g, tick.max(0.0), &[]) {
+        return c;
     }
     let u = grid_snap(s).ticks(g.ppq, g.bar_w);
     t - t % u
@@ -2405,17 +2431,27 @@ pub fn add_layer_channel(s: &mut State) -> usize {
 /// Native multi-file drops arrive one file at a time at identical coordinates.
 pub fn import_audio_clip(s: &mut State, path: &str, from: u16, tick: u32) -> Result<usize, &'static str> {
     let wave = s.playlist.wave(path).ok_or("Could not read the file as audio")?;
-    let ticks = wave.secs() / secs_per_tick(s);
-    let len = if ticks > 0.0 && ticks.is_finite() { (ticks.round() as u32).max(1) } else { bar(s) };
+    let window=crate::browser_preview::import_window(path);
+    let len = audio_drop_length_for_window(s,wave.secs(),window);
+    let track=audio_drop_track(s,from,tick,len,&[]).ok_or("No available Playlist track below this position")?;
+    let i=add_audio_clip_as(s,path,track,tick,"Playlist edit").ok_or("Could not read the file as audio")?;
+    if let Some(window)=window{let clip=&mut arr_mut(s).clips[i];clip.window=Some(window);clip.length=len;}
+    Ok(i)
+}
+pub fn audio_drop_length_for_window(s:&State,secs:f64,window:Option<(f64,f64)>)->u32{
+    if let Some((a,b))=window{return ((b-a)/1000.*s.tempo/60.*f64::from(s.project.ppq)).round().clamp(1.,u32::MAX as f64) as u32;}
+    let ticks=secs/secs_per_tick(s);
+    if ticks>0. && ticks.is_finite(){(ticks.round() as u32).max(1)}else{bar(s)}
+}
+pub fn audio_drop_track(s:&State,from:u16,tick:u32,len:u32,reserved:&[u16])->Option<u16>{
     let end = u64::from(tick) + u64::from(len);
     let rows = Rows::new(s);
-    let track = (from..TRACKS).find(|&t| {
-        !rows.strip(t)
+    (from..TRACKS).find(|&t| {
+        !reserved.contains(&t) && !rows.strip(t)
             && !track_info(s, t).is_some_and(|tr| tr.locked || tr.frozen.is_some())
             && !clips(s).iter().any(|c| c.track == t && u64::from(c.position) < end
                 && u64::from(c.position) + u64::from(c.length) > u64::from(tick))
-    }).ok_or("No available Playlist track below this position")?;
-    add_audio_clip(s, path, track, tick).ok_or("Could not read the file as audio")
+    })
 }
 
 /// Add an audio clip channel for a sample file and place it at `tick` on `track` (§9). The channel's colour comes from
@@ -2735,13 +2771,13 @@ fn every_items() -> Vec<PItem> {
 }
 
 /// The magnet's Snap menu and the ▸ menu's Snap submenu (§4): Main, Line, Cell, (none) to Bar; Events and Markers
-/// are not available yet.
+/// catch clip edges and timeline markers.
 fn snap_items(s: &State) -> Vec<PItem> {
     let now = s.playlist.snap;
     let radio = |p: EditorSnap| PItem::new(p.label(), Cmd::Snap(p)).mark(Mark::Radio(now == p));
     let mut items = vec![radio(EditorSnap::Main), PItem::sep(), radio(EditorSnap::Grid(Snap::Line)), radio(EditorSnap::Grid(Snap::Cell)), PItem::sep()];
     items.extend(Snap::MENU.iter().filter(|sn| !matches!(sn, Snap::Line | Snap::Cell)).map(|&sn| radio(EditorSnap::Grid(sn))));
-    items.extend([PItem::sep(), PItem::not_yet("Events"), PItem::not_yet("Markers")]);
+    items.extend([PItem::sep(), radio(EditorSnap::Events), radio(EditorSnap::Markers)]);
     items
 }
 
@@ -3683,6 +3719,9 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
     let shift = app.shift;
     let s = &mut app.state;
     let g = PGeom::new(s, grid);
+    let glide_from=if matches!(&d,PlDrag::Move{..}|PlDrag::ResizeL{..}|PlDrag::ResizeR{..}){
+        moved.iter().flatten().filter_map(|&i|clips(s).get(i).map(|c|(i,g.clip_rect(c)))).collect()
+    }else{Vec::new()};
     match d {
         PlDrag::HeaderRange{anchor,base}=>{
             let target=g.track_at(y.clamp(grid.y,grid.bottom()-1.));
@@ -3706,7 +3745,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
         PlDrag::Move { x0, scroll_x, track0, orig, .. } => {
-            let mut dt = snap_delta(s, &g, (x - x0 + g.scroll_x - scroll_x) / g.ppt, alt);
+            let skip:Vec<_>=orig.iter().map(|&(i,_)|i).collect();
+            let mut dt=orig.first().map_or(0,|(_,c)|snap_edge(s,&g,c.position,(x-x0+g.scroll_x-scroll_x)/g.ppt,alt,&skip));
             let min_pos = orig.iter().map(|(_, c)| i64::from(c.position)).min().unwrap_or(0);
             dt = dt.max(-min_pos);
             let dk = i32::from(g.track_at(y)) - i32::from(track0);
@@ -3723,7 +3763,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             s.piano.dirty = true;
         }
         PlDrag::ResizeR { x0, orig } => {
-            let dt = snap_delta(s, &g, (x - x0) / g.ppt, alt);
+            let skip:Vec<_>=orig.iter().map(|&(i,_)|i).collect();
+            let dt=orig.first().map_or(0,|(_,c)|snap_edge(s,&g,c.end(),(x-x0)/g.ppt,alt,&skip));
             let min = if alt { 1 } else { grid_snap(s).ticks(g.ppq, g.bar_w) } as i64;
             for &(i, o) in &orig {
                 let len = (i64::from(o.length) + dt).max(min) as u32;
@@ -3733,7 +3774,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
         PlDrag::ResizeL { x0, orig } => {
-            let dt = snap_delta(s, &g, (x - x0) / g.ppt, alt);
+            let skip:Vec<_>=orig.iter().map(|&(i,_)|i).collect();
+            let dt=orig.first().map_or(0,|(_,c)|snap_edge(s,&g,c.position,(x-x0)/g.ppt,alt,&skip));
             for &(i, o) in &orig {
                 let dt = dt.clamp(-i64::from(o.position), i64::from(o.length) - 1);
                 let (pos, len) = ((i64::from(o.position) + dt) as u32, (i64::from(o.length) - dt) as u32);
@@ -3923,6 +3965,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
     }
+    crate::playlist_motion::jumped(&app.state,&g,glide_from,alt);
     match (moved, before) {
         (Some(idx), Some(mut dirty)) => {
             dirty.extend(rects(&app.state, &idx));
@@ -5122,6 +5165,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
                 s.playlist.automation_last.get(&t).copied().filter(|ch|s.project.automation(*ch).is_some())
                     .or_else(|| automation_channels(s,t).first().copied())
             };
+            if next.is_none() && !s.playlist.automation_views.contains_key(&t){return None;}
             return run(app,Cmd::TrackAutomation(t,next));
         }
         Cmd::TrackAutomation(t, channel) => {
@@ -5707,7 +5751,7 @@ pub fn automation_menu(s: &mut State, row: u16, at: (f32, f32)) {
     }
     let available=track_automation_controls(s,row);
     if !available.is_empty() {items.push(PItem::sub("Create automation",available));}
-    s.playlist.popup = Some(Popup { x: at.0, y: at.1, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
+    s.playlist.popup = if items.is_empty(){None}else{Some(Popup { x: at.0, y: at.1, items, sub: None, scroll: [0; 2], cascade: Vec::new() })};
 }
 
 fn clip_channels(s:&State,c:&Clip)->Vec<u16> {
@@ -5800,4 +5844,21 @@ mod unique_audio_tests {
         assert_eq!(app.state.project.patterns,patterns);
         assert_eq!(clips(&app.state)[0].source,ClipSource::Pattern(1));
     }
+}
+
+// Rendering-only edge interpolation from upstream; this never writes the project.
+pub fn with_edges(s: &State, g: &PGeom, c: &Clip, left: f32, right: f32) -> Clip {
+    let dl = f64::from(left / g.ppt).round() as i64;
+    let dr = f64::from(right / g.ppt).round() as i64;
+    let end = (i64::from(c.end()) + dr).max(1);
+    let pos = (i64::from(c.position) + dl).clamp(0, end - 1);
+    let mut drawn = *c;
+    drawn.position = pos as u32;
+    drawn.length = (end - pos) as u32;
+    if c.window.is_some() || dl != 0 {
+        let (w0, w1) = window(s, c);
+        let from = (w0 + to_src(s, c.source, (pos - i64::from(c.position)) as f64)).max(0.0);
+        drawn.window = Some((from, w1 + to_src(s, c.source, dr as f64)));
+    }
+    drawn
 }

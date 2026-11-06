@@ -87,6 +87,7 @@ pub enum Item {
     Channel(usize),
     /// Sample file path.
     Sample(String),
+    Samples(Vec<String>),
     /// A generator (index into `Plugins::available`).
     Generator(usize),
     /// An effect (index into `Plugins::effects`).
@@ -902,7 +903,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             _ => row.label.clone(),
         };
         let hov = ui.hit(rect, Action::BrowserRow(i), hint);
-        if sel == Some(row.key.as_str()) || hov {
+        if sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key) || hov {
             ui.c.fill_rect(rect, t.browser_row_hi);
         }
         if s.browser_tab==EXCHANGE_BUTTON {

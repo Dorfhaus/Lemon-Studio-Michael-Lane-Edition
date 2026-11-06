@@ -329,6 +329,7 @@ pub enum Action {
     PlHeader(u16),
     PlTrackGrip(u16),
     PlRowResize(u16),
+    PlTrackZoom,
     PlLed(u16),
     PlAutomation(u16),
     PlAutomationToggle(u16),
@@ -1093,6 +1094,10 @@ pub struct State {
     pub browser_scroll: f32,
     pub browser_sel: Option<String>,
     pub browser_drag: Option<(String, f32, f32)>,
+    pub browser_samples: std::collections::BTreeSet<String>,
+    pub browser_sample_anchor: Option<String>,
+    pub sample_drop: crate::drop_preview::Preview,
+    pub playlist_motion: std::cell::RefCell<crate::playlist_motion::Motion>,
     /// Search text and whether the search box has keyboard focus (spec: ui/browser.md §5).
     pub browser_search: String,
     pub browser_tags: std::collections::BTreeMap<String,Vec<String>>,
@@ -1578,6 +1583,10 @@ impl App {
                 browser_scroll: 0.0,
                 browser_sel: None,
                 browser_drag: None,
+                browser_samples: Default::default(),
+                browser_sample_anchor: None,
+                sample_drop: Default::default(),
+                playlist_motion: Default::default(),
                 browser_search: String::new(),
                 browser_tags: crate::browser::load_tags(),
                 browser_tag_edit: None,
@@ -2477,6 +2486,7 @@ impl App {
 
     /// Drops every hosted instance (a new or opened project); `sync_samplers` hosts the new project's samplers.
     pub(crate) fn reset_hosted(&mut self) {
+        self.state.sample_drop.clear();self.state.playlist_motion.borrow_mut().clear();
         self.import_report=Default::default();
         crate::vocal::audition::stop(self);self.vocal_audition=Default::default();self.vocal_audio=None;
         self.vocal_job=None;self.state.playlist.vocal=Default::default();
@@ -3468,7 +3478,7 @@ impl App {
         for v in os_engine::metronome::VOLUMES {
             items.push(PItem::new(os_engine::metronome::volume_label(v), Cmd::MetronomeVolume(v)).mark(Mark::Radio(v == db)));
         }
-        let bars = if Opt::Precount.on() { crate::record::precount_bars() } else { 0 };
+        let bars = if Opt::Precount.on() && !crate::record_lead::mode() { crate::record::precount_bars() } else { 0 };
         items.push(PItem::head("Recording precount"));
         for (label, n) in [("Off", 0), ("1 bar", 1), ("2 bars", 2)] {
             items.push(PItem::new(label, Cmd::Rec(RecCmd::Precount(n))).mark(Mark::Radio(bars == n)));
@@ -4168,6 +4178,7 @@ impl App {
             || self.state.cables.borrow().moving()
             || self.hold.is_some()
             || self.smooth.running()
+            || self.state.playlist_motion.borrow().active()
             || self.midi_play.busy()
             || self.remote.busy()
             || views::browser::search_busy(&self.state)
@@ -4237,6 +4248,8 @@ impl App {
 
     /// Periodic housekeeping; returns whether a repaint is needed.
     pub fn tick(&mut self) -> bool {
+        crate::drop_preview::poll(self);
+        crate::playlist_motion::tick(self);
         if !self.state.mixer.insertion_ready && self.drag.is_none() && self.pressed.is_none() &&
             self.state.mixer.insertion_hover.is_some_and(|(_,_,since)|since.elapsed()>=std::time::Duration::from_millis(550)){
             self.state.mixer.insertion_ready=true;self.damage_win(Win::Mixer);
@@ -4633,12 +4646,14 @@ impl App {
     }
 
     pub(crate) fn import_stems(&mut self,files:Vec<PathBuf>,track:u16,tick:u32){
-        let mut failures=Vec::new();
+        let mut failures=Vec::new();let mut from=track;let mut selected=Vec::new();
         for path in &files {
-            if let Err(reason)=crate::playlist::import_audio_clip(&mut self.state,&path.to_string_lossy(),track,tick){
-                failures.push(format!("{}: {reason}",path.display()));
+            match crate::playlist::import_audio_clip(&mut self.state,&path.to_string_lossy(),from,tick){
+                Ok(i)=>{from=crate::playlist::clips(&self.state)[i].track.saturating_add(1);selected.push(i);},
+                Err(reason)=>failures.push(format!("{}: {reason}",path.display())),
             }
         }
+        self.state.playlist.sel=selected;
         self.state.message=Some(format!("Imported {} of {} stems{}",
             files.len()-failures.len(),files.len(),if failures.is_empty(){String::new()}else{format!(" — {}",failures.join(", "))}));
         self.invalidate();
@@ -6473,7 +6488,7 @@ impl App {
     /// Cursor for the current hover / drag.
     pub fn cursor(&self) -> Cursor {
         if matches!(self.drag,Some(Drag::PlRowResize{..}))||matches!(self.hover,Some(Action::PlRowResize(_))){return Cursor::NsResize;}
-        if matches!(self.drag,Some(Drag::TrackSize{..})) ||
+        if self.hover==Some(Action::PlTrackZoom) || matches!(self.drag,Some(Drag::TrackSize{..})) ||
             (self.resize_cursor && self.hover==Some(Action::Scrollbar(Scroll::PlaylistY))) { return Cursor::NsResize; }
         let win_edges = match (&self.drag, &self.hover) {
             (Some(Drag::WinResize { edges, .. }), _) => *edges,
@@ -7672,6 +7687,10 @@ impl App {
             self.scroll_set(t, self.scroll_get(t) - (dy + dx) * step);
             return scroll_win(t);
         }
+        if matches!(area,Some(Action::PlTrackZoom)){
+            if let Some(grid)=self.pl_grid{crate::playlist::zoom_rows(&mut self.state,grid,grid.y,dy+dx);}
+            return Some(Win::Playlist);
+        }
         // Piano roll (spec: ui/piano-roll.md §3a): Alt+wheel over the ruler zooms time; the keyboard takes the wheel
         // like the grid (scroll, Ctrl = time zoom); the keys zoom with Ctrl+middle-drag.
         if matches!(area, Some(Action::PianoRuler)) && self.alt {
@@ -7860,6 +7879,9 @@ impl App {
 
     pub fn key(&mut self, key: &winit::keyboard::Key, ctrl: bool, alt: bool) {
         self.invalidate();
+        if matches!(key,winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) && self.state.sample_drop.active(){
+            self.state.sample_drop.clear();self.state.browser_drag=None;self.drag=None;return;
+        }
         // A dialog takes every key.
         if self.modal_open() {
             return self.dialog_key(key, ctrl, alt);
@@ -7909,11 +7931,13 @@ impl App {
         {
             return self.toggle_multilink();
         }
-        // A held key repeats only the piano roll's moving and copying keys; every other key acts on its first press
+        // A held key repeats Piano Roll edits and Playlist Ctrl+B duplication; other shortcuts act on the first press
         // (switches would flicker on and off; spec: ui/piano-keys.md §4 rule 1).
         let browser_arrow = (self.over_browser() || self.state.browser_search_focus)
             && !ctrl && !alt && matches!(key,Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::ArrowRight));
-        if self.repeat && !browser_arrow && !(self.piano_keys() && crate::piano_tools::repeats(key, ctrl, alt, self.shift)) {
+        let playlist_duplicate = self.pl_focus() && self.state.playlist.edit.is_none() && self.drag.is_none()
+            && ctrl && !alt && !self.shift && matches!(key,Key::Character(c) if c.eq_ignore_ascii_case("b"));
+        if self.repeat && !playlist_duplicate && !browser_arrow && !(self.piano_keys() && crate::piano_tools::repeats(key, ctrl, alt, self.shift)) {
             return;
         }
         // Dismiss transient UI first, then close one window per press. The playlist stays open.
@@ -8062,6 +8086,7 @@ impl App {
             Key::Named(NamedKey::Escape) if self.state.settings.open && self.state.settings.picker.is_some() => self.picker_close(),
             Key::Named(NamedKey::Escape) if self.state.settings.open => self.state.settings.open = false,
             Key::Named(NamedKey::Escape) => {
+                if self.state.sample_drop.active(){self.state.sample_drop.clear();self.state.browser_drag=None;self.drag=None;self.invalidate();return;}
                 self.state.menu_open = None;
                 self.state.menu_sub = None;
                 self.state.playlist.popup = None;
@@ -8187,7 +8212,9 @@ impl App {
         // Browser audition must not double the first hit of transport playback.
         crate::browser_preview::dismiss(self);
         self.transport.stop_preview();
-        self.transport.play_counted(&p, self.play_mode(), start, bars);
+        self.retarget_audio_take(start.max(0.).round() as u32);
+        let play_start=crate::record_lead::begin(&mut self.state,start);
+        self.transport.play_counted(&p, self.play_mode(), play_start, bars);
     }
 
     fn play_mode(&self) -> PlayMode {
@@ -8387,6 +8414,11 @@ impl App {
         }){return;}
         self.state.piano.event_focus = matches!(a, Action::PianoVelocity);
         let tool = self.state.piano.tool;
+        if matches!(tool,Tool::Draw|Tool::Paint|Tool::Select) && !self.ctrl && !self.alt && !self.shift {
+            if let Action::PianoNote(i)=*a {
+                if crate::piano_note_properties::double_click(self,i){return;}
+            }else{self.state.piano.properties_click=None;}
+        }else{self.state.piano.properties_click=None;}
         // Ctrl temporarily selects with any note tool, without editing or auditioning notes.
         if self.ctrl && matches!(a, Action::PianoGrid | Action::PianoNote(_)) {
             let s=&mut self.state;
@@ -8571,6 +8603,12 @@ impl App {
                     pl::press_markers(self, g, right);
                 }
             }
+            Action::PlTrackZoom=>{
+                if let Some(grid)=self.pl_grid {
+                    if self.alt||right{pl::set_row_h(&mut self.state,grid,grid.y,pl::ROW_H);self.damage_win(Win::Playlist);}
+                    else{self.drag=Some(Drag::TrackSize{y0:self.mouse.1,row0:self.state.playlist.row_h,bottom:true});}
+                }
+            },
             Action::PlRowResize(row) if right=>{pl::press_header(self,row,true,self.mouse);},
             Action::PlRowResize(row)=>{crate::playlist::snapshot_as(&mut self.state,"Resize playlist track");let h0=crate::playlist::Rows::new(&self.state).base_height(row);self.drag=Some(Drag::PlRowResize{row,y0:self.mouse.1,h0});},
             Action::PlTrackGrip(t)=>{
@@ -9167,7 +9205,7 @@ impl App {
             | Action::PlClips
             | Action::PlRuler
             | Action::PlMarkers
-            | Action::PlHeader(_) | Action::PlTrackGrip(_) | Action::PlRowResize(_)
+            | Action::PlHeader(_) | Action::PlTrackGrip(_) | Action::PlRowResize(_) | Action::PlTrackZoom
             | Action::PlLed(_)
             | Action::PlAutomationToggle(_)
             | Action::PlAutomation(_)
@@ -13505,7 +13543,7 @@ mod tests {
             crate::dialog::Body::Shortcuts(_) => panic!("Manage shortcuts is on top"),
             crate::dialog::Body::TimeSig(_) => panic!("the time signature dialog is on top"),
             crate::dialog::Body::Project(_) => panic!("a project form is on top"),
-            crate::dialog::Body::Normalize(_) | crate::dialog::Body::StripSilence(_) | crate::dialog::Body::ClipFx(..) | crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
+            crate::dialog::Body::NoteProperties(_) | crate::dialog::Body::Normalize(_) | crate::dialog::Body::StripSilence(_) | crate::dialog::Body::ClipFx(..) | crate::dialog::Body::Warp(_) | crate::dialog::Body::Ai | crate::dialog::Body::Headphones(_) | crate::dialog::Body::RoutePicker(_) => panic!("selection form is on top"),
         }
     }
 
@@ -18125,10 +18163,10 @@ mod tests {
         assert_eq!(draw(&mut app, &mut c, 7.62, 2), 8 * 4 * ppq);
         app.state.global_snap.set(Snap::Beat);
         assert_eq!(draw(&mut app, &mut c, 2.78, 3), 11 * ppq);
-        // Its own menu: Main first and marked; Events and Markers are listed greyed.
+        // Its own menu: Main first and marked; Events and Markers are available.
         let m = pl::snap_menu(&app.state, 0.0, 0.0);
         assert_eq!((m.items[0].label.as_ref(), m.items[0].mark), ("Main", Mark::Radio(true)));
-        assert!(m.items.iter().filter(|i| i.label == "Events" || i.label == "Markers").all(|i| !i.enabled));
+        assert!(m.items.iter().filter(|i| i.label == "Events" || i.label == "Markers").all(|i| i.enabled));
         // Backspace with the playlist focused toggles too.
         backspace(&mut app);
         assert_eq!(now(&app), Snap::None);

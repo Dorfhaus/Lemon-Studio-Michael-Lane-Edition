@@ -16,6 +16,7 @@ use crate::playlist::{Cmd, Mark, PItem, Popup};
 /// A piano-roll command (keyboard shortcut or Tools menu entry). Note values are `1/n` notes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NCmd {
+    NoteColorMenu,NoteColor(u8),ApplyNoteColor,DrawSlide,DrawPorta,SelectedNoteType(u8),
     SessionPart(usize,u16),
     EndSession,
     Layer(u16,u16,bool),
@@ -129,6 +130,9 @@ pub fn options_menu(s:&State,x:f32,y:f32)->Popup {
         PItem::sub("Select",vec![k("Select all","a",true,false,false,"Ctrl+A"),k("Deselect","d",true,false,false,"Ctrl+D"),k("Invert selection","i",false,true,false,"Shift+I"),k("Select by color","c",false,true,false,"Shift+C"),k("Select random","r",false,true,false,"Shift+R")]),
         PItem::sub("Snap",crate::piano_snap::snap_menu(s,x,y).items),
         PItem::sub("Note length",crate::piano_snap::lengths_menu(x,y).items),
+        item("Note color...",NCmd::NoteColorMenu),
+        item("Slide / glide notes",NCmd::DrawSlide).mark(Mark::Check(s.piano.draw_slide)),
+        item("Portamento notes",NCmd::DrawPorta).mark(Mark::Check(s.piano.draw_porta)),
         PItem::sub("Draw mode",[(piano::Tool::Draw,"Pencil","P"),(piano::Tool::Paint,"Brush","B"),(piano::Tool::Slice,"Slice","C"),(piano::Tool::Select,"Select","E"),(piano::Tool::Stretch,"Stretch",""),(piano::Tool::Delete,"Delete",if view_on("piano_d_duplicate",true){""}else{"D"}),(piano::Tool::Mute,"Mute","T"),(piano::Tool::Zoom,"Zoom","Z"),(piano::Tool::Playback,"Playback","Y")].into_iter().map(|(tool,label,key)|item(label,NCmd::Tool(tool)).key(key).mark(if tool==piano::Tool::Stretch {Mark::Check(s.piano.stretch)}else{Mark::Radio(s.piano.tool==tool)})).collect()),
         PItem::sub("View",vec![PItem::sub("Keyboard style",vec![item("FL 11 style",NCmd::KeyboardStyle(true)).mark(Mark::Radio(classic_keyboard())),item("Piano-shaped",NCmd::KeyboardStyle(false)).mark(Mark::Radio(!classic_keyboard()))]),item("Zoom in",NCmd::Zoom(1.)).key("PgUp"),item("Zoom out",NCmd::Zoom(-1.)).key("PgDn"),check("Mini piano roll preview","piano_mini_preview",true),PItem::sub("Control lane",piano::Lane::ALL.iter().enumerate().map(|(i,l)|item(l.menu_name(),NCmd::Lane(i)).mark(Mark::Radio(s.piano.lane==*l))).collect())]),
         PItem::sub("Helpers",helpers),
@@ -457,6 +461,12 @@ pub fn run(app: &mut App, cmd: NCmd) -> Option<String> {
     let done = |changed: bool, what: &str| if changed { format!("Piano roll: {what}") } else { format!("Piano roll: {what}: nothing to change") };
     let msg = match cmd {
         NCmd::MenuKey(..)=>unreachable!(),
+        NCmd::NoteColorMenu=>{s.playlist.popup=Some(crate::piano_note_mode::menu(s,app.mouse.0,app.mouse.1));app.invalidate();return None;},
+        NCmd::NoteColor(n)=>{crate::piano_note_mode::choose_color(s,n);app.invalidate();return None;},
+        NCmd::ApplyNoteColor=>{crate::piano_note_mode::apply_selection(s,None);app.invalidate();return None;},
+        NCmd::SelectedNoteType(n)=>{crate::piano_note_mode::apply_selection(s,Some(n));app.invalidate();return None;},
+        NCmd::DrawSlide=>{s.piano.draw_slide=!s.piano.draw_slide;app.invalidate();return None;},
+        NCmd::DrawPorta=>{s.piano.draw_porta=!s.piano.draw_porta;app.invalidate();return None;},
         NCmd::EndSession=>{s.piano.clip_session=None;s.piano.scroll_x=0.;s.piano.clear_selection();app.invalidate();return None;}
         NCmd::SessionPart(i,ch)=>{
             let clip=s.piano.clip_session.as_ref()?.clip(s,i)?;

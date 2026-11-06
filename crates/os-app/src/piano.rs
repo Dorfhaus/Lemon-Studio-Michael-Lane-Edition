@@ -96,6 +96,9 @@ pub struct PianoState {
     /// The last note clicked or edited in the event panel: new notes take its controls (velocity, pan, release, cutoff,
     /// resonance, fine pitch, repeat, colour), as FL does; `None` = the defaults.
     pub last_controls: Option<Note>,
+    pub draw_slide:bool,
+    pub draw_porta:bool,
+    pub properties_click:Option<(u16,usize,Note,std::time::Instant,(f32,f32))>,
     /// The project changed since the playing engine last got it (notes, steps, mixer, channel
     /// settings, tempo); `App::tick` sends it to the transport.
     pub dirty: bool,
@@ -157,6 +160,8 @@ impl Default for PianoState {
             bar_span: None,
             last_len: 0,
             last_controls: None,
+            draw_slide:false,
+            draw_porta:false,properties_click:None,
             dirty: false,
             edit_length:None,
             held: None,
@@ -672,6 +677,7 @@ pub fn add_note(s: &mut State, channel: u16, tick: u32, key: i32) -> usize {
     if let Some(t) = s.piano.last_controls {
         copy_controls(&t, &mut note);
     }
+    note.set_slide(s.piano.draw_slide);note.set_porta(s.piano.draw_porta);
     let p = pattern_mut(s);
     p.notes.push(note);
     p.notes.len() - 1

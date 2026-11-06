@@ -603,7 +603,10 @@ fn time(ui: &mut Ui, c: &Ctx) {
     let bar_x = (step_x - 8.0 - bw).max(tp.x + 2.0);
     ui.c.push_clip(tp.inset(1.0));
     let g = if lemon { t.pill } else { t.glyph };
-    if let Some(c) = s.rec.count.filter(|c| c.left() > 0) {
+    if let Some(target)=s.rec.preroll.filter(|target|f.playing && !f.paused && f.tick<f64::from(*target)) {
+        let beats=((f64::from(target)-f.tick)/f64::from(s.project.beat_ticks().max(1))).ceil().max(1.) as u32;
+        ui.c.text_center(Font::light(18,8),Rect::new(tp.x,tp.y+2.,tp.w,tp.h-2.),g,&format!("PRE-ROLL {beats}"));
+    } else if let Some(c) = s.rec.count.filter(|c| c.left() > 0) {
         // A recording count-in (spec: ui/recording.md §3): the beats left.
         ui.c.text_center(Font::light(22, 8), Rect::new(tp.x, tp.y + 2.0, tp.w, tp.h - 2.0), g, &format!("REC IN {}", c.left()));
     } else {

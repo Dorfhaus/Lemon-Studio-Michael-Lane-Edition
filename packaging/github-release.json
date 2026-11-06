@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.06.1",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.06.1",
-  "notes": "- Lemon EQ keeps its analyzer refreshing during continuous mouse movement. Timed spectrum analysis, smoother peak drawing and reduced redraw work improve display responsiveness.\n- Lemon EQ adds an accessible analyzer Speed menu with resolution, range, tilt and averaging choices. New instances use a slower display; saved analyzer preferences are retained.\n- Clearer audition, dynamics and A/B controls, plus optional temporary RMS Level match for comparing EQ changes. Level match is off by default and clears when the editor closes.\n- Full-length Playlist pattern clips follow added or deleted Piano Roll notes across arrangements, including Undo and Redo. Manually trimmed and stretched clip lengths are preserved.\n- Reversed Lemon Sampler audio is drawn in reverse in the Playlist without modifying the source recording.\n- Reset all selected Mixer faders to 0 dB together, and solo selected Mixer tracks from their context menu.\n- Selected Playlist track headers support group delete, solo and color changes. Deleting selected folder headers preserves unselected child tracks and supports Undo.\n- Drag multiple selected effects from Plugin Picker onto a Mixer channel in picker order. Existing effects and reserved slots are preserved; drops with insufficient room are rejected together.\n- Playlist clip-control category buttons remain visible when clicked repeatedly. Audio clip menu icons show a pointing-finger cursor.\n- FL project sample recovery handles collected content placeholders without an FL content folder. More-specific relative paths take priority, while duplicate sample names require an explicit choice.\n- The first normal Save of a newly imported FLP opens Save As for a Lemon working copy. File > Import adds a persistent compatibility report, full report export and missing-file recovery choices.\n- FL plugin substitutes require approval before starting with default settings. Untouched imported presets are retained, deliberate native-plugin edits save correctly, and state-normalization warnings remain in the import report.\n- Imported FL Mixer tracks use neutral layouts while saved Lemon layouts are preserved. Edited duplicate effect-control records update consistently.\n- The import report identifies unsupported automation links while retaining their data. Older FL project layouts and unidentified automation targets remain compatibility limitations.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.06.2",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.06.2",
+  "notes": "- Recording pre-roll plays the existing arrangement before the recording cursor, then begins the take at the intended point. Right-click Recording precount to choose Off, count-in, or pre-roll with 1, 2, 4 or 8 bars. The chosen mode is remembered; pre-roll clamps to the beginning of the song.\n- MIDI notes and automation are kept out of the pre-roll section. Audio takes exclude the lead-in and remain aligned with the recording point; stopping before the point leaves no take.\n- The Playlist top-right corner now provides a visible track-height zoom control. Drag up/down or use the wheel to resize tracks, and right-click or Alt-click to restore the default height.\n- Clicking an empty track-automation chooser no longer opens a thin empty popup; an unavailable automation toggle leaves the clip selection intact.\n- Piano Roll overview note previews stay inside the scroll track and no longer draw across the left or right arrow buttons.\n- Double-click existing Piano Roll notes to edit slide/glide, portamento, color, velocity, pan, release, pitch, filter controls and length. Selected notes can be edited together with Apply, Cancel and Undo.\n- The Piano Roll note-color selector is enabled with 16 visual groups, alongside slide/glide and portamento drawing toggles. Scale Notes Only remains separately accessible.\n- Holding Ctrl+B in the Playlist repeatedly duplicates the current clips to the right. New copies remain selected; timeline repeat intervals and Undo are preserved.\n- Audio samples dragged from the Browser or a Windows folder show ghost clip previews at their landing positions. Available audio includes length and waveform previews without editing the project during hover.\n- Ctrl/Shift multi-selection in the Browser supports dragging several samples into separate available Playlist tracks with previews, and selects the imported clips together.\n- Playlist clip movement gains visual smoothing and Events/Markers snapping while retaining group offsets, edge scrolling and Alt snap bypass.\n- Updated MLE application icons for Windows, Linux and macOS.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.06.1.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110601/Lemon-Studio-Windows-Setup-2026.11.06.1.exe",
-      "sha256": "5dd52316b5e9d58aac2affefda047b06675bcf962d0d12503ce9d2e25eb1573e"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.06.2.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110602/Lemon-Studio-Windows-Setup-2026.11.06.2.exe",
+      "sha256": "27c47a2d103e15e6b24cc079ccb3a64954bf6b88e1f0d534f156074cfd24f5a9"
     },
     {
-      "name": "Lemon-Studio-Source-2026110601.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110601/Lemon%20Studio%20Source.zip",
-      "sha256": "f9cc565244310e2fd4cef257590a0709fc16b7e126032b7fbce1f4c472147b21"
+      "name": "Lemon-Studio-Source-2026110602.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110602/Lemon%20Studio%20Source.zip",
+      "sha256": "ef105a118ceffcae124f3b9356b627ea54e0e528045f7c33f6b82fa7c3a693ff"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110601.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110601/Lemon-Studio-Linux-x86_64-2026110601.tar.gz",
-      "sha256": "8239b358f7d71edd8377b5649b89343f701955847b78ec5787b3b48ca6bcd618"
+      "name": "Lemon-Studio-Linux-x86_64-2026110602.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110602/Lemon-Studio-Linux-x86_64-2026110602.tar.gz",
+      "sha256": "5718993457889ddfb90310c2caf83d35d9afa5920341937c6fce20121c7a1388"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110601.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110601/Lemon-Studio-Mac-arm64-2026110601.dmg",
-      "sha256": "8932be8b24a01e5c5c1b811ed056c74cac5f672340d2a1175618399be50c0f44"
+      "name": "Lemon-Studio-Mac-arm64-2026110602.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110602/Lemon-Studio-Mac-arm64-2026110602.dmg",
+      "sha256": "f17d455ef209df5ad58f5a0d3306c62a028d3c01d9a12edfda60bc512ab5a628"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110601.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110601/Lemon-Studio-Source-Mac-arm64-2026110601.zip",
-      "sha256": "32db57f27c7340c4bb8d6886660c8111ebf58fb5668e57cad619420ea3ece22d"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110602.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110602/Lemon-Studio-Source-Mac-arm64-2026110602.zip",
+      "sha256": "926fc027bae3c31fdae3beb5b303786325b71574bd17e1ce5469c48900b51a3a"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110601.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110601/Lemon-Studio-Mac-x86_64-2026110601.dmg",
-      "sha256": "9389342d259f2e5687c632f01eed0547bc44a84c554116c228032f408bd6e6eb"
+      "name": "Lemon-Studio-Mac-x86_64-2026110602.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110602/Lemon-Studio-Mac-x86_64-2026110602.dmg",
+      "sha256": "3624b8512587157d9e56b988f1c137635ebd4cd9d1c22122ba2ca0290cc2605b"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110601.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110601/Lemon-Studio-Source-Mac-x86_64-2026110601.zip",
-      "sha256": "a6833fdf6ad0095232ad688489aaae585e0da423905c111b02e62f6dae2ceea5"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110602.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110602/Lemon-Studio-Source-Mac-x86_64-2026110602.zip",
+      "sha256": "91e1b2b74636654713c606fc2465500205d332a67f64e1e831c1c8f0c0fbb5c9"
     }
   ]
 }

@@ -97,6 +97,9 @@ impl App {
 
     /// The mouse moved to (`x`, `y`): further than [`SLOP`] from the press, the hold ends and the drag goes on as one.
     pub(crate) fn hold_moved(&mut self, x: f32, y: f32) {
+        if self.state.piano.properties_click.is_some_and(|(_,_,_,_,at)| (x-at.0).abs().max((y-at.1).abs())>SLOP){
+            self.state.piano.properties_click=None;
+        }
         if self.hold.is_some_and(|h| (x - h.from.0).abs().max((y - h.from.1).abs()) > SLOP) {
             self.hold = None;
         }
@@ -109,6 +112,7 @@ impl App {
         if periods == h.periods {
             return;
         }
+        self.state.piano.properties_click=None;
         match h.kind {
             Kind::NewNote => {
                 let Some(Drag::NoteMove { orig, .. }) = &self.drag else {

@@ -218,6 +218,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     ui.c.fill_rect(Rect::new(grid_x + grid_w + 4.0, client.y + 1.0, vbar, client.h), t.scrollbar);
     let vtrack = Rect::new(grid_x + grid_w + 4.0, grid_y, vbar, (r.bottom() - grid_y).max(0.0));
     super::scrollbar(ui, vtrack, true, sy, vtrack.h, g.rows.total(), crate::app::Scroll::PlaylistY);
+    // The corner above the vertical scrollbar is a direct, discoverable track-height control.
+    let zoom=Rect::new(vtrack.x-2.,over.y,vbar+2.,(grid.y-over.y-2.).min(24.).max(18.));
+    let hot=ui.hit(zoom,Action::PlTrackZoom,"Track height: drag up/down or use wheel; right-click or Alt-click resets");
+    ui.c.fill_rrect(zoom.inset(1.),3.,if hot{t.button_hi}else{t.button});
+    let ink=if hot{t.accent}else{t.text_dim};let x=zoom.cx();let y=zoom.cy();
+    ui.c.line(x-4.,y,x+4.,y,1.5,ink);
+    ui.c.polyline(&[(x-3.,y-4.),(x,y-7.),(x+3.,y-4.)],1.,ink);
+    ui.c.polyline(&[(x-3.,y+4.),(x,y+7.),(x+3.,y+4.)],1.,ink);
     if has_markers {
         markers_paint(ui, s, &g, Rect::new(grid_x, lane_y, grid_w, MARKER_H));
     }
@@ -270,9 +278,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let bright_clips=crate::prefs::check(&crate::prefs::BRIGHT_PLAYLIST_CLIPS);
     for automation in [false,true] {
         for (i,c) in pl::clips(s).iter().enumerate() {
-            if (pl::source_kind(s,c.source)==PickKind::Automation)==automation && ui.c.visible(g.clip_rect(c).outset(2.0)) {clip_paint(ui,s,&g,i,c,bright_clips);}
+            if (pl::source_kind(s,c.source)==PickKind::Automation)!=automation{continue;}
+            let glide=s.playlist_motion.borrow_mut().offset(s.project.current_arrangement,pl::clips(s).len(),i,std::time::Instant::now());
+            if let Some((left,right,down))=glide{
+                let mut at=g.clone();at.scroll_y-=down;
+                if (left-right).abs()<0.01{at.scroll_x-=left;clip_paint(ui,s,&at,i,c,bright_clips);}
+                else{clip_paint(ui,s,&at,i,&pl::with_edges(s,&g,c,left,right),bright_clips);}
+            }else if ui.c.visible(g.clip_rect(c).outset(2.0)){clip_paint(ui,s,&g,i,c,bright_clips);}
         }
     }
+    crate::drop_preview::paint(ui,s,&g);
     for live in &s.mixer.recording.live {
         let x=g.x_of(live.start as f32);
         let right=g.x_of(live.start.saturating_add(live.length) as f32);
@@ -1447,6 +1462,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             Mark::Radio(false) => ui.c.stroke_circle(mx, my, 3.5, 1.0, t.menu_pop_dim),
             _ => {}
         }
+        let color=if let pl::Cmd::Piano(crate::piano_tools::NCmd::NoteColor(n))=it.cmd{crate::piano_note_mode::color(t,n)}else{color};
         ui.c.text_clip(font, rr.x + 20.0, rr.y + 2.0 + dy, lw + 4.0, color, &it.label);
         let right = rr.right() - if it.children.is_empty() { 8.0 } else { 16.0 };
         if !it.key.is_empty() {

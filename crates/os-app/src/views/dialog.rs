@@ -50,6 +50,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         ui.hit(full, Action::Swallow, "");
         match &m.body {
             Body::ClipFx(channel,page)=>{let r=place(s,m,510.,386.);frame(ui,r,"Clip Effects");crate::clip_effects::paint(ui,s,r,*channel,*page);},
+            Body::NoteProperties(f)=>{let r=place(s,m,460.,420.);frame(ui,r,"Note properties");crate::piano_note_properties::paint(ui,r,f);},
             Body::Normalize(f)=>{let r=place(s,m,440.,260.);frame(ui,r,"Normalize audio clips");crate::clip_normalize::paint(ui,r,f);},
             Body::StripSilence(f)=>{let r=place(s,m,550.,470.);frame(ui,r,"Strip silence");crate::strip_silence::paint(ui,r,f);},
             Body::Warp(f)=>{let r=place(s,m,(s.screen.0-24.).clamp(600.,1000.),430.);frame(ui,r,"Audio warp markers");crate::warp::paint(ui,r,f);},
