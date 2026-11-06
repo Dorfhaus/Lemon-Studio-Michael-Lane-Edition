@@ -541,6 +541,14 @@ impl App {
             }
             // An effect dropped on the mixer goes into the slot under the mouse, else the current track's first free
             // slot (spec §3).
+            Item::Effects(indices)=>{
+                if win==Some(Win::Mixer){
+                    let target=self.hits.iter().rev().find_map(|h|if h.rect.contains(x,y){match h.action{Action::Mix(crate::mixer::MHit::Strip(t)|crate::mixer::MHit::TrackSlot(t,_))=>Some(t),_=>None}}else{None});
+                    if let Some(t)=target{crate::mixer::select(&mut self.state,t,false);}
+                    let slot=match self.top_hit(x,y).map(|h|&h.action){Some(Action::Mix(crate::mixer::MHit::SlotName(k)|crate::mixer::MHit::SlotArrow(k)))=>Some(*k),Some(Action::Mix(crate::mixer::MHit::TrackSlot(t,k)))=>{let (t,k)=(*t,*k);crate::mixer::select(&mut self.state,t,false);Some(k)},_=>None};
+                    self.state.message=crate::plugin_menu::add_effects(self,&indices,slot);
+                }
+            }
             Item::Effect(i) => {
                 if win == Some(Win::Mixer) {
                     // A picker/database drop on a strip belongs to that track, even when another is selected.
@@ -1075,7 +1083,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
             let it = PItem::new("Load into selected channel", Cmd::Preset(crate::presets::PCmd::Load(key, p.into())));
             items.push(if s.hosted_rows.contains(&key) { it } else { it.off() });
         }
-        Item::None | Item::File(_) | Item::Param(..) => {}
+        Item::None | Item::File(_) | Item::Param(..) | Item::Effects(_) => {}
     }
     if let Some(path) = row.path.as_ref().filter(|_| !matches!(row.item,Item::Sample(_))) {
         sep(&mut items);

@@ -129,6 +129,7 @@ pub fn loaded(app: &mut App) {
     }
     let samples: Vec<String> = missing_samples(&app.state).iter().map(|(_, p)| file_name(p).to_string()).collect();
     let plugins = app.missing.plugin_names();
+    if std::mem::take(&mut app.import_report.pending){return crate::import_report::show(app,0);}
     if samples.is_empty() && plugins.is_empty() {
         return;
     }
@@ -183,8 +184,9 @@ pub fn search(app: &mut App, folder: PathBuf) {
 }
 
 /// The folders under `root` (itself included) that hold a file named as one of `wanted` (lower case), in the order
-/// found, until every name is found, `deadline` passes or `SEARCH_FOLDERS` folders were listed.
-pub fn find_in(root: &Path, mut wanted: HashSet<String>, deadline: Instant) -> Vec<PathBuf> {
+/// found, until `deadline` passes or `SEARCH_FOLDERS` folders were listed. All matches are collected so duplicate
+/// basenames remain an explicit choice instead of depending on traversal order.
+pub fn find_in(root: &Path, wanted: HashSet<String>, deadline: Instant) -> Vec<PathBuf> {
     let mut found = Vec::new();
     if !os_engine::sample::reachable(root) {
         return found;
@@ -192,7 +194,7 @@ pub fn find_in(root: &Path, mut wanted: HashSet<String>, deadline: Instant) -> V
     let mut stack = vec![(root.to_path_buf(), 0)];
     let mut listed = 0;
     while let Some((dir, depth)) = stack.pop() {
-        if wanted.is_empty() || Instant::now() >= deadline || listed >= SEARCH_FOLDERS {
+        if Instant::now() >= deadline || listed >= SEARCH_FOLDERS {
             break;
         }
         listed += 1;
@@ -204,7 +206,7 @@ pub fn find_in(root: &Path, mut wanted: HashSet<String>, deadline: Instant) -> V
                 if depth < SEARCH_DEPTH {
                     stack.push((e.path(), depth + 1));
                 }
-            } else if wanted.remove(&e.file_name().to_string_lossy().to_lowercase()) {
+            } else if wanted.contains(&e.file_name().to_string_lossy().to_lowercase()) {
                 here = true;
             }
         }

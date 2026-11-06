@@ -26,7 +26,23 @@
 <p>The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
 <p id="change-empty" hidden>No changes match your search.</p>
-<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-05</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-06</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Lemon EQ keeps its analyzer refreshing during continuous mouse movement. Timed spectrum analysis, smoother peak drawing and reduced redraw work improve display responsiveness.</li>
+<li style="margin:10px 0">Lemon EQ adds an accessible analyzer Speed menu with resolution, range, tilt and averaging choices. New instances use a slower display; saved analyzer preferences are retained.</li>
+<li style="margin:10px 0">Clearer audition, dynamics and A/B controls, plus optional temporary RMS Level match for comparing EQ changes. Level match is off by default and clears when the editor closes.</li>
+<li style="margin:10px 0">Full-length Playlist pattern clips follow added or deleted Piano Roll notes across arrangements, including Undo and Redo. Manually trimmed and stretched clip lengths are preserved.</li>
+<li style="margin:10px 0">Reversed Lemon Sampler audio is drawn in reverse in the Playlist without modifying the source recording.</li>
+<li style="margin:10px 0">Reset all selected Mixer faders to 0 dB together, and solo selected Mixer tracks from their context menu.</li>
+<li style="margin:10px 0">Selected Playlist track headers support group delete, solo and color changes. Deleting selected folder headers preserves unselected child tracks and supports Undo.</li>
+<li style="margin:10px 0">Drag multiple selected effects from Plugin Picker onto a Mixer channel in picker order. Existing effects and reserved slots are preserved; drops with insufficient room are rejected together.</li>
+<li style="margin:10px 0">Playlist clip-control category buttons remain visible when clicked repeatedly. Audio clip menu icons show a pointing-finger cursor.</li>
+<li style="margin:10px 0">FL project sample recovery handles collected content placeholders without an FL content folder. More-specific relative paths take priority, while duplicate sample names require an explicit choice.</li>
+<li style="margin:10px 0">The first normal Save of a newly imported FLP opens Save As for a Lemon working copy. File &gt; Import adds a persistent compatibility report, full report export and missing-file recovery choices.</li>
+<li style="margin:10px 0">FL plugin substitutes require approval before starting with default settings. Untouched imported presets are retained, deliberate native-plugin edits save correctly, and state-normalization warnings remain in the import report.</li>
+<li style="margin:10px 0">Imported FL Mixer tracks use neutral layouts while saved Lemon layouts are preserved. Edited duplicate effect-control records update consistently.</li>
+<li style="margin:10px 0">The import report identifies unsupported automation links while retaining their data. Older FL project layouts and unidentified automation targets remain compatibility limitations.</li>
+</ul></details>
+<details class="change-entry" style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-05</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
 <li style="margin:10px 0">Lemon EQ has a resizable graph-led glass editor with compact Frequency, Gain and Q controls, independent window dimensions and interface scaling, grouped band editing, Undo/Redo and A/B comparison.</li>
 <li style="margin:10px 0">Clearly labeled Dynamic and Spectral buttons show each band mode. Right-click bands to switch modes, enter precise values or delete; right-click empty graph space to add regular, dynamic or spectral bands.</li>
 <li style="margin:10px 0">Dynamic EQ adds automatic or manual threshold, attack and release with an illuminated range ring. Frequency-selective spectral dynamics and De-harsh provide resonance suppression, density and detector tilt controls while retaining the original static EQ path at default settings.</li>

@@ -99,6 +99,7 @@ pub struct PianoState {
     /// The project changed since the playing engine last got it (notes, steps, mixer, channel
     /// settings, tempo); `App::tick` sends it to the transport.
     pub dirty: bool,
+    pub edit_length:Option<(u16,u32)>,
     /// Key held with the mouse (keyboard press or a dragged note), lit on the keyboard (§4).
     pub held: Option<i32>,
     /// Keys held on the typing keyboard as (channel index, key), lit too (ui/typing-keyboard.md).
@@ -157,6 +158,7 @@ impl Default for PianoState {
             last_len: 0,
             last_controls: None,
             dirty: false,
+            edit_length:None,
             held: None,
             typed: Vec::new(),
             tool: Tool::Draw,
@@ -630,6 +632,7 @@ pub fn snapshot(s: &mut State) {
 /// `snapshot`, the step named `name` (as the browser's History lists it; spec: ui/settings-choices.md "Undo history:
 /// the four checks (2026-10-16)").
 pub fn snapshot_as(s: &mut State, name: &'static str) {
+    s.piano.edit_length=Some((s.pattern,s.project.pattern_length(s.pattern)));
     s.piano.dirty = true;
     let snap = crate::history::Snap::pattern(s, s.pattern);
     crate::history::record(s, name, snap);
@@ -650,6 +653,7 @@ pub fn rescale(s: &mut State, from: u16, to: u16) {
     let p = &mut s.piano;
     p.scroll_x *= k;
     p.last_len = rescale_length(p.last_len, from, to);
+    if let Some((_,len))=&mut p.edit_length{*len=rescale_length(*len,from,to);}
     p.marker = rescale_tick(p.marker, from, to);
     p.range = p.range.map(|(a, b)| (rescale_tick(a, from, to), rescale_tick(b, from, to)));
     p.clipboard.iter_mut().for_each(|n| n.rescale(from, to));
@@ -716,6 +720,7 @@ pub fn copy_controls(from: &Note, to: &mut Note) {
 
 /// Delete notes by index.
 pub fn delete(s: &mut State, mut idx: Vec<usize>) {
+    let old=s.project.pattern_length(s.pattern);
     idx.sort_unstable();
     idx.dedup();
     let p = pattern_mut(s);
@@ -725,10 +730,12 @@ pub fn delete(s: &mut State, mut idx: Vec<usize>) {
         }
     }
     s.piano.clear_selection();
+    crate::playlist::refit_pattern_clips(s,s.pattern,old);
 }
 
 /// Restore storage order (sorted by position, patterns.md) after an edit, keeping the selection.
 pub fn finish_edit(s: &mut State) {
+    if let Some((n,old))=s.piano.edit_length.take(){crate::playlist::refit_pattern_clips(s,n,old);}
     let (pattern, sel_key) = (s.pattern, s.piano.sel_key);
     let p = pattern_mut(s);
     let mut order: Vec<usize> = (0..p.notes.len()).collect();

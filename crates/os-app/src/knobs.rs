@@ -358,12 +358,11 @@ impl crate::app::App {
                 self.hint = Cow::Owned(s.knob_text(id));
             }
             Control::Fader(t) => {
-                crate::history::fader(s, t, false);
+                let tracks=if crate::mixer::is_selected(s,t){crate::mixer::selected(s)}else{vec![t]};
+                if crate::prefs::check(&crate::prefs::UNDO_KNOB_TWEAKS){let snaps=tracks.iter().filter_map(|&n|crate::mixer::track(s,n).map(|m|crate::history::Snap::Fader(n,m.volume))).collect();crate::history::record(s,"Reset selected mixer volumes",crate::history::Snap::Several(snaps));}
                 let v = os_model::MixerTrack::new(t).volume.unwrap_or(0.8);
-                if let Some(m) = crate::mixer::track_mut(s, t) {
-                    m.volume = Some(v);
-                    s.piano.dirty = true;
-                }
+                for n in tracks{if let Some(m)=crate::mixer::track_mut(s,n){m.volume=Some(v);}}
+                s.piano.dirty=true;
                 self.hint = Cow::Owned(crate::mixer::level_text("Volume", v));
             }
             Control::ChanPitch(row) => {

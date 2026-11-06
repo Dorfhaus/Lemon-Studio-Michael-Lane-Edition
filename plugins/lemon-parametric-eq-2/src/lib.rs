@@ -10,6 +10,7 @@
 #![allow(semicolon_in_expressions_from_non_local_macros)]
 
 pub mod analyzer;
+mod gain_match;
 pub mod editor;
 pub mod params;
 pub mod view;
@@ -35,6 +36,8 @@ pub struct Shared {
     pub trigger:[AtomicU32;7],
     pub threshold:[AtomicU32;7],
     pub solo:AtomicI32,
+    pub gain_match:AtomicBool,
+    pub repaint_pending:AtomicBool,
     pub editor_w:AtomicU32,
     pub editor_h:AtomicU32,
     /// Set while an editor is open (the audio thread feeds the analyzer only then).
@@ -56,6 +59,8 @@ impl Default for Shared {
             editor_w:AtomicU32::new(view::W),
             editor_h:AtomicU32::new(view::H),
             solo:AtomicI32::new(-1),
+            gain_match:AtomicBool::new(false),
+            repaint_pending:AtomicBool::new(false),
             spectral:std::array::from_fn(|_|AtomicU32::new(0f32.to_bits())),
             trigger:std::array::from_fn(|_|AtomicU32::new((-120f32).to_bits())),
             threshold:std::array::from_fn(|_|AtomicU32::new((-30f32).to_bits())),
@@ -79,6 +84,7 @@ pub struct LemonEq {
     sr: f64,
     /// The original's processing (every mode), and the parameters it was last given as stored values.
     eq: Equalizer,
+    gain_match:gain_match::GainMatch,
     audition:os_engine::effects::eq::dynamic::Audition,
     applied: [i32; PARAMS],
     /// The options read from the state image, and the delay last reported to the host.
@@ -99,6 +105,7 @@ impl Default for LemonEq {
             params,
             shared: Arc::new(Shared::default()),
             sr: 44100.0,
+            gain_match:gain_match::GainMatch::default(),
             audition:os_engine::effects::eq::dynamic::Audition::new(44100.),
             eq: Equalizer::new(44100.0, &applied, opts),
             applied,
@@ -189,6 +196,7 @@ impl Plugin for LemonEq {
 
     fn initialize(&mut self, _layout: &AudioIOLayout, config: &BufferConfig, ctx: &mut impl InitContext<Self>) -> bool {
         self.sr = f64::from(config.sample_rate);
+        self.gain_match.reset();
         self.audition=os_engine::effects::eq::dynamic::Audition::new(self.sr);
         self.shared.rate.store(config.sample_rate as u32, Ordering::Relaxed);
         self.extra_seen = u64::MAX;
@@ -207,6 +215,7 @@ impl Plugin for LemonEq {
 
     /// A new instance's state, with FL's silent buffers before a render already run (LIN starts at full level).
     fn reset(&mut self) {
+        self.gain_match.reset();
         self.eq.reset();
         self.eq.preroll();
     }
@@ -228,10 +237,13 @@ impl Plugin for LemonEq {
         if watch && self.monitor.0 == 1 {
             self.feed_scope(&out[0][..len], &out[1][..len]);
         }
+        let matching=self.shared.gain_match.load(Ordering::Relaxed) && self.shared.editor_open.load(Ordering::Relaxed);
+        let input_energy=if matching {gain_match::GainMatch::energy(&out[0][..len],&out[1][..len])}else{0.};
         let (left, right) = out.split_at_mut(1);
         let solo=self.shared.solo.load(Ordering::Relaxed);
         if (0..7).contains(&solo){let band=self.params.settings(self.opts.mask).bands[solo as usize];self.audition.process(&mut left[0][..len],&mut right[0][..len],band);}
         self.eq.process(&mut left[0][..len], &mut right[0][..len]);
+        self.gain_match.process(input_energy,&mut left[0][..len],&mut right[0][..len],self.sr,matching && solo<0);
         if self.shared.editor_open.load(Ordering::Relaxed){
         for (meter,v) in self.shared.dynamics.iter().zip(self.eq.dynamic_meters()){meter.store(v.to_bits(),Ordering::Relaxed);}
         for (meter,v) in self.shared.spectral.iter().zip(self.eq.spectral_response()){meter.store(v.to_bits(),Ordering::Relaxed);}

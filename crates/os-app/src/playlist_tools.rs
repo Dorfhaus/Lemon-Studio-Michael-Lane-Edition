@@ -94,6 +94,15 @@ pub fn cursor(app: &App) -> Option<Cursor> {
             && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1).is_some() {
             return Some(Cursor::Playlist(tool,GAIN));
         }
+        if app.drag.is_none() && !matches!(tool,PlTool::Select|PlTool::Comp)
+            && let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1) {
+            let clip=pl::clips(&app.state)[i];let r=g.clip_rect(&clip);
+            let menu=app.mouse.0<r.x+14. && app.mouse.1<r.y+pl::TITLE_H && r.w>20.;
+            if menu && pl::source_kind(&app.state,clip.source)==PickKind::Audio
+                && !(app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint)) {
+                return Some(Cursor::Playlist(tool,GAIN));
+            }
+        }
     }
     if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::Playlist(tool,RESIZE)); }
 

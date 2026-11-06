@@ -210,6 +210,14 @@ pub enum Mark {
 /// Commands of the playlist's popup menus (§10).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
+    ImportReport,
+    ExportImportReport,
+    ImportOptions,
+    FindMissingSamples,
+    ApproveSubstitutes,
+    LocateMissingSample(u16),
+    BrowseMissingSample(u16),
+    UseMissingSample(u16,String,std::path::PathBuf),
     MainMenu(usize, usize),
     StripSilence(usize),
     Warp(usize),
@@ -1367,7 +1375,7 @@ pub fn source_len(s: &State, src: ClipSource) -> u32 {
 pub fn refit_pattern_clips(s: &mut State, n: u16, old: u32) {
     let new = s.project.pattern_length(n);
     for a in &mut s.project.arrangements {
-        for c in a.clips.iter_mut().filter(|c| c.source == ClipSource::Pattern(n) && c.window.is_none() && c.length == old) {
+        for c in a.clips.iter_mut().filter(|c| c.source == ClipSource::Pattern(n) && c.window.is_none() && c.pattern_rate()==1. && c.length == old) {
             c.length = new;
         }
     }
@@ -2097,6 +2105,16 @@ pub fn insert_track(s: &mut State, t: u16) {
 
 /// Delete track `t` with its clips (the rest move up).
 pub fn delete_track(s: &mut State, t: u16) {
+    // Deleting a folder header preserves unselected children without joining the preceding group.
+    if is_group_track(s,t)&&track_info(s,t+1).is_some_and(|r|r.grouped){arr_mut(s).tracks[t as usize+1].grouped=false;}
+    if s.playlist.solo.as_ref().is_some_and(|(row,_)|*row==t){end_solo(s);}
+    let remap=|r:u16|if r==t{None}else{Some(if r>t{r-1}else{r})};
+    s.playlist.automation_last=std::mem::take(&mut s.playlist.automation_last).into_iter().filter_map(|(r,ch)|remap(r).map(|r|(r,ch))).collect();
+    s.playlist.automation_views=std::mem::take(&mut s.playlist.automation_views).into_iter().filter_map(|(r,ch)|remap(r).map(|r|(r,ch))).collect();
+    s.playlist.automation_owners.retain(|_,r|if let Some(next)=remap(*r){*r=next;true}else{false});
+    s.playlist.sampler_rows.retain(|_,r|if let Some(next)=remap(*r){*r=next;true}else{false});
+    s.playlist.track=remap(s.playlist.track).unwrap_or(t.saturating_sub(1));
+    if let Some((row,states))=&mut s.playlist.solo{*row=remap(*row).unwrap_or(0);if(t as usize)<states.len(){states.remove(t as usize);states.push(true);}}
     s.playlist.vocal.row=s.playlist.vocal.row.and_then(|r|if r==t{None}else{Some(if r>t{r-1}else{r})});
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
@@ -2117,6 +2135,7 @@ pub fn delete_track(s: &mut State, t: u16) {
         arr.tracks[k] = PlaylistTrack { number: arr.tracks[k].number, ..next };
     }
     arr.tracks[n - 1] = PlaylistTrack::new(n as u32);
+    for track in &mut arr.tracks{if let Some(clips)=&mut track.frozen{for c in clips{if c.track>t{c.track-=1;}}}}
     s.piano.dirty = true;
 }
 
@@ -2135,16 +2154,13 @@ pub fn toggle_track(s: &mut State, t: u16) {
 /// Ctrl+click / right-click on the LED: solo the track (others muted); again ends the solo (see [`end_solo`]). A solo
 /// moved to another track keeps the states from before the first one.
 pub fn toggle_solo(s: &mut State, t: u16) {
-    if let Some((was, _)) = s.playlist.solo {
-        end_solo(s);
-        if was == t {
-            return;
-        }
-    }
+    let chosen=folder_members(s,t);let mut keep=chosen.clone();
+    for &row in &chosen{if is_group_track(s,row){keep.extend((row+1..TRACKS).take_while(|&r|track_info(s,r).is_some_and(|r|r.grouped)));}if let Some(parent)=group_track(s,row){keep.push(parent);}}
+    if let Some((was,_))=s.playlist.solo {let same=s.project.arrangement().is_some_and(|a|a.tracks.iter().enumerate().all(|(k,r)|r.enabled==keep.contains(&(k as u16))));end_solo(s);if was==t&&same{return;}}
     let arr = arr_mut(s);
     let states: Vec<bool> = arr.tracks.iter().map(|t| t.enabled).collect();
     for (k, tr) in arr.tracks.iter_mut().enumerate() {
-        tr.enabled = k == usize::from(t);
+        tr.enabled = keep.contains(&(k as u16));
     }
     s.playlist.solo = Some((t, states));
     s.piano.dirty = true;
@@ -2944,7 +2960,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
             .mark(Mark::Radio(s.playlist.row_h == f32::from(height)))).collect()),
         PItem::sep(),
         PItem::new("Mute", Cmd::TrackMute(t)).mark(Mark::Check(!on)),
-        PItem::new("Solo", Cmd::TrackSolo(t)).mark(Mark::Check(s.playlist.solo.as_ref().is_some_and(|x| x.0 == t))),
+        PItem::new(if folder_members(s,t).len()>1{"Solo selected tracks"}else{"Solo"}, Cmd::TrackSolo(t)).mark(Mark::Check(s.playlist.solo.as_ref().is_some_and(|x| x.0 == t))),
         PItem::new("Mute all clips", Cmd::TrackMuteClips(t, true)),
         PItem::new("Unmute all clips", Cmd::TrackMuteClips(t, false)),
         PItem::sep(),
@@ -2953,7 +2969,7 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
             .mark(Mark::Check(group_track(s, t).or(Some(t)).and_then(|g| track_info(s, g)).is_some_and(|x| x.collapsed))),
         PItem::sep(),
         PItem::new("Insert one", Cmd::TrackInsert(t)),
-        PItem::new("Delete one", Cmd::TrackDelete(t)),
+        PItem::new(if folder_members(s,t).len()>1{"Delete selected tracks"}else{"Delete track"}, Cmd::TrackDelete(t)),
         PItem::new("Move up", Cmd::TrackUp(t)),
         PItem::new("Move down", Cmd::TrackDown(t)),
     ];
@@ -4258,6 +4274,7 @@ pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
         return app.invalidate();
     }
     let now = std::time::Instant::now();
+    s.playlist.sel.clear();
     let anchor=if app.shift{s.playlist.header_anchor.unwrap_or(s.playlist.track)}else{t};
     if app.ctrl || app.shift{
         let mut base=if app.ctrl{s.playlist.header_selection.clone()}else{Vec::new()};
@@ -4399,6 +4416,15 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     app.state.playlist.popup = None;
     // Commands that need the whole app.
     match cmd {
+        Cmd::ExportImportReport=>{crate::import_report::export(app);return None;},
+        Cmd::ImportReport=>{crate::import_report::show(app,0);return None;},
+        Cmd::ImportOptions=>{crate::import_report::options(app);return None;},
+        Cmd::FindMissingSamples=>{crate::missing::pick_folder(app);return None;},
+        Cmd::ApproveSubstitutes=>{crate::import_report::approve(app);return None;},
+        Cmd::LocateMissingSample(row)=>{crate::import_report::locate(app,row as usize);return None;},
+        Cmd::BrowseMissingSample(row)=>{crate::import_report::browse(app,row as usize);return None;},
+        Cmd::UseMissingSample(row,old,path)=>{crate::import_report::relink(app,row as usize,&old,&path);return None;},
+
         Cmd::Browser(b) => return app.browser_cmd(b),
         Cmd::Plugin(c) => return crate::plugin_menu::run(app, c),
         Cmd::Project(c) => return crate::project_picker::run(app, c),
@@ -4825,6 +4851,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             snapshot(s);
             (!delete_space(s)).then(|| "Delete space: make a time selection first (right-drag the ruler)".into())
         }
+        Cmd::ImportReport | Cmd::ExportImportReport | Cmd::ImportOptions | Cmd::FindMissingSamples | Cmd::ApproveSubstitutes | Cmd::LocateMissingSample(_) | Cmd::BrowseMissingSample(_) | Cmd::UseMissingSample(..) |
         Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
         Cmd::StretchMode => {
             s.playlist.stretch = !s.playlist.stretch;
@@ -5233,8 +5260,10 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             None
         }
         Cmd::TrackDelete(t) => {
-            snapshot(s);
-            delete_track(s, t);
+            let mut rows=folder_members(s,t);
+            rows.sort_unstable();rows.dedup();rows.retain(|&r|r<TRACKS);
+            snapshot_as(s,"Delete playlist tracks");
+            for row in rows.into_iter().rev(){delete_track(s,row);}
             None
         }
         Cmd::TrackHeight(row,height)=>{snapshot_as(s,"Resize playlist track");if let Some(t)=arr_mut(s).tracks.get_mut(row as usize){t.height=height.map(f32::from);}s.piano.dirty=true;None},
@@ -5249,13 +5278,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         }
         Cmd::TrackColor(t, c) => {
             snapshot(s);
-            if let Some(tr) = arr_mut(s).tracks.get_mut(usize::from(t)) {
-                tr.color = c;
-                // FL writes the default name when a track is recoloured (flp playlist.md).
-                if c.is_some() && tr.name.is_none() {
-                    tr.name = Some(format!("Track {}", t + 1));
-                }
-            }
+            for row in folder_members(s,t){if let Some(tr)=arr_mut(s).tracks.get_mut(row as usize){tr.color=c;if c.is_some()&&tr.name.is_none(){tr.name=Some(format!("Track {}",row+1));}}}
             s.piano.dirty = true;
             None
         }
@@ -5557,6 +5580,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
         }
         Key::Named(NamedKey::Delete) if ctrl => Cmd::DeleteSpace,
         Key::Named(NamedKey::Insert) if ctrl => Cmd::InsertSpace,
+        Key::Named(NamedKey::Delete) if app.state.playlist.header_selection.len()>1&&app.state.playlist.sel.is_empty()=>Cmd::TrackDelete(app.state.playlist.track),
         Key::Named(NamedKey::Delete) => Cmd::Delete,
         Key::Named(NamedKey::PageUp) => Cmd::ZoomIn,
         Key::Named(NamedKey::PageDown) => Cmd::ZoomOut,

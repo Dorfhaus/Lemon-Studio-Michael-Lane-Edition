@@ -83,6 +83,9 @@ pub enum Then {
     PluginFolder,
     /// The missing files box (`crate::missing`): Find samples... (Yes) or OK.
     MissingFiles,
+    ImportReport(usize),
+    SaveImportReport,
+    RelinkSample(usize,String),
     /// The folder the missing samples are looked for in.
     SampleFolder,
     /// FILE ▸ Export ▸ Zipped loop package...: the zip file (`crate::zipped`).

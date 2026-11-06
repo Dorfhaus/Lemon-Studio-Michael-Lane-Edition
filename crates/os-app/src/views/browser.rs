@@ -91,6 +91,7 @@ pub enum Item {
     Generator(usize),
     /// An effect (index into `Plugins::effects`).
     Effect(usize),
+    Effects(Vec<usize>),
     /// A non-audio file in a dropped folder; MIDI files can be dragged to import.
     File(String),
     /// A parameter of a hosted plugin: hosted key, parameter index (spec: plugins/plugin-parameters.md §6).

@@ -543,9 +543,12 @@ impl Snap {
             Snap::AudioWarps(v)=>s.project.audio_warps=v,
             Snap::Tempo(v) => s.tempo=v,
             Snap::Pattern { number, notes, controls, length } => {
+                let old=s.project.pattern_length(number);
+                s.piano.edit_length=None;
                 s.pattern = number;
                 let p = crate::patterns::pat_mut(s, number);
                 (p.notes, p.controls, p.length) = (notes, controls, length);
+                crate::playlist::refit_pattern_clips(s,number,old);
                 s.piano.clear_selection();
             }
             Snap::Ara(row,plugin,state) => {if let Some(ch)=s.project.channels.get_mut(row){ch.plugin=plugin;ch.plugin_state=state;}},

@@ -71,6 +71,7 @@ mod knobs;
 mod layout;
 mod loading;
 mod missing;
+mod import_report;
 mod zipped;
 mod logo;
 #[cfg(target_os = "macos")]

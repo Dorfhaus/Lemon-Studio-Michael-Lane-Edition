@@ -64,7 +64,7 @@ fn clip_controls(ui: &mut Ui, s: &State, strip: Rect) {
     };
     for (i, (k, icon, hint)) in [(PickKind::Audio, Icon::Wave, "Audio clip controls"), (PickKind::Automation, Icon::Slide, "Automation editing controls"), (PickKind::Pattern, Icon::PianoRoll, "Pattern note colors")].into_iter().enumerate() {
         let b = Rect::new(strip.x + 8.0 + i as f32 * 32.0, strip.y + 1.0, 26.0, 18.0);
-        let hov = ui.hit(b, Action::PlControl(C::Show(k)), hint);
+        let hov = ui.hit(b, Action::PlControl(C::Select(k)), hint);
         let ink = tool_face(ui, b, kind == k, hov);
         icons::draw(ui.c, icon, b.inset(3.0), ink);
     }
@@ -913,9 +913,11 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
         w.fine.borrow().clone()
     }else{None};
     // Peaks from `da` to `db` px into the body.
+    let reversed=s.project.channel(ch).is_some_and(|ch|ch.sound.fx.flags&os_model::SampleFx::REVERSE!=0);
     let range = |da: f64, db: f64| -> Option<(f32, f32)> {
         let ms_a = w0 + da / ppt * ms_per_tick;
         let ms_b = w0 + db / ppt * ms_per_tick;
+        let (ms_a,ms_b)=if reversed{let end=w.frames as f64/frames_per_ms;((end-ms_b).max(0.),(end-ms_a).max(0.))}else{(ms_a,ms_b)};
         if let Some(sample)=&fine {
             let per=if detail==1 {8} else {1};
             let a=(ms_a*frames_per_ms).max(0.) as usize/per*per;

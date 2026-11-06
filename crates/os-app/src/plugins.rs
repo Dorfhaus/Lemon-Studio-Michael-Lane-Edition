@@ -57,6 +57,7 @@ pub struct Hosted {
     /// A native instance started from a project's state that it did not give back byte for byte: a save keeps the
     /// file's bytes instead of this instance's state (spec: plugins/fruity-abi.md "Saved state").
     pub keep_file_state: bool,
+    pub native_import_edited: bool,
     /// A copy in another format standing in for the wrapped plugin a project names (`project_plugins::switched_format`),
     /// not edited by the user yet: a save leaves the channel's or slot's wrapper bytes as the file had them, so the named
     /// plugin and its settings stay in the project. Playback and automation moving its parameters are not edits; the
@@ -117,6 +118,7 @@ impl Hosted {
             pending_editor_resize: None,
             stop_told: false,
             keep_file_state: false,
+            native_import_edited: false,
             stand_in: false,
             attention,
             seen: Look::never(),
@@ -716,6 +718,7 @@ impl Plugins {
     pub fn mark_edited(&mut self, key: usize) {
         if let Some(h) = self.hosted.get_mut(&key) {
             h.stand_in = false;
+            if h.keep_file_state {h.keep_file_state=false;h.native_import_edited=true;}
             self.edit_revision = self.edit_revision.wrapping_add(1);
         }
     }

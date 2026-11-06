@@ -1756,9 +1756,11 @@ fn set_param_record(data: &mut Vec<u8>, loc: u16, pid: u8, v: i32) {
 
 /// Sets the record (`kind`, `pid`) at `loc`, or adds it before the first record of a later location.
 fn set_record(data: &mut Vec<u8>, kind: u8, loc: u16, pid: u8, v: i32) {
-    let found = mixer_param_records(data).find(|&(_, p, k, at, _)| k == kind && p == pid && at == loc).map(|r| r.0);
-    if let Some(off) = found {
-        data[off + 8..off + 12].copy_from_slice(&v.to_le_bytes());
+    // Some FL projects repeat a control record. The reader takes the final slot value;
+    // update every matching record so a later duplicate cannot undo the user's edit.
+    let found:Vec<_> = mixer_param_records(data).filter(|&(_, p, k, at, _)| k == kind && p == pid && at == loc).map(|r| r.0).collect();
+    if !found.is_empty() {
+        for off in found {data[off + 8..off + 12].copy_from_slice(&v.to_le_bytes());}
         return;
     }
     let at = mixer_param_records(data)
@@ -4651,6 +4653,26 @@ mod tests {
         assert!(back.mixer[1].strip_bypassed);assert!(!back.mixer[2].strip_bypassed);assert!(back.mixer[1].slots_enabled);assert_eq!(back.mixer[1].strip[0],12345);
         let mut old=f;old.chunks.retain(|c|c.tag!=STRIP_BYPASS_TAG);assert!(!load(&old).unwrap().mixer[1].strip_bypassed);
     }
+ #[test]fn foreign_imports_have_neutral_layouts_and_explicit_lemon_layouts_survive(){
+  let mut project=new_project();project.arrangements.push(default_arrangement());project.mixer=(0..45).map(MixerTrack::new).collect();project.mixer[33].channel_layout=2;
+  let mut file=create(&project).unwrap();assert_eq!(load(&file).unwrap().mixer[33].channel_layout,2);
+  file.chunks.retain(|c|!matches!(&c.tag.0,b"LPCH"|b"LSKB"|b"LSCL"));
+  let foreign=load(&file).unwrap();assert!(foreign.mixer.iter().all(|t|t.channel_layout==0));
+  file.chunks.push(Chunk{tag:Tag(*b"LPCH"),body:ChunkBody::Raw(vec![1,0,0,0,0])});
+  assert_eq!(load(&file).unwrap().mixer[33].channel_layout,2,"old Lemon migration retained");
+ }
+
+    #[test]
+    fn duplicated_imported_slot_controls_take_the_new_value() {
+        let loc=mixer_location(3,2);
+        let mut data=param_rec(MX_SLOT_MIX,MX_KIND_PARAM,loc,12800).to_vec();
+        data.extend(param_rec(MX_SLOT_MIX,MX_KIND_PARAM,loc,6400));
+        let untouched=param_rec(17,MX_KIND_PARAM,loc,1234);data.extend(&untouched);
+        set_param_record(&mut data,loc,MX_SLOT_MIX,3200);
+        let values:Vec<_>=mixer_param_records(&data).filter(|r|r.1==MX_SLOT_MIX).map(|r|r.4).collect();
+        assert_eq!(values,vec![3200,3200]);assert_eq!(&data[data.len()-untouched.len()..],untouched);
+    }
+
     #[test]
     fn channel_layouts_roundtrip_and_legacy_vocal_range() {
         let mut p=new_project();p.arrangements.push(default_arrangement());p.mixer=(0..45).map(MixerTrack::new).collect();
@@ -5648,6 +5670,7 @@ mod tests {
         let (mut lists, mut autos) = (0, 0);
         for path in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let file = FlpFile::parse(&std::fs::read(path).unwrap()).unwrap();
+            if matches!(load(&file),Err(ProjectError::LegacyLayout(_))){continue;}
             for e in events_of(&file).unwrap() {
                 match e.id {
                     id::ARR_CLIPS => {
@@ -6476,8 +6499,9 @@ fn write_comp_groups(p: &Project, file: &mut FlpFile) {
 
 const CHANNEL_LAYOUT_TAG:Tag=Tag(*b"LSCL");
 fn read_channel_layouts(file:&FlpFile,p:&mut Project) {
-    // Upgrade the user's existing mixer once. Explicit layouts thereafter travel with channels.
-    for m in &mut p.mixer {m.channel_layout=if (32..=41).contains(&m.index){2}else{1};}
+    // Migrate old Lemon projects only. Foreign FL projects have no template-specific Vox strips.
+    let old_lemon=file.chunks.iter().any(|c|matches!(&c.tag.0,b"LPCH"|b"LSKB"));
+    for m in &mut p.mixer {m.channel_layout=if old_lemon{if (32..=41).contains(&m.index){2}else{1}}else{0};}
     for c in &file.chunks {
         if c.tag!=CHANNEL_LAYOUT_TAG {continue;}let ChunkBody::Raw(d)=&c.body else{continue};
         if d.first()!=Some(&1){continue;}

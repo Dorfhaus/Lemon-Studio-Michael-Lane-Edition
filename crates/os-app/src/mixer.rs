@@ -1260,6 +1260,7 @@ fn track_items(s: &State, n: u16) -> Vec<PItem> {
         PItem::sub("Change color...", colors),
         PItem::not_yet("Change icon..."),
         PItem::sep(),
+        PItem::new(if targets(s,n).len()>1{"Solo selected tracks"}else{"Solo"},mx(MCmd::Solo(n))),
         PItem::new("Reset selected track(s) to default", mx(MCmd::Reset(n))),
         PItem::new("Reset selected track(s) routing", mx(MCmd::ResetRouting(n))),
         PItem::sep(),

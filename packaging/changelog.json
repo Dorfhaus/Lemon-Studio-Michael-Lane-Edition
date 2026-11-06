@@ -3,6 +3,26 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-06",
+      "title": "Smoother Lemon EQ, grouped editing and safer FL imports \u00b7 public build 2026110601",
+      "changes": [
+        "Lemon EQ keeps its analyzer refreshing during continuous mouse movement. Timed spectrum analysis, smoother peak drawing and reduced redraw work improve display responsiveness.",
+        "Lemon EQ adds an accessible analyzer Speed menu with resolution, range, tilt and averaging choices. New instances use a slower display; saved analyzer preferences are retained.",
+        "Clearer audition, dynamics and A/B controls, plus optional temporary RMS Level match for comparing EQ changes. Level match is off by default and clears when the editor closes.",
+        "Full-length Playlist pattern clips follow added or deleted Piano Roll notes across arrangements, including Undo and Redo. Manually trimmed and stretched clip lengths are preserved.",
+        "Reversed Lemon Sampler audio is drawn in reverse in the Playlist without modifying the source recording.",
+        "Reset all selected Mixer faders to 0 dB together, and solo selected Mixer tracks from their context menu.",
+        "Selected Playlist track headers support group delete, solo and color changes. Deleting selected folder headers preserves unselected child tracks and supports Undo.",
+        "Drag multiple selected effects from Plugin Picker onto a Mixer channel in picker order. Existing effects and reserved slots are preserved; drops with insufficient room are rejected together.",
+        "Playlist clip-control category buttons remain visible when clicked repeatedly. Audio clip menu icons show a pointing-finger cursor.",
+        "FL project sample recovery handles collected content placeholders without an FL content folder. More-specific relative paths take priority, while duplicate sample names require an explicit choice.",
+        "The first normal Save of a newly imported FLP opens Save As for a Lemon working copy. File > Import adds a persistent compatibility report, full report export and missing-file recovery choices.",
+        "FL plugin substitutes require approval before starting with default settings. Untouched imported presets are retained, deliberate native-plugin edits save correctly, and state-normalization warnings remain in the import report.",
+        "Imported FL Mixer tracks use neutral layouts while saved Lemon layouts are preserved. Edited duplicate effect-control records update consistently.",
+        "The import report identifies unsupported automation links while retaining their data. Older FL project layouts and unidentified automation targets remain compatibility limitations."
+      ]
+    },
+    {
       "date": "2026-11-05",
       "title": "Lemon EQ dynamics, spectral processing and editing improvements \u00b7 public build 2026110505",
       "changes": [

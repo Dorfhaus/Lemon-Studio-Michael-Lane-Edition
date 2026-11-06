@@ -87,6 +87,8 @@ pub enum Target {
     Phones,
     /// 0 off, 1 input, 2 output.
     Monitor(u8),
+    Analyzer,
+    GainMatch,
     Store,
     Flip,
 }
@@ -102,6 +104,8 @@ pub struct Hit {
 /// Editor-only state (not saved).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ViewState {
+    pub gain_match: bool,
+    pub compare_b: bool,
     pub size: (f32, f32),
     pub ui_scale: f32,
     pub range_db: f32,

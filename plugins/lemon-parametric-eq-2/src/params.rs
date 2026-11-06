@@ -213,6 +213,9 @@ pub fn default_state() -> Vec<u8> {
     for (i, v) in opts.into_iter().enumerate() {
         set_field(&mut b, 73 + i, v);
     }
+    // New instances use a calmer display and 2048-point resolution. Saved images keep their fields.
+    set_opt(&mut b, Opt::FreqPrecision, 5);
+    set_opt(&mut b, Opt::TimeSmoothing, 3);
     b
 }
 

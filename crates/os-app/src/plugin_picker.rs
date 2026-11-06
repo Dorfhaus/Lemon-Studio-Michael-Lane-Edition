@@ -138,8 +138,10 @@ pub fn mouse_move(app:&mut App,x:f32,y:f32)->bool{
         if !app.ctrl&&!app.shift&&app.state.plugin_picker.filter!=5&&(x-m0.0).hypot(y-m0.1)>5.{
             let list=if fx{&app.state.plugdb.lists.fx}else{&app.state.plugdb.lists.gens};
             if let Some(label)=list.iter().find(|e|e.index==i).map(|e|e.label.clone()){
+                let group:Vec<_>=if fx&&app.state.plugin_picker.multi.contains(&(fx,i)){choices(&app.state).into_iter().filter(|p|p.0&&app.state.plugin_picker.multi.contains(p)).map(|p|p.1).collect()}else{vec![i]};
+                let label=if fx&&group.len()>1{format!("{} effects",group.len())}else{label};
                 close(app);
-                let item=if fx{crate::views::browser::Item::Effect(i)}else{crate::views::browser::Item::Generator(i)};
+                let item=if fx&&group.len()>1{crate::views::browser::Item::Effects(group)}else if fx{crate::views::browser::Item::Effect(i)}else{crate::views::browser::Item::Generator(i)};
                 app.drag=Some(Drag::Browser{item,label:label.clone(),m0,started:true});
                 app.state.browser_drag=Some((label,x,y));
             }

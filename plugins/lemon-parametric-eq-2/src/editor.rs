@@ -24,6 +24,17 @@ use crate::params::{self, byte, flag, freq_id, level_id, order_id, set_byte, set
 use crate::view::{self, Hit, Target, ViewState, MAIN_FADER};
 use crate::Shared;
 
+/// Bounded input-driven refresh, independent of low-priority OS timer/paint delivery.
+#[derive(Default)]
+pub struct InputFrames { origin: Option<std::time::Instant>, next: std::time::Duration }
+impl InputFrames {
+    pub fn due(&mut self) -> bool { let start=*self.origin.get_or_insert_with(std::time::Instant::now);self.due_at(start.elapsed()) }
+    pub fn due_at(&mut self,now:std::time::Duration)->bool {
+        if now < self.next {return false;}
+        self.next=now+crate::analyzer::FRAME;true
+    }
+}
+
 /// "Lock spare state" (Options menu) is not saved; it lasts while the plugin instance lives.
 static LOCK_SPARE: AtomicBool = AtomicBool::new(false);
 
@@ -54,7 +65,7 @@ impl EqEditor {
 
     fn notify(&self) {
         #[cfg(windows)]
-        win32::post_changed(self.hwnd.load(Ordering::Acquire));
+        win32::post_changed(self.hwnd.load(Ordering::Acquire), &self.shared);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         os_plugkit::gui::notify(&self.slot);
     }
@@ -168,6 +179,7 @@ pub enum MenuReq {
     Lin,
     Hq,
     Phones,
+    Analyzer,
 }
 
 fn radio(m: &mut MenuDef<Cmd>, label: &str, on: bool, c: Cmd) {
@@ -379,6 +391,8 @@ impl Logic {
             Some(Target::Tokens) => "View band tokens".into(),
             Some(Target::Phones) => "Band solo on shift".into(),
             Some(Target::Monitor(m)) => format!("Monitor: {}", ["off", "input", "output"][usize::from(m.min(2))]),
+            Some(Target::Analyzer)=>"Analyzer speed, resolution, range and tilt; display settings do not change the audio".into(),
+            Some(Target::GainMatch)=>"Temporary RMS gain matching for A/B listening (off when editor closes); does not change output knob or saved settings".into(),
             Some(Target::Store) => if LOCK_SPARE.load(Ordering::Relaxed) { "Store in spare state (locked)".into() } else { "Store in spare state".into() },
             Some(Target::Flip) => "Flip with spare state (A/B compare)".into(),
             _ => {
@@ -444,9 +458,11 @@ impl Logic {
             if LOCK_SPARE.load(Ordering::Relaxed) {
                 return;
             }
+            self.view.compare_b=false;
             self.params.edit_extra(|b| {fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v));eq::routed::save_routes(b,current_routes,true);if flip{eq::routed::save_routes(b,spare_routes,false);}});
             return;
         }
+        self.view.compare_b=!self.view.compare_b;
         let spare = params::settings_at(&self.params.extra_copy(), 37);
         self.params.edit_extra(|b| {fields.iter().enumerate().for_each(|(i, &v)| params::set_field(b, 37 + i, v));eq::routed::save_routes(b,current_routes,true);if flip{eq::routed::save_routes(b,spare_routes,false);}});
         for k in 0..BANDS {
@@ -487,7 +503,7 @@ impl Logic {
             (Target::DisplayRange,Btn::Left)=>{self.view.range_db=match self.view.range_db{v if v<=0.||v>=30.=>3.,v if v<6.=>6.,v if v<12.=>12.,v if v<18.=>18.,_=>30.};},
             (Target::DeleteBand,Btn::Left)=>{let mask=if self.view.selection!=0{self.view.selection}else{1<<self.view.selected};self.delete_bands(mask);},
             (Target::PrevBand|Target::NextBand,Btn::Left)=>{let s=self.shown();let mut order:Vec<_>=(0..7).filter(|&k|self.visible(k)).collect();order.sort_by(|&a,&b|s.bands[a].freq.total_cmp(&s.bands[b].freq));if let Some(at)=order.iter().position(|&k|k==self.view.selected){let next=if t==Target::NextBand{(at+1)%order.len()}else{(at+order.len()-1)%order.len()};self.select(order[next]);}},
-            (Target::Solo(k),Btn::Left)=>{let restore=self.mask();self.set_mask(1<<k);self.shared.solo.store(k as i32,Ordering::Relaxed);self.drag=Some(Drag::Solo{restore});},
+            (Target::Solo(k),Btn::Left)=>{self.view.pressed=Some(t);let restore=self.mask();self.set_mask(1<<k);self.shared.solo.store(k as i32,Ordering::Relaxed);self.drag=Some(Drag::Solo{restore});},
             (Target::Dynamic(i),Btn::Left)=>{if i==29{self.vals.edit_plain(&params::dynamic_id(39),0.);}if i<28 && i%4==0 && self.dynamic_values().bands[i/4][0]==0.{self.vals.edit_plain(&params::dynamic_id(30+i/4),1.);}let id=params::dynamic_id(i);lock(self,Drag::Linear{id:id.clone(),px:240.},&[id]);acts.push(Act::Lock);},
             (Target::Dynamic(i),Btn::Middle)=>self.reset_param(&params::dynamic_id(i)),
             (Target::Dynamic(i),Btn::Right)=>acts.push(Act::Menu(MenuReq::Param(params::dynamic_id(i)),x,y)),
@@ -555,6 +571,8 @@ impl Logic {
             (Target::Phones, Btn::Left) => self.params.edit_extra(|b| toggle(b, params::F_SOLO_SHIFT)),
             (Target::Phones, Btn::Right) => acts.push(Act::Menu(MenuReq::Phones, x, y)),
             (Target::Monitor(i), Btn::Left) => self.params.edit_extra(|b| set_byte(b, params::MONITOR_BYTE, i)),
+            (Target::Analyzer,Btn::Left|Btn::Right)=>acts.push(Act::Menu(MenuReq::Analyzer,x,y)),
+            (Target::GainMatch,Btn::Left)=>{self.view.gain_match=!self.view.gain_match;self.shared.gain_match.store(self.view.gain_match,Ordering::Relaxed);},
             (Target::Store, Btn::Left) => self.compare(false),
             (Target::Flip, Btn::Left) => self.compare(true),
             _ => {}
@@ -612,13 +630,15 @@ impl Logic {
         if matches!(self.drag,Some(Drag::Group{width:false,..})){let previous=self.pointer_drag.replace((x,y));if let Some((px,py))=previous{return self.delta(x-px,y-py,m);}return vec![Act::Repaint];}
         if let Some(Drag::Marquee{x0,y0,create,..})=self.drag.clone(){let r=Rect::new(x.min(x0),y.min(y0),(x-x0).abs(),(y-y0).abs());self.view.marquee=Some(r);let s=self.shown();self.view.selection=(0..7).filter(|&k|self.visible(k)&&{let(p,q)=self.layout().node(&s,k);r.contains(p,q)}).fold(0,|m,k|m|(1<<k));if self.view.selection!=0{self.view.selected=self.view.selection.trailing_zeros() as usize;self.view.show_dynamics=true;}self.drag=Some(Drag::Marquee{x0,y0,x,y,create});return vec![Act::Repaint];}
         if self.drag.is_some() {return vec![Act::Repaint];}
+        let active=self.view.active;
         let t = self.hit(x, y);
         self.view.active = match t {
             Some(Target::Token(k)) => Some(k),
             _ => None,
         };
         self.hint = self.hint_for(t, x, y);
-        vec![Act::Repaint]
+        // Pointer coordinates/hints alone do not change the painted graph.
+        if active != self.view.active {vec![Act::Repaint]} else {vec![]}
     }
 
     pub fn leave(&mut self) -> Vec<Act> {
@@ -730,8 +750,8 @@ impl Logic {
                 check(&mut m, "Enabled", flag(&extra, params::F_HISTOGRAM), Cmd::Flag(params::F_HISTOGRAM));
                 m.submenu("Range", opt_menu(&extra, Opt::Range, &["-60dB", "-90dB", "-120dB"], 1), Cmd::None);
                 m.submenu("Pivot slope", opt_menu(&extra, Opt::PivotSlope, &["0 dB/oct", "1.5 dB/oct", "3 dB/oct", "4.5 dB/oct", "6 dB/oct"], 0), Cmd::None);
-                m.submenu("Frequency precision", opt_menu(&extra, Opt::FreqPrecision, &["Low", "Medium", "High", "Highest"], 0), Cmd::None);
-                m.submenu("Time smoothing", opt_menu(&extra, Opt::TimeSmoothing, &["Fastest", "Fast", "Medium", "Slow", "Slowest"], 0), Cmd::None);
+                m.submenu("Resolution", self.resolution_menu(&extra), Cmd::None);
+                m.submenu("Analyzer speed", opt_menu(&extra, Opt::TimeSmoothing, &crate::analyzer::SPEEDS, 0), Cmd::None);
                 check(&mut m, "Average mode", flag(&extra, params::F_AVERAGE), Cmd::Flag(params::F_AVERAGE));
                 m.head("Heatmap", Cmd::None);
                 check(&mut m, "Enabled", flag(&extra, params::F_HEATMAP), Cmd::Flag(params::F_HEATMAP));
@@ -759,8 +779,27 @@ impl Logic {
                 radio(&mut m, "HQ Legacy", mode == 0 && !enh, Cmd::Hq(1));
                 radio(&mut m, "HQ Enhanced", mode == 0 && enh, Cmd::Hq(2));
             }
+            MenuReq::Analyzer => {
+                m.head("Spectrum analyzer",Cmd::None);
+                m.submenu("Speed",opt_menu(&extra,Opt::TimeSmoothing,&crate::analyzer::SPEEDS,0),Cmd::None);
+                m.submenu("Resolution",self.resolution_menu(&extra),Cmd::None);
+                m.submenu("Range",opt_menu(&extra,Opt::Range,&["60 dB","90 dB","120 dB"],1),Cmd::None);
+                m.submenu("Tilt",opt_menu(&extra,Opt::PivotSlope,&["0 dB/oct","1.5 dB/oct","3 dB/oct","4.5 dB/oct","6 dB/oct"],0),Cmd::None);
+                check(&mut m,"Average",flag(&extra,params::F_AVERAGE),Cmd::Flag(params::F_AVERAGE));
+            }
             MenuReq::Phones => m = self.solo_menu(&extra),
         }
+        m
+    }
+
+    fn resolution_menu(&self,extra:&[u8])->MenuDef<Cmd>{
+        let mut m=MenuDef::new(MenuStyle::Context);
+        let cur=params::opt(extra,Opt::FreqPrecision).clamp(0,7) as usize;
+        let size=crate::analyzer::SIZES[cur];
+        for(i,label)in ["Low - 1024","Medium - 2048","High - 4096","Maximum - 8192"].iter().enumerate(){
+            radio(&mut m,label,size==crate::analyzer::SIZES[4+i],Cmd::Opt(Opt::FreqPrecision,(4+i) as i32));
+        }
+        if cur==3 {radio(&mut m,"Legacy - 16384",true,Cmd::Opt(Opt::FreqPrecision,3));}
         m
     }
 
@@ -845,14 +884,14 @@ mod win32 {
     use os_theme::Palette;
     use os_ui::Canvas;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-    use windows_sys::Win32::Graphics::Gdi::{InvalidateRect,ScreenToClient};
+    use windows_sys::Win32::Graphics::Gdi::{InvalidateRect,ScreenToClient,UpdateWindow};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-    use super::{Act, Btn, Logic, Mods};
-    use crate::analyzer::{Analyzer, Look as ALook};
+    use super::{Act, Btn, Logic, Mods, InputFrames};
+    use crate::analyzer::{LiveAnalyzer, Look as ALook};
     use crate::params::{self, EqParams, Opt};
     use crate::view::{self, Look, ViewState};
     use crate::Shared;
@@ -872,8 +911,8 @@ mod win32 {
         shared: Arc<Shared>,
         logic: Logic,
         palette: Palette,
-        analyzer: Analyzer,
-        scope_seen: u64,
+        analyzer: LiveAnalyzer,
+        input_frames: InputFrames,
         last_sig: u64,
         last_extra: u64,
         last_view: ViewState,
@@ -895,13 +934,18 @@ mod win32 {
             self.1.store(0, Ordering::Release);
             self.2.solo.store(-1,Ordering::Relaxed);
             self.2.editor_open.store(false, Ordering::Relaxed);
+            self.2.repaint_pending.store(false, Ordering::Release);
             unsafe { DestroyWindow(self.0 as HWND) };
         }
     }
 
-    pub fn post_changed(hwnd: isize) {
-        if hwnd != 0 {
-            unsafe { PostMessageW(hwnd as HWND, WM_CHANGED, 0, 0) };
+    pub fn post_changed(hwnd: isize, shared: &Shared) {
+        // Parameter automation and grouped edits can emit many notifications per block.
+        // Queue one wake-up; painting reads the newest values rather than every intermediate one.
+        if hwnd != 0 && !shared.repaint_pending.swap(true, Ordering::AcqRel) {
+            if unsafe { PostMessageW(hwnd as HWND, WM_CHANGED, 0, 0) } == 0 {
+                shared.repaint_pending.store(false, Ordering::Release);
+            }
         }
     }
 
@@ -929,8 +973,8 @@ mod win32 {
                 params,
                 shared: shared.clone(),
                 palette: os_plugkit::palette(),
-                analyzer: Analyzer::default(),
-                scope_seen: 0,
+                analyzer: LiveAnalyzer::default(),
+                input_frames: InputFrames::default(),
                 last_sig: 0,
                 last_extra: u64::MAX,
                 last_view: ViewState::default(),
@@ -997,7 +1041,10 @@ mod win32 {
                 }
                 WM_ERASEBKGND => 1,
                 WM_TIMER | WM_CHANGED => {
+                    if msg == WM_CHANGED { w.shared.repaint_pending.store(false, Ordering::Release); }
                     w.poll();
+                    let flush=w.input_frames.due();let hwnd=w.hwnd;
+                    if flush {UpdateWindow(hwnd);}
                     0
                 }
                 WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_RBUTTONDBLCLK | WM_MBUTTONDOWN => {
@@ -1029,11 +1076,17 @@ mod win32 {
                             let acts = w.logic.delta(dx as f32 / w.scale, dy as f32 / w.scale, mods());
                             w.run(acts);
                         }
+                        let flush=w.input_refresh();let hwnd=w.hwnd;
+                        if flush {UpdateWindow(hwnd);}
                         return 0;
                     }
                     let (x, y) = w.mouse(lp);
                     let acts = w.logic.moved(x, y, mods());
                     w.run(acts);
+                    // WM_TIMER/WM_PAINT can be starved by hardware input. Poll on a paced
+                    // input deadline and dispatch pending paint directly, before returning.
+                    let flush=w.input_refresh();let hwnd=w.hwnd;
+                    if flush {UpdateWindow(hwnd);}
                     0
                 }
                 WM_MOUSELEAVE => {
@@ -1103,12 +1156,19 @@ mod win32 {
             unsafe { InvalidateRect(self.hwnd, std::ptr::null(), 0) };
         }
 
+        fn input_refresh(&mut self)->bool {
+            if !self.input_frames.due(){return false;}
+            self.poll();
+            self.invalidate();
+            true
+        }
+
         /// Analyzer settings, or `None` when nothing is monitored.
         fn analyzer_look(&self) -> Option<ALook> {
             let b = self.params.extra_copy();
             let on = params::byte(&b, params::MONITOR_BYTE) != 0 && (params::flag(&b, params::F_HISTOGRAM) || params::flag(&b, params::F_HEATMAP));
             on.then(|| ALook {
-                precision: params::opt(&b, Opt::FreqPrecision).clamp(0, 3) as usize,
+                precision: params::opt(&b, Opt::FreqPrecision).clamp(0, 7) as usize,
                 slope: params::opt(&b, Opt::PivotSlope).clamp(0, 4) as usize,
                 smoothing: params::opt(&b, Opt::TimeSmoothing).clamp(0, 4) as usize,
                 average: params::flag(&b, params::F_AVERAGE),
@@ -1120,19 +1180,8 @@ mod win32 {
         fn poll(&mut self) {
             self.logic.dynamic_meter();
             let mut dirty = self.logic.vals.expire();
-            if let Some(look) = self.analyzer_look() {
-                let n = Analyzer::size_for(&look);
-                let fresh = self.shared.scope.lock().ok().filter(|s| s.written != self.scope_seen).map(|s| (s.written, s.latest(n)));
-                if let Some((written, samples)) = fresh {
-                    self.scope_seen = written;
-                    let rate = self.shared.rate.load(Ordering::Relaxed) as f32;
-                    self.analyzer.update(&samples, rate, view::COLS, &look);
-                    dirty = true;
-                }
-            } else if !self.analyzer.cols.is_empty() {
-                self.analyzer.cols.clear();
-                dirty = true;
-            }
+            let analyzer_look=self.analyzer_look();
+            dirty |= self.analyzer.poll(&self.shared,analyzer_look);
             let sig = self.logic.vals.signature();
             let ev = self.params.extra_version.load(Ordering::Acquire);
             if dirty || sig != self.last_sig || ev != self.last_extra || self.logic.view != self.last_view || self.logic.hint != self.last_hint {
@@ -1210,7 +1259,7 @@ mod win32 {
             self.logic.dynamic_meter();
             let extra = self.logic.shown_extra();
             let histogram = params::flag(&extra, params::F_HISTOGRAM) || params::flag(&extra, params::F_HEATMAP);
-            let spectrum = (histogram && params::byte(&extra, params::MONITOR_BYTE) != 0 && !self.analyzer.cols.is_empty()).then_some(self.analyzer.cols.as_slice());
+            let spectrum = (histogram && params::byte(&extra, params::MONITOR_BYTE) != 0 && !self.analyzer.analyzer.cols.is_empty()).then_some(self.analyzer.analyzer.cols.as_slice());
             let look = Look { s: self.logic.shown(), extra: &extra, spectrum, rate: f64::from(self.shared.rate.load(Ordering::Relaxed)) };
             self.logic.view.size=self.canvas.size();
             self.logic.hits = view::paint(&mut self.canvas, &look, &self.logic.view);
@@ -1236,8 +1285,8 @@ mod gui {
     use os_theme::Palette;
     use os_ui::Canvas;
 
-    use super::{Act, Btn, Logic, Mods};
-    use crate::analyzer::{Analyzer, Look as ALook};
+    use super::{Act, Btn, Logic, Mods, InputFrames};
+    use crate::analyzer::{LiveAnalyzer, Look as ALook};
     use crate::params::{self, EqParams, Opt};
     use crate::view::{self, Look, ViewState};
     use crate::Shared;
@@ -1255,8 +1304,8 @@ mod gui {
         shared: Arc<Shared>,
         logic: Logic,
         palette: Palette,
-        analyzer: Analyzer,
-        scope_seen: u64,
+        analyzer: LiveAnalyzer,
+        input_frames: InputFrames,
         last_sig: u64,
         last_extra: u64,
         last_view: ViewState,
@@ -1309,8 +1358,8 @@ mod gui {
                 shared,
                 logic,
                 palette: os_plugkit::palette(),
-                analyzer: Analyzer::default(),
-                scope_seen: 0,
+                analyzer: LiveAnalyzer::default(),
+                input_frames: InputFrames::default(),
                 last_sig: 0,
                 last_extra: u64::MAX,
                 last_view: ViewState::default(),
@@ -1349,10 +1398,12 @@ mod gui {
                     Input::Move { x, y } => {
                         let acts = self.logic.moved(x / self.scale, y / self.scale, self.mods());
                         self.act(acts);
+                        if self.input_frames.due(){self.poll();if self.dirty{self.paint();}}
                     }
                     Input::Delta { dx, dy } => {
                         let acts = self.logic.delta(dx / self.scale, dy / self.scale, self.mods());
                         self.act(acts);
+                        if self.input_frames.due(){self.poll();if self.dirty{self.paint();}}
                     }
                     Input::Up { .. } => {
                         self.win.unlock();
@@ -1391,7 +1442,7 @@ mod gui {
             let b = self.params.extra_copy();
             let on = params::byte(&b, params::MONITOR_BYTE) != 0 && (params::flag(&b, params::F_HISTOGRAM) || params::flag(&b, params::F_HEATMAP));
             on.then(|| ALook {
-                precision: params::opt(&b, Opt::FreqPrecision).clamp(0, 3) as usize,
+                precision: params::opt(&b, Opt::FreqPrecision).clamp(0, 7) as usize,
                 slope: params::opt(&b, Opt::PivotSlope).clamp(0, 4) as usize,
                 smoothing: params::opt(&b, Opt::TimeSmoothing).clamp(0, 4) as usize,
                 average: params::flag(&b, params::F_AVERAGE),
@@ -1405,19 +1456,8 @@ mod gui {
 
             self.logic.dynamic_meter();
             let mut dirty = self.logic.vals.expire();
-            if let Some(look) = self.analyzer_look() {
-                let n = Analyzer::size_for(&look);
-                let fresh = self.shared.scope.lock().ok().filter(|s| s.written != self.scope_seen).map(|s| (s.written, s.latest(n)));
-                if let Some((written, samples)) = fresh {
-                    self.scope_seen = written;
-                    let rate = self.shared.rate.load(Ordering::Relaxed) as f32;
-                    self.analyzer.update(&samples, rate, view::COLS, &look);
-                    dirty = true;
-                }
-            } else if !self.analyzer.cols.is_empty() {
-                self.analyzer.cols.clear();
-                dirty = true;
-            }
+            let analyzer_look=self.analyzer_look();
+            dirty |= self.analyzer.poll(&self.shared,analyzer_look);
             let sig = self.logic.vals.signature();
             let ev = self.params.extra_version.load(Ordering::Acquire);
             if dirty || sig != self.last_sig || ev != self.last_extra || self.logic.view != self.last_view || self.logic.hint != self.last_hint {
@@ -1468,7 +1508,7 @@ mod gui {
             self.logic.dynamic_meter();
             let extra = self.logic.shown_extra();
             let histogram = params::flag(&extra, params::F_HISTOGRAM) || params::flag(&extra, params::F_HEATMAP);
-            let spectrum = (histogram && params::byte(&extra, params::MONITOR_BYTE) != 0 && !self.analyzer.cols.is_empty()).then_some(self.analyzer.cols.as_slice());
+            let spectrum = (histogram && params::byte(&extra, params::MONITOR_BYTE) != 0 && !self.analyzer.analyzer.cols.is_empty()).then_some(self.analyzer.analyzer.cols.as_slice());
             let look = Look { s: self.logic.shown(), extra: &extra, spectrum, rate: f64::from(self.shared.rate.load(Ordering::Relaxed)) };
             self.logic.view.size=self.canvas.size();
             self.logic.hits = view::paint(&mut self.canvas, &look, &self.logic.view);
@@ -1596,7 +1636,7 @@ mod tests {
         for label in ["Phase rotation", "Enhanced frequency", "High precision", "Smooth", "Adaptive", "Inherit bandwidth"] {
             assert!(!clickable(&o, label), "{label}");
         }
-        for label in ["Lock spare state", "-120dB", "Average mode", "Highest", "Ultra"] {
+        for label in ["Lock spare state", "-120dB", "Average mode", "Maximum - 8192", "Ultra"] {
             assert!(clickable(&o, label), "{label}");
         }
         assert!(l.menu(&MenuReq::Phones).items.iter().all(|it| !it.clickable()));
@@ -1676,7 +1716,7 @@ mod tests {
 
 // A held audition must never leave the saved band mask changed when its window closes.
 impl Drop for Logic {
- fn drop(&mut self){if let Some(Drag::Solo{restore})=self.drag{self.set_mask(restore);}self.shared.solo.store(-1,Ordering::Relaxed);}
+ fn drop(&mut self){if let Some(Drag::Solo{restore})=self.drag{self.set_mask(restore);}self.shared.solo.store(-1,Ordering::Relaxed);self.shared.gain_match.store(false,Ordering::Relaxed);}
 }
 #[cfg(test)]mod audition_close_tests{
  use super::*;
@@ -1712,4 +1752,69 @@ impl Drop for Logic {
   paint(&mut l);let node=layout.node(&l.shown(),0);let actions=l.down(node.0,node.1,Btn::Right,Mods::default(),false);assert!(actions.contains(&Act::Menu(MenuReq::Token(0),node.0,node.1)));let req=MenuReq::Token(0);let menu=l.menu(&req);assert_eq!(menu.find("Frequency..."),Some(Cmd::TypeIn(freq_id(0))));assert_eq!(menu.find("Gain..."),Some(Cmd::TypeIn(level_id(0))));assert_eq!(menu.find("Q..."),Some(Cmd::TypeIn("q1".into())));assert_eq!(l.pick(&req,Cmd::TypeIn(freq_id(0)),node.0,node.1),vec![Act::TypeIn(freq_id(0),node.0,node.1)]);l.typed(&freq_id(0),"1500");assert!((l.shown().bands[0].hz()-1500.).abs()<0.2);
  }
  #[test]fn right_click_delete_is_undoable_and_preserves_other_band_ids(){let mut l=Logic::new(Arc::new(EqParams::default()),Arc::new(Shared::default()),None);let layout=l.layout();l.create_band(layout.x(0.4),layout.y(3.));l.create_band(layout.x(0.7),layout.y(-2.));l.select(0);l.toggle_spectral(0);let before=l.shown();let cfg=l.dynamic_values();let menu=l.menu(&MenuReq::Token(0));assert_eq!(menu.find("Delete"),Some(Cmd::DeleteBand(0)));l.pick(&MenuReq::Token(0),Cmd::DeleteBand(0),0.,0.);assert_eq!(l.shown().bands[0].kind,0);assert_eq!(l.shown().bands[1],before.bands[1]);assert_eq!(l.dynamic_values().bands[0][0],0.);assert_eq!(l.dynamic_values().spectral&1,0);l.undo_redo(false);assert_eq!(l.shown(),before);assert_eq!(l.dynamic_values(),cfg);l.undo_redo(true);assert_eq!(l.shown().bands[0].kind,0);l.undo_redo(false);l.view.selection=3;l.pick(&MenuReq::Token(0),Cmd::DeleteBand(0),0.,0.);assert_eq!((l.shown().bands[0].kind,l.shown().bands[1].kind),(0,0));l.undo_redo(false);assert_eq!(l.shown(),before);}
+}
+
+#[cfg(test)]mod upgrade_workflow_tests {
+ use super::*;
+ #[test]fn audition_match_and_compare_use_real_panel_hits_without_saved_level_changes(){
+  let params=Arc::new(EqParams::default());let shared=Arc::new(Shared::default());
+  {let mut l=Logic::new(params.clone(),shared.clone(),None);l.select(3);l.vals.edit_plain(&params::dynamic_id(12),-9.);
+   let mut c=os_ui::Canvas::new(1000,620,1.).unwrap();l.view.size=c.size();let extra=l.shown_extra();l.hits=view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:None,rate:48000.},&l.view);
+   let click=|l:&mut Logic,t|{let r=l.hits.iter().find(|h|h.t==t).unwrap().r;l.down(r.cx(),r.cy(),Btn::Left,Mods::default(),false);l.up(Btn::Left);};
+   let before=l.shown_extra();let output=l.vals.plain(MAIN_ID);click(&mut l,Target::GainMatch);assert!(shared.gain_match.load(Ordering::Relaxed));assert_eq!(l.shown_extra(),before);assert_eq!(l.vals.plain(MAIN_ID),output);
+   let mask=l.mask();let r=l.hits.iter().find(|h|h.t==Target::Solo(3)).unwrap().r;l.down(r.cx(),r.cy(),Btn::Left,Mods::default(),false);assert_eq!(shared.solo.load(Ordering::Relaxed),3);assert_eq!(l.view.pressed,Some(Target::Solo(3)));l.up(Btn::Left);assert_eq!(l.mask(),mask);assert_eq!(shared.solo.load(Ordering::Relaxed),-1);
+   click(&mut l,Target::Store);l.vals.edit_plain(&level_id(3),6.);l.vals.edit_plain(&params::dynamic_id(12),-3.);click(&mut l,Target::Flip);assert!(l.view.compare_b);assert_eq!(l.vals.plain(&level_id(3)),0.);assert_eq!(l.dynamic_values().bands[3][0],-9.);click(&mut l,Target::Flip);assert!(!l.view.compare_b);assert_eq!(l.vals.plain(&level_id(3)),6.);assert_eq!(l.dynamic_values().bands[3][0],-3.);
+  }
+  assert!(!shared.gain_match.load(Ordering::Relaxed));
+ }
+}
+
+#[cfg(test)]mod analyzer_menu_tests {
+ use super::*;
+ #[test]fn compact_analyzer_menu_preserves_audio_and_legacy_resolution_on_recall(){
+  let mut l=Logic::new(Arc::new(EqParams::default()),Arc::new(Shared::default()),None);
+  assert_eq!(params::opt(&l.params.extra_copy(),Opt::FreqPrecision),5);
+  assert_eq!(params::opt(&l.params.extra_copy(),Opt::TimeSmoothing),3);
+  let mut c=os_ui::Canvas::new(640,420,1.).unwrap();l.view.size=c.size();let extra=l.shown_extra();
+  l.hits=view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:None,rate:48000.},&l.view);
+  let hit=l.hits.iter().find(|h|h.t==Target::Analyzer).unwrap();
+  let acts=l.down(hit.r.cx(),hit.r.cy(),Btn::Left,Mods::default(),false);l.up(Btn::Left);
+  assert!(acts.iter().any(|a|matches!(a,Act::Menu(MenuReq::Analyzer,..))));
+  let settings=l.shown();let config=l.dynamic_values();let m=l.menu(&MenuReq::Analyzer);
+  assert_eq!(m.find("Slowest"),Some(Cmd::Opt(Opt::TimeSmoothing,4)));
+  assert_eq!(m.find("Low - 1024"),Some(Cmd::Opt(Opt::FreqPrecision,4)));
+  l.pick(&MenuReq::Analyzer,Cmd::Opt(Opt::TimeSmoothing,4),0.,0.);
+  l.pick(&MenuReq::Analyzer,Cmd::Opt(Opt::FreqPrecision,4),0.,0.);
+  assert_eq!(l.shown(),settings);assert_eq!(l.dynamic_values(),config);
+  for (index,size) in [(0,2048),(1,4096),(2,8192),(3,16384),(4,1024),(5,2048),(6,4096),(7,8192)] {
+   let mut image=l.shown_extra();params::set_opt(&mut image,Opt::FreqPrecision,index);
+   let recalled=params::fl_from_plugin_state(&params::plugin_state_from_fl(&image)).unwrap();
+   assert_eq!(params::opt(&recalled,Opt::FreqPrecision),index);
+   assert_eq!(crate::analyzer::Analyzer::size_for(&crate::analyzer::Look{precision:index as usize,smoothing:4,slope:3,average:false}),size);
+   let mut a=eq::routed::RoutedEq::from_state(&params::to_fl(&settings,&extra),48000.).unwrap();
+   let mut b=eq::routed::RoutedEq::from_state(&params::to_fl(&settings,&recalled),48000.).unwrap();
+   let input:Vec<_>=(0..4096).map(|i|0.2*(i as f32*0.17).sin()).collect();let(mut x,mut y,mut z,mut w)=(input.clone(),input.clone(),input.clone(),input);a.process(&mut x,&mut y);b.process(&mut z,&mut w);assert_eq!(x,z);assert_eq!(y,w);assert_eq!(a.latency(),b.latency());
+  }
+ }
+}
+
+#[cfg(test)]mod mouse_refresh_tests {
+ use super::*;
+ use crate::analyzer::{LiveAnalyzer,Look as AnalyzerLook};
+ use std::time::Duration;
+ #[test]fn continuous_mouse_only_stream_keeps_analyzer_and_frames_alive(){
+  let shared=Arc::new(Shared::default());let mut l=Logic::new(Arc::new(EqParams::default()),shared.clone(),None);
+  let mut c=os_ui::Canvas::new(640,420,1.).unwrap();l.view.size=c.size();let extra=l.shown_extra();l.hits=view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:None,rate:44100.},&l.view);
+  let mut cadence=InputFrames::default();let mut analyzer=LiveAnalyzer::default();let(mut frames,mut unsolicited,mut last,mut sample)=(0,0,0u64,0usize);
+  // Deliberately no Tick, idle or queued Paint events: 2000 consecutive mouse moves.
+  for ms in 0..2000u64{
+   {let mut scope=shared.scope.lock().unwrap();for _ in 0..44{let pos=scope.pos;scope.buf[pos]=0.1*(sample as f32*std::f32::consts::TAU*440./44100.).sin();scope.pos=(pos+1)%scope.buf.len();scope.written+=1;sample+=1;}}
+   let plot=l.layout().plot;let acts=l.moved(plot.x+10.+(ms%400)as f32,plot.y+60.,Mods::default());unsolicited+=usize::from(acts.contains(&Act::Repaint));
+   let now=Duration::from_millis(ms);
+   if cadence.due_at(now){assert!(ms-last<=34);last=ms;frames+=1;analyzer.poll_at(&shared,Some(AnalyzerLook{precision:5,smoothing:3,slope:3,average:false}),now);let extra=l.shown_extra();l.hits=view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:Some(&analyzer.analyzer.cols),rate:44100.},&l.view);}
+  }
+  assert_eq!(frames,59);assert!(analyzer.measurements>=58);assert!(analyzer.analyzer.cols.iter().any(|v|*v> -60.));assert_eq!(unsolicited,0,"plain hover must not request2000full redraws");
+  // A backlog is skipped instead of rendered in a burst.
+  assert!(cadence.due_at(Duration::from_secs(10)));for _ in 0..1000{assert!(!cadence.due_at(Duration::from_secs(10)));}
+ }
 }

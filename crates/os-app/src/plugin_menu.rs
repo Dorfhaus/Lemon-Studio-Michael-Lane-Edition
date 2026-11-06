@@ -486,6 +486,19 @@ pub fn add_effect(app: &mut App, index: usize, slot: Option<u8>) -> Option<Strin
     }
 }
 
+/// Drop a picker selection into free slots in display order; existing effects are preserved.
+pub fn add_effects(app:&mut App,indices:&[usize],slot:Option<u8>)->Option<String>{
+    if indices.is_empty(){return None;}if indices.iter().any(|&i|i>=app.plugins.effects.len()){return Some("An effect in this selection is unavailable".into());}
+    let t=app.state.selected_mixer;
+    let m=crate::mixer::track(&app.state,t)?;
+    let order:Vec<_>=(0..crate::mixer::user_slot_capacity(&app.state,t)).map(|i|crate::mixer::visible_user_slot(&app.state,t,i)as usize).collect();
+    let start=slot.unwrap_or(0)as usize;
+    let free:Vec<_>=order.iter().copied().filter(|&k|k>=start).chain(order.iter().copied().filter(|&k|k<start)).filter(|&k|m.slots[k].is_none()).take(indices.len()).map(|k|k as u8).collect();
+    if free.len()<indices.len(){return Some(format!("Need {} free effect slots; no effects were added",indices.len()));}
+    for (&index,slot)in indices.iter().zip(free){crate::mixer::run(app,crate::mixer::MCmd::AddEffect(slot,index));}
+    Some(format!("Added {} effects",indices.len()))
+}
+
 pub(crate) fn normalized(s: &str) -> String {
  s.to_lowercase().replace(" (vst3)", "").replace(" (vst2)", "").chars().filter(|c| c.is_alphanumeric()).collect()
 }

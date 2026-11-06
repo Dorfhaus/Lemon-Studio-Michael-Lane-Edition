@@ -7,6 +7,26 @@ pub struct Layout {
     pub scale: f32,
     pub range: f32,
 }
+// Bounded per-UI-thread cache: live meters and hover never rebuild static filter curves.
+struct Responses { hz: Vec<f64>, total: Vec<f64>, bands: [Vec<f64>; BANDS] }
+type ResponseEntry = (Settings, Options, f64, usize, std::rc::Rc<Responses>);
+thread_local! { static RESPONSES: std::cell::RefCell<Vec<ResponseEntry>> = const { std::cell::RefCell::new(Vec::new()) }; }
+fn responses(s: Settings, options: Options, rate: f64, count: usize) -> std::rc::Rc<Responses> {
+    RESPONSES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(i) = cache.iter().position(|e| e.0 == s && e.1 == options && e.2 == rate && e.3 == count) {
+            let entry = cache.remove(i); let result = entry.4.clone(); cache.push(entry); return result;
+        }
+        let design = options.design(rate);
+        let hz: Vec<_> = (0..count).map(|j| eq::freq_hz(j as f64 / (count-1) as f64)).collect();
+        let bands: [_; BANDS] = std::array::from_fn(|k| { let c=s.bands[k].coefs(design); hz.iter().map(|&f|eq::sections_db(&c,f,design.rate())).collect::<Vec<_>>() });
+        let total = (0..count).map(|j| s.main_db + (0..BANDS).filter(|&k|s.audible(k)).map(|k|bands[k][j]).sum::<f64>()).collect();
+        let result = std::rc::Rc::new(Responses { hz, total, bands });
+        if cache.len() == 8 { cache.remove(0); }
+        cache.push((s,options,rate,count,result.clone())); result
+    })
+}
+
 /// Nominal Q of the stored bell octave bandwidth (multi-section/shelf shapes retain their own design).
 pub fn q_of(w: f64) -> f64 {
     eq::dynamic::q_of_width(w)
@@ -257,6 +277,31 @@ fn knob(
         t,
     });
 }
+/// Presentation-only, narrow power-domain smoothing plus monotone cubic interpolation.
+/// Never feeds the analyzer/detectors or EQ audio. Local extrema cannot overshoot.
+fn spectrum_points(values:&[f32], plot:Rect, range:f32)->Vec<(f32,f32)> {
+    if values.len()<2 {return Vec::new();}
+    let power=|i:usize|10f32.powf(if values[i].is_finite(){values[i].clamp(-150.,60.)*0.1}else{-15.});
+    let y:Vec<_>=(0..values.len()).map(|i|{
+        let center=power(i);
+        let average=0.0625*power(i.saturating_sub(2))+0.25*power(i.saturating_sub(1))+0.375*center+0.25*power((i+1).min(values.len()-1))+0.0625*power((i+2).min(values.len()-1));
+        let p=average.max(0.75*center); // Keep isolated resonances within1.25dB of their measured peak.
+        let db=10.*p.max(1e-15).log10();
+        plot.bottom()-((db+range)/range).clamp(0.,1.)*plot.h
+    }).collect();
+    let slopes:Vec<_>=(0..y.len()).map(|i|{
+        let a=y[i]-y[i.saturating_sub(1)];let b=y[(i+1).min(y.len()-1)]-y[i];
+        if a*b>0.{2.*a*b/(a+b)}else{0.}
+    }).collect();
+    let mut points=Vec::with_capacity(y.len()*2-1);
+    for i in 0..y.len()-1 {for step in 0..2{
+        let t=step as f32*0.5;let t2=t*t;let t3=t2*t;
+        let v=((2.*t3-3.*t2+1.)*y[i]+(t3-2.*t2+t)*slopes[i]+(-2.*t3+3.*t2)*y[i+1]+(t3-t2)*slopes[i+1]).clamp(y[i].min(y[i+1]),y[i].max(y[i+1]));
+        points.push((plot.x+(i as f32+t)/(y.len()-1)as f32*plot.w,v));
+    }}
+    points.push((plot.right(),*y.last().unwrap()));points
+}
+
 pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     let mut v = v.clone();
     v.size = c.size();
@@ -272,7 +317,6 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         }
     }
     c.begin_frame(None);
-    c.clear(Color::rgb(0x1c2024));
     c.fill_rect_gradient(
         Rect::new(0., 0., w, h),
         Color::rgb(0x252a2f),
@@ -321,8 +365,8 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         &mut hits,
         Rect::new(w - 189. * s, 6. * s, 47. * s, 22. * s),
         Target::Flip,
-        "A / B",
-        false,
+        if v.compare_b { "B / A" } else { "A / B" },
+        v.compare_b,
         s,
     );
     button(
@@ -445,26 +489,6 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         s,
     );
     c.push_clip(l.plot);
-    if let Some(a) = look.spectrum.filter(|a| !a.is_empty()) {
-        let mut poly = Vec::with_capacity(a.len() + 2);
-        poly.push((l.plot.x, l.plot.bottom()));
-        for (i, db) in a.iter().enumerate() {
-            let x = l.plot.x + i as f32 / (a.len() - 1).max(1) as f32 * l.plot.w;
-            let range =
-                [60., 90., 120.][(params::opt(look.extra, Opt::Range) - 1).clamp(0, 2) as usize];
-            let y = l.plot.bottom() - ((db + range) / range).clamp(0., 1.) * l.plot.h;
-            poly.push((x, y));
-        }
-        poly.push((l.plot.right(), l.plot.bottom()));
-        if flag(look.extra, params::F_HISTOGRAM) {
-            c.fill_polygon(&poly, Color::rgb(0xa9b3be).with_alpha(26));
-        }
-        c.polyline(
-            &poly[1..poly.len() - 1],
-            0.9 * s,
-            Color::rgb(0xabb6c1).with_alpha(140),
-        );
-    }
     if flag(look.extra, params::F_HEATMAP) {
         if let Some(a) = look.spectrum.filter(|a| !a.is_empty()) {
             let range =
@@ -495,22 +519,30 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
             }
         }
     }
+    if let Some(a) = look.spectrum.filter(|a| a.len()>1) {
+        let range=[60.,90.,120.][(params::opt(look.extra,Opt::Range)-1).clamp(0,2)as usize];
+        let points=spectrum_points(a,l.plot,range);
+        if flag(look.extra,params::F_HISTOGRAM){
+            let mut fill=points.clone();fill.push((l.plot.right(),l.plot.bottom()));fill.push((l.plot.x,l.plot.bottom()));
+            c.fill_polygon(&fill,Color::rgb(0x9cb9c0).with_alpha(25));
+        }
+        c.polyline(&points,1.15*s,Color::rgb(0xb7ced1).with_alpha(185));
+    }
     let cfg = eq::dynamic::Config::load(look.extra, false);
-    let design = Options::from_image(look.extra).design(look.rate.max(22050.));
-    let curve = settings.curve(design);
     let count = (l.plot.w as usize).clamp(300, 1800);
+    let cached = responses(*settings, Options::from_image(look.extra), look.rate.max(22050.), count);
+    let live: [_; BANDS] = std::array::from_fn(|k| eq::dynamic::Response::new(look.rate, settings.bands[k], f64::from(v.reduction[k])));
     for k in 0..BANDS {
         if !visible(settings, &v, k) {
             continue;
         }
         let selected = v.selection & (1 << k) != 0 || (v.show_dynamics && v.selected == k);
         if selected || v.active == Some(k) {
-            let bc = settings.bands[k].coefs(design);
+            let envelope_response = eq::dynamic::Response::new(look.rate, settings.bands[k], f64::from(cfg.bands[k][0]));
             let mut points = Vec::with_capacity(count + 3);
             for j in 0..count {
                 let n = j as f64 / (count - 1) as f64;
-                let hz = eq::freq_hz(n);
-                points.push((l.x(n), l.y(eq::sections_db(&bc, hz, design.rate()))));
+                points.push((l.x(n), l.y(cached.bands[k][j])));
             }
             let mut fill = points.clone();
             fill.push((l.plot.right(), l.y(0.)));
@@ -524,14 +556,8 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
                 let mut envelope = Vec::with_capacity(count + 3);
                 for j in 0..count {
                     let n = j as f64 / (count - 1) as f64;
-                    let hz = eq::freq_hz(n);
-                    let db = eq::sections_db(&bc, hz, design.rate())
-                        + eq::dynamic::response_db(
-                            hz,
-                            look.rate,
-                            settings.bands[k],
-                            f64::from(cfg.bands[k][0]),
-                        );
+                    let hz = cached.hz[j];
+                    let db = cached.bands[k][j] + envelope_response.db(hz);
                     envelope.push((l.x(n), l.y(db)));
                 }
                 let mut fill = envelope.clone();
@@ -544,16 +570,11 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     let mut points = Vec::with_capacity(count);
     for j in 0..count {
         let n = j as f64 / (count - 1) as f64;
-        let hz = eq::freq_hz(n);
-        let mut db = curve.db(hz);
+        let hz = cached.hz[j];
+        let mut db = cached.total[j];
         for k in 0..BANDS {
             if settings.audible(k) && settings.bands[k].kind != 0 && cfg.spectral & (1 << k) == 0 {
-                db += eq::dynamic::response_db(
-                    hz,
-                    look.rate,
-                    settings.bands[k],
-                    f64::from(v.reduction[k]),
-                );
+                db += live[k].db(hz);
             }
         }
         if !v.spectral.is_empty() {
@@ -653,6 +674,9 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
             s,
         );
     }
+    button(c, &mut hits, Rect::new(310.*s, fy, 78.*s, 20.*s), Target::GainMatch, "Level match", v.gain_match, s);
+    let speed=crate::analyzer::SPEEDS[params::opt(look.extra,Opt::TimeSmoothing).clamp(0,4) as usize];
+    button(c, &mut hits, Rect::new(400.*s, fy, 92.*s, 20.*s), Target::Analyzer, &format!("Speed: {speed}"), false, s);
     button(
         c,
         &mut hits,
@@ -684,8 +708,8 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
     );
     c.fill_rect_gradient(
         r,
-        Color::rgb(0x3b484f).with_alpha(248),
-        Color::rgb(0x202a30).with_alpha(250),
+        Color::rgb(0x303c43).with_alpha(242),
+        Color::rgb(0x161f25).with_alpha(247),
         9. * s,
     );
     let color = if v.harsh_open {
@@ -936,6 +960,9 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
         color,
         s,
     );
+    if dynamic_on {
+        txt(c, Rect::new(r.x+9.*s, r.y+97.*s,86.*s,13.*s),9.,s,color,&format!("GR {:+.1} dB",v.reduction[k]));
+    }
     if expanded {
         let tx = r.x + 300. * s;
         let tr = Rect::new(tx, r.y + 23. * s, 15. * s, 76. * s);
@@ -973,9 +1000,9 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
         button(
             c,
             hits,
-            Rect::new(tx - 4. * s, r.y + 3. * s, 24. * s, 16. * s),
+            Rect::new(tx + 2. * s, r.y + 3. * s, 36. * s, 16. * s),
             Target::AutoDynamics,
-            "A",
+            "Auto",
             cfg.auto[k],
             s,
         );
@@ -987,7 +1014,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
             14. * s,
             f64::from(cfg.bands[k][2] / 200.),
             Target::Dynamic(k * 4 + 2),
-            "A",
+            "Attack",
             &format!("{:.0}ms", cfg.bands[k][2]),
             color,
             s,
@@ -1000,7 +1027,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
             14. * s,
             f64::from(cfg.bands[k][3] / 1500.),
             Target::Dynamic(k * 4 + 3),
-            "R",
+            "Release",
             &format!("{:.0}ms", cfg.bands[k][3]),
             color,
             s,
@@ -1056,8 +1083,35 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
         hits,
         Rect::new(end + 17. * s, r.y + 78. * s, 50. * s, 21. * s),
         Target::Solo(k),
-        "Solo",
-        false,
+        "Listen",
+        v.pressed == Some(Target::Solo(k)),
         s,
     );
+}
+
+#[cfg(test)] mod response_tests {
+    use super::*;
+    #[test] fn cached_graph_agrees_with_original_curve_after_edits_and_mode_changes() {
+        let mut s=Settings::default();s.bands[3].db=9.;s.bands[1].kind=eq::HIGH_PASS;
+        for rate in [44100.,96000.] { for opts in [Options::default(),Options{hq:1,flags:2,..Options::default()},Options{hq:3,..Options::default()}] {
+            for mask in [0x7f,0x08,0x01] {s.mask=mask;for width in [0.2,0.8] {s.bands[3].width=width;
+                let c=responses(s,opts,rate,500);let reference=s.curve(opts.design(rate));
+                for j in 0..500 { assert!((c.total[j]-reference.db(c.hz[j])).abs()<1e-10); }
+                assert!(std::rc::Rc::ptr_eq(&c,&responses(s,opts,rate,500)));
+            }}
+        }}
+    }
+}
+
+#[cfg(test)]mod spectrum_polish_tests {
+ use super::*;
+ #[test]fn smooth_outline_stays_bounded_and_keeps_narrow_peaks(){
+  let r=Rect::new(20.,44.,928.,520.);let mut values=vec![-90.;500];values[250]=-12.;
+  let p=spectrum_points(&values,r,90.);assert_eq!(p.len(),999);
+  for pair in p.windows(2){assert!(pair[0].0<pair[1].0);}
+  assert!(p.iter().all(|&(x,y)|x.is_finite()&&y.is_finite()&&x>=r.x&&x<=r.right()&&y>=r.y&&y<=r.bottom()));
+  let top=p.iter().map(|p|p.1).fold(f32::INFINITY,f32::min);let db=(r.bottom()-top)/r.h*90.-90.;assert!(db < -12.&&db > -13.3,"peak{db}");
+  let flat=spectrum_points(&vec![-30.;500],r,90.);assert!(flat.iter().all(|p|(p.1-flat[0].1).abs()<0.001));
+  assert!(spectrum_points(&[],r,90.).is_empty());assert!(spectrum_points(&[f32::NAN,0.,f32::INFINITY],r,90.).iter().all(|p|p.1.is_finite()));
+ }
 }

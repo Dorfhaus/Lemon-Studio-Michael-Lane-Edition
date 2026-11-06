@@ -202,20 +202,30 @@ impl Filter {
         };
     }
 }
-pub fn response_db(hz: f64, rate: f64, band: super::Band, gain: f64) -> f64 {
-    if gain.abs() < 1e-7 {
-        return 0.;
+/// A display response designed once, then sampled across the frequency grid.
+pub struct Response { c: [f64; 5], rate: f64, flat: bool }
+impl Response {
+    pub fn new(rate: f64, band: super::Band, gain: f64) -> Self {
+        let mut f = Filter::default();
+        let flat = gain.abs() < 1e-7;
+        if !flat { f.design(band.hz(), q_of_width(band.width), Some(gain), rate, band.kind); }
+        Self { c: f.c, rate, flat }
     }
-    let mut f = Filter::default();
-    let q = q_of_width(band.width);
-    f.design(band.hz(), q, Some(gain), rate, band.kind);
-    let w = std::f64::consts::TAU * hz / rate;
-    let (s, c) = w.sin_cos();
-    let (s2, c2) = (2. * w).sin_cos();
-    let num = (f.c[0] + f.c[1] * c + f.c[2] * c2).powi(2) + (f.c[1] * s + f.c[2] * s2).powi(2);
-    let den = (1. + f.c[3] * c + f.c[4] * c2).powi(2) + (f.c[3] * s + f.c[4] * s2).powi(2);
-    10. * (num / den.max(1e-20)).max(1e-20).log10()
+    pub fn db(&self, hz: f64) -> f64 {
+        if self.flat { return 0.; }
+        let w = std::f64::consts::TAU * hz / self.rate;
+        let (s, c) = w.sin_cos();
+        let (s2, c2) = (2. * w).sin_cos();
+        let f = &self.c;
+        let num = (f[0] + f[1] * c + f[2] * c2).powi(2) + (f[1] * s + f[2] * s2).powi(2);
+        let den = (1. + f[3] * c + f[4] * c2).powi(2) + (f[3] * s + f[4] * s2).powi(2);
+        10. * (num / den.max(1e-20)).max(1e-20).log10()
+    }
 }
+pub fn response_db(hz: f64, rate: f64, band: super::Band, gain: f64) -> f64 {
+    Response::new(rate, band, gain).db(hz)
+}
+
 #[derive(Default)]
 struct Band {
     detect: Filter,
