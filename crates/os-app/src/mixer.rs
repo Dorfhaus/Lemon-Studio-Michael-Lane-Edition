@@ -1578,6 +1578,7 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
             crate::peak_link::remove_slot(s,t,slot);
             if let Some(m) = track_mut(s, t) {
                 m.slots[usize::from(slot)] = Some(crate::plugins::new_slot(&nm));
+                m.slots_enabled = true;
                 m.slot_on[usize::from(slot)] = true;
                 m.slot_mix[usize::from(slot)] = 1.0;
             }

@@ -1137,14 +1137,15 @@ fn curve(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, ch: u16, edges: 
     ui.c.fill_polygon(&area, if g.automation_views.values().any(|a|*a==ch) {col.with_alpha(18)} else {bg.shade(0.07).with_alpha(24)});
     ui.c.polyline(&pts, 1.5, col);
     // Points and tension handles while the mouse is over the clip (§8).
-    if s.playlist.hover_clip == Some(i) {
+    let selection = s.playlist.selected_points.as_ref().filter(|(ch, _)| c.source == ClipSource::Channel(*ch));
+    if s.playlist.hover_clip == Some(i) || selection.is_some() {
         for (k, p) in a.points.iter().enumerate() {
             let px = pl::point_x(s, g, c, p.beat);
             if px < body.x - 4.0 || px > body.right() + 4.0 {
                 continue;
             }
             let py = pl::value_y(body, p.value);
-            ui.c.fill_circle(px, py, 4.0, bg);
+            ui.c.fill_circle(px, py, 4.0, if selection.is_some_and(|(_, points)| points.contains(p)) { col } else { bg });
             ui.c.stroke_circle(px, py, 4.0, 1.5, col);
             if k > 0 {
                 let q = a.points[k - 1];

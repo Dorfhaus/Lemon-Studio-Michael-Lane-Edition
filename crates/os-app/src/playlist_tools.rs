@@ -104,6 +104,21 @@ pub fn cursor(app: &App) -> Option<Cursor> {
             }
         }
     }
+    if !app.ctrl && matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select)
+        && let Some(grid) = app.pl_grid()
+    {
+        let g = pl::PGeom::new(&app.state, grid);
+        let (x, y) = app.mouse;
+        if let Some(i) = pl::clip_at(&app.state, &g, x, y) {
+            let clip = &pl::clips(&app.state)[i];
+            if pl::source_kind(&app.state, clip.source) == PickKind::Automation
+                && (pl::point_near(&app.state, &g, i, x, y).is_some()
+                    || (!app.resize_cursor && tool != PlTool::Select && y < g.body(clip).y))
+            {
+                return Some(Cursor::Playlist(tool, GAIN));
+            }
+        }
+    }
     if !app.ctrl && app.resize_cursor && matches!(tool, PlTool::Draw | PlTool::Paint) { return Some(Cursor::Playlist(tool,RESIZE)); }
 
     if matches!(tool,PlTool::Draw|PlTool::Paint) && app.drag.is_none() {

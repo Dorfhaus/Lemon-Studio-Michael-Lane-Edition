@@ -2686,12 +2686,12 @@ impl Engine {
         if self.pdc.waiting.iter().any(|w| w.0 <= now) {
             let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pdc.waiting).into_iter().partition(|w| w.0 <= now);
             self.pdc.waiting = rest;
-            for (_, target, n) in due {
-                self.auto_value(target, n, len.max(1) as u32);
+            for (_, target, n, starts_here) in due {
+                self.auto_value(target, n, if starts_here { 0 } else { len.max(1) as u32 });
             }
         }
         let b = os_model::curve::tick_step(self.ppq);
-        let mut values: Vec<(Target, i64)> = Vec::new();
+        let mut values: Vec<(Target, i64, bool)> = Vec::new();
         for a in self.autos.iter_mut().rev() {
             // Where clips on one target overlap, the latest decides that target.
             if now < a.start || now >= a.end || a.targets.iter().all(|t| values.iter().any(|v| v.0 == *t)) {
@@ -2718,30 +2718,23 @@ impl Engine {
             let n = handed_on(walk.value(pts));
             for &t in &a.targets {
                 if !values.iter().any(|v| v.0 == t) {
-                    values.push((t, n));
+                    values.push((t, n, now == a.start));
                 }
             }
         }
         let len = if now == self.auto_from { 0 } else { len.max(1) as u32 };
-        self.set_auto_values(values, len);
-    }
-
-    /// Passes automation values (2^30 = 1) on to their targets, each only when it differs from the one last passed on;
-    /// `len`: the ticks volumes and pans glide over (0 = set in place). A value for a mixer track or slot whose audio
-    /// is late waits the whole ticks that fit into the lateness; nothing waits on playback's first tick (spec:
-    /// audio/delay-compensation.md "Automation waits for late audio").
-    fn set_auto_values(&mut self, values: Vec<(os_model::target::Target, i64)>, len: u32) {
-        for (target, n) in values {
+        for (target, value, starts_here) in values {
             let wait = if len == 0 { 0 } else { self.wait_ticks(target) };
             if wait > 0 {
-                self.pdc.waiting.push((self.tick + wait, target, n));
+                self.pdc.waiting.push((self.tick + wait, target, value, starts_here));
             } else {
-                self.auto_value(target, n, len);
+                self.auto_value(target, value, if starts_here { 0 } else { len });
             }
         }
     }
 
-    /// Passes automation value `n` on to `target` when it differs from the one last passed on (`set_auto_values`).
+    /// Passes a value (2^30 = 1) to its target only when it differs from the last value.
+    /// A zero length sets gains in place so they are ready before the first frame is rendered.
     fn auto_value(&mut self, target: os_model::target::Target, n: i64, len: u32) {
         use os_model::target::Target;
         // Plugin parameters: per-tick plugins get this value, the others the curve sampled through the tick
@@ -3883,7 +3876,9 @@ impl Engine {
         self.pdc.switched = true;
         // A song back at its start: the initial values first, then automation clips act there as usual.
         if to == 0 && !self.init.is_empty() {
-            self.set_auto_values(self.init.clone(), 0);
+            for (target, value) in self.init.clone() {
+                self.auto_value(target, value, 0);
+            }
         }
     }
 
@@ -7112,6 +7107,13 @@ mod tests {
         assert!(end < 0.03, "near the end: {end}");
         let after = at(&mut e, 384.0 * 3.5);
         assert!(after < 0.03, "after the clip it keeps the last value: {after}");
+        // A clip entering during playback must set its first gain before rendering audio.
+        p.automations[0].points = vec![AutoPoint::new(0.0, 0.0), AutoPoint::new(8.0, 0.0)];
+        let mut at_entry = Engine::new(&p, &mut lib, 48000, PlayMode::Song);
+        at_entry.tick = 384;
+        at_entry.run_automation(256);
+        assert_eq!(at_entry.channels[0].vol_v, 0.0);
+        assert!(at_entry.channels[0].ramp.is_none());
         // A mixer pan clip moves the track's matrix.
         p.automations[0].targets = vec![target::mixer(1, target::MIXER_PAN)];
         p.automations[0].points = vec![AutoPoint::new(0.0, 0.0), AutoPoint::new(8.0, 0.0)];
@@ -7232,9 +7234,9 @@ mod tests {
         assert_eq!(t.routes[1].gain, os_dsp::mixer::send_gain_auto(0.8));
         assert_eq!(t.sep, 64);
         assert_eq!(t.strip.settings(),[0.6,0.4,0.3,0.2,0.7,0.,0.,0.]);
-        // The dry level and the send glide there: by at most the engine's limit per sample.
-        assert!(t.effects[0].dry.current < dry(6400) && t.effects[0].dry.current > 0.0, "dry: {:?}", t.effects[0].dry);
-        assert!(t.routes[1].glide.current > 0.0 && t.routes[1].glide.current < t.routes[1].gain);
+        // At clip entry, both gains are already at their automated values for the first sample.
+        assert_eq!(t.effects[0].dry.current, dry(6400));
+        assert_eq!(t.routes[1].glide.current, t.routes[1].gain);
         ticks(&mut e, 600);
         let t = &e.tracks[1];
         assert_eq!((t.effects[0].dry.current, t.routes[1].glide.current), (dry(6400), t.routes[1].gain));

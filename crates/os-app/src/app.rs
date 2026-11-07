@@ -15118,38 +15118,137 @@ mod tests {
     }
 
     #[test]
-    fn playback_fix_copy_includes_linked_automation() {
+    fn playlist_automation_spans_existing_clips_and_respects_manual_bounds() {
         use crate::playlist as pl;
-        use os_model::{Clip,ClipSource,ChannelKind,target};
-        for restored in [false,true] {
-            let mut a=App::new(None);a.state.project=test_project();
-            a.state.project.channels[0].kind=ChannelKind::AudioClip;
-            pl::arr_mut(&mut a.state).clips=vec![Clip::new(384,768,2,ClipSource::Channel(0))];
-            a.state.playlist.sel=vec![0];
-            let auto=pl::create_automation(&mut a.state,target::channel(0,target::CHANNEL_VOLUME),"Volume",0.5);
-            // An independent automation lane must not come along for the ride.
-            let independent=pl::capture_automation(&mut a.state,target::channel(0,target::CHANNEL_PAN),"Pan",0.5).unwrap();
-            if restored {
-                let mut file=os_flp::project::create(&a.state.project).unwrap();
-                a.state.project=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
-                a.state.playlist.automation_owners.clear();
+        use os_model::{Clip, ClipSource, Note, target};
+        for cut in [false, true] {
+            let mut app = App::new(None);
+            app.state.project = test_project();
+            app.state.project.patterns[0].notes.push(Note::step(0, 0));
+            let source = ClipSource::Pattern(1);
+            pl::arr_mut(&mut app.state).clips = vec![
+                Clip::new(384, 384, 2, source),
+                Clip::new(1152, 384, 2, source),
+                Clip::new(2304, 384, 3, source),
+            ];
+            app.state.playlist.sel = vec![1];
+            let ch = pl::create_automation(&mut app.state, target::slot_param(1, 0, 0), "Filter", 0.5);
+            let auto = pl::clips(&app.state)[3];
+            assert_eq!((auto.track, auto.position, auto.end()), (2, 384, 1536));
+            let owner = pl::clips(&app.state)[1];
+            app.state.playlist.stretch = true;
+            assert!(pl::stretch_clip(&mut app.state, 1, &owner, owner.position, 768));
+            pl::drag_end(&mut app, pl::PlDrag::ResizeR { x0: 0.0, orig: vec![(1, owner)] },
+                Rect::new(0.0, 0.0, 1200.0, 800.0));
+            let extended = pl::clips(&app.state)[3];
+            assert_eq!(extended.end(), 1920);
+            if cut {
+                pl::split(&mut app.state, 3, 1152).unwrap();
+            } else {
+                pl::resize_right(&mut app.state, 3, &extended, 768);
             }
-            let owner=pl::clips(&a.state).iter().position(|c|c.source==ClipSource::Channel(0)).unwrap();
-            a.state.playlist.sel=vec![owner];pl::copy(&mut a.state);
-            assert_eq!(a.state.playlist.clipboard.len(),2,"restored={restored}");
-            assert!(a.state.playlist.clipboard.iter().any(|c|c.source==ClipSource::Channel(auto)));
-            assert!(!a.state.playlist.clipboard.iter().any(|c|c.source==ClipSource::Channel(independent)));
-            a.state.playlist.pos=2304;pl::paste(&mut a.state);
-            let selected:Vec<_>=a.state.playlist.sel.iter().map(|&i|pl::clips(&a.state)[i]).collect();
-            assert_eq!(selected.len(),2);assert!(selected.iter().all(|c|c.position==2304&&c.track==2&&c.length==768));
-            a.state.playlist.sel=vec![owner];pl::duplicate(&mut a.state);
-            assert_eq!(a.state.playlist.sel.len(),2);
-            assert!(a.state.playlist.sel.iter().all(|&i|pl::clips(&a.state)[i].position==1152));
-            let original=pl::clips(&a.state)[owner];
-            pl::arr_mut(&mut a.state).clips[owner].position=4000;
-            let copies=pl::clone_clips(&mut a.state,&[(owner,original)]);
-            assert_eq!(copies.len(),2);assert_eq!(pl::clips(&a.state)[owner],original);
+            let file = os_flp::project::create(&app.state.project).unwrap();
+            app.state.project = os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+            let bounds = |s: &State| pl::clips(s).iter().filter(|c| c.source == ClipSource::Channel(ch))
+                .map(|c| (c.position, c.end(), c.window)).collect::<Vec<_>>();
+            let before = bounds(&app.state);
+            assert!(before.iter().all(|(_, _, window)| window.is_some()));
+            app.state.playlist.source = Some(source);
+            pl::place(&mut app.state, 2, 3072);
+            assert_eq!(bounds(&app.state), before);
         }
+    }
+
+    #[test]
+    fn playlist_copies_extend_one_linked_automation_curve() {
+        use crate::playlist as pl;
+        use os_model::{ChannelKind, Clip, ClipSource, target};
+        for reopened in [false, true] {
+            let mut app = App::new(None);
+            app.state.project = test_project();
+            app.state.project.channels[0].kind = ChannelKind::AudioClip;
+            let source = ClipSource::Channel(0);
+            pl::arr_mut(&mut app.state).clips = vec![Clip::new(384, 768, 2, source)];
+            let ch = pl::create_automation(&mut app.state, target::slot_param(1, 0, 0), "Filter", 0.5);
+            pl::add_point(&mut app.state, ch, 2.0, 0.7);
+            pl::run(&mut app, pl::Cmd::TrackAutomationToggle(2));
+            if reopened {
+                let file = os_flp::project::create(&app.state.project).unwrap();
+                app.state.project = os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+                app.state.playlist.automation_owners.clear();
+            }
+            let curve = app.state.project.automation(ch).unwrap().clone();
+            let automation = |s: &State| {
+                let mut placed = pl::clips(s).iter().filter(|c| c.source == ClipSource::Channel(ch));
+                let clip = *placed.next().expect("automation clip");
+                assert!(placed.next().is_none(), "there must be a single automation instance");
+                clip
+            };
+            let owner = pl::clips(&app.state).iter().position(|c| c.source == source).unwrap();
+            app.state.playlist.sel = vec![owner];
+            pl::snapshot(&mut app.state);
+            pl::duplicate(&mut app.state);
+            assert_eq!(app.state.playlist.sel.len(), 1);
+            assert_eq!(automation(&app.state).end(), 1920);
+            crate::history::undo(&mut app.state);
+            assert_eq!(automation(&app.state).end(), 1152);
+            app.state.playlist.sel = vec![owner];
+            pl::copy(&mut app.state);
+            assert_eq!(app.state.playlist.clipboard.len(), 1);
+            app.state.playlist.pos = 2304;
+            pl::paste(&mut app.state);
+            assert_eq!(automation(&app.state).end(), 3072);
+            app.state.playlist.source = Some(source);
+            let last = pl::place(&mut app.state, 2, 4000);
+            assert_eq!(automation(&app.state).end(), pl::clips(&app.state)[last].end());
+            assert_eq!(automation(&app.state).position, 384);
+            pl::run(&mut app, pl::Cmd::TrackAutomationToggle(2));
+            assert_eq!(app.state.playlist.automation_views.get(&2), Some(&ch));
+            assert_eq!(app.state.project.automation(ch), Some(&curve));
+        }
+    }
+
+    #[test]
+    fn mixer_plugin_automation_uses_insert_row_and_edits_points() {
+        use crate::playlist as pl;
+        use winit::keyboard::{Key, NamedKey};
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        pl::arr_mut(&mut app.state).clips.clear();
+        let ch = pl::create_automation(&mut app.state, os_model::target::slot_param(22, 0, 1), "Filter", 0.5);
+        let clip = pl::clips(&app.state)[0];
+        assert_eq!(clip.track, 21);
+        assert_eq!(app.state.playlist.automation_views.get(&21), Some(&ch));
+        app.state.playlist.track = 21;
+        app.state.playlist.row_h = 100.0;
+        let grid = Rect::new(0.0, 0.0, 1200.0, 3000.0);
+        let g = pl::PGeom::new(&app.state, grid);
+        let body = g.body(&clip);
+        let x = g.clip_rect(&clip).x + 20.0;
+        let y = body.cy();
+        app.state.playlist.tool = pl::PlTool::Paint;
+        app.mouse = (x, y);
+        pl::press_grid(&mut app, grid, false);
+        let drag = match app.drag.take() {
+            Some(Drag::Pl(d @ pl::PlDrag::PointPaint { .. })) => d,
+            _ => panic!("Brush should start point painting"),
+        };
+        app.mouse = (x + 20.0, y);
+        pl::drag_move(&mut app, drag, grid);
+        let count = app.state.project.automation(ch).unwrap().points.len();
+        assert!(count > 3);
+        app.drag = None;
+        app.state.playlist.tool = pl::PlTool::Select;
+        pl::press_grid(&mut app, grid, false);
+        assert!(pl::key(&mut app, &Key::Named(NamedKey::Delete), false, false));
+        assert!(app.state.project.automation(ch).unwrap().points.len() < count);
+        assert_eq!(pl::clips(&app.state).len(), 1);
+        let point = app.state.project.automation(ch).unwrap().points[1];
+        app.mouse = (pl::point_x(&app.state, &g, &clip, point.beat), pl::value_y(body, point.value));
+        let count = app.state.project.automation(ch).unwrap().points.len();
+        pl::press_grid(&mut app, grid, true);
+        assert_eq!(app.state.project.automation(ch).unwrap().points.len(), count - 1);
+        assert_eq!(pl::clips(&app.state).len(), 1);
     }
 
     #[test]
@@ -15184,6 +15283,7 @@ mod tests {
         let base=pl::clips(&app.state)[0];assert_eq!(g.clip_rect(&base),g.clip_rect(&overlay));
         let x=g.x_of(600.0);let y=pl::value_y(g.body(&overlay),0.65);
         assert_eq!(pl::clips(&app.state)[pl::clip_at(&app.state,&g,x,y).unwrap()].source,overlay.source);
+        app.state.playlist.tool = pl::PlTool::Draw;
         app.mouse=(x,y);let count=app.state.project.automation(auto).unwrap().points.len();
         pl::press_grid(&mut app,grid,true);assert_eq!(app.state.project.automation(auto).unwrap().points.len(),count+1);
         app.state.playlist.popup=None;app.state.playlist.hover_clip=Some(1);
@@ -19416,6 +19516,7 @@ mod tests {
         let mut canvas = Canvas::new(1920,1080,1.).unwrap();
         let (mut app,_,_,_) = ruler_app(&mut canvas);
         let ch = pl::create_automation(&mut app.state, os_model::target::TEMPO, "Tempo",0.5);
+        app.state.playlist.tool = pl::PlTool::Draw;
         frame(&mut app,&mut canvas,None);
         let clip = *pl::clips(&app.state).last().unwrap();
         let grid = app.pl_grid().unwrap(); let g = pl::PGeom::new(&app.state,grid);

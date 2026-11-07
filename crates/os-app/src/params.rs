@@ -988,7 +988,7 @@ mod tests {
 
 
     #[test]
-    fn automation_capture_next_edit_free_row() {
+    fn automation_capture_overlays_routed_clip_and_restores_deleted_instance() {
         use os_host::ParamEvent::{Begin,Value};
         use crate::playlist as pl;
         let (mut app,key)=eq_app();
@@ -997,7 +997,8 @@ mod tests {
         let plugin:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{desc,events:events.clone(),value:0.7}));
         app.plugins.hosted.insert(key,crate::plugins::Hosted::new(plugin));
         pl::arr_mut(&mut app.state).clips.clear();
-        for track in [0,2] {pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(0,768,track,os_model::ClipSource::Pattern(0)));}
+        app.state.project.patterns[0].notes.push(os_model::Note::step(1, 0));
+        pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(384,768,2,os_model::ClipSource::Pattern(1)));
         app.state.playlist.range=Some((96,480));
         let before=app.state.project.clone();
         app.toggle_automation_capture();
@@ -1012,13 +1013,14 @@ mod tests {
         assert_eq!(auto.target(),Some(target::slot_param(2,1,0)));
         assert_eq!(auto.points[0].value,0.7);
         let clip=pl::clips(&app.state).last().unwrap();
-        assert_eq!((clip.track,clip.position,clip.length),(1,96,384));
-        assert!(app.state.playlist.automation_owners.is_empty());
+        assert_eq!((clip.track,clip.position,clip.length),(2,384,768));
+        assert_eq!(app.state.playlist.automation_owners.get(&auto.channel),Some(&2));
+        assert_eq!(app.state.playlist.automation_views.get(&2),Some(&auto.channel));
         assert!(app.state.project.channels.last().unwrap().name.as_ref().unwrap().contains("Peak Reduction"));
         let file=os_flp::project::create(&app.state.project).unwrap();
         let back=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
         assert_eq!(back.automations.last().unwrap().target(),auto.target());
-        assert_eq!(back.arrangement().unwrap().clips.last().unwrap().track,1);
+        assert_eq!(back.arrangement().unwrap().clips.last().unwrap().track,2);
         events.lock().unwrap().push(Value(7,0.9));app.params_tick();
         assert_eq!(app.state.project.automations.len(),before.automations.len()+1);
         crate::history::undo(&mut app.state);assert_eq!(app.state.project,before);
@@ -1028,7 +1030,24 @@ mod tests {
         app.toggle_automation_capture();
         app.smart_record_host(&Action::Fader(2));
         assert!(!app.state.params.capture_armed);
-        assert_eq!(pl::clips(&app.state).last().unwrap().track,1);
+        let overlay = *pl::clips(&app.state).last().unwrap();
+        assert_eq!(overlay.track, 2);
+        let os_model::ClipSource::Channel(ch) = overlay.source else { panic!("expected automation"); };
+        let curve = app.state.project.automation(ch).unwrap().clone();
+        pl::delete(&mut app.state, vec![1]);
+        pl::automation_menu(&mut app.state, 2, (0.0, 0.0));
+        let command = app.state.playlist.popup.as_ref().unwrap().items.iter()
+            .find(|item| item.cmd == pl::Cmd::TrackAutomation(2, Some(ch))).unwrap().cmd.clone();
+        pl::run(&mut app, command.clone());
+        assert_eq!(pl::clips(&app.state).len(), 2);
+        assert_eq!(pl::clips(&app.state)[1], overlay);
+        assert_eq!(app.state.project.automation(ch), Some(&curve));
+        assert_eq!(app.state.playlist.automation_views.get(&2), Some(&ch));
+        pl::run(&mut app, command);
+        assert_eq!(pl::clips(&app.state).len(), 2, "choosing it again must not duplicate it");
+        crate::history::undo(&mut app.state);
+        assert_eq!(pl::clips(&app.state).len(), 1);
+        assert_eq!(app.state.project.automation(ch), Some(&curve));
     }
     /// A stand-in instance for typing `Weak` (never upgraded).
     #[test]

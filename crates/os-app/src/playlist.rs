@@ -647,6 +647,7 @@ pub struct PlaylistState {
     header_anchor:Option<u16>,
     pub drop_folder:Option<u16>,
     pub track: u16,
+    pub selected_points: Option<(u16, Vec<AutoPoint>)>,
     pub automation_last: HashMap<u16, u16>,
     pub sampler_rows: HashMap<usize, u16>,
     pub automation_views: HashMap<u16, u16>,
@@ -712,6 +713,7 @@ impl Default for PlaylistState {
             sel: Vec::new(),
             header_selection:Vec::new(),header_anchor:None,drop_folder:None,
             track: 0,
+            selected_points: None,
             automation_last: HashMap::new(),
             sampler_rows: HashMap::new(),
             automation_views: HashMap::new(),
@@ -1434,6 +1436,7 @@ pub(crate) fn restore(s: &mut State, (c, m, t, a, st, references, lanes, links):
     arr.markers = m;
     arr.tracks = t;
     s.project.automations = a;
+    s.playlist.selected_points = None;
     s.playlist.original_values = references;
     s.project.instrument_lanes=lanes;
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;s.playlist.drop_folder=None;
@@ -1520,6 +1523,12 @@ pub fn snap_delta(s: &State, g: &PGeom, dt: f32, alt: bool) -> i64 {
 
 /// Place a clip of the current source on `track` at `tick`; returns its index.
 pub fn place(s: &mut State, track: u16, tick: u32) -> usize {
+    let i = place_clip(s, track, tick);
+    extend_linked_automation(s, [i]);
+    i
+}
+
+fn place_clip(s: &mut State, track: u16, tick: u32) -> usize {
     let src = source(s);
     let len = match s.playlist.lock_len {
         Some((l, n)) if l == src => n,
@@ -1576,19 +1585,45 @@ pub fn with_groups(s: &State, mut idx: Vec<usize>) -> Vec<usize> {
     idx
 }
 
-/// Copy linked or restored inline clip automation with its owner; unrelated track/global
-/// automation remains independent. Each linked clip is included at most once.
-fn with_linked_automation(s: &State, mut idx: Vec<usize>) -> Vec<usize> {
-    let owners: Vec<_> = idx.iter().filter_map(|&i|clips(s).get(i)).copied()
-        .filter(|c|source_kind(s,c.source)!=PickKind::Automation).collect();
-    for (i,a) in clips(s).iter().enumerate() {
-        let ClipSource::Channel(ch)=a.source else {continue};
-        let owner=s.playlist.automation_owners.get(&ch).copied().unwrap_or(a.track);
-        if s.project.automation(ch).is_some() && owners.iter().any(|c|c.track==owner && a.position>=c.position && a.end()<=c.end()) && !idx.contains(&i) {
-            idx.push(i);
+/// A selection containing a routed clip copies the music and keeps its automation on the row.
+fn copy_indices(s: &State, indices: Vec<usize>) -> Vec<usize> {
+    indices.iter().copied().filter(|&i| {
+        let Some(clip) = clips(s).get(i) else { return false };
+        let ClipSource::Channel(ch) = clip.source else { return true };
+        let Some(automation) = s.project.automation(ch) else { return true };
+        let row = s.playlist.automation_owners.get(&ch).copied().unwrap_or(clip.track);
+        !indices.iter().filter_map(|&j| clips(s).get(j)).any(|owner| {
+            owner.track == row && automation.targets.iter().any(|&target| clip_matches_target(s, owner, target))
+        })
+    }).collect()
+}
+
+/// Extend the existing curve's right edge after placement. Its points and left edge stay put.
+fn extend_linked_automation(s: &mut State, added: impl IntoIterator<Item = usize>) {
+    if s.project.automations.is_empty() { return; }
+    let added: Vec<_> = added.into_iter().filter_map(|i| clips(s).get(i).copied())
+        .filter(|c| source_kind(s, c.source) != PickKind::Automation).collect();
+    if added.is_empty() { return; }
+    let mut tails = HashMap::new();
+    for (i, clip) in clips(s).iter().copied().enumerate() {
+        let ClipSource::Channel(ch) = clip.source else { continue };
+        if s.project.automation(ch).is_none() { continue; }
+        let row = s.playlist.automation_owners.get(&ch).copied().unwrap_or(clip.track);
+        let tail = tails.entry((row, ch)).or_insert((i, clip));
+        if clip.position > tail.1.position { *tail = (i, clip); }
+    }
+    for ((row, ch), (i, clip)) in tails {
+        // Slicing and manual trims save an explicit window. Respect that boundary after reopening too.
+        if clip.window.is_some() { continue; }
+        let Some(automation) = s.project.automation(ch) else { continue };
+        let end = added.iter().filter(|owner| owner.track == row && owner.position >= clip.position
+            && owner.end() > clip.end()
+            && automation.targets.iter().any(|&target| clip_matches_target(s, owner, target)))
+            .map(Clip::end).max();
+        if let Some(end) = end {
+            resize_right(s, i, &clip, end - clip.position);
         }
     }
-    idx
 }
 
 /// Shift+G: put the selected clips (and the groups they belong to) into one new group. Returns how many.
@@ -1659,19 +1694,15 @@ fn regroup_copies(s: &mut State, from: usize) {
 /// they were and the copies are added after every clip, grouped copies in groups of their own as a Shift+drag's are.
 /// Returns the copies.
 pub fn clone_clips(s: &mut State, orig: &[(usize, Clip)]) -> Vec<(usize, Clip)> {
-    // Restore the held move before finding its inline automation at the original location.
+    // Restore the held originals before copying their positions.
     for &(i,o) in orig {
         if let Some(c)=arr_mut(s).clips.get_mut(i){c.position=o.position;c.track=o.track;}
     }
-    let mut orig=orig.to_vec();
-    for i in with_linked_automation(s,orig.iter().map(|v|v.0).collect()) {
-        if !orig.iter().any(|v|v.0==i) {orig.push((i,clips(s)[i]));}
-    }
-    let orig=&orig;
+    let indices = copy_indices(s, orig.iter().map(|&(i, _)| i).collect());
     let arr = arr_mut(s);
     let first = arr.clips.len();
-    for &(_, o) in orig {
-        let mut cp = o;
+    for i in indices {
+        let mut cp = arr.clips[i];
         cp.set_id(0);
         arr.clips.push(cp);
     }
@@ -1825,11 +1856,10 @@ pub fn resize_right(s: &mut State, i: usize, orig: &Clip, len: u32) {
         ClipSource::Pattern(_) => true,
         ClipSource::Channel(_) => source_kind(s, orig.source) == PickKind::Audio,
     };
+    let shortens_automation = len < orig.length && source_kind(s, orig.source) == PickKind::Automation;
     if let Some(c) = arr_mut(s).clips.get_mut(i) {
         c.length = len.max(1);
-        if orig.window.is_some() || cuts {
-            c.window = Some((w0, end));
-        }
+        c.window = if orig.window.is_some() || cuts || shortens_automation { Some((w0, end)) } else { None };
     }
     s.piano.dirty = true;
 }
@@ -1877,17 +1907,18 @@ pub fn resize_left(s: &mut State, i: usize, orig: &Clip, dt: i64) {
     let dt = ((start-w0) / clip_to_src(s, orig, 1.0)).round() as i64;
     let dt = dt.max(min_dt).max(-i64::from(orig.position)).min(i64::from(orig.length) - 1);
     let d = clip_to_src(s, orig, dt as f64);
+    let is_automation = source_kind(s, orig.source) == PickKind::Automation;
     if let Some(c) = arr_mut(s).clips.get_mut(i) {
         c.position = (i64::from(orig.position) + dt) as u32;
         c.length = (i64::from(orig.length) - dt) as u32;
-        c.window = Some(((w0 + d).max(0.0), w1));
+        c.window = if dt == 0 && orig.window.is_none() && is_automation { None } else { Some(((w0 + d).max(0.0), w1)) };
     }
     s.piano.dirty = true;
 }
 
 /// Ctrl+B: duplicate the selection (or all clips) right after itself, or by the time selection's length.
 pub fn duplicate(s: &mut State) {
-    let idx = with_linked_automation(s,targets(s));
+    let idx = copy_indices(s, targets(s));
     let cs: Vec<Clip> = idx.iter().filter_map(|&i| clips(s).get(i).copied()).collect();
     let (Some(a), Some(b)) = (cs.iter().map(|c| c.position).min(), cs.iter().map(Clip::end).max()) else { return };
     let span = match s.playlist.range {
@@ -1909,6 +1940,7 @@ pub fn duplicate(s: &mut State) {
     let n = arr.clips.len();
     regroup_copies(s, first);
     s.playlist.sel = (first..n).collect();
+    extend_linked_automation(s, first..n);
     if let Some((r0, r1)) = s.playlist.range {
         s.playlist.range = Some((r0 + span, r1 + span));
     }
@@ -1916,7 +1948,7 @@ pub fn duplicate(s: &mut State) {
 }
 
 pub fn copy(s: &mut State) {
-    let idx = with_linked_automation(s,with_groups(s,s.playlist.sel.clone()));
+    let idx = copy_indices(s, with_groups(s, s.playlist.sel.clone()));
     s.playlist.clipboard = idx.iter().filter_map(|&i| clips(s).get(i).copied()).collect();
 }
 
@@ -1936,6 +1968,7 @@ pub fn paste(s: &mut State) {
     let n = arr.clips.len();
     regroup_copies(s, start);
     s.playlist.sel = (start..n).collect();
+    extend_linked_automation(s, start..n);
     s.piano.dirty = true;
 }
 
@@ -2268,10 +2301,17 @@ pub fn create_automation(s: &mut State, tgt: u32, name: &str, value: f64) -> u16
     create_automation_on(s,tgt,name,value,None)
 }
 
-/// Capture uses a completely empty row, never a linked overlay or an occupied row.
+/// Move control uses the same routed placement as direct creation. Unlinked controls use an empty row.
 pub fn capture_automation(s: &mut State,tgt:u32,name:&str,value:f64)->Option<u16> {
-    let track=(0..TRACKS).find(|&t| !s.mixer.recording.live.iter().any(|d| d.row == t) && !clips(s).iter().any(|c|c.track==t))?;
-    Some(create_automation_on(s,tgt,name,value,Some(track)))
+    let linked = automation_destination(s, tgt).is_some()
+        || matches!(target::decode(tgt), target::Target::SlotParam(insert, ..) if insert > 0);
+    let free = if linked {
+        None
+    } else {
+        Some((0..TRACKS).find(|&t| !s.mixer.recording.live.iter().any(|d| d.row == t)
+            && !clips(s).iter().any(|c| c.track == t))?)
+    };
+    Some(create_automation_on(s,tgt,name,value,free))
 }
 
 fn create_automation_on(s:&mut State,tgt:u32,name:&str,value:f64,free:Option<u16>)->u16 {
@@ -2279,10 +2319,10 @@ fn create_automation_on(s:&mut State,tgt:u32,name:&str,value:f64,free:Option<u16
     // automatically" is on (spec: ui/settings-choices.md "Advanced: Initialize controls automatically").
     let init = crate::init::automatic(tgt, value);
     arr_mut(s);
-    let mut snap = crate::history::Snap::Playlist(Box::new(capture(s)));
-    if free.is_some() {
-        snap=crate::history::Snap::Several(vec![snap,crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(s,s.project.channels.len())))]);
-    }
+    let mut snap = crate::history::Snap::Several(vec![
+        crate::history::Snap::Playlist(Box::new(capture(s))),
+        crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(s, s.project.channels.len()))),
+    ]);
     if init.is_some() {
         snap = crate::history::Snap::Several(vec![snap, crate::history::Snap::Init(tgt, crate::init::entry(s, tgt))]);
     }
@@ -2290,7 +2330,23 @@ fn create_automation_on(s:&mut State,tgt:u32,name:&str,value:f64,free:Option<u16
     let name = &unique_channel_name(s, name);
     let index = s.project.channels.iter().map(|c| c.index + 1).max().unwrap_or(0);
     let linked = if free.is_some() {None} else {automation_destination(s,tgt)};
-    let (a,b) = linked.map(|c|(c.position,c.end())).unwrap_or_else(|| match s.playlist.range {
+    let owner = linked.map(|clip| clip.track).or_else(|| {
+        if free.is_some() { return None; }
+        match target::decode(tgt) {
+            target::Target::SlotParam(insert, ..) if insert > 0 => {
+                let arrangement = s.project.arrangement().map(|a| a.number);
+                s.project.instrument_lanes.iter().find(|&&(ch, number, _, _)| {
+                    Some(number) == arrangement && s.project.channels.iter().any(|c| c.index == ch && c.mixer_track == insert)
+                }).map(|&(_, _, row, _)| row).or(Some((insert - 1).min(TRACKS - 1)))
+            }
+            _ => None,
+        }
+    });
+    let coverage = owner.and_then(|row| clips(s).iter()
+        .filter(|clip| clip.track == row && clip_matches_target(s, clip, tgt))
+        .map(|clip| (clip.position, clip.end()))
+        .reduce(|(start, end), (a, b)| (start.min(a), end.max(b))));
+    let (a,b) = coverage.unwrap_or_else(|| match s.playlist.range {
         Some((r0,r1)) if r1>r0 => (r0,r1), _=>automation_span(s),
     });
     let beats = f64::from(b - a) / f64::from(ppq(s));
@@ -2313,11 +2369,12 @@ fn create_automation_on(s:&mut State,tgt:u32,name:&str,value:f64,free:Option<u16
     });
     s.project.automations.push(os_flp::project::new_automation(index, tgt, value.clamp(0.0, 1.0), beats));
     s.playlist.original_values.insert(index, value.clamp(0.0, 1.0));
-    let track = free.unwrap_or_else(||linked.map_or_else(||free_track(s,track_after_used(s),a,b),|c|c.track));
+    let track = free.unwrap_or_else(||owner.unwrap_or_else(||free_track(s,track_after_used(s),a,b)));
     let arr = arr_mut(s);
     arr.clips.push(Clip::new(a, b - a, track, ClipSource::Channel(index)));
     let n = arr.clips.len();
-    if linked.is_some() {
+    if owner.is_some() {
+        s.playlist.automation_last.insert(track,index);
         s.playlist.automation_owners.insert(index,track);
         s.playlist.automation_views.insert(track,index);
     }
@@ -2533,6 +2590,22 @@ pub fn point_near(s: &State, g: &PGeom, ci: usize, x: f32, y: f32) -> Option<usi
         .filter(|&(_, d)| d <= 8.0)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
+}
+
+fn select_points(s: &mut State, g: &PGeom, ci: usize, start: (f32, f32), end: (f32, f32)) {
+    let Some(c) = clips(s).get(ci) else { return };
+    let ClipSource::Channel(ch) = c.source else { return };
+    let Some(a) = s.project.automation(ch) else { return };
+    let body = g.body(c);
+    let points = a.points.iter().copied().filter(|p| {
+        let x = point_x(s, g, c, p.beat);
+        let y = value_y(body, p.value);
+        x >= body.x - 4.0 && x <= body.right() + 4.0
+            && x >= start.0.min(end.0) - 4.0 && x <= start.0.max(end.0) + 4.0
+            && y >= start.1.min(end.1) - 4.0 && y <= start.1.max(end.1) + 4.0
+    }).collect();
+    s.playlist.selected_points = Some((ch, points));
+    s.playlist.sel.clear();
 }
 
 /// The tension handle (the segment's midpoint on the curve) near (x, y): index of the segment's end point.
@@ -3117,6 +3190,8 @@ pub enum PlDrag {
     SongPos,
     TimeSel { t0: u32 },
     Marker { i: usize, dt: i64, t0: u32 },
+    PointSelect { clip: usize, x0: f32, y0: f32 },
+    PointPaint { clip: usize, x0: f32, y0: f32 },
     Point { ch: u16, clip: usize, i: usize, x0: f32, y0: f32, beat0: f64, v0: f64, lock: Option<bool> },
     Tension { ch: u16, i: usize, y0: f32, t0: f32 },
     /// An audio clip's fade-in (`out` false) or fade-out handle (§9a).
@@ -3302,10 +3377,6 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
         s.playlist.range=None;s.playlist.overlay=None;s.playlist.last_header=None;
         s.playlist.last_clip=None;
     }
-    if right && tool==PlTool::Paint {
-        begin_erase_sweep(app, hit);
-        return;
-    }
     let alt = app.alt;
 
     if tool == PlTool::Comp {
@@ -3319,6 +3390,49 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             }
         }
         app.invalidate();return;
+    }
+
+    s.playlist.selected_points = None;
+    if right && !app.shift && matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select)
+        && let Some(ci) = hit
+        && let ClipSource::Channel(ch) = clips(s)[ci].source
+        && let Some(i) = point_near(s, &g, ci, x, y)
+    {
+        snapshot_as(s, "Delete automation point");
+        delete_point(s, ch, i);
+        app.invalidate();
+        return;
+    }
+    if let Some(ci) = hit {
+        let clip = clips(s)[ci];
+        if let ClipSource::Channel(ch) = clip.source
+            && s.playlist.automation_views.values().any(|&visible| visible == ch)
+            && g.body(&clip).outset(4.0).contains(x, y)
+        {
+            if !right && tool == PlTool::Select {
+                app.drag = Some(Drag::Pl(PlDrag::PointSelect { clip: ci, x0: x, y0: y }));
+                select_points(s, &g, ci, (x, y), (x, y));
+                app.invalidate();
+                return;
+            }
+            if !right && !app.ctrl && tool == PlTool::Paint && edge(g.clip_rect(&clip), x) == 0 {
+                snapshot_as(s, "Paint automation points");
+                add_point(s, ch, beat_at(s, &g, &clip, x), value_at_y(g.body(&clip), y));
+                app.drag = Some(Drag::Pl(PlDrag::PointPaint { clip: ci, x0: x, y0: y }));
+                app.invalidate();
+                return;
+            }
+        }
+    }
+
+    if right && tool == PlTool::Paint
+        && !hit.is_some_and(|i| {
+            let c = &clips(s)[i];
+            source_kind(s, c.source) == PickKind::Automation && g.body(c).contains(x, y)
+        })
+    {
+        begin_erase_sweep(app, hit);
+        return;
     }
 
     // Ctrl+drag selects in any tool; Ctrl+click toggles a clip (§3).
@@ -3436,11 +3550,12 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             }
         }
         let auto_clip = matches!(c.source, ClipSource::Channel(ch) if s.project.automation(ch).is_some());
-        if auto_clip && matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select) && !app.ctrl && g.body(&c).contains(x, y) {
+        if auto_clip && matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select) && !app.ctrl && (g.body(&c).contains(x, y) || point_near(s, &g, ci, x, y).is_some()) {
             let ClipSource::Channel(ch) = c.source else { return };
             if let Some(i) = point_near(s, &g, ci, x, y) {
                 if right {
                     s.playlist.popup = Some(point_menu(s, ch, i, x, y));
+                    app.invalidate();
                     return;
                 }
                 snapshot(s);
@@ -3553,7 +3668,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 snapshot_as(s, "Playlist fill paint clip");
                 s.playlist.sel.clear();
                 let start = snap_place(s, &g, tick, alt);
-                let i = place(s, track, start);
+                let i = place_clip(s, track, start);
                 let c = clips(s)[i];
                 if tool == PlTool::Paint {
                     s.playlist.sel.push(i);
@@ -3587,7 +3702,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 let r = g.clip_rect(&c);
                 let e = edge(r, x);
                 if app.shift && e == 0 {
-                    group=with_linked_automation(s,group);
+                    group = copy_indices(s, group);
                     // Shift+drag copies: the copies move, the originals stay.
                     let arr = arr_mut(s);
                     let first = arr.clips.len();
@@ -3692,6 +3807,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             | PlDrag::ZoomBox { .. }
             | PlDrag::TimeSel { .. }
             | PlDrag::Marker { .. }
+            | PlDrag::PointSelect { .. }
+            | PlDrag::PointPaint { .. }
             | PlDrag::Point { .. }
             | PlDrag::Tension { .. }
     );
@@ -3878,6 +3995,26 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 m.position = t;
             }
         }
+        PlDrag::PointSelect { clip, x0, y0 } => {
+            select_points(s, &g, clip, (x0, y0), (x, y));
+            s.playlist.overlay = Some(Overlay::Marquee(Rect::span(x0.min(x), x0.max(x), y0.min(y), y0.max(y))));
+        }
+        PlDrag::PointPaint { clip, x0, y0 } => {
+            if let Some(c) = clips(s).get(clip).copied()
+                && let ClipSource::Channel(ch) = c.source
+                && g.body(&c).contains(x, y)
+                && (x - x0).abs() >= 5.0
+            {
+                let steps = ((x - x0).abs() / 5.0).ceil() as usize;
+                for step in 1..=steps {
+                    let f = step as f32 / steps as f32;
+                    let beat = beat_at(s, &g, &c, x0 + f * (x - x0));
+                    let value = value_at_y(g.body(&c), y0 + f * (y - y0));
+                    add_point(s, ch, beat, value);
+                }
+                app.drag = Some(Drag::Pl(PlDrag::PointPaint { clip, x0: x, y0: y }));
+            }
+        }
         PlDrag::Point { ch, clip, i, x0, y0, beat0, v0, lock } => {
             let Some(c) = clips(s).get(clip).copied() else { return };
             let body = g.body(&c);
@@ -3995,6 +4132,12 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
     {
         s.playlist.lock_len = Some((c.source, c.length));
     }
+    if let PlDrag::ResizeL { orig, .. } | PlDrag::ResizeR { orig, .. } = &d {
+        let grown: Vec<_> = orig.iter().filter_map(|(i, old)|
+            clips(s).get(*i).filter(|clip| clip.end() > old.end()).map(|_| *i)
+        ).collect();
+        extend_linked_automation(s, grown);
+    }
     match d {
         PlDrag::Track{row,started:true,..}=>{
             let target=g.track_at(app.mouse.1.clamp(grid.y,grid.bottom()-1.));
@@ -4067,6 +4210,12 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
                 let p = app.state.playlist.pos;
                 app.play_song_from(p);
             }
+        }
+        PlDrag::Move { orig, fresh: true, .. } => {
+            extend_linked_automation(s, orig.iter().map(|&(i, _)| i));
+        }
+        PlDrag::Paint { .. } => {
+            extend_linked_automation(s, s.playlist.sel.clone());
         }
         PlDrag::Move { orig, fresh: false, .. } | PlDrag::ResizeL { orig, .. } | PlDrag::ResizeR { orig, .. } => {
             // A click that changed nothing leaves no undo step.
@@ -5170,6 +5319,20 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         }
         Cmd::TrackAutomation(t, channel) => {
             if let Some(ch) = channel {
+                let source = ClipSource::Channel(ch);
+                let automation = s.project.automation(ch)?;
+                if !clips(s).iter().any(|clip| clip.source == source) {
+                    let owner = automation.targets.iter()
+                        .filter_map(|&target| automation_destination(s, target))
+                        .find(|clip| clip.track == t)
+                        .or_else(|| clips(s).iter().find(|clip| clip.track == t
+                            && source_kind(s, clip.source) != PickKind::Automation).copied());
+                    let start = owner.map_or_else(|| automation_span(s).0, |clip| clip.position);
+                    let length = source_len(s, source);
+                    snapshot_as(s, "Restore automation clip");
+                    arr_mut(s).clips.push(Clip::new(start, length, t, source));
+                    s.piano.dirty = true;
+                }
                 for a in automation_channels(s, t) { s.playlist.automation_owners.insert(a, t); }
                 s.playlist.automation_owners.insert(ch, t);
                 s.playlist.automation_views.retain(|_, c| *c != ch);
@@ -5555,6 +5718,20 @@ pub fn consolidate(app: &mut App) -> String {
 pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> bool {
     use winit::keyboard::{Key, NamedKey};
     let shift = app.shift;
+    if !ctrl && app.state.playlist.edit.is_none() && matches!(key, Key::Named(NamedKey::Delete))
+        && let Some((ch, points)) = app.state.playlist.selected_points.take()
+    {
+        let s = &mut app.state;
+        let indices: Vec<_> = s.project.automation(ch).into_iter().flat_map(|a|
+            a.points.iter().enumerate().filter(|(i, p)| *i > 0 && points.contains(p)).map(|(i, _)| i)
+        ).collect();
+        if !indices.is_empty() {
+            snapshot_as(s, "Delete automation points");
+            for i in indices.into_iter().rev() { delete_point(s, ch, i); }
+        }
+        app.invalidate();
+        return true;
+    }
     // Inline text box first.
     if app.state.playlist.edit.is_some() {
         let e = app.state.playlist.edit.as_mut().expect("checked");
@@ -5761,16 +5938,23 @@ fn clip_channels(s:&State,c:&Clip)->Vec<u16> {
         _=>Vec::new(),
     }
 }
-fn automation_destination(s:&State,tgt:u32)->Option<Clip> {
+fn clip_matches_target(s: &State, clip: &Clip, target: u32) -> bool {
     use os_model::target::Target as T;
-    let matches=|c:&Clip| {
-        let channels=clip_channels(s,c);if channels.is_empty(){return false;}
-        match target::decode(tgt) {
-            T::ChannelVolume(ch)|T::ChannelPan(ch)|T::ChannelPitch(ch)|T::ChannelLevel(ch,_)|T::ChannelParam(ch,_)=>channels.contains(&ch),
-            T::MixerVolume(m)|T::MixerPan(m)|T::MixerSeparation(m)|T::MixerEq(m,..)|T::MixerStrip(m,_)|T::MixerSend(m,_)|T::SlotOn(m,_)|T::SlotMix(m,_)|T::SlotParam(m,..)=>m==0 || s.project.channels.iter().any(|ch|channels.contains(&ch.index)&&ch.mixer_track==m),
-            _=>false,
-        }
-    };
+    let channels = clip_channels(s, clip);
+    if channels.is_empty() { return false; }
+    match target::decode(target) {
+        T::ChannelVolume(ch) | T::ChannelPan(ch) | T::ChannelPitch(ch)
+        | T::ChannelLevel(ch, _) | T::ChannelParam(ch, _) => channels.contains(&ch),
+        T::MixerVolume(m) | T::MixerPan(m) | T::MixerSeparation(m) | T::MixerEq(m, ..)
+        | T::MixerStrip(m, _) | T::MixerSend(m, _) | T::SlotOn(m, _) | T::SlotMix(m, _)
+        | T::SlotParam(m, ..) => m == 0 || s.project.channels.iter()
+            .any(|ch| channels.contains(&ch.index) && ch.mixer_track == m),
+        _ => false,
+    }
+}
+
+fn automation_destination(s:&State,tgt:u32)->Option<Clip> {
+    let matches = |clip: &Clip| clip_matches_target(s, clip, tgt);
     s.playlist.sel.iter().filter_map(|&i|clips(s).get(i)).find(|c|matches(c))
         .or_else(||clips(s).iter().find(|c|matches(c)&&c.position<=s.playlist.pos&&c.end()>s.playlist.pos))
         .or_else(||clips(s).iter().find(|c|matches(c))).copied()

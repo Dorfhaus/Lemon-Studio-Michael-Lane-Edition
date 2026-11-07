@@ -4,6 +4,18 @@
   "sections": [
     {
       "date": "2026-11-07",
+      "title": "Playlist automation workflow \u00b7 public build 2026110703",
+      "changes": [
+        "Creating automation from a mixer plugin, including Move control, places it over the routed Playlist clips and opens it for editing.",
+        "New linked automation spans the existing routed clips on its Playlist row. Adding, duplicating or lengthening clips extends the same automation curve.",
+        "Cutting or shortening an automation clip preserves its edited boundaries when you add more material and after you reopen the project.",
+        "Choosing a saved automation from the track menu restores a deleted placement with its existing points.",
+        "Use Select to box-select automation points, right-click to remove a point, and Brush to paint points while dragging. Point and title cursors indicate where to edit or move the clip.",
+        "Adding a mixer effect enables the insert's FX, and opening automation gains apply before the first affected sample."
+      ]
+    },
+    {
+      "date": "2026-11-07",
       "title": "Smaller editing cursors on macOS \u00b7 public build 2026110702",
       "changes": [
         "macOS only: Reduced the size of the custom mouse cursors in the Playlist and Piano Roll on Retina displays. The editor toolbar buttons retain their original appearance."

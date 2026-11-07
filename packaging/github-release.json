@@ -1,27 +1,42 @@
 {
-  "tag": "v2026.11.07.2",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.07.2 (macOS)",
-  "notes": "macOS-only update for Apple silicon and Intel.\n\n- macOS only: Reduced the size of the custom mouse cursors in the Playlist and Piano Roll on Retina displays. The editor toolbar buttons retain their original appearance.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.07.3",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.07.3",
+  "notes": "- Creating automation from a mixer plugin, including Move control, places it over the routed Playlist clips and opens it for editing.\n- New linked automation spans the existing routed clips on its Playlist row. Adding, duplicating or lengthening clips extends the same automation curve.\n- Cutting or shortening an automation clip preserves its edited boundaries when you add more material and after you reopen the project.\n- Choosing a saved automation from the track menu restores a deleted placement with its existing points.\n- Use Select to box-select automation points, right-click to remove a point, and Brush to paint points while dragging. Point and title cursors indicate where to edit or move the clip.\n- Adding a mixer effect enables the insert's FX, and opening automation gains apply before the first affected sample.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110702.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110702/Lemon-Studio-Mac-arm64-2026110702.dmg",
-      "sha256": "69c0ef236bbd6143f29748f4d281a210661a7b76dce51f1856abaaedd67be301"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.07.3.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110703/Lemon-Studio-Windows-Setup-2026.11.07.3.exe",
+      "sha256": "eadae79482fca7e4d8dd4945423ba10f2cdaaa154bde724cdbcbcfafa19d23eb"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110702.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110702/Lemon-Studio-Source-Mac-arm64-2026110702.zip",
-      "sha256": "2ddd8d13fcdc08328b6eef6942cc7c2d8a6f044d6913b4d61b8671a5429dc5cf"
+      "name": "Lemon-Studio-Source-2026110703.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110703/Lemon%20Studio%20Source.zip",
+      "sha256": "570802be86a2a07d44709e91b21340205f4d2e559d7fe185c406e016184e2008"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110702.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110702/Lemon-Studio-Mac-x86_64-2026110702.dmg",
-      "sha256": "47a5c8d87407d40cc22ef6b4fb5c7ce8df1648507922b2b81b127ba04f9ede9b"
+      "name": "Lemon-Studio-Linux-x86_64-2026110703.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110703/Lemon-Studio-Linux-x86_64-2026110703.tar.gz",
+      "sha256": "5076f640804b41caaf4b30b4789763e56b445ed05abda4aa7cf0bf2a5150007b"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110702.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110702/Lemon-Studio-Source-Mac-x86_64-2026110702.zip",
-      "sha256": "ffe08bf6b328c50a911df01f216cfcfb6a9049b11ac91d2bfd1c2d0a42409ee1"
+      "name": "Lemon-Studio-Mac-arm64-2026110703.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110703/Lemon-Studio-Mac-arm64-2026110703.dmg",
+      "sha256": "6823083b255969d287b9dee96867221ad259ca48c0f82cfb4e082121d921a87a"
+    },
+    {
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110703.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110703/Lemon-Studio-Source-Mac-arm64-2026110703.zip",
+      "sha256": "70871f3dc30a1dcd4041071f2ecf84210646d24d33775b4417ff0ea50121a8f3"
+    },
+    {
+      "name": "Lemon-Studio-Mac-x86_64-2026110703.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110703/Lemon-Studio-Mac-x86_64-2026110703.dmg",
+      "sha256": "677e3f0e47d17fe68c1bb4cb7fd58853dc825882a03a03bee07917fac229be5a"
+    },
+    {
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110703.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110703/Lemon-Studio-Source-Mac-x86_64-2026110703.zip",
+      "sha256": "3d78a8e549c20b48640de0a606eb7157edb8da2c2c9fb969e1fb64c947d0758b"
     }
   ]
 }
