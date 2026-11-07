@@ -853,6 +853,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_rack_strips(file,&mut p);
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
+    read_gain_lines(file,&mut p);
     read_marker_colors(file,&mut p);
     read_clip_fx_owners(file,&mut p);
     read_note_drive(file,&mut p);read_mpe(file,&mut p);
@@ -1461,6 +1462,7 @@ fn decode_clip(r: &[u8]) -> Clip {
         source,
         muted: r[19] & CLIP_MUTED != 0,
         window,
+        gain_line: os_model::GainLine::default(),
         raw,
     }
 }
@@ -3286,6 +3288,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_rack_strips(project,file);
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
+    write_gain_lines(project,file);
     write_marker_colors(project,file);
     write_clip_fx_owners(project,file);
     write_note_drive(project,file);write_mpe(project,file);
@@ -3825,6 +3828,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_rack_strips(project,&mut file);
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
+    write_gain_lines(project,&mut file);
     write_marker_colors(project,&mut file);
     write_clip_fx_owners(project,&mut file);
     write_note_drive(project,&mut file);write_mpe(project,&mut file);
@@ -6716,6 +6720,39 @@ fn read_pattern_speeds(file:&FlpFile,p:&mut Project){
             let Some(a)=p.arrangements.iter_mut().find(|a|a.number==arr)else{continue;};
             let clips=if track==u32::MAX{Some(&mut a.clips)}else{a.tracks.iter_mut().find(|t|t.number==track).and_then(|t|t.frozen.as_mut())};
             if let Some(clip)=clips.and_then(|c|c.get_mut(index)).filter(|c|matches!(c.source,ClipSource::Pattern(_))){clip.pattern_speed=rate;}
+        }
+    }
+}
+
+// Audio clips' gain lines (Lemon-native, `os_model::GainLine`): version 1, then per clip the arrangement, the track
+// (u32::MAX for the arrangement's own clips, else the frozen track's number), the clip's index, the breakpoint count
+// and the breakpoints as (ms, dB) f32 pairs.
+const GAIN_LINES:Tag=Tag(*b"LSGL");
+fn write_gain_lines(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=GAIN_LINES);let mut data=vec![1];
+    for a in &p.arrangements {
+        let lists=std::iter::once((u32::MAX,a.clips.as_slice())).chain(a.tracks.iter().filter_map(|t|t.frozen.as_deref().map(|clips|(t.number,clips))));
+        for (track,clips) in lists {for (index,c) in clips.iter().enumerate(){if !c.gain_line.is_empty() {
+            data.extend(a.number.to_le_bytes());data.extend(track.to_le_bytes());data.extend((index as u32).to_le_bytes());
+            data.push(c.gain_line.nodes().len() as u8);
+            for n in c.gain_line.nodes(){data.extend(n.ms.to_le_bytes());data.extend(n.db.to_le_bytes());}
+        }}}
+    }
+    if data.len()>1{file.chunks.push(Chunk{tag:GAIN_LINES,body:ChunkBody::Raw(data)});}
+}
+fn read_gain_lines(file:&FlpFile,p:&mut Project){
+    for c in &file.chunks{if c.tag!=GAIN_LINES{continue;}let ChunkBody::Raw(data)=&c.body else{continue;};if data.first()!=Some(&1){continue;}
+        let mut r=&data[1..];
+        while r.len()>=11 {
+            let arr=u16::from_le_bytes(r[0..2].try_into().unwrap());let track=u32::from_le_bytes(r[2..6].try_into().unwrap());let index=u32::from_le_bytes(r[6..10].try_into().unwrap()) as usize;let count=usize::from(r[10]);
+            r=&r[11..];
+            if r.len()<count*8 {break;}
+            let mut line=os_model::GainLine::default();
+            for k in 0..count {let ms=f32::from_le_bytes(r[k*8..k*8+4].try_into().unwrap());let db=f32::from_le_bytes(r[k*8+4..k*8+8].try_into().unwrap());if ms.is_finite()&&db.is_finite(){line.add(os_model::GainNode{ms,db});}}
+            r=&r[count*8..];
+            let Some(a)=p.arrangements.iter_mut().find(|a|a.number==arr)else{continue;};
+            let clips=if track==u32::MAX{Some(&mut a.clips)}else{a.tracks.iter_mut().find(|t|t.number==track).and_then(|t|t.frozen.as_mut())};
+            if let Some(clip)=clips.and_then(|c|c.get_mut(index)).filter(|c|matches!(c.source,ClipSource::Channel(_))){clip.gain_line=line;}
         }
     }
 }

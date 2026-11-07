@@ -19890,6 +19890,113 @@ mod tests {
         let _=std::fs::remove_file(wav);
     }
 
+    /// An audio clip's gain line (Pro Tools-style clip gain with nodes): a press on the line adds a breakpoint at
+    /// the line's value and drags it in time and dB, the line follows the static gain, Alt-click removes a
+    /// breakpoint, each edit is one undo step, and the line survives a save and reload.
+    #[test]
+    fn audio_clip_gain_line_nodes() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        app.state.playlist_bar_w = 400.0;
+        let wav = std::env::temp_dir().join(format!("os-app-clip-gain-line-{}.wav", std::process::id()));
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 48000, &[0.5; 96000]).unwrap();
+        pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, 0).expect("audio clip added");
+        let ci = pl::clips(&app.state).len() - 1;
+        app.state.playlist.sel.clear();
+        frame(&mut app, &mut c, None);
+        let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
+        let clip = pl::clips(&app.state)[ci];
+        let body = g.body(&clip);
+        assert!(clip.gain_line.is_empty());
+        let undo_before = app.state.history.len();
+        // Hovering the line (0 dB, three quarters up the body) lights it; a press adds a breakpoint there.
+        let x = body.x + body.w * 0.5;
+        let y = pl::gain_line_y_at(&app.state, &g, &clip, x);
+        assert!((y - (body.bottom() - body.h * 0.75)).abs() < 1.0, "0 dB sits at three quarters: {y} in {body:?}");
+        app.mouse_move(x, y);
+        assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainLine));
+        app.mouse_down();
+        let clip = pl::clips(&app.state)[ci];
+        assert_eq!(clip.gain_line.nodes().len(), 1, "a press on the line adds a breakpoint");
+        let n = clip.gain_line.nodes()[0];
+        assert!((n.db).abs() < 0.01, "at the line's value: {} dB", n.db);
+        assert!((n.ms - pl::x_ms(&app.state, &g, &clip, x)).abs() < 1.0);
+        // Dragging it 5 px up and 40 px right: up by 5 px worth of the body's 48 dB, later in the clip.
+        let db_px = (pl::GAIN_LINE_MAX_DB - pl::GAIN_LINE_MIN_DB) / body.h;
+        for k in 1..=8 {
+            let f = k as f32 / 8.0;
+            app.mouse_move(x + 40.0 * f, y - 5.0 * f);
+        }
+        app.mouse_up();
+        frame(&mut app, &mut c, None);
+        let clip = pl::clips(&app.state)[ci];
+        let n = clip.gain_line.nodes()[0];
+        assert!((n.db - 5.0 * db_px).abs() < 0.05, "node at {} dB, expected {}", n.db, 5.0 * db_px);
+        assert!((n.ms - pl::x_ms(&app.state, &g, &clip, x + 40.0)).abs() < 1.0, "node moved in time");
+        assert_eq!(app.state.history.len(), undo_before + 1, "adding and dragging a node is one undo step");
+        // The clip plays the line: unity before the node (it holds flat), the node's gain after it.
+        assert!((clip.gain_at(0.0) - 10f32.powf(n.db / 20.0)).abs() < 1e-4, "flat before the only node");
+        assert!((clip.gain_at(n.ms + 500.0) - 10f32.powf(n.db / 20.0)).abs() < 1e-4);
+        // A second breakpoint earlier on the line, then the two sit in time order and the line slopes between them.
+        let x2 = body.x + body.w * 0.25;
+        let y2 = pl::gain_line_y_at(&app.state, &g, &clip, x2);
+        app.mouse_move(x2, y2);
+        assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainLine));
+        app.mouse_down();
+        app.mouse_move(x2, y2 + 30.0);
+        app.mouse_up();
+        frame(&mut app, &mut c, None);
+        let clip = pl::clips(&app.state)[ci];
+        let nodes = clip.gain_line.nodes();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes[0].ms < nodes[1].ms);
+        assert!(nodes[0].db < nodes[1].db, "the earlier node was dragged down: {nodes:?}");
+        let mid = (nodes[0].ms + nodes[1].ms) / 2.0;
+        assert!((clip.gain_line.db_at(mid) - (nodes[0].db + nodes[1].db) / 2.0).abs() < 1e-4);
+        // The gain handle moves the whole line: the nodes keep their relative dB.
+        let before = clip.gain_line;
+        app.mouse_move(body.cx(), body.bottom() - 2.0);
+        assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::Gain));
+        app.mouse_down();
+        app.mouse_move(body.cx(), body.bottom() - 22.0);
+        app.mouse_up();
+        frame(&mut app, &mut c, None);
+        let clip = pl::clips(&app.state)[ci];
+        assert_eq!(clip.gain_line, before);
+        assert!((pl::static_db(&clip) - 3.0).abs() < 0.01);
+        // The line is saved with the project and comes back.
+        let file = os_flp::project::create(&app.state.project).unwrap();
+        let back = os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+        let clips_back = &back.arrangements[0].clips;
+        let found = clips_back.iter().find(|c| !c.gain_line.is_empty()).expect("the gain line was saved");
+        assert_eq!(found.gain_line, clip.gain_line);
+        // Alt-click removes a breakpoint; undo brings it back.
+        let (nx, ny) = pl::gain_node_xy(&app.state, &g, &clip, 1).unwrap();
+        app.mouse_move(nx, ny);
+        assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainNode(1)));
+        app.alt = true;
+        app.mouse_down();
+        app.mouse_up();
+        app.alt = false;
+        frame(&mut app, &mut c, None);
+        assert_eq!(pl::clips(&app.state)[ci].gain_line.nodes().len(), 1);
+        crate::history::undo(&mut app.state);
+        assert_eq!(pl::clips(&app.state)[ci].gain_line.nodes().len(), 2, "undo restores the removed node");
+        // Splitting the clip keeps the line with the audio on both halves.
+        let split_tick = clip.position + clip.length / 2;
+        let right = pl::split(&mut app.state, ci, split_tick).expect("split");
+        let (l, r) = (pl::clips(&app.state)[ci], pl::clips(&app.state)[right]);
+        let half_ms = pl::clip_ms(&app.state, &clip) / 2.0;
+        for ms in [0.0, half_ms * 0.5, half_ms * 0.99] {
+            assert!((l.gain_line.db_at(ms) - clip.gain_line.db_at(ms)).abs() < 0.01, "left half at {ms} ms");
+        }
+        for ms in [0.0, half_ms * 0.5, half_ms * 0.99] {
+            assert!((r.gain_line.db_at(ms) - clip.gain_line.db_at(ms + half_ms)).abs() < 0.05, "right half at {ms} ms");
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
     /// Audio clip handles (spec: ui/playlist.md §9a): dragging the fade triangles sets the fades, the tension ring
     /// bends the curve, the gain half-circle changes the gain; one undo step each.
     #[test]

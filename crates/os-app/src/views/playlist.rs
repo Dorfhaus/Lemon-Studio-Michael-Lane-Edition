@@ -1054,6 +1054,35 @@ fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body, wav
         curve(ui, edges.x, f64::from(xf.x1), xf.t_in, false);
         curve(ui, edges.x, f64::from(xf.x1), xf.t_out, true);
     }
+    // The gain line (Pro Tools-style clip gain): across the body at the clip's whole gain, faint on its own, bright
+    // while the mouse is over the clip; its breakpoints as small discs. Drawn when the clip has breakpoints, or
+    // while hovered so a press on the line can add one.
+    let has_line = !c.gain_line.is_empty();
+    if s.playlist.controls.fades && (has_line || hovered) && body.w > 24.0 {
+        let base = pl::static_db(c);
+        let mut pts: Vec<(f32, f32)> = Vec::with_capacity(c.gain_line.nodes().len() + 2);
+        let y_at = |db: f32| pl::snap(f64::from(pl::gain_line_y(body, base + db)));
+        let first = c.gain_line.nodes().first().map_or(0.0, |n| n.db);
+        pts.push((pl::snap(f64::from(body.x)), y_at(first)));
+        for n in c.gain_line.nodes() {
+            let x = (body.x + pl::ms_px(s, g, n.ms)).min(body.right());
+            pts.push((pl::snap(f64::from(x)), y_at(n.db)));
+        }
+        let last = c.gain_line.nodes().last().map_or(0.0, |n| n.db);
+        pts.push((pl::snap(f64::from(body.right())), y_at(last)));
+        let alpha = if hovered { 230 } else if has_line { 150 } else { 0 };
+        let line_col = if lit(pl::Handle::GainLine) { ui.t.tx(0xffd166) } else { white.with_alpha(alpha) };
+        ui.c.polyline(&pts, if hovered { 1.6 } else { 1.2 }, line_col);
+        if hovered || has_line {
+            for k in 0..c.gain_line.nodes().len() {
+                if let Some((nx, ny)) = pl::gain_node_xy(s, g, c, k) {
+                    let on = lit(pl::Handle::GainNode(k));
+                    ui.c.fill_circle(nx, ny, if on { 4.0 } else { 3.0 }, if on { ui.t.tx(0xffd166) } else { white.with_alpha(if hovered { 235 } else { 170 }) });
+                    ui.c.stroke_circle(nx, ny, if on { 4.0 } else { 3.0 }, 1.0, ui.t.s(0x1c2328).with_alpha(200));
+                }
+            }
+        }
+    }
     // Handles only while the mouse is over the clip (as FL): white, brighter on the one under the mouse.
     if !hovered || !s.playlist.controls.fades {
         return;

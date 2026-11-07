@@ -1580,6 +1580,129 @@ pub enum ClipSource {
 /// Length of a stored clip record (spec: flp/events/playlist.md).
 pub const CLIP_RECORD_LEN: usize = 88;
 
+/// Most breakpoints an audio clip's gain line holds (a fixed array keeps [`Clip`] `Copy`).
+pub const GAIN_NODES_MAX: usize = 32;
+
+/// Lowest a gain-line breakpoint goes (dB, relative to the clip's static gain) and highest.
+pub const GAIN_NODE_MIN_DB: f32 = -60.0;
+pub const GAIN_NODE_MAX_DB: f32 = 24.0;
+
+/// One breakpoint of an audio clip's gain line: `ms` from the clip's start, `db` relative to the clip's static gain.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GainNode {
+    pub ms: f32,
+    pub db: f32,
+}
+
+/// An audio clip's gain line (Pro Tools-style clip gain with nodes): breakpoints in dB over the clip's time, joined by
+/// straight lines in dB, flat before the first and after the last. The line is relative to the clip's static
+/// [`Clip::gain`]: the two multiply, so dragging the static handle moves the whole line and an empty line is unity.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GainLine {
+    len: u8,
+    nodes: [GainNode; GAIN_NODES_MAX],
+}
+
+impl GainLine {
+    pub fn nodes(&self) -> &[GainNode] {
+        &self.nodes[..usize::from(self.len)]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// The line's gain in dB `ms` into the clip: linear between the breakpoints around it.
+    pub fn db_at(&self, ms: f32) -> f32 {
+        let n = self.nodes();
+        match n {
+            [] => 0.0,
+            [a] => a.db,
+            _ => {
+                if ms <= n[0].ms { return n[0].db; }
+                let last = n[n.len() - 1];
+                if ms >= last.ms { return last.db; }
+                let i = n.partition_point(|p| p.ms <= ms);
+                let (a, b) = (n[i - 1], n[i]);
+                let span = b.ms - a.ms;
+                if span <= 0.0 { b.db } else { a.db + (b.db - a.db) * ((ms - a.ms) / span) }
+            }
+        }
+    }
+
+    /// The line's gain as a factor `ms` into the clip.
+    pub fn gain_at(&self, ms: f32) -> f32 {
+        if self.len == 0 { 1.0 } else { 10f32.powf(self.db_at(ms) / 20.0) }
+    }
+
+    /// Adds a breakpoint, keeping the line ordered by time; the index it took, or `None` when the line is full. A
+    /// breakpoint at exactly another's time replaces it.
+    pub fn add(&mut self, node: GainNode) -> Option<usize> {
+        let node = GainNode { ms: node.ms.max(0.0), db: node.db.clamp(GAIN_NODE_MIN_DB, GAIN_NODE_MAX_DB) };
+        if !node.ms.is_finite() || !node.db.is_finite() { return None; }
+        let n = usize::from(self.len);
+        if let Some(i) = self.nodes[..n].iter().position(|p| p.ms == node.ms) {
+            self.nodes[i] = node;
+            return Some(i);
+        }
+        if n >= GAIN_NODES_MAX { return None; }
+        let i = self.nodes[..n].partition_point(|p| p.ms < node.ms);
+        self.nodes.copy_within(i..n, i + 1);
+        self.nodes[i] = node;
+        self.len += 1;
+        Some(i)
+    }
+
+    pub fn remove(&mut self, i: usize) {
+        let n = usize::from(self.len);
+        if i >= n { return; }
+        self.nodes.copy_within(i + 1..n, i);
+        self.len -= 1;
+    }
+
+    /// Moves breakpoint `i` to `ms`, `db`: its time stays between its neighbours' (a node never passes another).
+    pub fn set(&mut self, i: usize, ms: f32, db: f32) {
+        let n = usize::from(self.len);
+        if i >= n { return; }
+        let lo = if i == 0 { 0.0 } else { self.nodes[i - 1].ms };
+        let hi = if i + 1 < n { self.nodes[i + 1].ms } else { f32::INFINITY };
+        let ms = if ms.is_finite() { ms.clamp(lo, hi) } else { self.nodes[i].ms };
+        let db = if db.is_finite() { db.clamp(GAIN_NODE_MIN_DB, GAIN_NODE_MAX_DB) } else { self.nodes[i].db };
+        self.nodes[i] = GainNode { ms, db };
+    }
+
+    /// The line `delta` milliseconds later (the clip's start moved earlier into its audio by `-delta`): breakpoints
+    /// that end up before the start are dropped, keeping the line's value there as a breakpoint at 0 so the audio
+    /// still plays at the gain it had.
+    pub fn shift(&mut self, delta: f32) {
+        if self.len == 0 || !delta.is_finite() || delta == 0.0 { return; }
+        let at_start = self.db_at(-delta);
+        let mut out = GainLine::default();
+        let crossed = self.nodes().iter().any(|p| p.ms + delta < 0.0);
+        if crossed { out.add(GainNode { ms: 0.0, db: at_start }); }
+        for p in self.nodes() {
+            let ms = p.ms + delta;
+            if ms >= 0.0 { out.add(GainNode { ms, db: p.db }); }
+        }
+        *self = out;
+    }
+
+    /// The line from `ms` on, as the right half of a clip split there keeps it (the value at the split becomes its
+    /// first breakpoint), and the line up to `ms` as the left half keeps it.
+    pub fn split(&self, ms: f32) -> (GainLine, GainLine) {
+        let mut right = *self;
+        right.shift(-ms);
+        let mut left = GainLine::default();
+        for p in self.nodes().iter().filter(|p| p.ms <= ms) { left.add(*p); }
+        if !self.is_empty() && self.nodes().iter().any(|p| p.ms > ms) { left.add(GainNode { ms, db: self.db_at(ms) }); }
+        (left, right)
+    }
+}
+
 /// A playlist clip. `start` / `end` are the clip's window into its source in the source's unit: pattern ticks,
 /// audio milliseconds, automation beats (spec: flp/events/playlist.md "Clip offsets"); `None` = from the
 /// source's start for the clip's length.
@@ -1594,6 +1717,8 @@ pub struct Clip {
     pub source: ClipSource,
     pub muted: bool,
     pub window: Option<(f64, f64)>,
+    /// An audio clip's gain line (Lemon-native, kept in its own chunk; see [`GainLine`]).
+    pub gain_line: GainLine,
     /// The stored record (fields not modeled are written back from here; a new clip gets FL's defaults).
     pub raw: [u8; CLIP_RECORD_LEN],
 }
@@ -1626,7 +1751,7 @@ impl Clip {
     };
 
     pub fn new(position: u32, length: u32, track: u16, source: ClipSource) -> Clip {
-        Clip { pattern_speed:1.0, position, length, track, source, muted: false, window: None, raw: Clip::TEMPLATE }
+        Clip { pattern_speed:1.0, position, length, track, source, muted: false, window: None, gain_line: GainLine::default(), raw: Clip::TEMPLATE }
     }
 
     pub fn end(&self) -> u32 {
@@ -1758,6 +1883,76 @@ impl Clip {
 
     pub fn set_gain(&mut self, g: f32) {
         self.set_f32(52, g);
+    }
+
+    /// The clip's whole gain `ms` into it: its static gain through its gain line.
+    pub fn gain_at(&self, ms: f32) -> f32 {
+        self.gain() * self.gain_line.gain_at(ms)
+    }
+}
+
+#[cfg(test)]
+mod gain_line_tests {
+    use super::{GainLine, GainNode, GAIN_NODES_MAX};
+
+    fn line(pts: &[(f32, f32)]) -> GainLine {
+        let mut l = GainLine::default();
+        for &(ms, db) in pts { l.add(GainNode { ms, db }).unwrap(); }
+        l
+    }
+
+    #[test]
+    fn empty_is_unity_and_one_node_is_flat() {
+        assert_eq!(GainLine::default().gain_at(123.0), 1.0);
+        let l = line(&[(500.0, -6.0)]);
+        assert_eq!(l.db_at(0.0), -6.0);
+        assert_eq!(l.db_at(9999.0), -6.0);
+    }
+
+    #[test]
+    fn interpolates_linearly_in_db_and_holds_outside() {
+        let l = line(&[(1000.0, 0.0), (2000.0, -12.0)]);
+        assert_eq!(l.db_at(0.0), 0.0);
+        assert_eq!(l.db_at(1500.0), -6.0);
+        assert_eq!(l.db_at(3000.0), -12.0);
+        assert!((l.gain_at(1500.0) - 0.501187).abs() < 1e-4);
+    }
+
+    #[test]
+    fn adds_in_time_order_and_replaces_at_the_same_time() {
+        let mut l = line(&[(300.0, 1.0), (100.0, 2.0), (200.0, 3.0)]);
+        assert_eq!(l.nodes().iter().map(|p| p.ms).collect::<Vec<_>>(), [100.0, 200.0, 300.0]);
+        assert_eq!(l.add(GainNode { ms: 200.0, db: -9.0 }), Some(1));
+        assert_eq!(l.nodes().len(), 3);
+        assert_eq!(l.nodes()[1].db, -9.0);
+        l.remove(0);
+        assert_eq!(l.nodes()[0].ms, 200.0);
+    }
+
+    #[test]
+    fn a_node_never_passes_its_neighbours_and_the_line_fills_up() {
+        let mut l = line(&[(100.0, 0.0), (200.0, 0.0), (300.0, 0.0)]);
+        l.set(1, 50.0, 100.0);
+        assert_eq!(l.nodes()[1], GainNode { ms: 100.0, db: 24.0 });
+        l.set(1, 900.0, -100.0);
+        assert_eq!(l.nodes()[1], GainNode { ms: 300.0, db: -60.0 });
+        let mut full = GainLine::default();
+        for i in 0..GAIN_NODES_MAX { assert!(full.add(GainNode { ms: i as f32, db: 0.0 }).is_some()); }
+        assert_eq!(full.add(GainNode { ms: 1e6, db: 0.0 }), None);
+    }
+
+    #[test]
+    fn shifting_keeps_the_gain_at_the_new_start_and_splitting_keeps_both_halves() {
+        let mut l = line(&[(1000.0, 0.0), (2000.0, -12.0)]);
+        l.shift(-1500.0);
+        assert_eq!(l.nodes(), [GainNode { ms: 0.0, db: -6.0 }, GainNode { ms: 500.0, db: -12.0 }]);
+        let (a, b) = line(&[(1000.0, 0.0), (2000.0, -12.0)]).split(1500.0);
+        assert_eq!(a.nodes(), [GainNode { ms: 1000.0, db: 0.0 }, GainNode { ms: 1500.0, db: -6.0 }]);
+        assert_eq!(b.nodes(), [GainNode { ms: 0.0, db: -6.0 }, GainNode { ms: 500.0, db: -12.0 }]);
+        // The two halves play the whole line unchanged.
+        let whole = line(&[(1000.0, 0.0), (2000.0, -12.0)]);
+        for ms in [0.0, 1200.0, 1499.0] { assert!((a.db_at(ms) - whole.db_at(ms)).abs() < 1e-4); }
+        for ms in [0.0, 300.0, 900.0] { assert!((b.db_at(ms) - whole.db_at(ms + 1500.0)).abs() < 1e-4); }
     }
 }
 

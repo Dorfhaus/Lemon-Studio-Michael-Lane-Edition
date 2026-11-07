@@ -1801,6 +1801,12 @@ pub fn split(s: &mut State, i: usize, tick: u32) -> Option<usize> {
     right.position = tick;
     right.length = c.end() - tick;
     right.window = Some((w0 + cut, w1.max(w0 + cut)));
+    // An audio clip's gain line is split with its audio (its unit is milliseconds, as `cut` is for audio).
+    if matches!(c.source, ClipSource::Channel(_)) && !c.gain_line.is_empty() {
+        let (l, r) = c.gain_line.split(cut as f32);
+        left.gain_line = l;
+        right.gain_line = r;
+    }
     right.set_id(0);
     let a = arr_mut(s);
     a.clips[i] = left;
@@ -1912,6 +1918,11 @@ pub fn resize_left(s: &mut State, i: usize, orig: &Clip, dt: i64) {
         c.position = (i64::from(orig.position) + dt) as u32;
         c.length = (i64::from(orig.length) - dt) as u32;
         c.window = if dt == 0 && orig.window.is_none() && is_automation { None } else { Some(((w0 + d).max(0.0), w1)) };
+        // The gain line stays with the audio (its unit is milliseconds, as `d` is for an audio clip).
+        if matches!(orig.source, ClipSource::Channel(_)) {
+            c.gain_line = orig.gain_line;
+            c.gain_line.shift(-(d as f32));
+        }
     }
     s.piano.dirty = true;
 }
@@ -3199,6 +3210,8 @@ pub enum PlDrag {
     FadeTension { clip: usize, out: bool, y0: f32, t0: f32, targets: Vec<usize> },
     /// An audio clip's gain handle: dB from where the drag started.
     Gain { clip: usize, y0: f32, starting_db: Vec<(usize, f32)> },
+    /// A breakpoint of an audio clip's gain line (Pro Tools-style clip gain): dragged in time and dB.
+    GainNode { clip: usize, node: usize },
     /// A crossfade's handle (§9a): later clip `b`, earlier clip `a`, `b`'s gain at the middle when the drag started.
     Crossfade { a: usize, b: usize, y0: f32, m0: f64 },
 }
@@ -3213,7 +3226,57 @@ pub enum Handle {
     Gain,
     /// The handle in the middle of a crossfade (on the later clip).
     Crossfade,
+    /// A breakpoint of the clip's gain line.
+    GainNode(usize),
+    /// The gain line itself, between breakpoints: a press adds one there.
+    GainLine,
 }
+
+/// The dB the top and bottom of an audio clip's body stand for on its gain line (0 dB sits at three quarters).
+pub const GAIN_LINE_MAX_DB: f32 = 12.0;
+pub const GAIN_LINE_MIN_DB: f32 = -36.0;
+
+/// Where `db` of whole clip gain (static gain through the line) sits on the body, and back.
+pub fn gain_line_y(body: Rect, db: f32) -> f32 {
+    let u = ((db - GAIN_LINE_MIN_DB) / (GAIN_LINE_MAX_DB - GAIN_LINE_MIN_DB)).clamp(0.0, 1.0);
+    body.bottom() - u * body.h
+}
+pub fn gain_line_db(body: Rect, y: f32) -> f32 {
+    let u = ((body.bottom() - y) / body.h.max(1.0)).clamp(0.0, 1.0);
+    GAIN_LINE_MIN_DB + u * (GAIN_LINE_MAX_DB - GAIN_LINE_MIN_DB)
+}
+
+/// The clip's static gain in dB.
+pub fn static_db(c: &Clip) -> f32 {
+    20.0 * c.gain().log10()
+}
+
+/// Milliseconds into audio clip `c` at screen x.
+pub fn x_ms(s: &State, g: &PGeom, c: &Clip, x: f32) -> f32 {
+    let body = g.body(c);
+    (f64::from(x - body.x) / f64::from(g.ppt) * fade_ms_per_tick(s)) as f32
+}
+
+/// How long audio clip `c` plays, in milliseconds.
+pub fn clip_ms(s: &State, c: &Clip) -> f32 {
+    (f64::from(c.length) * fade_ms_per_tick(s)) as f32
+}
+
+/// The gain line's y at screen x on audio clip `c`'s body: the whole gain there (§9a).
+pub fn gain_line_y_at(s: &State, g: &PGeom, c: &Clip, x: f32) -> f32 {
+    gain_line_y(g.body(c), static_db(c) + c.gain_line.db_at(x_ms(s, g, c, x)))
+}
+
+/// Screen position of breakpoint `k` of audio clip `c`'s gain line.
+pub fn gain_node_xy(s: &State, g: &PGeom, c: &Clip, k: usize) -> Option<(f32, f32)> {
+    let n = c.gain_line.nodes().get(k)?;
+    let body = g.body(c);
+    Some((body.x + ms_px(s, g, n.ms).min(body.w), gain_line_y(body, static_db(c) + n.db)))
+}
+
+/// How close to a breakpoint (and to the line) a press grabs it.
+const GAIN_NODE_GRAB: f32 = 5.0;
+const GAIN_LINE_GRAB: f32 = 3.0;
 
 /// Tension per logical pixel of a tension-handle drag, and dB per pixel of a gain drag (§9a, OS: FL's per-pixel
 /// steps at 150 %).
@@ -3335,6 +3398,18 @@ pub fn handle_at(s: &State, g: &PGeom, i: usize, x: f32, y: f32) -> Option<Handl
     if near(body.cx(), body.bottom() - 2.0, 6.0) {
         return Some(Handle::Gain);
     }
+    // The gain line's breakpoints, then the line itself (a press there adds one), with the drawing and Select
+    // tools and away from the clip's edges, which resize it.
+    if matches!(s.playlist.tool, PlTool::Draw | PlTool::Paint | PlTool::Select) && body.w > 24.0 && x > body.x + 6.0 && x < body.right() - 6.0 {
+        for k in 0..c.gain_line.nodes().len() {
+            if let Some((nx, ny)) = gain_node_xy(s, g, c, k) && near(nx, ny, GAIN_NODE_GRAB) {
+                return Some(Handle::GainNode(k));
+            }
+        }
+        if (y - gain_line_y_at(s, g, c, x)).abs() <= GAIN_LINE_GRAB && y >= body.y && y <= body.bottom() {
+            return Some(Handle::GainLine);
+        }
+    }
     None
 }
 
@@ -3347,6 +3422,11 @@ pub fn handle_hint(c: &Clip, h: Handle) -> String {
         Handle::TensionOut => format!("Fade out tension: {:+.2}", c.fade_out_tension()),
         Handle::Gain => format!("Clip gain: {:+.1} dB", 20.0 * c.gain().log10()),
         Handle::Crossfade => format!("Crossfade tension: {:+.2}", c.fade_in_tension()),
+        Handle::GainNode(k) => match c.gain_line.nodes().get(k) {
+            Some(n) => format!("Clip gain node: {:+.1} dB at {:.0} ms (Alt-click removes)", static_db(c) + n.db, n.ms),
+            None => String::from("Clip gain node"),
+        },
+        Handle::GainLine => format!("Clip gain line: {:+.1} dB (click to add a node)", static_db(c)),
     }
 }
 
@@ -3480,8 +3560,10 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                             Handle::FadeOut=>{c.set_fade_out(None);c.set_fade_out_tension(0.);},
                             Handle::TensionIn=>c.set_fade_in_tension(0.),
                             Handle::TensionOut=>c.set_fade_out_tension(0.),
-                            Handle::Gain=>c.set_gain(1.),
+                            Handle::Gain=>{c.set_gain(1.);c.gain_line.clear();},
                             Handle::Crossfade=>{},
+                            Handle::GainNode(k)=>c.gain_line.remove(k),
+                            Handle::GainLine=>c.gain_line.clear(),
                         }
                     }
                 }
@@ -3501,6 +3583,16 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 Handle::Crossfade => {
                     let a = crossfade(s, &g, ci).map_or(ci, |xf| xf.a);
                     PlDrag::Crossfade { a, b: ci, y0: y, m0: os_model::fade_curve(0.5, f64::from(c.fade_in_tension())) }
+                }
+                Handle::GainNode(k) => PlDrag::GainNode { clip: ci, node: k },
+                Handle::GainLine => {
+                    // A new breakpoint at the line's value there, so the line does not jump; then it is dragged.
+                    let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
+                    let db = c.gain_line.db_at(ms);
+                    match arr_mut(s).clips[ci].gain_line.add(os_model::GainNode { ms, db }) {
+                        Some(k) => PlDrag::GainNode { clip: ci, node: k },
+                        None => { app.hint = Cow::Borrowed("Clip gain line: no room for another node"); app.invalidate(); return; }
+                    }
                 }
             }));
             app.hint = Cow::Owned(handle_hint(&c, h));
@@ -3816,13 +3908,14 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
     // tension or gain handle only that clip (and the hint bar). A stretch-mode resize changes every clip of the
     // stretched channels: the whole window.
     let stretching = !app.state.playlist.stretch_base.is_empty() && matches!(d, PlDrag::ResizeL { .. } | PlDrag::ResizeR { .. });
-    let handle = matches!(d, PlDrag::Fade { .. } | PlDrag::FadeTension { .. } | PlDrag::Gain { .. } | PlDrag::Crossfade { .. });
+    let handle = matches!(d, PlDrag::Fade { .. } | PlDrag::FadeTension { .. } | PlDrag::Gain { .. } | PlDrag::GainNode { .. } | PlDrag::Crossfade { .. });
     let moved: Option<Vec<usize>> = match &d {
         _ if stretching => None,
         PlDrag::Move { orig, .. } | PlDrag::ResizeL { orig, .. } | PlDrag::ResizeR { orig, .. } => Some(orig.iter().map(|&(i, _)| i).collect()),
         PlDrag::Slip { i, .. } => Some(vec![*i]),
         PlDrag::Fade { targets, .. } | PlDrag::FadeTension { targets, .. } => Some(targets.clone()),
         PlDrag::Gain { starting_db, .. } => Some(starting_db.iter().map(|&(i, _)| i).collect()),
+        PlDrag::GainNode { clip, .. } => Some(vec![*clip]),
         PlDrag::Crossfade { a, b, .. } => Some(vec![*a, *b]),
         _ => None,
     };
@@ -4087,6 +4180,16 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             let c = arr.clips[clip];
             app.hint = Cow::Owned(handle_hint(&c, Handle::Gain));
             app.state.piano.dirty = true;
+        }
+        PlDrag::GainNode { clip, node } => {
+            if let Some(c) = clips(s).get(clip).copied() {
+                let body = g.body(&c);
+                let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
+                let db = gain_line_db(body, y) - static_db(&c);
+                arr_mut(s).clips[clip].gain_line.set(node, ms, db);
+                app.hint = Cow::Owned(handle_hint(&clips(s)[clip], Handle::GainNode(node)));
+                app.state.piano.dirty = true;
+            }
         }
         PlDrag::Crossfade { a, b, y0, m0 } => {
             // The later clip's gain at the middle moves 1/120 per logical pixel; its fade-in takes the tension that

@@ -145,6 +145,9 @@ struct ClipShape {
     tension_in: f64,
     tension_out: f64,
     gain: f32,
+    /// The clip's gain line over its time (`os_model::GainLine`), and the milliseconds a frame lasts to read it.
+    line: os_model::GainLine,
+    ms_per_frame: f64,
     /// Frames of the short fade a late start begins with (0 = none).
     declick: u64,
 }
@@ -156,6 +159,9 @@ impl ClipShape {
     fn at(&self, age: u64) -> f32 {
         let t = self.position(age);
         let mut g = f64::from(self.gain);
+        if !self.line.is_empty() {
+            g *= f64::from(self.line.gain_at((t as f64 * self.ms_per_frame) as f32));
+        }
         if self.fade_in > 0 && t < self.fade_in {
             g *= os_model::fade_curve(t as f64 / self.fade_in as f64, self.tension_in);
         }
@@ -230,12 +236,13 @@ struct ClipFx {
     fade_in: (f32, f32),
     fade_out: (f32, f32),
     gain: f32,
+    line: os_model::GainLine,
 }
 
 impl ClipFx {
     fn of(c: &os_model::Clip, (fade_in, fade_out): (Option<(f32, f32)>, Option<(f32, f32)>)) -> Option<ClipFx> {
-        let fx = ClipFx { fade_in: fade_in.unwrap_or((0.0, 0.0)), fade_out: fade_out.unwrap_or((0.0, 0.0)), gain: c.gain() };
-        (fx.fade_in.0 > 0.0 || fx.fade_out.0 > 0.0 || fx.gain != 1.0).then_some(fx)
+        let fx = ClipFx { fade_in: fade_in.unwrap_or((0.0, 0.0)), fade_out: fade_out.unwrap_or((0.0, 0.0)), gain: c.gain(), line: c.gain_line };
+        (fx.fade_in.0 > 0.0 || fx.fade_out.0 > 0.0 || fx.gain != 1.0 || !fx.line.is_empty()).then_some(fx)
     }
 }
 
@@ -1494,7 +1501,7 @@ impl Engine {
                     from,
                     start,
                     buf: 0,
-                    shape: n.clip.or_else(|| n.cut.map(|_| ClipFx { fade_in: (0.0,0.0), fade_out: (0.0,0.0), gain: 1.0 })).map(|fx| {
+                    shape: n.clip.or_else(|| n.cut.map(|_| ClipFx { fade_in: (0.0,0.0), fade_out: (0.0,0.0), gain: 1.0, line: os_model::GainLine::default() })).map(|fx| {
                         let ms = |v: f32| (f64::from(v.max(0.0)) * f64::from(rate) / 1000.0).round() as u64;
                         let total = Clock::frame_of_tick(rate, ppq, tick_tempo, n.tick + n.len) - Clock::frame_of_tick(rate, ppq, tick_tempo, n.tick);
                         ClipShape {
@@ -1506,6 +1513,8 @@ impl Engine {
                             tension_in: f64::from(fx.fade_in.1),
                             tension_out: f64::from(fx.fade_out.1),
                             gain: fx.gain,
+                            line: fx.line,
+                            ms_per_frame: 1000.0 / f64::from(rate),
                             declick: 0,
                         }
                     }),
@@ -2328,7 +2337,7 @@ impl Engine {
                 let since = at - frame(t.tick);
                 let from = t.from + since as f64 * t.rate * ch.base_rate;
                 let total = t.cut.map_or(u64::MAX, |c| frame(c) - frame(t.tick));
-                let plain = ClipShape { since: 0, age_origin: 0, total, fade_in: 0, fade_out: 0, tension_in: 0.0, tension_out: 0.0, gain: 1.0, declick: 0 };
+                let plain = ClipShape { since: 0, age_origin: 0, total, fade_in: 0, fade_out: 0, tension_in: 0.0, tension_out: 0.0, gain: 1.0, line: os_model::GainLine::default(), ms_per_frame: 1000.0 / f64::from(self.rate), declick: 0 };
                 let declick = (LATE_START_SECONDS * f64::from(self.rate)).round() as u64;
                 let shape = Some(ClipShape { since, declick, ..t.shape.unwrap_or(plain) });
                 (from < frames).then(|| Trigger { tick, from, start: (from / frames) as f32, shape, ..*t })
@@ -8659,3 +8668,31 @@ mod rack_strip_tests {
 
 #[cfg(test)]
 mod audit_tests;
+
+#[cfg(test)]
+mod gain_line_shape_tests {
+    use super::ClipShape;
+    use os_model::{GainLine, GainNode};
+
+    #[test]
+    fn the_shape_reads_the_gain_line_in_clip_time_under_its_fades_and_static_gain() {
+        let rate = 48_000u32;
+        let mut line = GainLine::default();
+        line.add(GainNode { ms: 1000.0, db: 0.0 }).unwrap();
+        line.add(GainNode { ms: 2000.0, db: -12.0 }).unwrap();
+        let shape = ClipShape {
+            since: 0, age_origin: 0, total: 4 * u64::from(rate), fade_in: 0, fade_out: 0, tension_in: 0.0, tension_out: 0.0,
+            gain: 0.5, line, ms_per_frame: 1000.0 / f64::from(rate), declick: 0,
+        };
+        let frames = |ms: f64| (ms / 1000.0 * f64::from(rate)) as u64;
+        assert!((shape.at(frames(0.0)) - 0.5).abs() < 1e-6, "flat before the first node");
+        assert!((shape.at(frames(1500.0)) - 0.5 * 10f32.powf(-6.0 / 20.0)).abs() < 1e-5, "halfway is -6 dB");
+        assert!((shape.at(frames(3500.0)) - 0.5 * 10f32.powf(-12.0 / 20.0)).abs() < 1e-5, "flat after the last node");
+        // A voice that started 1.5 s into the clip reads the line from there.
+        let late = ClipShape { since: frames(1500.0), ..shape };
+        assert!((late.at(0) - shape.at(frames(1500.0))).abs() < 1e-6);
+        // Without nodes the line is unity.
+        let plain = ClipShape { line: GainLine::default(), ..shape };
+        assert_eq!(plain.at(frames(1500.0)), 0.5);
+    }
+}

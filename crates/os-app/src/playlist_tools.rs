@@ -38,7 +38,7 @@ pub fn cursor(app: &App) -> Option<Cursor> {
         }
         let(tool,phase)=match t{Tool::Draw=>(PlTool::Draw,3),Tool::Split=>(PlTool::Slice,3),Tool::Time|Tool::Attack=>(PlTool::Slip,RESIZE),Tool::Main|Tool::Hand=>(PlTool::Select,if app.drag.is_some(){GRABBING}else{GRAB}),Tool::Zoom=>(PlTool::Zoom,3),_ =>(PlTool::Select,11+crate::vocal::TOOLS.iter().position(|p|*p==t).unwrap_or(0)as u8)};return Some(Cursor::Playlist(tool,phase));
     }
-    if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::Gain { .. } | pl::PlDrag::Fade { .. } | pl::PlDrag::FadeTension { .. } | pl::PlDrag::Crossfade { .. }))) {
+    if matches!(app.drag,Some(crate::app::Drag::Pl(pl::PlDrag::Gain { .. } | pl::PlDrag::GainNode { .. } | pl::PlDrag::Fade { .. } | pl::PlDrag::FadeTension { .. } | pl::PlDrag::Crossfade { .. }))) {
         return Some(Cursor::Playlist(app.state.playlist.tool,GAIN));
     }
     if matches!(app.drag,Some(crate::app::Drag::NotePaint { .. })) {
