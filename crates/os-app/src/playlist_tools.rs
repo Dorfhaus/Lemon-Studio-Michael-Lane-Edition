@@ -193,10 +193,25 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
     }}
     Some(c)
 }
+fn native_cursor_scale(scale: f32) -> f32 {
+    // Winit uses the bitmap dimensions as AppKit points. Compensate for Retina backing
+    // pixels and make the editor pointer smaller than the original logical artwork.
+    let scale = if cfg!(target_os = "macos") { scale * 0.425 } else { scale };
+    scale.clamp(0.5, 4.0)
+}
+
 pub fn cursor_source(tool: PlTool, phase: u8, scale: f32) -> Option<winit::window::CustomCursorSource> {
+    let scale = native_cursor_scale(scale);
     let c=cursor_canvas(tool,phase,scale)?;
     let bytes: Vec<u8> = c.pixmap.pixels().iter().flat_map(|p| { let p=p.demultiply(); [p.red(),p.green(),p.blue(),p.alpha()] }).collect();
-    let (hx,hy)=if phase==GAIN {let s=scale.clamp(0.5,4.0);((15.*s).round() as u16,(5.*s).round() as u16)}else if phase>=GRAB {let mid=(16.*scale.clamp(0.5,4.)).round() as u16;(mid,mid)}else{hotspot(tool,scale.clamp(0.5,4.0))};
+    let (hx, hy) = if phase == GAIN {
+        ((15. * scale).round() as u16, (5. * scale).round() as u16)
+    } else if phase >= GRAB {
+        let mid = (16. * scale).round() as u16;
+        (mid, mid)
+    } else {
+        hotspot(tool, scale)
+    };
     winit::window::CustomCursor::from_rgba(bytes,c.pixmap.width() as u16,c.pixmap.height() as u16,hx,hy).ok()
 }
 
@@ -226,8 +241,10 @@ mod tests {
     use super::*;
     #[test]
     fn native_tool_cursors_are_transparent_and_scale_correctly() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(native_cursor_scale(2.0), 0.85);
         for tool in [PlTool::Draw,PlTool::Paint,PlTool::Slice,PlTool::Select,PlTool::Delete,PlTool::Mute,PlTool::Zoom,PlTool::Slip,PlTool::Playback,PlTool::Comp] {
-            for scale in [1.0,1.5,2.0,4.0] {
+            for scale in [0.85,1.0,1.5,2.0,4.0] {
                 for phase in [0,1,2,3,4,GRAB,GRABBING,RESIZE,COPYING,STRETCH,GAIN] {
                     let c=cursor_canvas(tool,phase,scale).unwrap();
                     let opaque=c.pixmap.pixels().iter().filter(|p| p.alpha()>100).count();

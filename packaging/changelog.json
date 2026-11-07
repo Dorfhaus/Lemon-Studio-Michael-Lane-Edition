@@ -4,6 +4,13 @@
   "sections": [
     {
       "date": "2026-11-07",
+      "title": "Smaller editing cursors on macOS \u00b7 public build 2026110702",
+      "changes": [
+        "macOS only: Reduced the size of the custom mouse cursors in the Playlist and Piano Roll on Retina displays. The editor toolbar buttons retain their original appearance."
+      ]
+    },
+    {
+      "date": "2026-11-07",
       "title": "Cleaner Playlist zoom and lighter Mixer redraws \u00b7 public build 2026110701",
       "changes": [
         "Playlist track headers stay readable at the smallest height, showing the name and mute/solo control. Grouped tracks are easier to distinguish.",
