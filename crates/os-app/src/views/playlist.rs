@@ -259,7 +259,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let x = g.x_of(p as f32).clamp(grid_x, grid.right());
         ui.c.fill_rect(Rect::span(grid_x, x, grid.y, grid.bottom()), t.s(0x000000).with_alpha(70));
     }
-    grid_lines(ui, &g, bar_w, start_bar(&g, start));
+    grid_lines(ui, &g, bar_w, start_bar(&g, start), pl::grid_snap(s));
     for &row in &visible {
         let (y, h) = (g.y_of(row), g.rows.height(row));
         // The gap line at the theme's line strength (spec: ui/flstheme.md §3, PLGridContrast).
@@ -615,7 +615,7 @@ pub(crate) fn marker_label(m: &TimeMarker) -> String {
 
 /// Vertical lines: grid units (dim), beats, bars (bright); every fourth bar group tinted, counted from bar `sb` (the
 /// Start marker's, §7a).
-fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32) {
+fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32, snap: pl::Snap) {
     let t = ui.t;
     let grid = g.grid;
     let mut bar_step = 1;
@@ -627,8 +627,10 @@ fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32) {
     // Lines at the theme's line strength (spec: ui/flstheme.md §3, PLGridContrast).
     let beat = t.pl_line(t.grid_gap.mix(t.grid, 0.4));
     let bar_line = t.pl_line(t.grid_bar);
-    let unit = pl::grid_ticks(g.ppq, bar_w) as f32 * g.ppt;
-    let per_bar = ((bar_w / unit).round() as i32).max(1);
+    let ticks = if snap == pl::Snap::None { pl::grid_ticks(g.ppq, bar_w) } else { snap.ticks(g.ppq, bar_w) };
+    let unit = f64::from(ticks) * f64::from(g.ppt);
+    let beat_ticks = i64::from(g.ppq);
+    let bar_ticks = 4 * beat_ticks;
     // Bar b's x on the drawing grid (`PGeom::xs`), plus `d` content pixels.
     let bar_x = |b: i32, d: f32| g.xs(f64::from(b) * f64::from(bar_w) + f64::from(d));
     let mut b = first_bar;
@@ -637,10 +639,16 @@ fn grid_lines(ui: &mut Ui, g: &PGeom, bar_w: f32, sb: i32) {
         if (b - sb).div_euclid(4).rem_euclid(2) == 1 {
             ui.c.fill_rect(Rect::new(x, grid.y, bar_x(b + bar_step, 0.0) - x, grid.h), t.grid_alt.with_alpha(160));
         }
-        if bar_step == 1 && per_bar > 1 {
-            for q in 1..per_bar {
-                let c = if unit * q as f32 % (bar_w / 4.0) < 0.5 { beat } else { beat.mix(t.grid, 0.5) };
-                ui.c.fill_rect(Rect::new(bar_x(b, q as f32 * unit), grid.y, 1.0, grid.h), c);
+        if bar_step == 1 && i64::from(ticks) < bar_ticks {
+            let stride = if unit >= 5.0 { i64::from(ticks) } else { beat_ticks };
+            if stride as f32 * g.ppt >= 5.0 {
+                let start = i64::from(b) * bar_ticks;
+                let first = start.div_euclid(stride) * stride + stride;
+                for tick in (first..start + bar_ticks).step_by(stride as usize) {
+                    let c = if tick % beat_ticks == 0 { beat } else { beat.mix(t.grid, 0.5) };
+                    let x = bar_x(b, (tick - start) as f32 * g.ppt);
+                    ui.c.fill_rect(Rect::new(x, grid.y, 1.0, grid.h), c);
+                }
             }
         }
         ui.c.fill_rect(Rect::new(x, grid.y, if bar_step == 1 { 2.0 } else { 1.0 }, grid.h), bar_line);
@@ -1177,8 +1185,8 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let bh = h - gap;
     let hr = Rect::new(bx, y, bw, bh);
     if member {
-        // The indent beside the members: a dark strip (FL dithers it).
-        ui.c.fill_rect(Rect::new(x, y, INDENT, bh), t.s(0x2b3439));
+        let guide = colored.unwrap_or(t.glyph).mix(t.grid_gap, 0.4);
+        ui.c.fill_rect(Rect::new(x + 2.0, y, 2.0, h), guide);
     }
     let (top, bottom) = if super::lemon(ui) { (base, base) } else { (base.shade(0.035), base.shade(-0.03)) };
     let k = if super::lemon(ui) { lk::r_btn(t) + 1.0 } else { RADIUS }.min(bh / 2.0);
@@ -1196,6 +1204,22 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         ui.c.fill_rrect(Rect::new(hr.x+1.,hr.y+3.,3.,(hr.h-6.).max(1.)),1.5,t.accent);
     }
     if strip {return;}
+    let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
+    let text = if colored.is_some() { t.tx(0xdce8f0) } else { t.text };
+    let text = if on || crate::comping::parent(s, row).is_some() { text } else { text.mix(t.grid_gap, 0.32) };
+    let base_height = g.rows.base_height(row);
+    if base_height < 36.0 {
+        let face = Rect::new(hr.x, hr.y, hr.w, base_height - gap);
+        let led = Rect::new(face.right() - 17.0, face.y, 16.0, face.h);
+        ui.hit(led, Action::PlLed(row), "Mute track (right-click / Ctrl+click: solo)");
+        super::led(ui, led.cx(), led.cy(), on);
+        if !editing {
+            ui.c.push_clip(face);
+            ui.c.text_clip(Font::new(12), face.x + 5.0, face.cy() - 6.0, face.w - 24.0, text, &pl::track_name(s, row));
+            ui.c.pop_clip();
+        }
+        return;
+    }
     // The LED and "…" keep their distance from the row's bottom when the track height changes (Alt+wheel); short
     // rows drop the "…" and keep the name clear of the LED.
     let short = g.rows.base_height(row) < pl::ROW_H - 8.0;
@@ -1210,10 +1234,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
     let hot = ui.hit(auto, Action::PlAutomation(row), hint);
     icons::draw(ui.c, Icon::Slide, auto.inset(1.0), if active.is_some() || hot { t.glyph } else { t.text_faint });
     ui.hit(led, Action::PlLed(row), "Mute track (right-click / Ctrl+click: solo)");
-    let text = if colored.is_some() { ui.t.tx(0xdce8f0) } else { t.text_faint };
-    let text = if on || crate::comping::parent(s,row).is_some() { text } else { text.shade(-0.35) };
     crate::vocal::head(ui,s,row,Rect::new(hr.x+27.,led.y,17.,14.));
-    let editing = matches!(s.playlist.edit.as_ref().map(|e| e.target), Some(pl::EditTarget::TrackName(r)) if r == row);
     if !editing {
         let name_w = if short { hr.w - 26.0 } else { hr.w - 4.0 };
         let indent=if lead {15.}else{0.}+if short {15.}else{0.};

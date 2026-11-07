@@ -10,6 +10,7 @@ pub struct Windows { stems:Option<(u16,u32,Vec<std::path::PathBuf>)>, panes:Vec<
 struct Pane {
     kind:Win, window:Rc<Window>, surface:softbuffer::Surface<Rc<Window>,Rc<Window>>, canvas:Canvas,
     cursor:Option<(crate::app::Cursor,u16)>,
+    eq_visible: bool,
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
 }
 fn key(w:Win)-> &'static str {match w {Win::Browser=>"native_browser",Win::Mixer=>"native_mixer",Win::PianoRoll=>"native_piano",_=>"native_playlist"}}
@@ -57,7 +58,7 @@ impl Windows {
                 let context=softbuffer::Context::new(window.clone()).map_err(|e|e.to_string())?;
                 let surface=softbuffer::Surface::new(&context,window.clone()).map_err(|e|e.to_string())?;
                 let size=window.inner_size();let canvas=Canvas::new(size.width.max(1),size.height.max(1),crate::ui_scale(&window) as f32).map_err(|e|e.to_string())?;
-                Ok(Pane{kind,window,surface,canvas,cursor:None,motion:None,hover:None,refresh_editors:false,frame,mouse:(-1.,-1.),mods:ModifiersState::empty(),last:Instant::now(),painted:Instant::now()})
+                Ok(Pane{kind,window,surface,canvas,cursor:None,eq_visible:false,motion:None,hover:None,refresh_editors:false,frame,mouse:(-1.,-1.),mods:ModifiersState::empty(),last:Instant::now(),painted:Instant::now()})
             })();
             match made {Ok(p)=>{created.push(p.window.id());self.panes.push(p);},Err(e)=>{app.state.native_detached.retain(|w|*w!=kind);app.state.message=Some(format!("Could not detach window: {e}"));}}
         }
@@ -70,6 +71,9 @@ impl Windows {
             if p.painted.elapsed().as_millis()>=if app.animating()||p.motion.is_some(){16}else{100} {p.window.request_redraw();}
         }
         for id in created {self.event(app,el,id,WindowEvent::RedrawRequested,cache);}
+        app.detached_eq_visible = self.panes.iter().any(|p| {
+            p.kind == Win::Mixer && p.eq_visible && p.window.is_minimized() != Some(true)
+        });
     }
     pub fn event(&mut self,app:&mut App,_el:&ActiveEventLoop,id:WindowId,event:WindowEvent,cache:&mut Vec<(crate::playlist::PlTool,u8,u16,winit::window::CustomCursor)>) {
         if app.loading() && matches!(event,WindowEvent::MouseInput{state:ElementState::Pressed,..}|WindowEvent::KeyboardInput{..}|WindowEvent::MouseWheel{..}|WindowEvent::DroppedFile(_)){return;}
@@ -98,6 +102,9 @@ impl Windows {
         if p.canvas.pixmap.width()!=size.width||p.canvas.pixmap.height()!=size.height||p.canvas.scale!=scale {p.canvas.resize(size.width,size.height,scale);}
         app.state.native_view=Some(p.kind);app.state.display_scale=p.window.scale_factor() as f32;app.mouse=p.mouse;
         set_rack_parent(app,&p.window);app.hover=p.hover.clone();app.paint(&mut p.canvas,None);
+        if p.kind == Win::Mixer {
+            p.eq_visible = app.mixer_eq_region().is_some();
+        }
         let redraw=matches!(event,WindowEvent::RedrawRequested);
         if let Some(pos)=p.motion.take(){p.mouse=pos;app.mouse_move(pos.0,pos.1);if app.drag.is_some(){self.changed=true;}}
         p.refresh_editors|=matches!(event,WindowEvent::Moved(_)|WindowEvent::ScaleFactorChanged{..});

@@ -574,7 +574,8 @@ pub enum Live {
     /// Lights for the notes sounding now (rack select slots, piano-roll keys).
     Sounding,
     /// Mixer peak meters.
-    Meter,
+    Meter(u16),
+    MixerEqSpectrum,
 }
 
 /// The playback state the frame shows. Taken in `App::tick`, where the damage for playheads is worked out, so a paint
@@ -1344,6 +1345,7 @@ pub struct App {
     keep: Keep,
     /// Live regions from the last paint.
     live: Vec<(Live, Rect)>,
+    pub(crate) detached_eq_visible: bool,
     /// Playback state the frame shows (see `Shown`).
     shown: Shown,
     /// Rects of last frame's overlays (menus, popups...): docked plugin windows are clipped under them.
@@ -1649,6 +1651,7 @@ impl App {
             hits: Vec::new(),
             keep: Keep::default(),
             live: Vec::new(),
+            detached_eq_visible: false,
             shown: Shown::default(),
             overlays: Vec::new(),
             #[cfg(any(windows,target_os="macos"))] rack_parent:0,
@@ -4367,9 +4370,7 @@ impl App {
             self.damage_rect(views::tapper::pad_rect(&self.state));
         }
         // Mixer meters (spec: ui/mixer.md §9): fall back after playback stops.
-        if self.state.shown(Win::Mixer) {
-            if crate::mini_eq::refresh(self) { self.damage_eq(); }
-        } else { self.transport.select_eq_scope(None); }
+        self.refresh_mixer_eq();
         let peaks = self.transport.take_track_peaks();
         let vu = self.transport.take_track_vu();
         for (n,request,suggestion) in self.transport.tune_learning() {
@@ -4383,8 +4384,15 @@ impl App {
                 }
             }
         }
-        if crate::mixer::feed_meters(&mut self.state, &peaks, vu.as_deref()) && self.state.shown(Win::Mixer) {
-            self.damage_live(Live::Meter);
+        let meters = crate::mixer::feed_meters(&mut self.state, &peaks, vu.as_deref());
+        if !meters.is_empty() && self.state.shown(Win::Mixer) {
+            let rects: Vec<_> = self.live.iter().filter_map(|&(kind, rect)| match kind {
+                Live::Meter(track) if meters.binary_search(&track).is_ok() => Some(rect),
+                _ => None,
+            }).collect();
+            for rect in rects {
+                self.damage_rect(rect);
+            }
         }
         // Audio clips follow their channel's stretch, pitch and the tempo (ui/playlist.md §9c). The lengths are worked
         // out, not edited: the saved copy gets them too, so a fit alone (an opened FL project) is not an unsaved change.
@@ -5575,6 +5583,48 @@ impl App {
             }
             _ => return None,
         })
+    }
+
+    pub(crate) fn mixer_eq_region(&self) -> Option<Rect> {
+        self.live.iter().find_map(|&(kind, rect)| (kind == Live::MixerEqSpectrum).then_some(rect))
+    }
+
+    fn visible_mixer_eq_region(&self) -> Option<Rect> {
+        let region = self.mixer_eq_region()?;
+        if self.state.native_view == Some(Win::Mixer) {
+            return Some(region);
+        }
+        if self.state.native_view.is_some() || self.state.native_detached.contains(&Win::Mixer)
+            || self.state.wins[Win::Mixer.slot().unwrap()].mini
+        {
+            return None;
+        }
+        let mixer = self.state.z.iter().position(|&win| win == Win::Mixer)?;
+        let covered = self.state.z[mixer + 1..].iter().any(|&win| {
+            if matches!(win, Win::Hosted(_)) || self.state.native_detached.contains(&win) {
+                return false;
+            }
+            let bounds = self.win_bounds(win);
+            bounds.x <= region.x && bounds.y <= region.y
+                && bounds.right() >= region.right() && bounds.bottom() >= region.bottom()
+        });
+        (!covered).then_some(region)
+    }
+
+    fn refresh_mixer_eq(&mut self) {
+        let shown = self.state.shown(Win::Mixer);
+        let region = self.visible_mixer_eq_region();
+        let detached = self.state.native_detached.contains(&Win::Mixer);
+        let visible = region.is_some() || (detached && self.detached_eq_visible);
+        let spectrum_changed = crate::mini_eq::refresh_spectrum(self, shown && visible);
+        if shown && crate::mini_eq::sync(self, self.state.selected_mixer) {
+            // The hosted editor changed EQ parameters, so the curve and related knobs both need repainting.
+            if self.state.native_view == Some(Win::Mixer) || !detached {
+                self.damage_eq();
+            }
+        } else if let Some(rect) = region.filter(|_| spectrum_changed) {
+            self.damage_rect(rect);
+        }
     }
 
     /// Repaints the current track's equaliser: graph, faders and knobs (a change to one moves the others).
@@ -12158,6 +12208,39 @@ mod tests {
     }
 
     #[test]
+    fn mini_eq_spectrum_damage_stays_inside_the_graph() {
+        let Ok(mut partial) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut full = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.z = vec![Win::Mixer];
+        app.state.mixer.layout = crate::mixer::WIDE;
+        let win = &mut app.state.wins[Win::Mixer.slot().unwrap()];
+        win.maxed = false;
+        win.rect = Rect::new(220., 200., 1470., 605.);
+        let view = &mut app.state.mixer.mini_eq;
+        view.track = Some(app.state.selected_mixer);
+        view.analyzer.cols = vec![-24.; 208];
+        frame(&mut app, &mut partial, None);
+        let _ = app.take_damage();
+        let graph = hit_rect(&app, &Action::Mix(crate::mixer::MHit::EqGraph));
+        app.refresh_mixer_eq();
+        let damage = app.take_damage();
+        assert_eq!(damage, Some(Some(vec![graph.outset(2.)])));
+        frame_damage(&mut app, &mut partial, damage);
+        frame(&mut app, &mut full, None);
+        assert_same(&partial, &full, "mini EQ spectrum");
+
+        app.state.wins[Win::Mixer.slot().unwrap()].mini = true;
+        frame(&mut app, &mut partial, None);
+        let _ = app.take_damage();
+        assert!(app.mixer_eq_region().is_none());
+        app.refresh_mixer_eq();
+        assert!(app.state.mixer.mini_eq.track.is_none());
+        assert_eq!(app.take_damage(), None);
+    }
+
+    #[test]
     fn mini_eq_graph_drags_the_nearest_band() {
         use crate::mixer::MHit;
         use lemon_parametric_eq_2::params;
@@ -12203,7 +12286,7 @@ mod tests {
         // A full-editor parameter edit returns to the mini view.
         app.plugins.set_param_named(key,"Band 4 level",1./3.);
         app.plugins.hosted[&key].plugin.lock().unwrap().idle();
-        crate::mini_eq::refresh(&mut app);
+        crate::mini_eq::sync(&mut app, 1);
         assert_eq!(crate::mini_eq::settings(&app.state,1).bands[3].db,-6.);
         crate::mini_eq::position(&mut app);
         assert!(app.state.project.mixer[1].parametric_pre);
@@ -12524,7 +12607,8 @@ mod tests {
                 app.state.mixer.meters.resize(18, Default::default());
                 app.state.mixer.meters[1].db = [-6.0 - i as f32, -12.0];
                 app.state.mixer.meters[2].db = [-3.0 * i as f32, -1.0];
-                app.damage_live(Live::Meter);
+                app.damage_live(Live::Meter(1));
+                app.damage_live(Live::Meter(2));
                 let d = app.take_damage();
                 let Some(Some(rects)) = &d else { panic!("a tick repaints regions, not the frame") };
                 assert!(rects.iter().any(|r| !r.intersect(&grid).is_empty()), "the playhead is repainted");
@@ -20777,6 +20861,8 @@ mod tests {
         frame(&mut app, &mut c, None);
         let g = pl::PGeom::new(&app.state, grid);
         assert!(hit_rect(&app, &Action::PlLed(0)).bottom() <= g.y_of(0) + pl::ROW_MIN, "the LED fits the smallest row");
+        assert!(!app.hits.iter().any(|h| matches!(h.action, Action::PlAutomation(0) | Action::PlTrackGrip(0))),
+            "compact headers hide overlapping controls");
         app.state.playlist_scroll = (0.0, 0.0);
         frame(&mut app, &mut c, None);
         let grid_pt = (g.x_of(20.0 * bar as f32), g.y_of(2) + 5.0);

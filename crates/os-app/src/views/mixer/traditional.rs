@@ -169,7 +169,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
     }
     // The bars cover the labels (measured: two 13 px bars filling the column inside its 1 px border).
-    ui.live(Live::Meter, col);
+    ui.live(Live::Meter(s.selected_mixer), col);
     if let Some(m) = s.mixer.meters.get(usize::from(s.selected_mixer)) {
         let ys = |db: f32| cy(meters::law_y(db, floor, alt)).min(col.bottom() - 1.0);
         for i in 0..2 {
@@ -329,7 +329,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         ui.c.fill_rect(Rect::new(meter.x + 3.0, ly.y(y), 9.0, 1.0), ui.t.s(0x111315));
     }
     // Per-track peak meter (spec: ui/mixer.md §9): two 6 px bars on the same scale as the "C" column.
-    ui.live(Live::Meter, meter);
+    ui.live(Live::Meter(n), meter);
     if let Some(m) = s.mixer.meters.get(usize::from(n)) {
         let cfg = &s.mixer.meter_cfg;
         let (top, bot) = (meter.y + 2.0, meter.bottom() - 2.0);

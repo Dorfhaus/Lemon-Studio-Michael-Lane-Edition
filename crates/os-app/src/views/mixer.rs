@@ -543,7 +543,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     let meter = Rect::new(left + 6.0, ly.y(METER_Y0) + 4.0, width - 12.0,
         (ly.y(METER_Y1) - ly.y(METER_Y0) - 26.0).clamp(38.0, if full {64.0}else{61.6}));
     let meter=if standard {Rect::new(left+14.,ly.y(PANEL_Y0)+29.,width-28.,(ly.y(LED_Y)-ly.y(PANEL_Y0)-45.).max(40.))}else{meter};
-    ui.live(Live::Meter, meter.outset(if full {4.0}else{2.0}));
+    ui.live(Live::Meter(n), meter.outset(if full {4.0}else{2.0}));
     let levels = s.mixer.meters.get(usize::from(n)).map_or([0.0; 2], |m| m.vu);
     let clipped = s.mixer.meters.get(usize::from(n)).is_some_and(|m| m.hold.iter().any(|&db| db >= 0.0));
     if standard || s.mixer.peak_view.contains(&n) {
@@ -630,7 +630,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         // A compact, visibly segmented stereo meter beside the fader, including
         // dim unlit LEDs so silence never looks like an unexplained black box.
         let r=Rect::new(mx+14.,top,8.,(bottom-100.-top).max(1.));
-        ui.live(Live::Meter,r.outset(2.));
+        ui.live(Live::Meter(n),r.outset(2.));
         ui.c.stroke_rrect(r.outset(1.),1.,1.,Color::rgb(0x687166));
         let db=s.mixer.meters.get(usize::from(n)).map_or([meters::SILENT;2],|m|m.db);
         let steps=(r.h/5.).floor().max(1.) as usize;

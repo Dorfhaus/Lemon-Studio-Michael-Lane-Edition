@@ -656,29 +656,46 @@ fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
 }
 
 /// Vertical step / beat / bar lines over `area`, in `line(fill)` colors per horizontal band.
-fn columns(ui: &mut Ui, g: &Geom, area: Rect, bands: &[(f32, f32, Color)], bar: Color) {
-    let step = g.step as f32 * g.ppt;
-    let show_steps = step >= 5.0;
-    let beat_px = g.beat as f32 * g.ppt;
-    let first = (g.scroll_x / g.step as f32).floor() as i64;
-    let last = ((g.scroll_x + area.w / g.ppt) / g.step as f32).ceil() as i64;
-    for i in first.max(0)..=last {
-        let tick = (i * i64::from(g.step)) as u32;
+fn columns(ui: &mut Ui, s: &State, g: &Geom, area: Rect, bands: &[(f32, f32, Color)], bar: Color) {
+    let snap = s.piano.snap.grid(s.global_snap.now);
+    let unit = crate::piano_snap::unit(s).unwrap_or(g.step);
+    let bars_only = snap == Some(crate::playlist::Snap::Bar);
+    let first = g.tick_at(area.x).floor().max(0.0) as u32;
+    let end = g.tick_at(area.right()).ceil().max(0.0) as u32;
+    let mut draw = |tick, strength| {
         let x = g.x_of(tick as f32).floor();
-        if x < area.x || x >= area.right() {
-            continue;
-        }
-        // The pattern's own bars and beats (spec: ui/pattern-time-signature.md §2: 3/8, a bar every 6 steps).
-        let (on_bar, on_beat) = g.line_at(tick);
-        if on_bar {
-            ui.c.fill_rect(Rect::new(x, area.y, 1.0, area.h), bar);
-        } else if on_beat && beat_px >= 4.0 {
+        if x >= area.x && x < area.right() {
             for &(y, h, c) in bands {
-                ui.c.fill_rect(Rect::new(x, y, 1.0, h), sub(ui.t, c, 0x12));
+                ui.c.fill_rect(Rect::new(x, y, 1.0, h), sub(ui.t, c, strength));
             }
-        } else if show_steps {
-            for &(y, h, c) in bands {
-                ui.c.fill_rect(Rect::new(x, y, 1.0, h), sub(ui.t, c, 0x0a));
+        }
+    };
+    if !bars_only {
+        if unit as f32 * g.ppt >= 5.0 {
+            for tick in (first - first % unit..end).step_by(unit as usize) {
+                if !g.line_at(tick).0 {
+                    draw(tick, if g.line_at(tick).1 { 0x12 } else { 0x0a });
+                }
+            }
+        } else {
+            for (i, &(start, _, beat)) in g.bars.iter().enumerate() {
+                let stop = g.bars.get(i + 1).map_or(end, |r| r.0.min(end));
+                if stop <= first || beat as f32 * g.ppt < 5.0 { continue; }
+                let offset = first.saturating_sub(start);
+                for tick in (start + offset - offset % beat..stop).step_by(beat as usize) {
+                    draw(tick, 0x12);
+                }
+            }
+        }
+    }
+    for (i, &(start, length, _)) in g.bars.iter().enumerate() {
+        let stop = g.bars.get(i + 1).map_or(end, |r| r.0.min(end));
+        if stop <= first { continue; }
+        let offset = first.saturating_sub(start);
+        for tick in (start + offset - offset % length..stop).step_by(length as usize) {
+            let x = g.x_of(tick as f32).floor();
+            if x >= area.x && x < area.right() {
+                ui.c.fill_rect(Rect::new(x, area.y, 1.0, area.h), bar);
             }
         }
     }
@@ -711,7 +728,7 @@ fn grid_rows(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, clip: Rect, selecting
         bands.push((y, g.row - 1.0, fill));
     }
     let bar = if selecting { ui.t.s(0x0e080c) } else { bar_line(t) };
-    columns(ui, g, gr, &bands, bar);
+    columns(ui, s, g, gr, &bands, bar);
     ui.c.pop_clip();
 }
 
@@ -762,7 +779,7 @@ fn velocity_panel(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], 
         y += 22.0;
         i += 1;
     }
-    columns(ui, g, p, &bands, bar_line(t));
+    columns(ui, s, g, p, &bands, bar_line(t));
     ui.c.text(Font::new(16), p.x + 7.0, p.y + 2.0, t.text_faint.shade(-0.35), lane.name());
 
     if lane.is_channel() {
