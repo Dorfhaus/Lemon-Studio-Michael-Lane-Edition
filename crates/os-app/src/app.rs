@@ -20313,6 +20313,344 @@ mod tests {
         glp_check_trim_left(false);
     }
 
+    // ---- Gain node fine drag (lemon-mle-test/GAIN-NODE-FINE-DRAG-SPEC.md, F1-F5) ------------------------------
+    // Nothing under test is mocked: the real App and playlist run; only the WAV fixture is synthesised.
+    // WHY tolerances are 0.01 ms / 0.01 dB: the spec states them (F1-F3). They are far above f32 rounding at
+    // these magnitudes (~1e-4 ms at 2000 ms) and far below one pixel of movement (several ms, ~1 dB).
+
+    const GNF_TOL_MS: f64 = 0.01;
+    const GNF_TOL_DB: f64 = 0.01;
+
+    /// One fine-drag fixture: a 2 s clip on track 0 at tick 0, gain line nodes at (fraction of length, dB).
+    struct Gnf {
+        app: App,
+        ci: usize,
+        g: crate::playlist::PGeom,
+        body: Rect,
+        len_ms: f32,
+        /// ms of clip time per screen px (fade_ms_per_tick / ppt), and dB per px (48 dB / body.h).
+        ms_px: f64,
+        db_px: f64,
+        wav: std::path::PathBuf,
+    }
+
+    impl Drop for Gnf {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.wav);
+        }
+    }
+
+    fn gnf_setup(c: &mut Canvas, tag: &str, bar_w: f32, nodes: &[(f32, f32)]) -> Gnf {
+        use crate::playlist as pl;
+        let (mut app, _, _, _) = ruler_app(c);
+        app.state.playlist_bar_w = bar_w;
+        let wav = glp_wav(&format!("gnf-{tag}"), 96000, |_| 0.5);
+        let ci = glp_clip(&mut app, &wav, 0);
+        let clip = pl::clips(&app.state)[ci];
+        let len_ms = (clip.length as f64 * pl::fade_ms_per_tick(&app.state)) as f32;
+        for &(f, db) in nodes {
+            pl::arr_mut(&mut app.state).clips[ci].gain_line.add(os_model::GainNode { ms: len_ms * f, db });
+        }
+        assert_eq!(pl::clips(&app.state)[ci].gain_line.nodes().len(), nodes.len(), "harness: nodes placed");
+        frame(&mut app, c, None);
+        let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
+        let body = g.body(&pl::clips(&app.state)[ci]);
+        let ms_px = pl::fade_ms_per_tick(&app.state) / f64::from(g.ppt);
+        let db_px = f64::from(pl::GAIN_LINE_MAX_DB - pl::GAIN_LINE_MIN_DB) / f64::from(body.h);
+        assert!(body.w > 300.0, "harness: clip wide enough to drag in, body {body:?}");
+        Gnf { app, ci, g, body, len_ms, ms_px, db_px, wav }
+    }
+
+    fn gnf_node(f: &Gnf, k: usize) -> os_model::GainNode {
+        crate::playlist::clips(&f.app.state)[f.ci].gain_line.nodes()[k]
+    }
+
+    /// Moves the pointer onto node k and presses; returns the pointer position.
+    fn gnf_press_node(f: &mut Gnf, k: usize) -> (f32, f32) {
+        use crate::playlist as pl;
+        let clip = pl::clips(&f.app.state)[f.ci];
+        let (x, y) = pl::gain_node_xy(&f.app.state, &f.g, &clip, k).expect("node on screen");
+        f.app.mouse_move(x, y);
+        assert_eq!(f.app.state.playlist.hover_handle, Some(pl::Handle::GainNode(k)), "harness: hovering node {k}");
+        f.app.mouse_down();
+        (x, y)
+    }
+
+    /// Moves the pointer by (dx, dy) screen px from `at` in `steps` equal moves; updates `at`.
+    fn gnf_move(app: &mut App, at: &mut (f32, f32), dx: f32, dy: f32, steps: u32) {
+        let (x0, y0) = *at;
+        for s in 1..=steps {
+            let t = s as f32 / steps as f32;
+            app.mouse_move(x0 + dx * t, y0 + dy * t);
+        }
+        *at = (x0 + dx, y0 + dy);
+    }
+
+    /// Asserts node `n` sits at (ms, db) within the spec tolerance.
+    fn gnf_assert_at(n: os_model::GainNode, ms: f64, db: f64, what: &str) {
+        let (dms, ddb) = (f64::from(n.ms) - ms, f64::from(n.db) - db);
+        assert!(
+            dms.abs() <= GNF_TOL_MS && ddb.abs() <= GNF_TOL_DB,
+            "{what}: expected ({ms:.4} ms, {db:.4} dB), actual ({:.4} ms, {:.4} dB), off by ({dms:.4} ms, {ddb:.4} dB)",
+            n.ms,
+            n.db
+        );
+    }
+
+    /// Cases of (dx, dy) screen px: right/left, up/down, fractional, one-axis-only. Small enough that nothing
+    /// clamps from a node at the middle of the clip at -12 dB with neighbours 30% of the clip away.
+    const GNF_MOVES: [(f32, f32); 6] = [(40.0, -5.0), (-37.0, 6.0), (13.5, -2.25), (0.0, -7.0), (25.0, 0.0), (-0.5, 0.5)];
+
+    fn gnf_check_rate(shift: bool, tag: &str) {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let rate = if shift { 0.1 } else { 1.0 };
+        for bar_w in [400.0f32, 800.0] {
+            for (i, &(dx, dy)) in GNF_MOVES.iter().enumerate() {
+                let mut f = gnf_setup(&mut c, &format!("{tag}-{i}"), bar_w, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+                assert!(
+                    -12.0 + f64::from(dy.abs()) * f.db_px < f64::from(crate::playlist::GAIN_LINE_MAX_DB) - 1.0,
+                    "harness: move must not clamp in dB (db_px {})",
+                    f.db_px
+                );
+                let mut at = gnf_press_node(&mut f, 1);
+                let n0 = gnf_node(&f, 1);
+                f.app.shift = shift;
+                gnf_move(&mut f.app, &mut at, dx, dy, 8);
+                let n = gnf_node(&f, 1);
+                f.app.mouse_up();
+                f.app.shift = false;
+                let ms = f64::from(n0.ms) + rate * f64::from(dx) * f.ms_px;
+                let db = f64::from(n0.db) - rate * f64::from(dy) * f.db_px;
+                gnf_assert_at(n, ms, db, &format!("shift={shift} bar_w={bar_w} move ({dx},{dy}) px during drag"));
+                gnf_assert_at(gnf_node(&f, 1), ms, db, &format!("shift={shift} bar_w={bar_w} move ({dx},{dy}) px after release"));
+            }
+        }
+    }
+
+    /// F1: without Shift the dragged node follows the mouse 1:1 in time and dB.
+    #[test]
+    fn gain_node_fine_f1_unshifted_drag_is_one_to_one() {
+        gnf_check_rate(false, "f1");
+    }
+
+    /// F2: with Shift held the same movement moves the node exactly a tenth as far, in time and dB.
+    #[test]
+    fn gain_node_fine_f2_shift_drag_is_one_tenth() {
+        gnf_check_rate(true, "f2");
+    }
+
+    /// F2 via the other entry point: a press on the gain line (which adds a node) then a Shift drag. Then a
+    /// plain drag afterwards is 1:1 again (fine mode does not stick after release).
+    #[test]
+    fn gain_node_fine_f2_shift_drag_from_line_press_then_plain_again() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnf_setup(&mut c, "f2line", 400.0, &[(0.2, -12.0), (0.8, -12.0)]);
+        let x = f.body.x + f.body.w * 0.5;
+        let clip = pl::clips(&f.app.state)[f.ci];
+        let y = pl::gain_line_y_at(&f.app.state, &f.g, &clip, x);
+        f.app.mouse_move(x, y);
+        assert_eq!(f.app.state.playlist.hover_handle, Some(pl::Handle::GainLine), "harness: hovering the line");
+        f.app.mouse_down();
+        assert_eq!(pl::clips(&f.app.state)[f.ci].gain_line.nodes().len(), 3, "harness: press on line adds a node");
+        let n0 = gnf_node(&f, 1);
+        let mut at = (x, y);
+        f.app.shift = true;
+        gnf_move(&mut f.app, &mut at, 30.0, -6.0, 6);
+        f.app.mouse_up();
+        f.app.shift = false;
+        let n1 = gnf_node(&f, 1);
+        gnf_assert_at(n1, f64::from(n0.ms) + 3.0 * f.ms_px, f64::from(n0.db) + 0.6 * f.db_px, "Shift drag of a node added by a line press");
+        // A later plain drag of the same node is 1:1.
+        frame(&mut f.app, &mut c, None);
+        let mut at = gnf_press_node(&mut f, 1);
+        let n2 = gnf_node(&f, 1);
+        gnf_move(&mut f.app, &mut at, -20.0, 4.0, 4);
+        f.app.mouse_up();
+        gnf_assert_at(gnf_node(&f, 1), f64::from(n2.ms) - 20.0 * f.ms_px, f64::from(n2.db) - 4.0 * f.db_px, "plain drag after a Shift drag");
+    }
+
+    /// F3: pressing then releasing Shift mid-drag never jumps the node; movement after each change is at the
+    /// new rate, counted from where the node was.
+    #[test]
+    fn gain_node_fine_f3_shift_toggle_mid_drag_no_jump() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnf_setup(&mut c, "f3", 400.0, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+        let mut at = gnf_press_node(&mut f, 1);
+        let n0 = gnf_node(&f, 1);
+        gnf_move(&mut f.app, &mut at, 30.0, -4.0, 5);
+        let a = gnf_node(&f, 1);
+        gnf_assert_at(a, f64::from(n0.ms) + 30.0 * f.ms_px, f64::from(n0.db) + 4.0 * f.db_px, "before Shift");
+        // Shift pressed: the next move (pointer not moved) must leave the node where it was.
+        f.app.shift = true;
+        f.app.mouse_move(at.0, at.1);
+        gnf_assert_at(gnf_node(&f, 1), f64::from(a.ms), f64::from(a.db), "right after pressing Shift");
+        gnf_move(&mut f.app, &mut at, 20.0, -10.0, 5);
+        let b = gnf_node(&f, 1);
+        gnf_assert_at(b, f64::from(a.ms) + 2.0 * f.ms_px, f64::from(a.db) + 1.0 * f.db_px, "fine movement after pressing Shift");
+        // Shift released: no jump, then 1:1 again from there.
+        f.app.shift = false;
+        f.app.mouse_move(at.0, at.1);
+        gnf_assert_at(gnf_node(&f, 1), f64::from(b.ms), f64::from(b.db), "right after releasing Shift");
+        gnf_move(&mut f.app, &mut at, -10.0, 2.0, 5);
+        let d = gnf_node(&f, 1);
+        gnf_assert_at(d, f64::from(b.ms) - 10.0 * f.ms_px, f64::from(b.db) - 2.0 * f.db_px, "1:1 movement after releasing Shift");
+        f.app.mouse_up();
+        gnf_assert_at(gnf_node(&f, 1), f64::from(d.ms), f64::from(d.db), "after release");
+    }
+
+    /// F3 property: over generated drags with random Shift changes, the node always sits at the sum of each
+    /// segment's movement times that segment's rate (1 or 1/10), and never moves on a Shift change alone.
+    #[test]
+    fn gain_node_fine_f3_property_random_shift_toggles() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        // Deterministic LCG so a failure reproduces from the printed seed.
+        let mut seed: u64 = 0x5eed_6a1b;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as f64 / (1u64 << 31) as f64) as f32
+        };
+        for case in 0..10 {
+            let mut f = gnf_setup(&mut c, &format!("f3p-{case}"), 400.0, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+            let mut at = gnf_press_node(&mut f, 1);
+            let n0 = gnf_node(&f, 1);
+            let (mut ms, mut db) = (f64::from(n0.ms), f64::from(n0.db));
+            let mut shift = false;
+            let mut log = Vec::new();
+            for seg in 0..6 {
+                if rnd() < 0.5 {
+                    shift = !shift;
+                    f.app.shift = shift;
+                    f.app.mouse_move(at.0, at.1);
+                    log.push(format!("shift={shift}"));
+                    gnf_assert_at(gnf_node(&f, 1), ms, db, &format!("case {case} seg {seg} Shift change jumped; {log:?}"));
+                }
+                // |dx| <= 15 px, |dy| <= 2 px per segment: six segments stay well clear of every clamp.
+                let (dx, dy) = ((rnd() - 0.5) * 30.0, (rnd() - 0.5) * 4.0);
+                log.push(format!("move ({dx:.3},{dy:.3})"));
+                gnf_move(&mut f.app, &mut at, dx, dy, 3);
+                let rate = if shift { 0.1 } else { 1.0 };
+                ms += rate * f64::from(dx) * f.ms_px;
+                db -= rate * f64::from(dy) * f.db_px;
+                gnf_assert_at(gnf_node(&f, 1), ms, db, &format!("case {case} seg {seg}; {log:?}"));
+            }
+            f.app.mouse_up();
+            f.app.shift = false;
+        }
+    }
+
+    /// F4: clamps hold at both rates: time between the neighbouring nodes and within the clip, dB within limits.
+    #[test]
+    fn gain_node_fine_f4_clamps_hold() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        // WHY pl::GAIN_LINE_* and not os_model::GAIN_NODE_* (-60..24): F4 says the clamps "still hold", i.e. as
+        // today. Before this change (HEAD d0a16046) a node drag stops at 12 dB / -36 dB, measured by this test.
+        let (min_db, max_db) = (pl::GAIN_LINE_MIN_DB, pl::GAIN_LINE_MAX_DB);
+        // Every violation is collected so one run reports all clamps that fail, not just the first.
+        let mut bad: Vec<String> = Vec::new();
+        let mut check = |ok: bool, msg: String| if !ok { bad.push(msg) };
+        for shift in [true, false] {
+            // Between neighbours 3% of the clip away each side (~14 px at this zoom; 1/10 rate needs ~140 px).
+            for dx in [400.0f32, -200.0] {
+                let mut f = gnf_setup(&mut c, &format!("f4n-{shift}-{dx}"), 400.0, &[(0.47, -12.0), (0.5, -12.0), (0.53, -12.0)]);
+                let (lo, hi) = (gnf_node(&f, 0).ms, gnf_node(&f, 2).ms);
+                let mut at = gnf_press_node(&mut f, 1);
+                f.app.shift = shift;
+                gnf_move(&mut f.app, &mut at, dx, 0.0, 20);
+                f.app.mouse_up();
+                f.app.shift = false;
+                let nodes = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+                check(nodes.len() == 3, format!("shift={shift} dx={dx}: expected 3 nodes, actual {nodes:?}"));
+                if nodes.len() != 3 { continue; }
+                let n = nodes[1];
+                check(n.ms >= lo && n.ms <= hi, format!("shift={shift} dx={dx}: expected ms in [{lo}, {hi}], actual {}", n.ms));
+                check(nodes[0].ms <= nodes[1].ms && nodes[1].ms <= nodes[2].ms, format!("shift={shift} dx={dx}: order kept, actual {nodes:?}"));
+                let edge = if dx > 0.0 { hi } else { lo };
+                check((n.ms - edge).abs() < 1.0, format!("shift={shift} dx={dx}: expected pressed against neighbour at {edge} ms, actual {}", n.ms));
+            }
+            // Within the clip: a lone node near each end dragged past it.
+            for (frac, dx) in [(0.98f32, 300.0f32), (0.02, -150.0)] {
+                let mut f = gnf_setup(&mut c, &format!("f4e-{shift}-{frac}"), 400.0, &[(frac, -12.0)]);
+                let mut at = gnf_press_node(&mut f, 0);
+                f.app.shift = shift;
+                gnf_move(&mut f.app, &mut at, dx, 0.0, 20);
+                f.app.mouse_up();
+                f.app.shift = false;
+                let n = gnf_node(&f, 0);
+                check(n.ms >= 0.0 && n.ms <= f.len_ms, format!("shift={shift} frac={frac}: expected ms in [0, {}], actual {}", f.len_ms, n.ms));
+                let edge = if dx > 0.0 { f.len_ms } else { 0.0 };
+                check((n.ms - edge).abs() < 1.0, format!("shift={shift} frac={frac}: expected at clip edge {edge} ms, actual {}", n.ms));
+            }
+            // dB limits: a node 0.5 dB inside each limit dragged 120 px past it (12 px of travel at the 1/10 rate is
+            // over 10 dB, so the limit is reached at both rates).
+            for (db0, dy) in [(max_db - 0.5, -120.0f32), (min_db + 0.5, 120.0)] {
+                let mut f = gnf_setup(&mut c, &format!("f4d-{shift}-{dy}"), 400.0, &[(0.2, -12.0), (0.35, db0), (0.8, -12.0)]);
+                let mut at = gnf_press_node(&mut f, 1);
+                f.app.shift = shift;
+                gnf_move(&mut f.app, &mut at, 0.0, dy, 20);
+                f.app.mouse_up();
+                f.app.shift = false;
+                let n = gnf_node(&f, 1);
+                check(n.db >= min_db && n.db <= max_db, format!("shift={shift} dy={dy}: expected dB in [{min_db}, {max_db}], actual {}", n.db));
+                let edge = if dy < 0.0 { max_db } else { min_db };
+                check((n.db - edge).abs() < 0.01, format!("shift={shift} dy={dy}: expected at limit {edge} dB, actual {}", n.db));
+            }
+        }
+        assert!(bad.is_empty(), "{} clamp violations:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// F5: a whole drag with Shift changes is one undo step, and undo puts the node back where it started.
+    #[test]
+    fn gain_node_fine_f5_drag_with_shift_changes_is_one_undo_step() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnf_setup(&mut c, "f5", 400.0, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+        let before_nodes = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+        let undo_before = f.app.state.history.len();
+        let mut at = gnf_press_node(&mut f, 1);
+        for (k, shift) in [false, true, false, true, false].into_iter().enumerate() {
+            f.app.shift = shift;
+            gnf_move(&mut f.app, &mut at, 8.0 + k as f32, -1.0, 3);
+        }
+        f.app.mouse_up();
+        f.app.shift = false;
+        let moved = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+        assert_ne!(moved, before_nodes, "harness: the drag moved the node");
+        assert_eq!(f.app.state.history.len(), undo_before + 1, "expected one undo step for the drag: history {undo_before} -> {}", f.app.state.history.len());
+        crate::history::undo(&mut f.app.state);
+        let back = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+        assert_eq!(back, before_nodes, "one undo restores the line from before the drag: expected {before_nodes:?}, actual {back:?}");
+        // A line press that adds a node, then a drag with Shift toggled: also one step, and one undo removes the
+        // node and nothing else. WHY a fresh fixture with a committed plain drag first: history.len() after an
+        // undo still counts the redo entry, so the count is only compared across steps with no undo between.
+        let mut f = gnf_setup(&mut c, "f5b", 400.0, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+        let mut at = gnf_press_node(&mut f, 1);
+        gnf_move(&mut f.app, &mut at, 10.0, -1.0, 3);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        let before_nodes = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+        let undo_before = f.app.state.history.len();
+        let x = f.body.x + f.body.w * 0.35;
+        let clip = pl::clips(&f.app.state)[f.ci];
+        let y = pl::gain_line_y_at(&f.app.state, &f.g, &clip, x);
+        f.app.mouse_move(x, y);
+        assert_eq!(f.app.state.playlist.hover_handle, Some(pl::Handle::GainLine), "harness: hovering the line");
+        f.app.mouse_down();
+        let mut at = (x, y);
+        for shift in [true, false, true] {
+            f.app.shift = shift;
+            gnf_move(&mut f.app, &mut at, 6.0, -1.0, 3);
+        }
+        f.app.mouse_up();
+        f.app.shift = false;
+        assert_eq!(pl::clips(&f.app.state)[f.ci].gain_line.nodes().len(), 4, "harness: the press added a node");
+        assert_eq!(f.app.state.history.len(), undo_before + 1, "expected add+drag to be one undo step: history {undo_before} -> {}", f.app.state.history.len());
+        crate::history::undo(&mut f.app.state);
+        let back = pl::clips(&f.app.state)[f.ci].gain_line.nodes().to_vec();
+        assert_eq!(back, before_nodes, "undo removes the added node: expected {before_nodes:?}, actual {back:?}");
+    }
+
     /// Audio clip handles (spec: ui/playlist.md §9a): dragging the fade triangles sets the fades, the tension ring
     /// bends the curve, the gain half-circle changes the gain; one undo step each.
     #[test]

@@ -3214,8 +3214,10 @@ pub enum PlDrag {
     FadeTension { clip: usize, out: bool, y0: f32, t0: f32, targets: Vec<usize> },
     /// An audio clip's gain handle: dB from where the drag started.
     Gain { clip: usize, y0: f32, starting_db: Vec<(usize, f32)> },
-    /// A breakpoint of an audio clip's gain line (Pro Tools-style clip gain): dragged in time and dB.
-    GainNode { clip: usize, node: usize },
+    /// A breakpoint of an audio clip's gain line (Pro Tools-style clip gain): dragged in time and dB, relative to
+    /// an anchor (mouse `x0`, `y0`; node `ms0`, `db0`) at full rate, or a tenth of it while Shift is held (`fine`).
+    /// Shift changing mid-drag re-anchors at the last mouse position, so the node never jumps.
+    GainNode { clip: usize, node: usize, x0: f32, y0: f32, ms0: f32, db0: f32, fine: bool, last: (f32, f32) },
     /// A crossfade's handle (§9a): later clip `b`, earlier clip `a`, `b`'s gain at the middle when the drag started.
     Crossfade { a: usize, b: usize, y0: f32, m0: f64 },
 }
@@ -3286,6 +3288,16 @@ const GAIN_LINE_GRAB: f32 = 3.0;
 /// steps at 150 %).
 const TENSION_PER_PX: f32 = 0.28;
 const DB_PER_PX: f32 = 0.15;
+
+/// How far a gain node moves per mouse pixel while Shift is held, as a share of its normal 1:1 rate: a tenth, in both
+/// time and dB, for placing a node on a transient or setting a level the track height makes coarse.
+const GAIN_NODE_FINE: f32 = 0.1;
+
+/// The drag of gain node `k` of clip `ci`, anchored at the press (`x`, `y`) and the node's current place.
+fn gain_node_drag(c: &Clip, ci: usize, k: usize, x: f32, y: f32) -> PlDrag {
+    let n = c.gain_line.nodes().get(k).copied().unwrap_or(os_model::GainNode { ms: 0.0, db: 0.0 });
+    PlDrag::GainNode { clip: ci, node: k, x0: x, y0: y, ms0: n.ms, db0: n.db, fine: false, last: (x, y) }
+}
 /// Logical pixels of a crossfade-handle drag per unit of the later clip's gain at the middle (§9a, OS: 1/120 per
 /// pixel).
 const XFADE_PX: f64 = 120.0;
@@ -3588,13 +3600,13 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                     let a = crossfade(s, &g, ci).map_or(ci, |xf| xf.a);
                     PlDrag::Crossfade { a, b: ci, y0: y, m0: os_model::fade_curve(0.5, f64::from(c.fade_in_tension())) }
                 }
-                Handle::GainNode(k) => PlDrag::GainNode { clip: ci, node: k },
+                Handle::GainNode(k) => gain_node_drag(&c, ci, k, x, y),
                 Handle::GainLine => {
                     // A new breakpoint at the line's value there, so the line does not jump; then it is dragged.
                     let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
                     let db = c.gain_line.db_at(ms);
                     match arr_mut(s).clips[ci].gain_line.add(os_model::GainNode { ms, db }) {
-                        Some(k) => PlDrag::GainNode { clip: ci, node: k },
+                        Some(k) => gain_node_drag(&arr_mut(s).clips[ci], ci, k, x, y),
                         None => { app.hint = Cow::Borrowed("Clip gain line: no room for another node"); app.invalidate(); return; }
                     }
                 }
@@ -4185,12 +4197,28 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             app.hint = Cow::Owned(handle_hint(&c, Handle::Gain));
             app.state.piano.dirty = true;
         }
-        PlDrag::GainNode { clip, node } => {
+        PlDrag::GainNode { clip, node, mut x0, mut y0, mut ms0, mut db0, mut fine, last } => {
             if let Some(c) = clips(s).get(clip).copied() {
+                // Shift pressed or released: carry on from where the node is now, at the new rate.
+                if shift != fine {
+                    (x0, y0) = last;
+                    if let Some(n) = c.gain_line.nodes().get(node) {
+                        (ms0, db0) = (n.ms, n.db);
+                    }
+                    fine = shift;
+                }
+                let k = if fine { GAIN_NODE_FINE } else { 1.0 };
                 let body = g.body(&c);
-                let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
-                let db = gain_line_db(body, y) - static_db(&c);
+                let ms_per_px = fade_ms_per_tick(s) / f64::from(g.ppt);
+                let db_per_px = (GAIN_LINE_MAX_DB - GAIN_LINE_MIN_DB) / body.h.max(1.0);
+                let ms = (f64::from(ms0) + f64::from(x - x0) * ms_per_px * f64::from(k)) as f32;
+                // Kept inside the body's visible range (as the 1:1 drag was, through `gain_line_db`): a node is never
+                // dragged where it cannot be seen or grabbed again.
+                let base = static_db(&c);
+                let db = (db0 + (y0 - y) * db_per_px * k).clamp(GAIN_LINE_MIN_DB - base, GAIN_LINE_MAX_DB - base);
+                let ms = ms.clamp(0.0, clip_ms(s, &c));
                 arr_mut(s).clips[clip].gain_line.set(node, ms, db);
+                app.drag = Some(Drag::Pl(PlDrag::GainNode { clip, node, x0, y0, ms0, db0, fine, last: (x, y) }));
                 app.hint = Cow::Owned(handle_hint(&clips(s)[clip], Handle::GainNode(node)));
                 app.state.piano.dirty = true;
             }
