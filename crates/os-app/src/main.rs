@@ -25,6 +25,7 @@ mod autoscroll;
 mod backup;
 mod safe_save;
 #[cfg(test)] mod audit_fixes;
+#[cfg(test)] mod gain_edit_tests;
 #[cfg(test)]
 mod audio_bench;
 #[cfg(test)]
@@ -130,6 +131,7 @@ mod loop_fit;
 mod stem_separation;
 mod playlist_controls;
 mod playlist_tools;
+mod playlist_gain_line;
 mod plugin_db;
 mod plugin_manager;
 mod plugin_menu;

@@ -6159,7 +6159,7 @@ impl App {
             if let Some(g) = self.pl_grid {
                 let s = &self.state;
                 let pg = crate::playlist::PGeom::new(s, g);
-                let hit = crate::playlist::clip_at(s, &pg, x, y);
+                let hit = crate::playlist::clip_at(s, &pg, x, y).or_else(|| crate::playlist::end_node_clip_at(s, &pg, x, y));
                 // Automation clips show their points while hovered, audio clips their fade and gain handles (§9a).
                 let auto = hit.filter(|&i| {
                     let c = &crate::playlist::clips(s)[i];
@@ -6178,7 +6178,7 @@ impl App {
                     self.state.playlist.hover_handle = handle;
                 }
                 if let (Some(i), Some(h)) = (hit, handle) {
-                    hint = Cow::Owned(crate::playlist::handle_hint(&crate::playlist::clips(&self.state)[i], h));
+                    hint = Cow::Owned(crate::playlist_gain_line::hover_hint(&self.state, &pg, i, h, x));
                 } else if let Some(i) = hit {
                     let r = pg.clip_rect(&crate::playlist::clips(&self.state)[i]);
                     let z = crate::playlist::EDGE.min(r.w / 4.0);
@@ -7141,6 +7141,7 @@ impl App {
         }
         if let Some(Drag::Pl(d)) = self.drag.clone() {
             self.drag = None;
+            self.state.playlist.gain_drag = None;
             if let Some(g) = self.pl_grid {
                 crate::playlist::drag_end(self, d, g);
             }

@@ -91,7 +91,7 @@ pub fn cursor(app: &App) -> Option<Cursor> {
     if !app.ctrl && let Some(grid)=app.pl_grid() {
         let g=pl::PGeom::new(&app.state,grid);
         if let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1)
-            && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1).is_some() {
+            && pl::handle_at(&app.state,&g,i,app.mouse.0,app.mouse.1).is_some() && pl::drawing_tool(tool) {
             return Some(Cursor::Playlist(tool,GAIN));
         }
         if app.drag.is_none() && !matches!(tool,PlTool::Select|PlTool::Comp)

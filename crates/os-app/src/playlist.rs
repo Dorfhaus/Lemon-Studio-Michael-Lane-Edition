@@ -17,6 +17,7 @@ use os_model::{
 use os_ui::Rect;
 
 use crate::app::{App, Drag, State};
+pub use crate::playlist_gain_line::{gain_line_menu, gain_node_menu, gain_readout};
 use crate::snap::EditorSnap;
 
 /// Track row pitch at the default size (spec: ui/main-window.md §6); a clip fills its row less the 3 px gap.
@@ -312,6 +313,14 @@ pub enum Cmd {
     ClipRandomColor(usize),
     ClipPreview(usize),
     ClipRoute(usize),
+    /// The gain line's right-click menus (`crate::playlist_gain_line`): clip, node; clip, pointer time in ms.
+    GainNodeDelete(usize, usize),
+    GainNodeType(usize, usize),
+    GainNodeZero(usize, usize),
+    GainLineReset(usize),
+    GainLineAdd(usize, f32),
+    /// The audio clip menu's Reset clip gain: 0 dB static gain and no gain nodes.
+    ClipGainReset(usize),
     FitLoop(usize, crate::loop_fit::Fit),
     SeparateStems(usize),
     AraMenu(usize),
@@ -690,6 +699,8 @@ pub struct PlaylistState {
     pub last_clip: Option<(usize, std::time::Instant)>,
     /// Last press on a clip gain node (clip, node, time): a second one soon after opens its value box.
     pub last_gain_node: Option<(usize, usize, std::time::Instant)>,
+    /// The gain node being dragged (clip, node): its value readout follows it (`crate::playlist_gain_line`).
+    pub gain_drag: Option<(usize, usize)>,
     /// Last left click in the ruler: a second one soon after clears the time selection.
     pub last_ruler: Option<std::time::Instant>,
     /// Waveform cache by sample path (`None` = could not be loaded).
@@ -742,6 +753,7 @@ impl Default for PlaylistState {
             last_header: None,
             last_clip: None,
             last_gain_node: None,
+            gain_drag: None,
             last_ruler: None,
             waves: RefCell::new(HashMap::new()),
             tones: RefCell::new(HashMap::new()),
@@ -2894,6 +2906,7 @@ pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
             items.push(PItem::new("Strip silence...",Cmd::StripSilence(i)));
             items.push(PItem::sub("Normalize audio clips", crate::clip_normalize::Mode::ALL.into_iter()
                 .map(|mode| PItem::new(mode.label(), Cmd::Normalize(i,mode))).collect()));
+            items.push(crate::playlist_gain_line::reset_item(&c,i));
             items.push(PItem::new("Clip effects...",Cmd::ClipEffects(i)));
             items.push(PItem::new("Send to mixer track...",Cmd::ClipRoute(i)));
             use crate::loop_fit::Fit;
@@ -3381,13 +3394,41 @@ pub fn fade_mid(body: Rect, x0: f32, x1: f32, tension: f32, _out: bool) -> (f32,
     ((x0 + x1) / 2.0, body.bottom() - v * body.h)
 }
 
-/// The handle of audio clip `i` under (x, y), if any (§9a).
+/// The handle of audio clip `i` under (x, y), if any (§9a). The fade and static gain handles belong to the drawing
+/// tools; the gain line's nodes and line answer in every tool but Comp, so their right-click menu and readout work
+/// whatever the tool (GAIN-NODE-EDIT-SPEC R2/R3; a left press uses them only with the drawing tools, `press_grid`).
 pub fn handle_at(s: &State, g: &PGeom, i: usize, x: f32, y: f32) -> Option<Handle> {
     if !s.playlist.controls.fades { return None; }
     let c = clips(s).get(i)?;
-    if !is_audio_clip(s, g, c) || c.muted || !matches!(s.playlist.tool, PlTool::Draw | PlTool::Paint | PlTool::Select) {
+    if !is_audio_clip(s, g, c) || c.muted || s.playlist.tool == PlTool::Comp {
         return None;
     }
+    if drawing_tool(s.playlist.tool) && let Some(h) = fade_handle_at(s, g, i, c, x, y) {
+        return Some(h);
+    }
+    gain_line_handle_at(s, g, c, x, y)
+}
+
+/// The audio clip with a gain node under (x, y) just past the clip's rect, where `clip_at` stops: a node at the clip's
+/// very end is drawn centred on its right edge, half outside, and must still answer to hover and presses there.
+pub fn end_node_clip_at(s: &State, g: &PGeom, x: f32, y: f32) -> Option<usize> {
+    // The cheap rect test first: this runs on every mouse move over empty grid.
+    clips(s)
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, c)| g.clip_rect(c).outset(GAIN_NODE_GRAB).contains(x, y))
+        .find(|&(i, _)| matches!(handle_at(s, g, i, x, y), Some(Handle::GainNode(_))))
+        .map(|(i, _)| i)
+}
+
+/// The tools whose left press edits an audio clip's handles.
+pub fn drawing_tool(tool: PlTool) -> bool {
+    matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Select)
+}
+
+/// The fade, tension, static gain or crossfade handle of audio clip `c` (index `i`) under (x, y).
+fn fade_handle_at(s: &State, g: &PGeom, i: usize, c: &Clip, x: f32, y: f32) -> Option<Handle> {
     let body = g.body(c);
     let (fx_in, fx_out) = fade_xs(s, g, c);
     let near = |hx: f32, hy: f32, r: f32| (x - hx).abs() <= r && (y - hy).abs() <= r;
@@ -3419,17 +3460,27 @@ pub fn handle_at(s: &State, g: &PGeom, i: usize, x: f32, y: f32) -> Option<Handl
     if near(body.cx(), body.bottom() - 2.0, 6.0) {
         return Some(Handle::Gain);
     }
-    // The gain line's breakpoints, then the line itself (a press there adds one), with the drawing and Select
-    // tools and away from the clip's edges, which resize it.
-    if matches!(s.playlist.tool, PlTool::Draw | PlTool::Paint | PlTool::Select) && body.w > 24.0 && x > body.x + 6.0 && x < body.right() - 6.0 {
-        for k in 0..c.gain_line.nodes().len() {
-            if let Some((nx, ny)) = gain_node_xy(s, g, c, k) && near(nx, ny, GAIN_NODE_GRAB) {
-                return Some(Handle::GainNode(k));
-            }
+    None
+}
+
+/// The gain line's breakpoint under (x, y) on audio clip `c`, else the line itself (a press there adds one).
+fn gain_line_handle_at(s: &State, g: &PGeom, c: &Clip, x: f32, y: f32) -> Option<Handle> {
+    let body = g.body(c);
+    if body.w <= 24.0 {
+        return None;
+    }
+    let near = |hx: f32, hy: f32, r: f32| (x - hx).abs() <= r && (y - hy).abs() <= r;
+    // WHY nodes are not kept off the clip's edges like the line: a node at the clip's very start or end (a press
+    // near the end adds one at the clip's length) sits in the resize zone, and would otherwise never show its
+    // readout or menu, nor be grabbed again. A node's 5 px grab is small enough to leave the rest of the edge to resizing.
+    for k in 0..c.gain_line.nodes().len() {
+        if let Some((nx, ny)) = gain_node_xy(s, g, c, k) && near(nx, ny, GAIN_NODE_GRAB) {
+            return Some(Handle::GainNode(k));
         }
-        if (y - gain_line_y_at(s, g, c, x)).abs() <= GAIN_LINE_GRAB && y >= body.y && y <= body.bottom() {
-            return Some(Handle::GainLine);
-        }
+    }
+    // The line itself only away from the clip's edges, which resize it.
+    if x > body.x + 6.0 && x < body.right() - 6.0 && (y - gain_line_y_at(s, g, c, x)).abs() <= GAIN_LINE_GRAB && y >= body.y && y <= body.bottom() {
+        return Some(Handle::GainLine);
     }
     None
 }
@@ -3444,10 +3495,12 @@ pub fn handle_hint(c: &Clip, h: Handle) -> String {
         Handle::Gain => format!("Clip gain: {:+.1} dB", 20.0 * c.gain().log10()),
         Handle::Crossfade => format!("Crossfade tension: {:+.2}", c.fade_in_tension()),
         Handle::GainNode(k) => match c.gain_line.nodes().get(k) {
-            Some(n) => format!("Clip gain node: {:+.1} dB at {:.0} ms (double-click types a value, Alt-click removes)", static_db(c) + n.db, n.ms),
+            Some(n) => crate::playlist_gain_line::node_hint(c, *n),
             None => String::from("Clip gain node"),
         },
-        Handle::GainLine => format!("Clip gain line: {:+.1} dB (click to add a node)", static_db(c)),
+        // Without a pointer: the static gain. The hover hint reads the line under the pointer
+        // (`crate::playlist_gain_line::hover_hint`).
+        Handle::GainLine => crate::playlist_gain_line::line_hint(static_db(c)),
     }
 }
 
@@ -3472,6 +3525,8 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     let track = g.track_at(y);
     let tick = g.tick_at(x).max(0.0);
     let hit = clip_at(s, &g, x, y);
+    // Only the gain node handling below looks past the clip's edge (`end_node_clip_at`); every tool action keeps `hit`.
+    let gain_hit = hit.or_else(|| end_node_clip_at(s, &g, x, y));
     let tool = s.playlist.tool;
     if right && hit.is_none() && matches!(tool,PlTool::Draw|PlTool::Paint) {
         s.playlist.sel.clear();s.playlist.header_selection.clear();s.playlist.header_anchor=None;
@@ -3491,6 +3546,13 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             }
         }
         app.invalidate();return;
+    }
+
+    // A right press on an audio clip's gain node or line opens its menu in every tool, before any tool's right
+    // button (Draw and Paint delete the clip, others erase) can act on the clip (GAIN-NODE-EDIT-SPEC R2/R3).
+    if right && let Some(ci) = gain_hit && crate::playlist_gain_line::open_menu(s, &g, ci, x, y) {
+        app.invalidate();
+        return;
     }
 
     s.playlist.selected_points = None;
@@ -3561,8 +3623,9 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
 
 
     // Audio clip handles: fades, fade tensions, gain (§9a).
-    if let (Some(ci), false) = (hit, right) {
-        if let Some(h) = handle_at(s, &g, ci, x, y) {
+    if let (Some(ci), false) = (gain_hit, right) {
+        // Other tools see the gain line only for its right-click menu: their left press keeps its own meaning.
+        if let Some(h) = handle_at(s, &g, ci, x, y).filter(|_| drawing_tool(tool)) {
             snapshot(s);
             let c = clips(s)[ci];
             let targets = if s.playlist.sel.contains(&ci) {
@@ -3618,13 +3681,13 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                     let a = crossfade(s, &g, ci).map_or(ci, |xf| xf.a);
                     PlDrag::Crossfade { a, b: ci, y0: y, m0: os_model::fade_curve(0.5, f64::from(c.fade_in_tension())) }
                 }
-                Handle::GainNode(k) => gain_node_drag(&c, ci, k, x, y),
+                Handle::GainNode(k) => { s.playlist.gain_drag = Some((ci, k)); gain_node_drag(&c, ci, k, x, y) }
                 Handle::GainLine => {
                     // A new breakpoint at the line's value there, so the line does not jump; then it is dragged.
                     let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
                     let db = c.gain_line.db_at(ms);
                     match arr_mut(s).clips[ci].gain_line.add(os_model::GainNode { ms, db }) {
-                        Some(k) => gain_node_drag(&arr_mut(s).clips[ci], ci, k, x, y),
+                        Some(k) => { s.playlist.gain_drag = Some((ci, k)); gain_node_drag(&arr_mut(s).clips[ci], ci, k, x, y) }
                         None => { app.hint = Cow::Borrowed("Clip gain line: no room for another node"); app.invalidate(); return; }
                     }
                 }
@@ -5091,6 +5154,10 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::AraScan => {app.start_scan(crate::plugin_db::Mode::All);return Some("Scanning plugins; reopen Edit with ARA when the scan finishes".into());},
         Cmd::SeparateStems(i) => { crate::stem_separation::request(app, i); return None; }
         Cmd::FitLoop(i, cmd) => return crate::loop_fit::run(app, i, cmd),
+        Cmd::GainNodeType(ci, k) => {
+            crate::playlist_gain_line::type_value(app, ci, k);
+            return None;
+        }
         Cmd::ClipPreview(i) => {
             if let Some(c) = clips(&app.state).get(i).copied() {
                 app.preview_clip(&c);
@@ -5725,6 +5792,10 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::ChopPattern(_) => None,
         Cmd::Messages(_) => None,
         Cmd::DataFolder(_) => None,
+        Cmd::GainNodeType(..) => None,
+        c @ (Cmd::GainNodeDelete(..) | Cmd::GainNodeZero(..) | Cmd::GainLineReset(_) | Cmd::GainLineAdd(..) | Cmd::ClipGainReset(_)) => {
+            crate::playlist_gain_line::run(s, c)
+        }
     };
     app.invalidate();
     msg
