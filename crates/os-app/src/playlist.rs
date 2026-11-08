@@ -578,6 +578,8 @@ pub enum EditTarget {
     /// The value box of "Type in value..." and whether it reads normalized values (spec: ui/type-in-value.md).
     TypeIn(crate::typein::Target, bool),
     Tempo,
+    /// A clip gain node's exact value (clip index, node index): "dB", "dB @ ms" or "@ ms" (double-click a node).
+    GainNode(usize, usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -686,6 +688,8 @@ pub struct PlaylistState {
     pub last_header: Option<(u16, std::time::Instant)>,
     /// Last left click on an audio clip (clip, time): a second one soon after opens its sampler.
     pub last_clip: Option<(usize, std::time::Instant)>,
+    /// Last press on a clip gain node (clip, node, time): a second one soon after opens its value box.
+    pub last_gain_node: Option<(usize, usize, std::time::Instant)>,
     /// Last left click in the ruler: a second one soon after clears the time selection.
     pub last_ruler: Option<std::time::Instant>,
     /// Waveform cache by sample path (`None` = could not be loaded).
@@ -737,6 +741,7 @@ impl Default for PlaylistState {
             row_h: ROW_H,
             last_header: None,
             last_clip: None,
+            last_gain_node: None,
             last_ruler: None,
             waves: RefCell::new(HashMap::new()),
             tones: RefCell::new(HashMap::new()),
@@ -3439,7 +3444,7 @@ pub fn handle_hint(c: &Clip, h: Handle) -> String {
         Handle::Gain => format!("Clip gain: {:+.1} dB", 20.0 * c.gain().log10()),
         Handle::Crossfade => format!("Crossfade tension: {:+.2}", c.fade_in_tension()),
         Handle::GainNode(k) => match c.gain_line.nodes().get(k) {
-            Some(n) => format!("Clip gain node: {:+.1} dB at {:.0} ms (Alt-click removes)", static_db(c) + n.db, n.ms),
+            Some(n) => format!("Clip gain node: {:+.1} dB at {:.0} ms (double-click types a value, Alt-click removes)", static_db(c) + n.db, n.ms),
             None => String::from("Clip gain node"),
         },
         Handle::GainLine => format!("Clip gain line: {:+.1} dB (click to add a node)", static_db(c)),
@@ -3586,6 +3591,19 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 s.piano.dirty=true;
                 app.hint=Cow::Owned(handle_hint(&clips(s)[ci],h));
                 app.invalidate();return;
+            }
+            // A second press on the same gain node soon after the first opens its value box instead of a drag.
+            if let Handle::GainNode(k) = h {
+                let now = std::time::Instant::now();
+                let double = s.playlist.last_gain_node.is_some_and(|(i, n, t)| i == ci && n == k && now.duration_since(t).as_millis() < 450);
+                s.playlist.last_gain_node = (!double).then_some((ci, k, now));
+                if double {
+                    start_edit(s, EditTarget::GainNode(ci, k), (x + 8.0, y + 8.0));
+                    app.invalidate();
+                    return;
+                }
+            } else {
+                s.playlist.last_gain_node = None;
             }
             app.drag = Some(Drag::Pl(match h {
                 Handle::FadeIn => PlDrag::Fade { clip: ci, out: false, targets },
@@ -4652,8 +4670,14 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
         EditTarget::MixerName(n) => crate::mixer::name(s, n),
         EditTarget::SlotName(t, k) => crate::mixer::slot_name(s, t, k).unwrap_or_default(),
         EditTarget::TypeIn(t, norm) => crate::typein::text(s, t, norm),
+        EditTarget::GainNode(ci, k) => match clips(s).get(ci).and_then(|c| c.gain_line.nodes().get(k).map(|n| (static_db(c), *n))) {
+            Some((base, n)) => format!("{:.1} dB @ {:.2} ms", base + n.db, n.ms),
+            None => String::new(),
+        },
     };
-    s.playlist.edit = Some(TextEdit { target, text, at, sel: false });
+    // The gain node's box opens selected, like the value box: typing replaces the shown value.
+    let sel = matches!(target, EditTarget::GainNode(..)) && !text.is_empty();
+    s.playlist.edit = Some(TextEdit { target, text, at, sel });
 }
 
 /// Enter in the text box.
@@ -4722,6 +4746,20 @@ pub fn commit_edit(s: &mut State) {
             }
         }
         EditTarget::TypeIn(t, norm) => crate::typein::accept(s, t, norm, &text),
+        EditTarget::GainNode(ci, k) => {
+            let Some(c) = clips(s).get(ci).copied() else { return };
+            let Some(n) = c.gain_line.nodes().get(k).copied() else { return };
+            match parse_gain_node(&text) {
+                Some((db, ms)) => {
+                    // Typed dB is the whole gain (as the hint and the box show it), held to the drawn range like a drag.
+                    let base = static_db(&c);
+                    let db = db.map_or(n.db, |d| d.clamp(GAIN_LINE_MIN_DB, GAIN_LINE_MAX_DB) - base);
+                    let ms = ms.map_or(n.ms, |m| m.clamp(0.0, clip_ms(s, &c)));
+                    arr_mut(s).clips[ci].gain_line.set(k, ms, db);
+                }
+                None => s.message = Some("Type a gain node value like -6, -6 dB @ 1250 ms or @ 1250.".into()),
+            }
+        }
         EditTarget::PatternName(n) => {
             if let Some(p) = s.project.patterns.iter_mut().find(|p| p.number == n) {
                 p.name = (!text.is_empty()).then_some(text);
@@ -4735,6 +4773,23 @@ pub fn commit_edit(s: &mut State) {
 
 // ---------------------------------------------------------------------------------------------------------
 // Commands
+
+/// A gain node's typed value: (whole dB, ms), either may be left out ("-6", "-6 dB @ 1250 ms", "@1250"); `None` when
+/// nothing usable was typed. Accepts a decimal comma and the typographic minus, which pasted or locale text carries.
+fn parse_gain_node(text: &str) -> Option<(Option<f32>, Option<f32>)> {
+    let t = text.trim().to_ascii_lowercase().replace('\u{2212}', "-").replace(',', ".");
+    let num = |part: &str, unit: &str| -> Option<Option<f32>> {
+        let p = part.trim();
+        let p = p.strip_suffix(unit).unwrap_or(p).trim();
+        if p.is_empty() { return Some(None); }
+        let v: f32 = p.parse().ok()?;
+        v.is_finite().then_some(Some(v))
+    };
+    let (a, b) = match t.split_once('@') { Some((a, b)) => (a, Some(b)), None => (t.as_str(), None) };
+    let db = num(a, "db")?;
+    let ms = match b { Some(b) => Some(num(b, "ms")??), None => None };
+    (db.is_some() || ms.is_some()).then_some((db, ms))
+}
 
 /// Run a menu / shortcut command. Returns a status message, if any.
 pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {

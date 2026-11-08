@@ -20651,6 +20651,493 @@ mod tests {
         assert_eq!(back, before_nodes, "undo removes the added node: expected {before_nodes:?}, actual {back:?}");
     }
 
+    // ---- Gain node type-in (lemon-mle-test/GAIN-NODE-TYPEIN-SPEC.md, T1-T7) ------------------------------------
+    // Nothing under test is mocked: the real App, playlist, text box, Esc key path and history run; only the WAV
+    // fixture is synthesised. Every case builds its own fixture so no case can be a "third click" of another.
+    // WHY 0.001 dB / 0.01 ms: the spec states them (T2, T3). f32 rounding of e.g. -6 - (-6.0206) is ~1e-6 dB and of
+    // a time near 2000 ms ~1e-4 ms, so they sit well above float noise and far below anything audible or visible.
+
+    const GNT_TOL_DB: f64 = 0.001;
+    const GNT_TOL_MS: f64 = 0.01;
+
+    /// A gnf fixture with the clip's static gain set to `gain` (a factor; 1.0 = 0 dB), repainted.
+    fn gnt_setup(c: &mut Canvas, tag: &str, gain: f32, nodes: &[(f32, f32)]) -> Gnf {
+        use crate::playlist as pl;
+        let mut f = gnf_setup(c, &format!("gnt-{tag}"), 400.0, nodes);
+        pl::arr_mut(&mut f.app.state).clips[f.ci].set_gain(gain);
+        frame(&mut f.app, c, None);
+        f.g = pl::PGeom::new(&f.app.state, f.app.pl_grid().unwrap());
+        assert_eq!(f.app.state.pending_open, None, "harness: no window pending before the test");
+        assert!(f.app.state.playlist.edit.is_none(), "harness: no text box open before the test");
+        f
+    }
+
+    fn gnt_nodes(f: &Gnf, ci: usize) -> Vec<os_model::GainNode> {
+        crate::playlist::clips(&f.app.state)[ci].gain_line.nodes().to_vec()
+    }
+
+    /// Whole gain (clip static gain + node dB) of node k of clip ci, as the spec defines it.
+    fn gnt_whole_db(f: &Gnf, ci: usize, k: usize) -> f64 {
+        use crate::playlist as pl;
+        let clip = pl::clips(&f.app.state)[ci];
+        f64::from(pl::static_db(&clip)) + f64::from(clip.gain_line.nodes()[k].db)
+    }
+
+    /// Moves onto node k of clip ci (asserting the hover) and presses.
+    fn gnt_press(f: &mut Gnf, ci: usize, k: usize) {
+        use crate::playlist as pl;
+        let clip = pl::clips(&f.app.state)[ci];
+        let (x, y) = pl::gain_node_xy(&f.app.state, &f.g, &clip, k).expect("node on screen");
+        f.app.mouse_move(x, y);
+        assert_eq!(f.app.state.playlist.hover_handle, Some(pl::Handle::GainNode(k)), "harness: hovering clip {ci} node {k}");
+        f.app.mouse_down();
+    }
+
+    /// Double-clicks node k of clip ci: press + release, a paint (as the shell does between events), then press +
+    /// release again with no pointer move, and a paint.
+    fn gnt_double_click(f: &mut Gnf, c: &mut Canvas, ci: usize, k: usize) {
+        gnt_press(f, ci, k);
+        f.app.mouse_up();
+        frame(&mut f.app, c, None);
+        f.app.mouse_down();
+        f.app.mouse_up();
+        frame(&mut f.app, c, None);
+    }
+
+    /// Double-clicks and asserts the box opened on GainNode(ci, k); returns the box.
+    fn gnt_open(f: &mut Gnf, c: &mut Canvas, ci: usize, k: usize) -> crate::playlist::TextEdit {
+        gnt_double_click(f, c, ci, k);
+        let e = f.app.state.playlist.edit.clone().unwrap_or_else(|| panic!("double-click on clip {ci} node {k}: expected the text box open, actual none"));
+        assert_eq!(e.target, crate::playlist::EditTarget::GainNode(ci, k), "box target");
+        e
+    }
+
+    /// Opens the box on node k of the fixture's clip, replaces its text and presses Enter.
+    fn gnt_type(f: &mut Gnf, c: &mut Canvas, k: usize, text: &str) {
+        let ci = f.ci;
+        gnt_open(f, c, ci, k);
+        f.app.state.playlist.edit.as_mut().unwrap().text = text.into();
+        crate::playlist::commit_edit(&mut f.app.state);
+    }
+
+    /// The spec's text for node k of clip ci: `format!("{:.1} dB @ {:.2} ms", static_db(c) + n.db, n.ms)`.
+    fn gnt_expected_text(f: &Gnf, ci: usize, k: usize) -> String {
+        use crate::playlist as pl;
+        let clip = pl::clips(&f.app.state)[ci];
+        let n = clip.gain_line.nodes()[k];
+        format!("{:.1} dB @ {:.2} ms", pl::static_db(&clip) + n.db, n.ms)
+    }
+
+    /// "-0.0" and "0.0" are both acceptable for a zero whole gain (T1).
+    fn gnt_text_matches(actual: &str, expected: &str) -> bool {
+        actual == expected
+            || expected.strip_prefix("-0.0 ").is_some_and(|r| actual == format!("0.0 {r}"))
+            || expected.strip_prefix("0.0 ").is_some_and(|r| actual == format!("-0.0 {r}"))
+    }
+
+    fn gnt_lcg(mut seed: u64) -> impl FnMut() -> f64 {
+        move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64
+        }
+    }
+
+    const GNT_NODES: [(f32, f32); 3] = [(0.1, -6.0), (0.5, -3.37), (0.9, 0.0)];
+
+    /// T1: a double-click on each node (first, middle, last; static gain 0 dB and -6 dB) opens the box on
+    /// GainNode(ci, k), selected, showing whole gain and time; the node does not move; no sampler opens.
+    #[test]
+    fn gain_node_typein_t1_double_click_opens_box_with_whole_gain_and_time() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        for gain in [1.0f32, 0.5] {
+            for k in 0..3 {
+                let mut f = gnt_setup(&mut c, &format!("t1-{gain}-{k}"), gain, &GNT_NODES);
+                let before = gnt_nodes(&f, f.ci);
+                let want = gnt_expected_text(&f, f.ci, k);
+                let ci = f.ci;
+                let e = gnt_open(&mut f, &mut c, ci, k);
+                assert!(e.sel, "gain={gain} node {k}: expected the text selected (typing replaces it)");
+                assert!(gnt_text_matches(&e.text, &want), "gain={gain} node {k}: expected text {want:?}, actual {:?}", e.text);
+                assert_eq!(gnt_nodes(&f, f.ci), before, "gain={gain} node {k}: the double-click moved a node");
+                assert_eq!(f.app.state.pending_open, None, "gain={gain} node {k}: the double-click opened the sampler");
+            }
+        }
+    }
+
+    /// T1 with two audio clips: the box targets the clip that was double-clicked, by its own index, and shows that
+    /// clip's node (not the other clip's node with the same index).
+    #[test]
+    fn gain_node_typein_t1_targets_the_double_clicked_clip() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t1two", 1.0, &GNT_NODES);
+        let ci2 = gnt_add_second_clip(&mut f, &mut c);
+        let want = gnt_expected_text(&f, ci2, 1);
+        assert_ne!(want, gnt_expected_text(&f, f.ci, 1), "harness: the two clips' node 1 differ");
+        let e = gnt_open(&mut f, &mut c, ci2, 1);
+        assert!(gnt_text_matches(&e.text, &want), "expected text {want:?}, actual {:?}", e.text);
+        assert_eq!(f.app.state.pending_open, None, "the double-click opened the sampler");
+    }
+
+    /// Adds a second audio clip on track 1 at tick 0 with static gain 1.8 and nodes different from GNT_NODES.
+    fn gnt_add_second_clip(f: &mut Gnf, c: &mut Canvas) -> usize {
+        use crate::playlist as pl;
+        pl::add_audio_clip(&mut f.app.state, &f.wav.to_string_lossy(), 1, 0).expect("second audio clip added");
+        f.app.state.playlist.sel.clear();
+        let ci2 = pl::clips(&f.app.state).len() - 1;
+        assert_ne!(ci2, f.ci, "harness: a second clip");
+        let len = f.len_ms;
+        let arr = pl::arr_mut(&mut f.app.state);
+        for (fr, db) in [(0.2f32, -15.0f32), (0.6, -9.25), (0.8, -1.5)] {
+            arr.clips[ci2].gain_line.add(os_model::GainNode { ms: len * fr, db });
+        }
+        arr.clips[ci2].set_gain(1.8);
+        frame(&mut f.app, c, None);
+        f.g = pl::PGeom::new(&f.app.state, f.app.pl_grid().unwrap());
+        ci2
+    }
+
+    /// T1: one click opens nothing.
+    #[test]
+    fn gain_node_typein_t1_single_click_does_not_open() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t1one", 1.0, &GNT_NODES);
+        let ci = f.ci;
+        gnt_press(&mut f, ci, 1);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        assert!(f.app.state.playlist.edit.is_none(), "one click opened the box: {:?}", f.app.state.playlist.edit.as_ref().map(|e| e.text.clone()));
+    }
+
+    /// T1: two quick clicks on two different nodes are not a double-click.
+    #[test]
+    fn gain_node_typein_t1_clicks_on_two_nodes_do_not_open() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t1diff", 1.0, &GNT_NODES);
+        let ci = f.ci;
+        gnt_press(&mut f, ci, 0);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        gnt_press(&mut f, ci, 1);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        assert!(f.app.state.playlist.edit.is_none(), "clicks on node 0 then node 1 opened the box");
+    }
+
+    /// T1: a second click later than 450 ms is not a double-click. WHY 600 ms of real sleep: the spec's window is
+    /// 450 ms of wall-clock time and the App takes no injectable clock; 150 ms margin absorbs scheduler jitter.
+    #[test]
+    fn gain_node_typein_t1_slow_second_click_does_not_open() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t1slow", 1.0, &GNT_NODES);
+        let ci = f.ci;
+        gnt_press(&mut f, ci, 1);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        f.app.mouse_down();
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        assert!(f.app.state.playlist.edit.is_none(), "a second click 600 ms later opened the box");
+    }
+
+    /// T2: Enter with a dB-only text sets the whole gain and leaves the time, at static gains 0, -6.02 and +5.1 dB.
+    #[test]
+    fn gain_node_typein_t2_db_only_sets_whole_gain() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let cases: [(&str, f64); 6] = [("-6", -6.0), ("-6 dB", -6.0), ("-6dB", -6.0), (" -6.5 ", -6.5), ("+3", 3.0), ("-12.25 dB", -12.25)];
+        for gain in [1.0f32, 0.5, 1.8] {
+            for (i, &(text, want)) in cases.iter().enumerate() {
+                let mut f = gnt_setup(&mut c, &format!("t2-{gain}-{i}"), gain, &GNT_NODES);
+                let before = gnt_nodes(&f, f.ci);
+                let static0 = gnt_static_db(&f, f.ci);
+                gnt_type(&mut f, &mut c, 1, text);
+                let after = gnt_nodes(&f, f.ci);
+                let whole = gnt_whole_db(&f, f.ci, 1);
+                assert!((whole - want).abs() <= GNT_TOL_DB, "gain={gain} {text:?}: expected whole {want} dB, actual {whole:.5} dB (node.db {})", after[1].db);
+                assert_eq!(after[1].ms, before[1].ms, "gain={gain} {text:?}: time changed");
+                assert_eq!((after[0], after[2]), (before[0], before[2]), "gain={gain} {text:?}: other nodes changed");
+                assert_eq!(gnt_static_db(&f, f.ci), static0, "gain={gain} {text:?}: the clip's static gain changed");
+            }
+        }
+    }
+
+    fn gnt_static_db(f: &Gnf, ci: usize) -> f32 {
+        crate::playlist::static_db(&crate::playlist::clips(&f.app.state)[ci])
+    }
+
+    /// T2 with two clips: a commit changes only the opened clip's node; the other clip, same node index, is untouched.
+    #[test]
+    fn gain_node_typein_t2_commit_changes_only_the_opened_clip() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t2two", 1.0, &GNT_NODES);
+        let ci2 = gnt_add_second_clip(&mut f, &mut c);
+        let first = gnt_nodes(&f, f.ci);
+        let second = gnt_nodes(&f, ci2);
+        gnt_open(&mut f, &mut c, ci2, 1);
+        f.app.state.playlist.edit.as_mut().unwrap().text = "-20".into();
+        crate::playlist::commit_edit(&mut f.app.state);
+        let whole = gnt_whole_db(&f, ci2, 1);
+        assert!((whole + 20.0).abs() <= GNT_TOL_DB, "expected clip {ci2} node 1 whole -20 dB, actual {whole:.5}");
+        assert_eq!(gnt_nodes(&f, f.ci), first, "the other clip's nodes changed");
+        let now = gnt_nodes(&f, ci2);
+        assert_eq!((now[0], now[2], now[1].ms), (second[0], second[2], second[1].ms), "other nodes / time of the opened clip changed");
+    }
+
+    /// T3: dB and time together, and time only.
+    #[test]
+    fn gain_node_typein_t3_db_and_time() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let cases: [(&str, Option<f64>, f64); 6] = [
+            ("-3 @ 500", Some(-3.0), 500.0),
+            ("-3 dB @ 500 ms", Some(-3.0), 500.0),
+            ("-3dB@500ms", Some(-3.0), 500.0),
+            ("@ 500", None, 500.0),
+            ("@500ms", None, 500.0),
+            ("-7.5 @ 1333.33", Some(-7.5), 1333.33),
+        ];
+        for gain in [1.0f32, 0.5] {
+            for (i, &(text, db, ms)) in cases.iter().enumerate() {
+                let mut f = gnt_setup(&mut c, &format!("t3-{gain}-{i}"), gain, &GNT_NODES);
+                let before = gnt_nodes(&f, f.ci);
+                assert!(f64::from(before[0].ms) < 500.0 && 1333.33 < f64::from(before[2].ms), "harness: targets lie between the neighbours, nodes {before:?}");
+                gnt_type(&mut f, &mut c, 1, text);
+                let after = gnt_nodes(&f, f.ci);
+                assert_eq!(after.len(), 3, "{text:?}: node count changed: {after:?}");
+                let n = after[1];
+                assert!((f64::from(n.ms) - ms).abs() <= GNT_TOL_MS, "gain={gain} {text:?}: expected {ms} ms, actual {} ms", n.ms);
+                match db {
+                    Some(want) => {
+                        let whole = gnt_whole_db(&f, f.ci, 1);
+                        assert!((whole - want).abs() <= GNT_TOL_DB, "gain={gain} {text:?}: expected whole {want} dB, actual {whole:.5}");
+                    }
+                    None => assert_eq!(n.db, before[1].db, "gain={gain} {text:?}: time-only text changed the dB"),
+                }
+                assert_eq!((after[0], after[2]), (before[0], before[2]), "gain={gain} {text:?}: other nodes changed");
+            }
+        }
+    }
+
+    /// T4: whole gain clamps to GAIN_LINE_MIN_DB..=GAIN_LINE_MAX_DB (beyond, exactly at, and 0.1 past each limit),
+    /// with and without a static gain; the time is left alone.
+    #[test]
+    fn gain_node_typein_t4_db_clamps_to_visible_range() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (min, max) = (f64::from(pl::GAIN_LINE_MIN_DB), f64::from(pl::GAIN_LINE_MAX_DB));
+        let cases = [
+            ("+40".to_string(), max),
+            ("-100".to_string(), min),
+            (format!("{max}"), max),
+            (format!("{min}"), min),
+            (format!("{}", max + 0.1), max),
+            (format!("{}", min - 0.1), min),
+            ("-100 @ 700".to_string(), min),
+        ];
+        for gain in [1.0f32, 0.5, 1.8] {
+            for (i, (text, want)) in cases.iter().enumerate() {
+                let mut f = gnt_setup(&mut c, &format!("t4d-{gain}-{i}"), gain, &GNT_NODES);
+                let before = gnt_nodes(&f, f.ci);
+                gnt_type(&mut f, &mut c, 1, text);
+                let whole = gnt_whole_db(&f, f.ci, 1);
+                assert!((whole - want).abs() <= GNT_TOL_DB, "gain={gain} {text:?}: expected whole {want} dB, actual {whole:.5}");
+                if !text.contains('@') {
+                    assert_eq!(gnt_nodes(&f, f.ci)[1].ms, before[1].ms, "gain={gain} {text:?}: time changed");
+                }
+            }
+        }
+    }
+
+    /// T4: time clamps to 0..=clip length (lone node) and between the neighbours (node never passes another; order
+    /// and count unchanged; neighbours untouched). WHY 1.0 ms at a neighbour: same allowance as the drag clamp test
+    /// (F4) - an implementation may keep a tiny gap; 0.01 ms at the clip edges, where no gap is needed.
+    #[test]
+    fn gain_node_typein_t4_time_clamps_to_clip_and_neighbours() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut bad: Vec<String> = Vec::new();
+        for (i, (text, to_end)) in [("@ 99999", true), ("-3 @ 99999", true), ("@ 0", false), ("@ -50", false)].into_iter().enumerate() {
+            let mut f = gnt_setup(&mut c, &format!("t4e-{i}"), 1.0, &[(0.5, -6.0)]);
+            gnt_type(&mut f, &mut c, 0, text);
+            let n = gnt_nodes(&f, f.ci)[0];
+            let edge = if to_end { f.len_ms } else { 0.0 };
+            if (f64::from(n.ms) - f64::from(edge)).abs() > GNT_TOL_MS || n.ms < 0.0 || n.ms > f.len_ms {
+                bad.push(format!("lone node {text:?}: expected {edge} ms (clip 0..={}), actual {}", f.len_ms, n.ms));
+            }
+        }
+        for (i, (text, to_hi)) in [("@ 99999", true), ("@ 1500", true), ("@ 0", false), ("@ 100", false)].into_iter().enumerate() {
+            let mut f = gnt_setup(&mut c, &format!("t4n-{i}"), 1.0, &[(0.47, -12.0), (0.5, -6.0), (0.53, -12.0)]);
+            let before = gnt_nodes(&f, f.ci);
+            let (lo, hi) = (before[0].ms, before[2].ms);
+            gnt_type(&mut f, &mut c, 1, text);
+            let after = gnt_nodes(&f, f.ci);
+            if after.len() != 3 || after[0] != before[0] || after[2] != before[2] {
+                bad.push(format!("{text:?}: expected neighbours unchanged {before:?}, actual {after:?}"));
+                continue;
+            }
+            let n = after[1];
+            let edge = if to_hi { hi } else { lo };
+            if n.ms < lo || n.ms > hi || (n.ms - edge).abs() >= 1.0 {
+                bad.push(format!("{text:?}: expected ms against neighbour {edge} within [{lo}, {hi}], actual {}", n.ms));
+            }
+        }
+        assert!(bad.is_empty(), "{} clamp violations:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// T2-T4 property: for generated typed (dB, ms) in any of the spec's spellings, at random static gains, the
+    /// node's whole gain is clamp(dB, MIN, MAX) and its time clamp(ms, prev, next); node order and neighbours hold.
+    #[test]
+    fn gain_node_typein_t4_property_typed_values_land_clamped() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (min, max) = (f64::from(pl::GAIN_LINE_MIN_DB), f64::from(pl::GAIN_LINE_MAX_DB));
+        let mut rnd = gnt_lcg(0x6a1_7e1d);
+        for case in 0..24 {
+            let gain = (0.25 + rnd() * 1.75) as f32;
+            let db = ((rnd() * 140.0 - 90.0) * 100.0).round() / 100.0; // -90..50 dB: inside and past both limits
+            let ms = ((rnd() * 2400.0) * 100.0).round() / 100.0; // 0..2400 ms: before, between and past neighbours
+            let text = match case % 4 {
+                0 => format!("{db} @ {ms}"),
+                1 => format!("{db} dB @ {ms} ms"),
+                2 => format!("{db}dB@{ms}ms"),
+                _ => format!(" {db} dB @ {ms} ms "),
+            };
+            let mut f = gnt_setup(&mut c, &format!("t4p-{case}"), gain, &[(0.2, -12.0), (0.5, -12.0), (0.8, -12.0)]);
+            let before = gnt_nodes(&f, f.ci);
+            let (lo, hi) = (f64::from(before[0].ms), f64::from(before[2].ms));
+            gnt_type(&mut f, &mut c, 1, &text);
+            let after = gnt_nodes(&f, f.ci);
+            let ctx = format!("case {case} gain {gain} text {text:?}");
+            assert_eq!(after.len(), 3, "{ctx}: node count {after:?}");
+            assert_eq!((after[0], after[2]), (before[0], before[2]), "{ctx}: neighbours changed");
+            let whole = gnt_whole_db(&f, f.ci, 1);
+            let want_db = db.clamp(min, max);
+            assert!((whole - want_db).abs() <= GNT_TOL_DB, "{ctx}: expected whole {want_db} dB, actual {whole:.5}");
+            let got = f64::from(after[1].ms);
+            assert!(got >= lo && got <= hi, "{ctx}: expected ms in [{lo}, {hi}], actual {got}");
+            let want_ms = ms.clamp(lo, hi);
+            let tol = if ms > lo + 1.0 && ms < hi - 1.0 { GNT_TOL_MS } else { 1.0 };
+            assert!((got - want_ms).abs() <= tol, "{ctx}: expected {want_ms} ms (tol {tol}), actual {got}");
+        }
+    }
+
+    /// T1+T2 property: committing the text the box opened with leaves the node where it was, to the text's own
+    /// precision (0.05 dB from "{:.1}" plus 0.001; 0.005 ms from "{:.2}" plus 0.01), over generated nodes and gains.
+    #[test]
+    fn gain_node_typein_t2_property_shown_text_round_trips() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut rnd = gnt_lcg(0x7e_1d_2b);
+        for case in 0..16 {
+            let gain = (0.3 + rnd() * 1.5) as f32;
+            let db = (-20.0 + rnd() * 16.0) as f32;
+            let fr = (0.3 + rnd() * 0.4) as f32;
+            let mut f = gnt_setup(&mut c, &format!("t2p-{case}"), gain, &[(0.1, -12.0), (fr, db), (0.9, -12.0)]);
+            let before = gnt_nodes(&f, f.ci);
+            let whole0 = gnt_whole_db(&f, f.ci, 1);
+            let ci = f.ci;
+            let e = gnt_open(&mut f, &mut c, ci, 1);
+            crate::playlist::commit_edit(&mut f.app.state);
+            let after = gnt_nodes(&f, f.ci);
+            let whole = gnt_whole_db(&f, f.ci, 1);
+            assert!((whole - whole0).abs() <= 0.05 + GNT_TOL_DB, "case {case} text {:?}: whole {whole0:.4} -> {whole:.4}", e.text);
+            let dms = (f64::from(after[1].ms) - f64::from(before[1].ms)).abs();
+            assert!(dms <= 0.005 + GNT_TOL_MS, "case {case} text {:?}: ms {} -> {}", e.text, before[1].ms, after[1].ms);
+        }
+    }
+
+    /// T5: unreadable text leaves the node exactly as it was and sets a message.
+    #[test]
+    fn gain_node_typein_t5_bad_input_changes_nothing_and_says_so() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut bad: Vec<String> = Vec::new();
+        for (i, text) in ["abc", "", "NaN", "inf", "-3 @ abc", "@", "-inf", "infinity", "abc @ 500"].into_iter().enumerate() {
+            let mut f = gnt_setup(&mut c, &format!("t5-{i}"), 0.5, &GNT_NODES);
+            let before = gnt_nodes(&f, f.ci);
+            f.app.state.message = None;
+            gnt_type(&mut f, &mut c, 1, text);
+            let after = gnt_nodes(&f, f.ci);
+            if after != before {
+                bad.push(format!("{text:?}: expected nodes unchanged {before:?}, actual {after:?}"));
+            }
+            if f.app.state.message.is_none() {
+                bad.push(format!("{text:?}: expected a message, actual none"));
+            }
+        }
+        assert!(bad.is_empty(), "{} bad-input failures:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    /// T5: Esc closes the box through the real key path and commits nothing, even with valid text typed.
+    #[test]
+    fn gain_node_typein_t5_escape_changes_nothing() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t5esc", 0.5, &GNT_NODES);
+        let before = gnt_nodes(&f, f.ci);
+        let hist = f.app.state.history.len();
+        let ci = f.ci;
+        gnt_open(&mut f, &mut c, ci, 1);
+        f.app.state.playlist.edit.as_mut().unwrap().text = "-20 @ 500".into();
+        f.app.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape), false, false);
+        assert!(f.app.state.playlist.edit.is_none(), "Esc closes the box");
+        assert_eq!(gnt_nodes(&f, f.ci), before, "Esc changed the node");
+        assert_eq!(f.app.state.history.len(), hist, "Esc added an undo step");
+    }
+
+    /// T6: one undo after a commit restores the node's previous ms and dB exactly; other nodes untouched.
+    #[test]
+    fn gain_node_typein_t6_undo_restores_exactly() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        for (i, text) in ["-3 @ 500", "-9", "@ 700", "+40 @ 99999"].into_iter().enumerate() {
+            let mut f = gnt_setup(&mut c, &format!("t6-{i}"), 0.5, &GNT_NODES);
+            let before = gnt_nodes(&f, f.ci);
+            gnt_type(&mut f, &mut c, 1, text);
+            let changed = gnt_nodes(&f, f.ci);
+            assert_ne!(changed, before, "{text:?}: the commit changed the node");
+            crate::history::undo(&mut f.app.state).expect("undo");
+            let back = gnt_nodes(&f, f.ci);
+            assert_eq!(back, before, "{text:?}: one undo: expected {before:?}, actual {back:?}");
+        }
+    }
+
+    /// T7: a single press on a node then a drag still moves it 1:1, and opens no box.
+    #[test]
+    fn gain_node_typein_t7_press_and_drag_still_moves() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t7drag", 1.0, &GNT_NODES);
+        let n0 = gnf_node(&f, 1);
+        let mut at = gnf_press_node(&mut f, 1);
+        gnf_move(&mut f.app, &mut at, 30.0, -4.0, 6);
+        f.app.mouse_up();
+        frame(&mut f.app, &mut c, None);
+        gnf_assert_at(gnf_node(&f, 1), f64::from(n0.ms) + 30.0 * f.ms_px, f64::from(n0.db) + 4.0 * f.db_px, "press + drag");
+        assert!(f.app.state.playlist.edit.is_none(), "a drag opened the box");
+    }
+
+    /// T7: Alt-click on a node still removes it (and opens no box).
+    #[test]
+    fn gain_node_typein_t7_alt_click_still_removes() {
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let mut f = gnt_setup(&mut c, "t7alt", 1.0, &GNT_NODES);
+        let before = gnt_nodes(&f, f.ci);
+        f.app.alt = true;
+        gnf_press_node(&mut f, 1);
+        f.app.mouse_up();
+        f.app.alt = false;
+        frame(&mut f.app, &mut c, None);
+        assert_eq!(gnt_nodes(&f, f.ci), vec![before[0], before[2]], "Alt-click removes node 1 only");
+        assert!(f.app.state.playlist.edit.is_none(), "Alt-click opened the box");
+    }
+
+    /// T7: the node's hover hint mentions the double-click.
+    #[test]
+    fn gain_node_typein_t7_hint_mentions_double_click() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let f = gnt_setup(&mut c, "t7hint", 1.0, &GNT_NODES);
+        let clip = pl::clips(&f.app.state)[f.ci];
+        for k in 0..3 {
+            let hint = pl::handle_hint(&clip, pl::Handle::GainNode(k));
+            assert!(hint.to_lowercase().contains("double-click"), "node {k}: expected the hint to mention double-click, actual {hint:?}");
+        }
+    }
+
     /// Audio clip handles (spec: ui/playlist.md §9a): dragging the fade triangles sets the fades, the tension ring
     /// bends the curve, the gain half-circle changes the gain; one undo step each.
     #[test]
