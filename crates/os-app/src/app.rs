@@ -19900,6 +19900,8 @@ mod tests {
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         let (mut app, _, _, _) = ruler_app(&mut c);
         app.state.playlist_bar_w = 400.0;
+        // WHY: this test is about free placement at the pressed x; GAIN-SNAP-SPEC S2 snaps by default.
+        app.state.playlist.snap = crate::snap::EditorSnap::Grid(pl::Snap::None);
         let wav = std::env::temp_dir().join(format!("os-app-clip-gain-line-{}.wav", std::process::id()));
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 48000, &[0.5; 96000]).unwrap();
         pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, 0).expect("audio clip added");
@@ -20083,6 +20085,8 @@ mod tests {
         use crate::playlist as pl;
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         let (mut app, _, _, _) = ruler_app(&mut c);
+        // WHY: S1 checks sub-pixel press precision with the snap off (GAIN-SNAP-SPEC S2 snaps by default).
+        app.state.playlist.snap = crate::snap::EditorSnap::Grid(pl::Snap::None);
         let wav = glp_wav("s1", 96000, |_| 0.5);
         let ci = glp_clip(&mut app, &wav, 0);
         let empty = pl::clips(&app.state)[ci].gain_line;
@@ -20345,6 +20349,9 @@ mod tests {
         use crate::playlist as pl;
         let (mut app, _, _, _) = ruler_app(c);
         app.state.playlist_bar_w = bar_w;
+        // WHY: gnf/gnt tests check 1:1 and 1/10 drag rates and type-in in free time;
+        // GAIN-SNAP-SPEC S2 snaps by default, so they run with the snap off.
+        app.state.playlist.snap = crate::snap::EditorSnap::Grid(pl::Snap::None);
         let wav = glp_wav(&format!("gnf-{tag}"), 96000, |_| 0.5);
         let ci = glp_clip(&mut app, &wav, 0);
         let clip = pl::clips(&app.state)[ci];

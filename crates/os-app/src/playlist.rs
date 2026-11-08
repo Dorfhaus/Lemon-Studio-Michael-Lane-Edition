@@ -3311,6 +3311,23 @@ const DB_PER_PX: f32 = 0.15;
 /// time and dB, for placing a node on a transient or setting a level the track height makes coarse.
 const GAIN_NODE_FINE: f32 = 0.1;
 
+/// Where a gain node at `ms` into clip `c` lands (GAIN-SNAP-SPEC S2): on the playlist's snap grid, counted in song
+/// ticks as clip moves are, then held to the clip. `free` (Alt or Shift held) or no grid: `ms` as it is, not even
+/// rounded to whole ticks, so a node can sit exactly on a transient.
+// WHY round to the nearest line, Cell included: `snap_place`'s floor for Cell is about which cell a click is in; a
+// node follows the pointer and should go to the closest line either side.
+pub fn snap_gain_ms(s: &State, g: &PGeom, c: &Clip, ms: f32, free: bool) -> f32 {
+    let sn = grid_snap(s);
+    let mpt = fade_ms_per_tick(s);
+    if free || sn == Snap::None || mpt <= 0.0 {
+        return ms.clamp(0.0, clip_ms(s, c));
+    }
+    let u = f64::from(sn.ticks(g.ppq, g.bar_w).max(1));
+    let tick = f64::from(c.position) + f64::from(ms) / mpt;
+    let snapped = (tick / u).round() * u;
+    (((snapped - f64::from(c.position)) * mpt) as f32).clamp(0.0, clip_ms(s, c))
+}
+
 /// The drag of gain node `k` of clip `ci`, anchored at the press (`x`, `y`) and the node's current place.
 fn gain_node_drag(c: &Clip, ci: usize, k: usize, x: f32, y: f32) -> PlDrag {
     let n = c.gain_line.nodes().get(k).copied().unwrap_or(os_model::GainNode { ms: 0.0, db: 0.0 });
@@ -3684,10 +3701,19 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 Handle::GainNode(k) => { s.playlist.gain_drag = Some((ci, k)); gain_node_drag(&c, ci, k, x, y) }
                 Handle::GainLine => {
                     // A new breakpoint at the line's value there, so the line does not jump; then it is dragged.
-                    let ms = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
+                    // Placed on the grid unless Shift (fine) is held (S2); anchored at the pointer's own time so the
+                    // node keeps up with the pointer rather than lagging by the snap distance.
+                    let raw = x_ms(s, &g, &c, x).clamp(0.0, clip_ms(s, &c));
+                    let ms = snap_gain_ms(s, &g, &c, raw, app.shift);
                     let db = c.gain_line.db_at(ms);
                     match arr_mut(s).clips[ci].gain_line.add(os_model::GainNode { ms, db }) {
-                        Some(k) => { s.playlist.gain_drag = Some((ci, k)); gain_node_drag(&arr_mut(s).clips[ci], ci, k, x, y) }
+                        Some(k) => {
+                            s.playlist.gain_drag = Some((ci, k));
+                            match gain_node_drag(&arr_mut(s).clips[ci], ci, k, x, y) {
+                                PlDrag::GainNode { clip, node, x0, y0, db0, fine, last, .. } => PlDrag::GainNode { clip, node, x0, y0, ms0: raw, db0, fine, last },
+                                d => d,
+                            }
+                        }
                         None => { app.hint = Cow::Borrowed("Clip gain line: no room for another node"); app.invalidate(); return; }
                     }
                 }
@@ -4297,7 +4323,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 // dragged where it cannot be seen or grabbed again.
                 let base = static_db(&c);
                 let db = (db0 + (y0 - y) * db_per_px * k).clamp(GAIN_LINE_MIN_DB - base, GAIN_LINE_MAX_DB - base);
-                let ms = ms.clamp(0.0, clip_ms(s, &c));
+                // Snapped to the grid unless Alt (free at 1:1) or Shift (fine) is held (GAIN-SNAP-SPEC S2, S3).
+                let ms = snap_gain_ms(s, &g, &c, ms, fine || alt);
                 arr_mut(s).clips[clip].gain_line.set(node, ms, db);
                 app.drag = Some(Drag::Pl(PlDrag::GainNode { clip, node, x0, y0, ms0, db0, fine, last: (x, y) }));
                 app.hint = Cow::Owned(handle_hint(&clips(s)[clip], Handle::GainNode(node)));

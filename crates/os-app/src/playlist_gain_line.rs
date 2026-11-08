@@ -9,19 +9,19 @@ use crate::playlist::{self as pl, Cmd, EditTarget, Handle, PGeom, PItem, Popup};
 use os_model::{Clip, GainNode};
 use os_ui::Rect;
 
-/// The readout pill (R1): clip `clip`'s node's whole gain ("-6.0 dB") over its time ("1000 ms"), painted at `pill`.
+/// The readout pill (R1): clip `clip`'s node's whole gain ("-6.0 dB"), painted at `pill`.
+// WHY no time line: the user found two numbers next to the node noise while dragging (GAIN-SNAP-SPEC S1); the time
+// stays in the node's right-click menu header and the status-bar hint.
 pub struct Readout {
     pub clip: usize,
     pub value: String,
-    pub time: String,
     pub pill: Rect,
 }
 
-/// Text sizes of the readout's two lines: the spec's floor for readable text is 11 px.
+/// Text size of the readout: the spec's floor for readable text is 11 px.
 pub const VALUE_PX: u16 = 12;
-pub const TIME_PX: u16 = 11;
-/// Pill height: 3 px padding, a 14 px line, a 13 px line, 2 px padding.
-pub const PILL_H: f32 = 32.0;
+/// Pill height: 3 px padding, a 14 px line, 3 px padding.
+pub const PILL_H: f32 = 20.0;
 pub const PILL_PAD: f32 = 6.0;
 // WHY an estimate, not a measured width: the pill's rect is a pure function of the state (the view paints it and
 // tests read it without a canvas). Cuprum's digits are about 6 px wide at 12 px, so 6.5 px a character leaves room;
@@ -63,9 +63,8 @@ pub fn readout(s: &State, g: &PGeom) -> Option<Readout> {
     let n = c.gain_line.nodes().get(k)?;
     let (nx, ny) = pl::gain_node_xy(s, g, c, k)?;
     let value = whole_text(pl::static_db(c) + n.db);
-    let time = ms_text(n.ms);
-    let w = value.len().max(time.len()) as f32 * CHAR_W + 2.0 * PILL_PAD;
-    Some(Readout { clip: ci, pill: place_pill(g.body(c), g.grid, nx, ny, w), value, time })
+    let w = value.len() as f32 * CHAR_W + 2.0 * PILL_PAD;
+    Some(Readout { clip: ci, pill: place_pill(g.body(c), g.grid, nx, ny, w), value })
 }
 
 /// The readout's value text and pill (the spec's test interface for R1).
@@ -217,7 +216,7 @@ pub fn line_hint(db: f32) -> String {
 /// The node's hover hint (R7).
 pub fn node_hint(c: &Clip, n: GainNode) -> String {
     format!(
-        "Clip gain node: {} at {} (drag to move, double-click to type, right-click for options)",
+        "Clip gain node: {} at {} (drag to move, Alt: no snap, Shift: fine, double-click to type, right-click for options)",
         whole_text(pl::static_db(c) + n.db),
         ms_text(n.ms)
     )

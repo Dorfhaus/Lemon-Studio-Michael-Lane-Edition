@@ -1171,16 +1171,15 @@ fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body, wav
 }
 
 #[allow(clippy::too_many_arguments)]
-/// A gain node's readout (GAIN-NODE-EDIT-SPEC R1): its whole gain over its time, on an opaque dark pill so it reads
+/// A gain node's readout (GAIN-NODE-EDIT-SPEC R1, GAIN-SNAP-SPEC S1): its whole gain, on an opaque dark pill so it reads
 /// over any waveform.
 fn gain_readout(ui: &mut Ui, r: &crate::playlist_gain_line::Readout) {
-    use crate::playlist_gain_line::{PILL_PAD, TIME_PX, VALUE_PX};
+    use crate::playlist_gain_line::{PILL_PAD, VALUE_PX};
     let p = r.pill;
     let text = ui.t.tx(0xffffff);
     let w = p.w - 2.0 * PILL_PAD;
     ui.c.fill_rrect(p, 4.0, ui.t.s(0x1c2328));
-    ui.c.text_clip(Font::new(VALUE_PX), p.x + PILL_PAD, p.y + 2.0, w, text, &r.value);
-    ui.c.text_clip(Font::new(TIME_PX), p.x + PILL_PAD, p.y + 16.0, w, text.with_alpha(200), &r.time);
+    ui.c.text_clip(Font::new(VALUE_PX), p.x + PILL_PAD, p.y + 3.0, w, text, &r.value);
 }
 
 fn curve(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, ch: u16, edges: Body, bg: Color, col: Color) {

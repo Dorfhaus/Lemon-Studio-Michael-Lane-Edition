@@ -1,4 +1,5 @@
-//! Acceptance tests for the clip gain line edit change (GAIN-NODE-EDIT-SPEC.md, R1–R7).
+//! Acceptance tests for the clip gain line edit change (GAIN-NODE-EDIT-SPEC.md, R1–R7)
+//! and the follow-up value-only readout + time snapping (GAIN-SNAP-SPEC.md, S1–S4).
 //!
 //! Written from the spec and the public interface only (no implementation source was read).
 //! These are the contract: the implementer may not edit them.
@@ -43,6 +44,11 @@ fn write_wav(name: &str) -> std::path::PathBuf {
 /// App with the playlist on top, tall rows, one 1000 ms audio clip at track 0 / tick 0.
 /// Returns (canvas, app, clip index).
 fn setup(name: &str) -> Option<(Canvas, App, usize)> {
+    setup_at(name, 0)
+}
+
+/// Same as `setup`, with the clip placed at song tick `tick` (S2: off-grid clip positions).
+fn setup_at(name: &str, tick: u32) -> Option<(Canvas, App, usize)> {
     let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return None };
     let mut app = App::new(None);
     app.state.project = crate::app::test_project();
@@ -55,8 +61,9 @@ fn setup(name: &str) -> Option<(Canvas, App, usize)> {
     // WHY: dB steps per pixel are only meaningful on a tall clip (spec note: body.h >= 60).
     app.state.playlist.row_h = 160.0;
     let wav = write_wav(name);
-    pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, 0).expect("audio clip added");
+    pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, tick).expect("audio clip added");
     let ci = pl::clips(&app.state).len() - 1;
+    assert_eq!(pl::clips(&app.state)[ci].position, tick, "test precondition: clip placed at tick {tick}");
     app.state.playlist.sel.clear();
     app.paint(&mut c, None);
     let g = geom(&app);
@@ -203,6 +210,8 @@ fn gain_edit_r1_readout_follows_every_drag_frame_with_whole_gain() {
         let (text, _) = pl::gain_readout(&app.state, &geom(&app))
             .unwrap_or_else(|| panic!("frame {k}: readout must be shown while dragging"));
         assert!(text.starts_with(&want), "frame {k}: readout {text:?} must show whole gain {want:?}");
+        // S1: the time line is gone from the pill.
+        assert!(!text.contains("ms"), "frame {k}: readout {text:?} must not show a time (S1)");
         seen.insert(want);
     }
     assert!(seen.len() >= 4, "dragging 40 px must move the value through several steps: {seen:?}");
@@ -225,6 +234,7 @@ fn gain_edit_r1_readout_on_hover_shows_whole_gain() {
     let want = fmt_db(whole(&app, ci, 0));
     assert_eq!(want, "-12.0 dB", "fixture sanity: -6 static + -6 node");
     assert!(text.starts_with(&want), "readout {text:?} must start with {want:?}");
+    assert!(!text.contains("ms"), "readout {text:?} must not show a time (S1)");
 }
 
 /// Pill must be readable (>= 11 px text -> pill at least 11 px tall), inside the playlist
@@ -707,7 +717,8 @@ fn gain_edit_r7_node_hint() {
     let (nx, ny) = node_xy(&app, ci, 1);
     hover(&mut c, &mut app, nx, ny);
     let want = format!(
-        "Clip gain node: {} at {} (drag to move, double-click to type, right-click for options)",
+        // S4 supersedes R7's node hint text (adds the Alt / Shift modifiers).
+        "Clip gain node: {} at {} (drag to move, Alt: no snap, Shift: fine, double-click to type, right-click for options)",
         fmt_db(whole(&app, ci, 1)),
         fmt_ms(500.0)
     );
@@ -730,4 +741,431 @@ fn gain_edit_r7_line_hint() {
     assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainLine));
     // -6 static + flat -3 line = -9.0 dB at any pointer between the nodes.
     assert_eq!(app.hint.as_ref(), "Clip gain line: -9.0 dB (click to add a node, right-click for options)");
+}
+
+// =====================================================================================
+// GAIN-SNAP-SPEC.md, S1–S4
+// =====================================================================================
+//
+// Tolerances (stated once, used below):
+// - SNAP_TOL_MS = 0.01 ms: the spec's own tolerance for a snapped time.
+// - FREE_TOL_MS = 0.05 ms: a free node must sit at the pointer's time. Pointer x is f32 near
+//   ~700 px (ulp ~6e-5 px) at ~2.3 ms/px, so f32 noise is ~1e-4 ms; 0.05 ms is still 5x
+//   smaller than the 0.4-tick (~1.9 ms) offset the free cases use to tell "free" from
+//   "rounded to a whole tick".
+
+const SNAP_TOL_MS: f64 = 0.01;
+const FREE_TOL_MS: f64 = 0.05;
+
+use crate::snap::EditorSnap;
+
+/// Grid unit in song ticks and ms per song tick, both through the public API (S2).
+fn unit_and_mpt(app: &App) -> (u32, f64) {
+    let g = geom(app);
+    (pl::grid_snap(&app.state).ticks(g.ppq, g.bar_w), pl::fade_ms_per_tick(&app.state))
+}
+
+/// Spec S2 formula: song tick = position + ms/mpt, rounded to the nearest multiple of u
+/// (song ticks), back to clip-relative ms, clamped to 0..=clip_ms.
+fn expect_snapped(app: &App, ci: usize, free_ms: f64) -> f64 {
+    let (u, mpt) = unit_and_mpt(app);
+    assert!(u > 0, "test precondition: grid on");
+    let cl = clip(app, ci);
+    let pos = cl.position as f64;
+    let t = pos + free_ms / mpt;
+    let snapped_t = (t / u as f64).round() * u as f64;
+    ((snapped_t - pos) * mpt).clamp(0.0, pl::clip_ms(&app.state, &cl) as f64)
+}
+
+/// Clip-relative ms of a (fractional) song tick.
+fn tick_ms(app: &App, ci: usize, song_tick: f64) -> f64 {
+    let (_, mpt) = unit_and_mpt(app);
+    (song_tick - clip(app, ci).position as f64) * mpt
+}
+
+/// Distance (in ticks) of a clip-relative time from the nearest whole song tick.
+fn tick_frac_dist(app: &App, ci: usize, ms: f64) -> f64 {
+    let (_, mpt) = unit_and_mpt(app);
+    let t = clip(app, ci).position as f64 + ms / mpt;
+    (t - t.round()).abs()
+}
+
+/// Screen x of a clip-relative ms, by inverting the public `x_ms` (linear across the body).
+fn ms_x(app: &App, ci: usize, ms: f64) -> f32 {
+    let g = geom(app);
+    let cl = clip(app, ci);
+    let body = g.body(&cl);
+    let a = pl::x_ms(&app.state, &g, &cl, body.x) as f64;
+    let b = pl::x_ms(&app.state, &g, &cl, body.x + 100.0) as f64;
+    (body.x as f64 + (ms - a) * 100.0 / (b - a)) as f32
+}
+
+/// Hover node k and press on it (asserting the press really hits the node).
+fn press_node(c: &mut Canvas, app: &mut App, ci: usize, k: usize) -> (f32, f32) {
+    let (nx, ny) = node_xy(app, ci, k);
+    hover(c, app, nx, ny);
+    assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainNode(k)), "precondition: pointer on node {k}");
+    app.mouse_down();
+    app.paint(c, None);
+    (nx, ny)
+}
+
+fn drag_to(c: &mut Canvas, app: &mut App, x: f32, y: f32) {
+    app.mouse_move(x, y);
+    app.paint(c, None);
+}
+
+fn node_ms(app: &App, ci: usize) -> f64 {
+    let ns = nodes(app, ci);
+    assert_eq!(ns.len(), 1, "exactly one node expected, got {ns:?}");
+    ns[0].0 as f64
+}
+
+/// Single node at an off-grid, non-whole-tick time (0.3 u + 0.4 tick past the grid point at 0).
+fn one_offgrid_node(c: &mut Canvas, app: &mut App, ci: usize, db: f32) -> f64 {
+    let (u, _) = unit_and_mpt(app);
+    let pos = clip(app, ci).position as f64;
+    let first_grid = (pos / u as f64).ceil() * u as f64;
+    let m0 = tick_ms(app, ci, first_grid + 0.3 * u as f64 + 0.4);
+    add_node(app, ci, m0 as f32, db);
+    app.paint(c, None);
+    m0
+}
+
+// ---------- S1: value-only readout ----------
+
+#[test]
+fn gain_snap_s1_readout_is_value_only_on_hover() {
+    for (static_db, node_db, ms) in [(-6.0f32, -6.0f32, 500.0f32), (0.0, 4.5, 20.0), (3.0, -27.0, CLIP_MS - 20.0)] {
+        let Some((mut c, mut app, ci)) = setup("s1-hover") else { return };
+        set_static_db(&mut app, ci, static_db);
+        add_node(&mut app, ci, ms, node_db);
+        app.paint(&mut c, None);
+        let (nx, ny) = node_xy(&app, ci, 0);
+        hover(&mut c, &mut app, nx, ny);
+        let (text, r) = pl::gain_readout(&app.state, &geom(&app)).expect("hovered node shows a readout");
+        let want = fmt_db(whole(&app, ci, 0));
+        assert_eq!(text, want, "S1: readout is exactly the whole gain, nothing else");
+        assert!(!text.contains("ms"), "S1: no time in the readout: {text:?}");
+        assert!(r.h <= 22.0, "S1: one-line pill must be <= 22 px tall, got {r:?}");
+        assert!(r.h >= 11.0, "S1: pill still fits >= 11 px text, got {r:?}");
+    }
+}
+
+#[test]
+fn gain_snap_s1_readout_is_value_only_during_drag() {
+    let Some((mut c, mut app, ci)) = setup("s1-drag") else { return };
+    set_static_db(&mut app, ci, -6.0);
+    add_node(&mut app, ci, 300.0, -3.0);
+    app.paint(&mut c, None);
+    let (nx, ny) = press_node(&mut c, &mut app, ci, 0);
+    for k in 1..=6 {
+        drag_to(&mut c, &mut app, nx + 12.0 * k as f32, ny + 6.0 * k as f32);
+        let (text, r) = pl::gain_readout(&app.state, &geom(&app)).expect("readout while dragging");
+        assert_eq!(text, fmt_db(whole(&app, ci, 0)), "frame {k}: readout is exactly the whole gain");
+        assert!(!text.contains("ms"), "frame {k}: no time in the readout: {text:?}");
+        assert!(r.h <= 22.0 && r.h >= 11.0, "frame {k}: pill height must be 11..=22 px, got {r:?}");
+    }
+    app.mouse_up();
+}
+
+// ---------- S2: drag snaps to the playlist grid ----------
+
+/// Beat grid (coarse, u = one beat): pointer targets 0.3 u and 0.7 u past a grid point
+/// must land on the nearer grid point, and visibly NOT at the pointer time.
+#[test]
+fn gain_snap_s2_drag_snaps_time_to_beat_grid() {
+    let Some((mut c, mut app, ci)) = setup("s2-beat") else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+    let (u, mpt) = unit_and_mpt(&app);
+    assert!(u as f64 * mpt >= 50.0, "test precondition: beat grid is coarse ({u} ticks)");
+    one_offgrid_node(&mut c, &mut app, ci, -4.0);
+    let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+    let uf = u as f64;
+    for (target, want_tick) in [(0.7 * uf, uf), (1.3 * uf, uf), (0.2 * uf, 0.0), (1.8 * uf, 2.0 * uf)] {
+        let free_ms = tick_ms(&app, ci, target + 0.4);
+        if free_ms > CLIP_MS as f64 {
+            continue;
+        }
+        let px = ms_x(&app, ci, free_ms);
+        drag_to(&mut c, &mut app, px, ny);
+        let got = node_ms(&app, ci);
+        let want = tick_ms(&app, ci, want_tick);
+        assert!((want - expect_snapped(&app, ci, free_ms)).abs() < 1e-9, "fixture sanity");
+        assert!(
+            (got - want).abs() <= SNAP_TOL_MS,
+            "pointer at song tick {:.1}: node must snap to tick {want_tick} ({want:.3} ms), got {got:.3} ms",
+            target + 0.4
+        );
+        assert!((got - free_ms).abs() > 1.0, "snapped time must differ from the free pointer time");
+    }
+    let held = node_ms(&app, ci);
+    app.mouse_up();
+    let got = node_ms(&app, ci);
+    assert!((got - held).abs() <= SNAP_TOL_MS, "release keeps the snapped time: {held} -> {got}");
+    assert!((got - expect_snapped(&app, ci, got)).abs() <= SNAP_TOL_MS, "released node is on the grid: {got}");
+    let _ = mpt;
+}
+
+/// Property: over generated pointer positions and several grids, every dragged node time is
+/// exactly the spec formula (nearest multiple of u in song ticks, clamped to the clip).
+#[test]
+fn gain_snap_s2_property_snapped_time_matches_formula() {
+    let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    // Main = the default (follows the main snap); Line/Beat explicit.
+    for snap in [EditorSnap::Main, EditorSnap::Grid(pl::Snap::Line), EditorSnap::Grid(pl::Snap::Beat)] {
+        let Some((mut c, mut app, ci)) = setup("s2-prop") else { return };
+        app.state.playlist.snap = snap;
+        let (u, _) = unit_and_mpt(&app);
+        assert!(u > 0, "{snap:?}: precondition: grid on");
+        one_offgrid_node(&mut c, &mut app, ci, -2.0);
+        let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+        let mut off_grid_targets = 0;
+        for i in 0..60 {
+            // Pointer anywhere in the clip; the last few hug the right edge to hit the clamp.
+            let free_ms = if i >= 55 { CLIP_MS as f64 - 4.0 * rnd() } else { 5.0 + (CLIP_MS as f64 - 10.0) * rnd() };
+            let px = ms_x(&app, ci, free_ms);
+            drag_to(&mut c, &mut app, px, ny);
+            let got = node_ms(&app, ci);
+            let want = expect_snapped(&app, ci, free_ms);
+            assert!(
+                (got - want).abs() <= SNAP_TOL_MS,
+                "{snap:?} case {i}: pointer {free_ms:.3} ms -> want {want:.3} ms, got {got:.3} ms"
+            );
+            if (want - free_ms).abs() > 1.0 {
+                off_grid_targets += 1;
+            }
+        }
+        assert!(off_grid_targets >= 20, "{snap:?}: generator must mostly land between grid points");
+        app.mouse_up();
+    }
+}
+
+/// Clamp: the nearest grid point past the clip's end is clamped to clip_ms.
+#[test]
+fn gain_snap_s2_snap_past_clip_end_clamps_to_clip_length() {
+    let Some((mut c, mut app, ci)) = setup("s2-clamp") else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Line);
+    let (u, mpt) = unit_and_mpt(&app);
+    let end_tick = CLIP_MS as f64 / mpt;
+    let next = (end_tick / u as f64).ceil() * u as f64;
+    // Precondition: the clip end is off-grid and the next grid point is nearer than the previous.
+    let prev = next - u as f64;
+    let target = end_tick - 0.3;
+    assert!(next > end_tick && (next - target) < (target - prev), "fixture: end {end_tick}, grid {prev}/{next}");
+    one_offgrid_node(&mut c, &mut app, ci, -2.0);
+    let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+    let px = ms_x(&app, ci, target * mpt);
+    drag_to(&mut c, &mut app, px, ny);
+    let got = node_ms(&app, ci);
+    assert!((got - CLIP_MS as f64).abs() <= SNAP_TOL_MS, "snap past the end must clamp to {CLIP_MS} ms, got {got}");
+    app.mouse_up();
+}
+
+/// Rounding is in SONG ticks: a clip that starts half a unit off the grid gets nodes at
+/// clip-relative times that are NOT multiples of u (a clip-relative implementation would be).
+#[test]
+fn gain_snap_s2_off_grid_clip_rounds_in_song_ticks() {
+    let beat_u = {
+        let Some((_c, mut app, _)) = setup("s2-offgrid-probe") else { return };
+        app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+        unit_and_mpt(&app).0
+    };
+    assert!(beat_u >= 2 && beat_u % 2 == 0, "fixture: need an even unit, got {beat_u}");
+    let half = beat_u / 2;
+    let Some((mut c, mut app, ci)) = setup_at("s2-offgrid", half) else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+    let (u, mpt) = unit_and_mpt(&app);
+    assert_eq!(u, beat_u);
+    let uf = u as f64;
+    // Node at song tick u + 0.3u (clip-relative 0.8u): song rounding -> song tick u (rel 0.5u);
+    // clip-relative rounding would give rel u.
+    let m0 = tick_ms(&app, ci, 1.3 * uf + 0.4) as f32;
+    add_node(&mut app, ci, m0, -3.0);
+    app.paint(&mut c, None);
+    let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+    for (target, want_song_tick) in [(1.2 * uf, uf), (1.85 * uf, 2.0 * uf), (0.7 * uf, uf)] {
+        let free_ms = tick_ms(&app, ci, target + 0.4);
+        let px = ms_x(&app, ci, free_ms);
+        drag_to(&mut c, &mut app, px, ny);
+        let got = node_ms(&app, ci);
+        let want = tick_ms(&app, ci, want_song_tick);
+        let clip_rel = ((free_ms / mpt / uf).round() * uf * mpt).clamp(0.0, CLIP_MS as f64);
+        assert!((want - clip_rel).abs() > 1.0, "fixture: song vs clip-relative rounding must differ");
+        assert!(
+            (got - want).abs() <= SNAP_TOL_MS,
+            "pointer at song tick {:.1}: must snap to SONG tick {want_song_tick} ({want:.3} ms rel), got {got:.3} ms \
+             (clip-relative rounding would give {clip_rel:.3})",
+            target + 0.4
+        );
+    }
+    app.mouse_up();
+}
+
+/// Grid off (magnet "(none)"), Events and Markers: no grid -> time is free, not even whole ticks.
+#[test]
+fn gain_snap_s2_no_grid_is_free_not_whole_ticks() {
+    for snap in [EditorSnap::Grid(pl::Snap::None), EditorSnap::Events, EditorSnap::Markers] {
+        let Some((mut c, mut app, ci)) = setup("s2-free") else { return };
+        app.state.playlist.snap = snap;
+        assert_eq!(pl::grid_snap(&app.state), pl::Snap::None, "{snap:?}: fixture: no grid");
+        add_node(&mut app, ci, 200.0, -3.0);
+        app.paint(&mut c, None);
+        let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+        for tick in [37.4f64, 61.6, 100.4, 150.6] {
+            let free_ms = tick_ms(&app, ci, tick);
+            let px = ms_x(&app, ci, free_ms);
+            drag_to(&mut c, &mut app, px, ny);
+            let got = node_ms(&app, ci);
+            assert!((got - free_ms).abs() <= FREE_TOL_MS, "{snap:?}: free drag to {free_ms:.3} ms, got {got:.3}");
+            assert!(tick_frac_dist(&app, ci, got) > 0.1, "{snap:?}: free time must not be rounded to a whole tick: {got}");
+        }
+        app.mouse_up();
+    }
+}
+
+/// dB is never snapped: the same diagonal pointer path gives the same dB with the grid on
+/// and off, while the time differs.
+#[test]
+fn gain_snap_s2_db_is_not_snapped() {
+    let mut results = Vec::new();
+    for snap in [EditorSnap::Grid(pl::Snap::Beat), EditorSnap::Grid(pl::Snap::None)] {
+        let Some((mut c, mut app, ci)) = setup("s2-db") else { return };
+        app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+        one_offgrid_node(&mut c, &mut app, ci, -1.0);
+        app.state.playlist.snap = snap;
+        let (nx, ny) = press_node(&mut c, &mut app, ci, 0);
+        for k in 1..=7 {
+            drag_to(&mut c, &mut app, nx + 13.7 * k as f32, ny + 3.3 * k as f32);
+        }
+        app.mouse_up();
+        results.push(nodes(&app, ci)[0]);
+    }
+    let ((ms_on, db_on), (ms_off, db_off)) = (results[0], results[1]);
+    assert!((ms_on - ms_off).abs() > 1.0, "S2: with the beat grid on the time must snap, unlike the free run ({ms_on} vs {ms_off})");
+    // 1e-4 dB: identical pointer path; only f32 noise allowed.
+    assert!((db_on - db_off).abs() < 1e-4, "dB must not depend on snapping: {db_on} vs {db_off}");
+    assert!(db_on < -2.0, "dragging down lowered the node: {db_on}");
+}
+
+/// A press on the line adds a node at the SNAPPED time with the line's own value there.
+#[test]
+fn gain_snap_s2_line_press_adds_node_at_snapped_time_on_the_line() {
+    let Some((mut c, mut app, ci)) = setup("s2-line") else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+    sloped(&mut c, &mut app, ci); // nodes at 100 ms (-12) and 900 ms (+6)
+    let (u, _) = unit_and_mpt(&app);
+    let free_ms = tick_ms(&app, ci, u as f64 * 1.3 + 0.4);
+    let want = expect_snapped(&app, ci, free_ms);
+    assert!(want > 100.0 && want < 900.0 && (want - free_ms).abs() > 1.0, "fixture: snapped {want} between nodes");
+    let g = geom(&app);
+    let cl = clip(&app, ci);
+    let probe: Vec<f32> = (0..=100).map(|i| CLIP_MS * i as f32 / 100.0).collect();
+    let line0: Vec<f32> = probe.iter().map(|&t| cl.gain_line.db_at(t)).collect();
+    let want_db = cl.gain_line.db_at(want as f32);
+    let x = ms_x(&app, ci, free_ms);
+    let y = pl::gain_line_y_at(&app.state, &g, &cl, x);
+    hover(&mut c, &mut app, x, y);
+    assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainLine), "precondition: on the line");
+    app.mouse_down();
+    app.paint(&mut c, None);
+    app.mouse_up();
+    app.paint(&mut c, None);
+    let ns = nodes(&app, ci);
+    assert_eq!(ns.len(), 3, "press on the line adds one node: {ns:?}");
+    let added = ns.iter().find(|n| n.0 != 100.0 && n.0 != 900.0).copied().expect("new node");
+    assert!(
+        (added.0 as f64 - want).abs() <= SNAP_TOL_MS,
+        "line press at {free_ms:.3} ms must add at snapped {want:.3} ms, got {:.3}",
+        added.0
+    );
+    // 0.01 dB: the node takes the line's value at the snapped time (only f32 interpolation noise).
+    assert!((added.1 - want_db).abs() < 0.01, "added node dB {} must equal the line at {want:.3} ms ({want_db})", added.1);
+    let after = clip(&app, ci);
+    for (t, d0) in probe.iter().zip(&line0) {
+        let d1 = after.gain_line.db_at(*t);
+        assert!((d1 - d0).abs() < 0.05, "line reshaped at {t} ms: {d0} -> {d1}");
+    }
+}
+
+// ---------- S3: free movement whenever wanted ----------
+
+#[test]
+fn gain_snap_s3_alt_mid_drag_is_free_then_snaps_again() {
+    let Some((mut c, mut app, ci)) = setup("s3-alt") else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+    one_offgrid_node(&mut c, &mut app, ci, -4.0);
+    let (u, _) = unit_and_mpt(&app);
+    let uf = u as f64;
+    let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+    // Alt pressed AFTER the press: means "no snap", not delete.
+    app.alt = true;
+    for target in [0.7 * uf + 0.4, 1.3 * uf + 0.4] {
+        let free_ms = tick_ms(&app, ci, target);
+        let px = ms_x(&app, ci, free_ms);
+        drag_to(&mut c, &mut app, px, ny);
+        let got = node_ms(&app, ci); // also asserts Alt mid-drag did not delete the node
+        assert!((got - free_ms).abs() <= FREE_TOL_MS, "Alt: free 1:1 drag to {free_ms:.3} ms, got {got:.3}");
+        assert!(tick_frac_dist(&app, ci, got) > 0.1, "Alt: not rounded to whole ticks: {got}");
+    }
+    // Release Alt: the next move snaps again.
+    app.alt = false;
+    let free_ms = tick_ms(&app, ci, 1.2 * uf + 0.4);
+    let px = ms_x(&app, ci, free_ms);
+    drag_to(&mut c, &mut app, px, ny);
+    let got = node_ms(&app, ci);
+    let want = tick_ms(&app, ci, uf);
+    assert!((got - want).abs() <= SNAP_TOL_MS, "after releasing Alt the node snaps to {want:.3} ms, got {got:.3}");
+    app.mouse_up();
+    assert_eq!(nodes(&app, ci).len(), 1, "node kept");
+}
+
+#[test]
+fn gain_snap_s3_shift_drag_is_free_and_fine() {
+    let Some((mut c, mut app, ci)) = setup("s3-shift") else { return };
+    app.state.playlist.snap = EditorSnap::Grid(pl::Snap::Beat);
+    let m0 = one_offgrid_node(&mut c, &mut app, ci, -4.0);
+    let (u, mpt) = unit_and_mpt(&app);
+    app.shift = true;
+    let (_, ny) = press_node(&mut c, &mut app, ci, 0);
+    // Pointer moves 0.8 u to the right; at 1/10 the node moves ~0.08 u, staying off-grid
+    // (0.38 u past the grid point at 0); a snap would put it on 0 or u.
+    let dms = 0.8 * u as f64 * mpt;
+    let steps = 8;
+    for k in 1..=steps {
+        let x = ms_x(&app, ci, m0 + dms * k as f64 / steps as f64);
+        drag_to(&mut c, &mut app, x, ny);
+    }
+    let got = node_ms(&app, ci);
+    app.mouse_up();
+    app.shift = false;
+    let moved = got - m0;
+    assert!(
+        moved > 0.05 * dms && moved < 0.2 * dms,
+        "Shift: time moves at ~1/10 rate: pointer {dms:.2} ms -> node {moved:.3} ms (want ~{:.2})",
+        dms / 10.0
+    );
+    let on_grid = (got - expect_snapped(&app, ci, got)).abs() <= SNAP_TOL_MS;
+    assert!(!on_grid, "Shift: time must not snap, got {got:.3} ms");
+    assert!(tick_frac_dist(&app, ci, got) > 0.02, "Shift: not rounded to whole ticks: {got}");
+}
+
+// ---------- S4: hint ----------
+
+#[test]
+fn gain_snap_s4_node_hint_mentions_alt_and_shift() {
+    let Some((mut c, mut app, ci)) = setup("s4-node") else { return };
+    three_nodes(&mut c, &mut app, ci);
+    let (nx, ny) = node_xy(&app, ci, 2);
+    hover(&mut c, &mut app, nx, ny);
+    assert_eq!(
+        app.hint.as_ref(),
+        "Clip gain node: -15.0 dB at 750 ms (drag to move, Alt: no snap, Shift: fine, double-click to type, right-click for options)"
+    );
 }
