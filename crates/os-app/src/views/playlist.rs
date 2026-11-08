@@ -916,17 +916,13 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     let fade_ms = pl::fade_ms_per_tick(s);
     let total_ms = f64::from(c.length) * fade_ms;
     let (fin, fout, gain) = (c.stored_fade_in(), c.stored_fade_out(), f64::from(c.gain()));
-    // Gain of the fades `d` px into the body (the engine's law, os_model::fade_curve).
+    // Gain `d` px into the body. The fades count from the clip's start (`side + d`); the gain line from the body's
+    // left edge (`d`), the same origin `pl::x_ms` uses when nodes are placed, so the waveform bends exactly under
+    // the drawn line.
     let shape = |d: f64| -> f64 {
-        let ms = (side + d) / ppt * fade_ms;
-        let mut k = gain;
-        if let Some((l, t)) = fin {
-            k *= os_model::fade_curve(ms / f64::from(l), f64::from(t));
-        }
-        if let Some((l, t)) = fout {
-            k *= os_model::fade_curve((total_ms - ms) / f64::from(l), f64::from(t));
-        }
-        k
+        let fade_at = (side + d) / ppt * fade_ms;
+        let line_at = d / ppt * fade_ms;
+        wave_gain(gain, &c.gain_line, fin, fout, total_ms, fade_at, line_at)
     };
     let detail=crate::prefs::text("playlist_wave_detail").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0);
     let fine=if detail>0 && ms_per_tick*frames_per_ms/ppt*px < w.per as f64 {
@@ -1007,6 +1003,44 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
         _ => ui.c.fill_polygon(&outline, col),
     }
     ui.c.pop_clip();
+}
+
+/// The factor a waveform column is drawn at: static gain, gain line and fades, the same product the engine plays
+/// (os_engine `ClipShape::at`), so what you see is what you hear. `fade_ms` is from the clip's start, `line_ms`
+/// in the gain line's own time (from the body's left edge).
+fn wave_gain(gain: f64, line: &os_model::GainLine, fin: Option<(f32, f32)>, fout: Option<(f32, f32)>, total_ms: f64, fade_ms: f64, line_ms: f64) -> f64 {
+    let mut k = gain * f64::from(line.gain_at(line_ms as f32));
+    if let Some((l, t)) = fin {
+        k *= os_model::fade_curve(fade_ms / f64::from(l), f64::from(t));
+    }
+    if let Some((l, t)) = fout {
+        k *= os_model::fade_curve((total_ms - fade_ms) / f64::from(l), f64::from(t));
+    }
+    k
+}
+
+#[cfg(test)]
+mod wave_gain_tests {
+    use super::wave_gain;
+    use os_model::{GainLine, GainNode};
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn the_waveform_follows_the_gain_line_times_the_static_gain() {
+        let mut line = GainLine::default();
+        line.add(GainNode { ms: 1000.0, db: 0.0 }).unwrap();
+        line.add(GainNode { ms: 2000.0, db: -12.0 }).unwrap();
+        let minus12 = 10f64.powf(-12.0 / 20.0);
+        // Before, between and after the nodes, with static gain 0.5 on top.
+        assert!(close(wave_gain(0.5, &line, None, None, 4000.0, 500.0, 500.0), 0.5));
+        assert!(close(wave_gain(0.5, &line, None, None, 4000.0, 1500.0, 1500.0), 0.5 * 10f64.powf(-6.0 / 20.0)));
+        assert!(close(wave_gain(0.5, &line, None, None, 4000.0, 3000.0, 3000.0), 0.5 * minus12));
+        // No line: just the static gain, as before the gain line existed.
+        assert!(close(wave_gain(0.5, &GainLine::default(), None, None, 4000.0, 3000.0, 3000.0), 0.5));
+    }
 }
 
 /// An audio clip's fade curves, and its handles while the mouse is over it (§9a): fade triangles at the top
