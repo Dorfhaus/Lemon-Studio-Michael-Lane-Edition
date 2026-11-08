@@ -134,6 +134,47 @@ mod tests{
         open(&mut a,0);form(&mut a).unwrap().fields[6].set("17");command(&mut a,Command::Apply);assert!(a.modal_open());assert!(!form(&mut a).unwrap().message.is_empty());command(&mut a,Command::Cancel);
     }
     #[test]
+    fn note_workflow_clicking_existing_notes_switches_placement_type() {
+        use crate::piano_tools::{self, NCmd};
+
+        let mut app = app();
+        let normal = Note { length: 48, key: 60, ..Note::step(0, 0) };
+        let mut glide = Note { position: 96, ..normal };
+        glide.set_slide(true);
+        let mut porta = Note { position: 192, ..normal };
+        porta.set_porta(true);
+        piano::pattern_mut(&mut app.state).notes = vec![normal, glide, porta];
+        let mut canvas = os_ui::Canvas::new(1280, 800, 1.).unwrap();
+        let place = |app: &mut App, canvas: &mut os_ui::Canvas, tick: f32| {
+            app.paint(canvas, None);
+            let g = app.piano_geom().unwrap();
+            app.mouse_move(g.x_of(tick) + 3., g.y_of(60) + 4.);
+            app.mouse_down();
+            app.mouse_up();
+            *piano::notes(&app.state).last().unwrap()
+        };
+
+        piano_tools::run(&mut app, NCmd::DrawSlide);
+        assert!(place(&mut app, &mut canvas, 288.).slide());
+
+        click_note(&mut app, &mut canvas, 0);
+        let drawn = place(&mut app, &mut canvas, 384.);
+        assert!(!drawn.slide() && !drawn.porta());
+
+        click_note(&mut app, &mut canvas, 1);
+        let drawn = place(&mut app, &mut canvas, 480.);
+        assert!(drawn.slide() && !drawn.porta());
+
+        app.ctrl = true;
+        click_note(&mut app, &mut canvas, 2);
+        app.ctrl = false;
+        let drawn = place(&mut app, &mut canvas, 576.);
+        assert!(drawn.porta() && !drawn.slide());
+
+        assert_eq!(&piano::notes(&app.state)[..3], &[normal, glide, porta]);
+    }
+
+    #[test]
     fn note_workflow_playlist_held_ctrl_b_repeats_and_respects_focus_and_undo(){
         let mut a=app();a.state.z=vec![Win::Playlist];let bar=pl::bar(&a.state);
         pl::arr_mut(&mut a.state).clips=vec![os_model::Clip::new(0,bar,1,os_model::ClipSource::Pattern(1))];a.state.playlist.sel=vec![0];

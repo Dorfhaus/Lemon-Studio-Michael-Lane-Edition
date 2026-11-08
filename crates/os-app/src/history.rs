@@ -79,6 +79,7 @@ pub enum Snap {
     /// Mixer track `.0`'s volume fader (0..1, the fader law; `None`: the track's default).
     Fader(u16, Option<f64>),
     TrackColor(u16,Option<os_model::Rgb>),
+    SourceColor(os_model::ClipSource, Option<os_model::Rgb>, Option<os_model::Rgb>),
     CutGroups(u16,u32,u32),
     Effects(u16, bool, bool),
     AllEffects(bool),
@@ -86,6 +87,8 @@ pub enum Snap {
     StripBypass(u16,bool),
     DriveType(u16,u16),
     EqPosition(u16,bool),
+    EqEnabled(u16, bool),
+    MixerLock(u16, bool),
     ChannelLayout(u16,u8),
     Tune(u16,[u16;4]),
     TuneEnabled(u16,bool),
@@ -347,6 +350,14 @@ impl RackSide {
 impl Snap {
     pub fn ara(s:&State,row:usize)->Option<Self>{let c=s.project.channels.get(row)?;Some(Self::Ara(row,c.plugin.clone(),c.plugin_state.clone()))}
 
+    pub fn source_color(s: &State, source: os_model::ClipSource) -> Snap {
+        let stored = match source {
+            os_model::ClipSource::Channel(id) => s.project.channels.iter().find(|c| c.index == id).and_then(|c| c.rack.stored_color),
+            _ => None,
+        };
+        Snap::SourceColor(source, crate::playlist::source_color(s, source), stored)
+    }
+
     /// Pattern `number` as it is now.
     pub fn pattern(s: &State, number: u16) -> Snap {
         let p = s.project.pattern(number);
@@ -384,6 +395,7 @@ impl Snap {
             Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::InstrumentLanes(_)=>Snap::InstrumentLanes(s.project.instrument_lanes.clone()),
             Snap::Ara(row,..) => Self::ara(s,*row).unwrap_or_else(||self.clone()),
+            Snap::SourceColor(source, ..) => Snap::source_color(s, *source),
             Snap::Pattern { number, .. } => Snap::pattern(s, *number),
             Snap::Playlist(_) => Snap::Playlist(Box::new(crate::playlist::capture(s))),
             Snap::Knob(id, _) => Snap::Knob(*id, knob_value(s, *id)),
@@ -397,6 +409,8 @@ impl Snap {
             Snap::PeakLinks(_)=>Snap::PeakLinks(s.project.peak_links.clone()),
             Snap::TuneEnabled(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::TuneEnabled(*t,m.tune_enabled)),
             Snap::Tune(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::Tune(*t,m.tune)),
+            Snap::MixerLock(t, _) => Snap::MixerLock(*t, crate::mixer::locked(s, *t)),
+            Snap::EqEnabled(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::EqEnabled(*t, m.slot_on[usize::from(crate::mini_eq::SLOT)])),
             Snap::EqPosition(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::EqPosition(*t,m.parametric_pre)),
             Snap::DriveType(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::DriveType(*t,m.strip[6])),
             Snap::StripBypass(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::StripBypass(*t,m.strip_bypassed)),
@@ -484,6 +498,7 @@ impl Snap {
             | Snap::ChannelRoute(..)
             | Snap::CutGroups(..)
             | Snap::TrackColor(..)
+            | Snap::SourceColor(..)
             | Snap::Fader(..)
             | Snap::Ara(..)
             | Snap::RackStrips(..)
@@ -495,6 +510,8 @@ impl Snap {
             | Snap::TuneEnabled(..)
             | Snap::PeakLinks(..)
             | Snap::EqPosition(..)
+            | Snap::EqEnabled(..)
+            | Snap::MixerLock(..)
             | Snap::DriveType(..)
             | Snap::AllEffects(..)
             | Snap::Effects(..)
@@ -556,6 +573,15 @@ impl Snap {
             Snap::Knob(id, v) => set_knob_value(s, id, v),
             Snap::CutGroups(id,cut,by) => if let Some(c)=s.project.channels.iter_mut().find(|c|c.index==id) {c.misc.cut=cut;c.misc.cut_by=by;},
             Snap::TrackColor(t,col) => {if let Some(m)=crate::mixer::track_mut(s,t){m.color=col;}},
+            Snap::SourceColor(source, color, stored) => match source {
+                os_model::ClipSource::Pattern(n) => crate::patterns::pat_mut(s, n).color = color,
+                os_model::ClipSource::Channel(id) => {
+                    if let Some(ch) = s.project.channels.iter_mut().find(|c| c.index == id) {
+                        ch.color = color;
+                        ch.rack.stored_color = stored;
+                    }
+                }
+            },
             Snap::Fader(t, v) => {
                 if let Some(m) = crate::mixer::track_mut(s, t) {
                     m.volume = v;
@@ -579,6 +605,12 @@ impl Snap {
             Snap::PeakLinks(v)=>{crate::peak_link::restore_removed(s,&v);s.project.peak_links=v;},
             Snap::TuneEnabled(t,on) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune_enabled=on;}},
             Snap::Tune(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune=p;m.tune_learn=0;}},
+            Snap::MixerLock(t, locked) => {
+                if let Some(m) = crate::mixer::track_mut(s, t) { m.edit_locked = locked; }
+            },
+            Snap::EqEnabled(t, enabled) => {
+                if let Some(m) = crate::mixer::track_mut(s, t) { m.slot_on[usize::from(crate::mini_eq::SLOT)] = enabled; }
+            },
             Snap::EqPosition(t,p) => {if let Some(m)=crate::mixer::track_mut(s,t){m.parametric_pre=p;}},
             Snap::DriveType(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip[6]=p;}},
             Snap::StripBypass(t,b) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip_bypassed=b;}},

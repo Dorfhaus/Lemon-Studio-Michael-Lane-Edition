@@ -188,10 +188,11 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     grid(ui, s, &l, timeline, range);
 
     // Notes: ghosts of the other channels first (when shown, Alt+V), then this channel's (§5).
-    ui.hit(l.grid, Action::PianoGrid, "Piano roll: click to add a note, drag a note to move it or its end to resize, right-click to delete");
+    ui.hit(l.grid, Action::PianoGrid, "Piano roll: click to add notes; Alt+wheel resizes rows; right-click empty space to deselect with Pencil or Brush");
     ui.c.push_clip(l.grid);
     let ghost = t.text_faint.with_alpha(110);
-    for n in notes.iter().filter(|n| s.piano.ghosts && Some(n.channel) != ch) {
+    let ghosts = s.piano.ghosts && crate::workspace_visibility::shown("visible_piano-ghost");
+    for n in notes.iter().filter(|n| ghosts && Some(n.channel) != ch) {
         if let Some(nr) = g.note_rect(n).filter(|nr| nr.intersect(&l.grid).w > 0.0) {
             ui.c.stroke_rrect(nr.inset(1.5), if lemon { 3.0 } else { 2.0 }, 1.0, ghost);
         }
@@ -219,7 +220,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     for &(pattern,channel) in &s.piano.layers {
         if active_clip.is_some(){break;}
-        if pattern==s.pattern && (Some(channel)==ch || s.piano.ghosts) {continue;}
+        if pattern==s.pattern && (Some(channel)==ch || ghosts) {continue;}
         if let Some(p)=s.project.pattern(pattern){for n in p.notes.iter().filter(|n|n.channel==channel){
             if let Some(r)=g.note_rect(n).filter(|r|r.intersect(&l.grid).w>0.){ui.c.stroke_rrect(r.inset(1.),2.,1.,t.accent.with_alpha(145));}
         }}
@@ -240,9 +241,10 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             // Muted (§9): grey body, measured from FL.
             (ui.t.s(0x6d7276), ui.t.s(0x63686c), ui.t.s(0x474a4d), ui.t.tx(0xc4c8cc))
         } else {
-            if n.group&15==0{(t.note_top,t.note_bottom,t.note_rim,t.note_text)}else{
+            if n.group & 15 == 0 && t.appearance.note_groups & 1 == 0 {(t.note_top,t.note_bottom,t.note_rim,t.note_text)}else{
                 let c=crate::piano_note_mode::color(t,n.group&15);
-                (c.shade(0.08),c.shade(-0.08),c.shade(-0.30),Color::rgb(0x152019))
+                (c.shade(0.08),c.shade(-0.08),c.shade(-0.30),
+                    crate::piano_note_mode::custom_color(t, n.group).map_or(Color::rgb(0x152019), lk::ink_on))
             }
         };
         let body = Rect::new(nr.x + 1.0, nr.y + 1.0, (nr.w - 2.0).max(1.0), nr.h - 2.0);
@@ -324,12 +326,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     // Playhead: the pattern's own in pattern mode; in song mode where the song is in this pattern, while a clip of
     // it plays there.
-    let head = if !f.playing { None } else if f.song { piano::pattern_tick_in_song(s, f.tick) } else { Some(f.tick) };
-    if active_clip.is_some() && s.song_mode{
-        let tick=if f.playing{f.tick}else{f64::from(s.playlist.pos)};
-        let x=timeline.x_of(tick as f32);ui.c.fill_rect(Rect::new(x,l.grid.y,1.5,l.grid.h),t.playhead);
-    } else if let Some(tick) = head {
-        let x = g.x_of(tick as f32);
+    let head = if f.playing {
+        piano::playhead_x(s, &g, f.piano_tick, f.song)
+    } else if active_clip.is_some() && s.song_mode {
+        piano::playhead_x(s, &g, f64::from(s.playlist.pos), true)
+    } else {
+        None
+    };
+    if let Some(x) = head {
         ui.c.fill_rect(Rect::new(x, l.grid.y, 1.5, l.grid.h), t.playhead);
     } else if let Some(tick) = (!f.playing && s.song_mode).then(|| piano::pattern_tick_in_song(s, f64::from(s.playlist.pos))).flatten() {
         // Stopped in song mode on a place where this pattern plays: a grey line there.
@@ -356,6 +360,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         Rect::new(l.vscroll.x + 1.0, up.bottom(), l.vscroll.w - 2.0, (down.y - up.bottom()).max(0.0))
     };
     super::scrollbar(ui, track, true, s.piano.scroll_y, l.grid.h, g.keys.len() as f32 * g.row, Scroll::PianoY);
+    if crate::workspace_visibility::shown("visible_piano-row-zoom") {
+        let zoom = Rect::new(l.vscroll.x, l.vscroll.y, l.vscroll.w, 21.);
+        let hot = ui.hit(zoom, Action::PianoVerticalZoom, "Vertical zoom: drag up/down or use the wheel. Right-click resets");
+        ui.c.fill_rrect(zoom.inset(1.), 3., if hot { t.button_hi } else { t.button });
+        let ink = if hot { t.accent } else { t.text_dim };
+        let (x, y) = (zoom.cx(), zoom.cy());
+        ui.c.line(x - 3., y, x + 3., y, 1., ink);
+        ui.c.polyline(&[(x - 2.5, y - 4.), (x, y - 6.5), (x + 2.5, y - 4.)], 1., ink);
+        ui.c.polyline(&[(x - 2.5, y + 4.), (x, y + 6.5), (x + 2.5, y + 4.)], 1., ink);
+    }
 
     velocity_panel(ui, s, &l, &g, notes, ch, &sel);
     resize_zones(ui, s, Win::PianoRoll, outer);
@@ -391,7 +405,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
     let t = ui.t;
     let active = s.piano.tool;
     let ox = r.x - 209.0 + shift;
-    let items: [(f32, Icon, &'static str, Option<Action>); 15] = [
+    let items: [(f32, Icon, &'static str, Option<Action>); 16] = [
         (222.0, Icon::ArrowRight, "Piano roll options", Some(Action::PianoOptions)),
         (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
         (263.0, Icon::Magnet, "", Some(Action::PianoSnapMenu)),
@@ -405,17 +419,34 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         (450.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
         (472.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
         (494.0, Icon::StretchBand, "Stretch toggle: drag note ends to scale selected timing and lengths; drag note bodies to move; right-click empty grid to turn off", Some(Action::PianoTool(Tool::Stretch))),
+        (515.0, Icon::Playlist, "Place Pattern to Playlist (Ctrl+Shift+Enter)", Some(Action::PianoCommand(crate::piano_tools::NCmd::PlacePattern))),
         (536.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
         (558.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
     ];
     for (x, icon, hint, action) in items {
+        let visible = match &action {
+            Some(Action::PianoToolsMenu) => crate::workspace_visibility::shown("visible_piano-tools"),
+            Some(Action::Harmony(crate::harmony::HCmd::Open)) => crate::workspace_visibility::shown("visible_piano-chords"),
+            Some(Action::PianoUndo) => crate::workspace_visibility::shown("visible_piano-undo"),
+            Some(Action::PianoCommand(crate::piano_tools::NCmd::PlacePattern)) =>
+                crate::workspace_visibility::shown("visible_piano-place-pattern"),
+            _ => true,
+        };
+        if !visible { continue; }
         let snap = action == Some(Action::PianoSnapMenu);
         let offset = if x > 263.0 { 43.0+harmony_width(r) } else { 0.0 };
         let b = Rect::new(ox + x + offset - 9.0, r.y + 2.0, if snap { 61.0 } else { 18.0 }, 18.0);
         if snap {
             ui.hit(b, Action::PianoSnapMenu, crate::piano_snap::hint(s));
             super::sunken(ui, b, t.sunken);
-            ui.c.text_center(os_ui::Font::new(11), Rect::new(b.x,b.y,b.w-9.0,b.h), t.text, s.piano.snap.label());
+            if ui.c.icon_pack() == 0 {
+                ui.c.text_center(os_ui::Font::new(11), Rect::new(b.x,b.y,b.w-9.0,b.h), t.text, s.piano.snap.label());
+            } else {
+                icons::draw(ui.c, Icon::Magnet, Rect::new(b.x+2.0,b.y+3.0,12.0,12.0), t.glyph);
+                let label = Rect::new(b.x+15.0,b.y,b.w-24.0,b.h);
+                let font = ui.c.fit_font(os_ui::Font::new(11), s.piano.snap.label(), label.w);
+                ui.c.text_center(font, label, t.text, s.piano.snap.label());
+            }
             os_ui::kit::triangle(ui.c,b.right()-5.0,b.cy(),2.5,os_ui::kit::Dir::Down,t.text_dim);
             let width=harmony_width(r);
             if width>0. {harmony_boxes(ui,s,b.right()+3.,b.y,width,b.h);}
@@ -430,7 +461,10 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         // The magnet's hint names the current snap (spec: ui/piano-snap.md §8).
         let hint: std::borrow::Cow<'static, str> = if action == Action::PianoSnapMenu { crate::piano_snap::hint(s).into() } else { hint.into() };
         let hov = ui.hit(b, action, hint);
-        let c = if super::lemon(ui) {
+        let state = os_ui::kit::State::hover(hov).with_on(on);
+        let c = if os_ui::kit::custom_button_in(ui.c, t, b, state, t.appearance.piano_buttons) {
+            os_ui::kit::ink(t, state)
+        } else if super::lemon(ui) {
             // Lemon: the active tool is a lit rounded square with a dark glyph.
             let bg = b.outset(1.0);
             if on {
@@ -457,13 +491,13 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
 fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Option<u16>) {
     let t = ui.t;
     let o = l.overview;
-    // Horizontal scroll bar over the pattern plus room to scroll on (half a screen past the
-    // pattern or the current view).
+    // Leave half a screen of edit space after the content. A view placed further out by a
+    // zoom or seek may still be shown, without adding more scroll range every time it moves.
     let view = l.grid.w / g.ppt;
     let len = if let Some(session)=s.piano.clip_session.as_ref().filter(|_|piano::active_clip(s).is_some()){
         (0..session.parts.len()).filter_map(|i|session.clip(s,i)).map(|c|c.end()).max().unwrap_or(0) as f32
     }else{piano::pattern_length(s,s.pattern) as f32};
-    let span = s.piano.bar_span.unwrap_or(len.max(g.scroll_x + view) + view / 2.0);
+    let span = s.piano.bar_span.unwrap_or((len.max(view) + view / 2.0).max(g.scroll_x + view));
     // Scroll arrows at both ends (§1a); the bar runs between them (small scroll bars: no arrows).
     let arrow = if super::small_scrollbars() { 0.0 } else { 19.0 };
     if arrow > 0.0 {
@@ -474,14 +508,24 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     let track = Rect::new(o.x + arrow, o.y, (l.grid.right() - o.x - 2.0 * arrow).max(0.0), o.h);
     super::scrollbar(ui, track, false, g.scroll_x * g.ppt, l.grid.w, span * g.ppt, Scroll::PianoX);
     // Mini-map: one dash per note of the channel.
-    let dash = t.note_top.mix(t.note_bottom, 0.5);
+    if !crate::workspace_visibility::shown("visible_piano-map") || !crate::piano_tools::view_on("piano_mini_preview", true) {
+        return;
+    }
+    let dash = t.note_top.mix(t.note_bottom, 0.5).mix(t.text, 0.25);
+    let channel_notes = notes.iter().filter(|n| Some(n.channel) == ch);
+    let (low, high) = channel_notes.clone().fold((u16::MAX, 0), |(lo, hi), n| (lo.min(n.key), hi.max(n.key)));
+    let center = (f32::from(low) + f32::from(high)) / 2.0;
+    let pitch_span = f32::from(high.saturating_sub(low)).max(12.0);
+    let clip = piano::active_clip(s);
     ui.c.push_clip(Rect::new(track.x,track.y+1.,track.w,(track.h-2.).max(0.)));
-    for n in notes.iter().filter(|n| Some(n.channel) == ch && crate::piano_tools::view_on("piano_mini_preview",true)) {
-        let position=piano::active_clip(s).map_or(n.position as f64,|c|f64::from(c.position)+(f64::from(n.position)-crate::playlist::window(s,&c).0)/c.pattern_rate());
+    for n in channel_notes {
+        let position = clip.map_or(f64::from(n.position), |c| {
+            f64::from(c.position) + (f64::from(n.position) - crate::playlist::window(s, &c).0) / c.pattern_rate()
+        });
         let x = track.x + position as f32 / span * track.w;
         let w = (piano::shown_len(s, n) as f32 / span * track.w).max(1.0);
-        let y = o.y + 3.0 + (1.0 - f32::from(n.key) / TOP_KEY as f32) * (o.h - 7.0);
-        ui.c.fill_rect(Rect::new(x, y.round(), w, 1.0), dash);
+        let y = o.cy() - 1.0 - (f32::from(n.key) - center) / pitch_span * (o.h - 6.0);
+        ui.c.fill_rect(Rect::new(x, y.round(), w, 2.0), dash);
     }
     ui.c.pop_clip();
 }
@@ -551,12 +595,19 @@ fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
         if r.bottom()<k.y || r.y>k.bottom(){continue;}
         let black=is_black(key);let pressed=lit.contains(&key);
         let (left,right)=if pressed {(ui.t.key_lit_left,ui.t.key_lit)}
+            else if ui.t.style.vintage_2005 && black {(Color::rgb(0x454f55),Color::rgb(0x252e34))}
+            else if ui.t.style.vintage_2005 {(Color::rgb(0xd0d6d5),Color::rgb(0x9ba8ac))}
             else if black {(Color::rgb(0x44494e),Color::rgb(0x60666c))}
             else {(Color::rgb(0xcbd0d5),Color::rgb(0xaeb5bc))};
         ui.c.fill_rect_gradient(r,left,right,0.);
+        if ui.t.style.vintage_2005 && g.row >= 8.0 {
+            ui.c.fill_rect(Rect::new(r.x, r.y, r.w, 1.0), left.shade(0.12));
+            ui.c.fill_rect(Rect::new(r.right() - 1.0, r.y + 1.0, 1.0, r.h - 2.0), right.shade(-0.24));
+        }
         ui.c.fill_rect(Rect::new(r.x,r.bottom()-1.,r.w,1.),Color::rgb(0x656b71));
         if g.row>=10. {
-            let font=Font::new((g.row-3.).clamp(8.,12.) as u16);
+            let size = (g.row - 3.0).clamp(8.0, 12.0) as u16;
+            let font = if ui.t.style.vintage_2005 { Font::vintage(size) } else { Font::new(size) };
             let text_y=r.cy()-ui.c.line_height(font)/2.;
             ui.c.text_right(font,r.right()-4.,text_y,if pressed||!black {Color::rgb(0x20252a)}else{Color::rgb(0xf4f5f6)},&key_name(key));
         }
@@ -623,7 +674,8 @@ fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
                     ui.c.fill_rect(Rect::new(k.x + 45.0, y - half, k.w - 46.0, row - 1.0 + half), t.key_c);
                 }
                 if row >= 10.0 {
-                    ui.c.text_right(Font::new(12), k.right() - 4.0, y + 1.0 + (row - ROW) / 2.0, t.key_label, &key_name(key));
+                    let font = if t.style.vintage_2005 { Font::vintage(11).bold() } else { Font::new(12) };
+                    ui.c.text_right(font, k.right() - 4.0, y + 1.0 + (row - ROW) / 2.0, t.key_label, &key_name(key));
                 }
                 ui.c.fill_rect(Rect::new(k.x, y + row - 1.0, k.w - 1.0, 1.0), sep);
             }
@@ -636,6 +688,11 @@ fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
         if is_black(key) {
             let y = g.y_of(key);
             let (left, right) = if lit.contains(&key) { (t.key_black_lit_left, t.key_black_lit) } else { (t.key_black_left, t.key_black) };
+            if t.style.vintage_2005 {
+                let face = if lit.contains(&key) { right } else { Color::rgb(0x39454b) };
+                crate::vintage::metal(ui.c, Rect::new(k.x, y, 46.0_f32.min(k.w), row), face);
+                continue;
+            }
             if lemon {
                 // Rounded at the playing end; the left end runs under the clip.
                 ui.c.fill_rrect(Rect::new(k.x - 6.0, y, 51.0, row), 3.0f32.min(row / 2.0), right);
@@ -717,15 +774,22 @@ fn grid_rows(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, clip: Rect, selecting
     let gr = l.grid;
     let (white, black) = if selecting { (t.pr_row_sel, t.pr_row_black_sel) } else { (t.pr_row, t.pr_row_black) };
     ui.c.push_clip(clip);
+    if !selecting {
+        ui.c.fill_rect(gr, white.with_alpha(255));
+    }
+    let scale = ui.c.scale;
+    let pixel = 1.0 / scale;
     let (lo, hi) = g.visible_keys();
     let mut bands = Vec::with_capacity((hi - lo + 1).max(0) as usize);
     for key in lo..=hi {
         if !g.keys.contains(&key) { continue; }
         let y = g.y_of(key);
         let fill = if s.piano.harmony.shade {if s.piano.harmony.allows(key){white}else{black.shade(-0.18)}}else if is_black(key) && crate::piano_tools::view_on("piano_grid_highlights",true) { black } else { white };
-        ui.c.fill_rect(Rect::new(gr.x, y, gr.w, g.row - 1.0), fill);
-        ui.c.fill_rect(Rect::new(gr.x, y + g.row - 1.0, gr.w, 1.0), sub(t, white, 0x0a));
-        bands.push((y, g.row - 1.0, fill));
+        let bottom = ((y + g.row) * scale).round() / scale;
+        let line_y = bottom - pixel;
+        ui.c.fill_rect(Rect::new(gr.x, y, gr.w, g.row), fill);
+        ui.c.fill_rect(Rect::new(gr.x, line_y, gr.w, pixel), sub(t, white, 0x0a));
+        bands.push((y, (line_y - y).max(0.0), fill));
     }
     let bar = if selecting { ui.t.s(0x0e080c) } else { bar_line(t) };
     columns(ui, s, g, gr, &bands, bar);
@@ -835,6 +899,11 @@ fn pitch_scroll(ui: &mut Ui, s: &State, l: &Layout) {
     let arrows = if btn > 0.0 { vec![(up, 1, "Scroll the lane up"), (down, -1, "Scroll the lane down")] } else { Vec::new() };
     for (r, dir, name) in arrows {
         let hov = ui.hit(r, Action::PitchStep(dir), name);
+        if t.style.vintage_2005 {
+            use os_ui::kit;
+            kit::scroll_arrow_button(ui.c, t, r, if dir > 0 { kit::Dir::Up } else { kit::Dir::Down }, kit::State::hover(hov));
+            continue;
+        }
         ui.c.fill_rect(r, if hov { t.scrollbar.shade(0.2) } else { t.scrollbar.shade(0.1) });
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let d = if dir > 0 { -2.0 } else { 2.0 };
@@ -928,6 +997,36 @@ fn lane_menu(ui: &mut Ui, s: &State, l: &Layout, k: f32) {
 #[cfg(test)]
 mod overview_clip_tests{
     use super::*;
+    #[test]
+    fn piano_row_seams_stay_consistent_while_scrolling() {
+        let mut app = crate::app::App::new(None);
+        app.state.project = crate::app::test_project();
+        crate::piano::pattern_mut(&mut app.state).notes.clear();
+        app.state.z = vec![Win::PianoRoll];
+        app.state.vintage_2005 = true;
+        let scale = 1.25;
+        let mut canvas = os_ui::Canvas::new(1400, 900, scale).unwrap();
+        let mut expected = None;
+        for offset in 100..108 {
+            app.state.piano.scroll_y = offset as f32;
+            app.invalidate();
+            app.paint(&mut canvas, None);
+            let grid = grid_rect(&app.state);
+            let g = Geom::new(&app.state, grid);
+            let (lo, hi) = g.visible_keys();
+            let x = (grid.x * scale).round() as u32 + 9;
+            for key in lo + 1..hi {
+                let y = ((g.y_of(key) + g.row) * scale).round() as u32 - 1;
+                let seam = canvas.pixmap.pixel(x, y).unwrap();
+                assert_eq!(seam, *expected.get_or_insert(seam), "seam at scroll {offset}, key {key}");
+            }
+        }
+        assert!(expected.is_some());
+        if let Some(path) = std::env::var_os("LEMON_VINTAGE_PIANO_PREVIEW") {
+            canvas.pixmap.save_png(path).unwrap();
+        }
+    }
+
     #[test]
     fn lead_fix_piano_overview_notes_never_paint_over_scroll_arrows(){
         let mut a=crate::app::App::new(None);a.state.project=crate::app::test_project();a.state.selected_channel=0;a.state.z=vec![Win::PianoRoll];

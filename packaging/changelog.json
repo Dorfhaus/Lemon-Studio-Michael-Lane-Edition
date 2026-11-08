@@ -3,6 +3,21 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-08",
+      "title": "Vintage workspace, mixer controls and editing refinements \u00b7 public build 2026110801",
+      "changes": [
+        "Added the FL Studio 2005 theme with compact recording controls, vintage toolbar displays, Channel Rack and Mixer artwork, and a Traditional mixer layout that remembers its setting.",
+        "The FL Studio 2005 cursor pack is the vintage theme default and can be selected in other themes. Windows users with a compatible FL Studio 4 installation can import its original cursors locally from the release source. Matching monochrome cursors cover missing artwork and other systems.",
+        "Added independently selectable icon and cursor packs, individual icon and cursor choices, cursor sizing and visual color selection, and separate Mixer finish controls.",
+        "Refined vintage mixer meters, shorter faders with full travel, stacked FX and disk-arm switches, stereo separation spacing, routing cables, slot dividers and value readouts.",
+        "Added Mixer channel locks that prevent manual edits and preserve existing automation, plus visibility controls for mixer shortcuts and optional settings tabs.",
+        "Added Playlist Bounce Audio in a new track or in place, clip color swatches, and a quick instrument picker in the Playlist.",
+        "Piano Roll editing adds Place Pattern to Playlist, Alt-wheel row zoom, configurable zoom shortcuts, and right-click deselection. Editor scrolling and grid rendering are more consistent.",
+        "Lemon EQ adds a compact band card with audition controls. The Mixer mini EQ has a separate bypass button.",
+        "Improved Vocal Align previews and audition, and refined inline Vocal Tuning and automation controls in the vintage theme."
+      ]
+    },
+    {
       "date": "2026-11-07",
       "title": "Playlist automation workflow \u00b7 public build 2026110703",
       "changes": [

@@ -365,14 +365,13 @@ pub fn uid_of(path: &Path) -> Option<String> {
     }
 }
 
-/// The preset `dir` steps away from `current` in `list` (wraps around). Without a current preset (or one no longer in
-/// the list) the first step goes to the first preset, a step back to the last.
-pub fn step(list: &[Preset], current: Option<&Path>, dir: i32) -> Option<usize> {
-    if list.is_empty() {
+/// Step through the menu in order, wrapping at either end.
+fn step(count: usize, current: Option<usize>, dir: i32) -> Option<usize> {
+    if count == 0 {
         return None;
     }
-    let n = list.len() as i32;
-    match current.and_then(|c| list.iter().position(|p| p.path == c)) {
+    let n = count as i32;
+    match current {
         Some(i) => Some((i as i32 + dir).rem_euclid(n) as usize),
         None => Some(if dir < 0 { (n - 1) as usize } else { 0 }),
     }
@@ -483,11 +482,11 @@ pub fn items(app: &App, key: usize, nested: bool) -> Vec<PItem> {
         v.push(PItem::head("Factory"));
     }
     v.extend(rows(app, key, &fac, nested));
-    if let Some(hosted)=app.plugins.hosted.get(&key) && let Ok(plugin)=hosted.plugin.lock(){
-        let programs=plugin.programs();
-        if !programs.is_empty(){v.push(PItem::head("Plugin programs"));}
-        v.extend(programs.into_iter().map(|(selector,index,name)|PItem::new(name,Cmd::Preset(PCmd::Native(key,selector,index)))));
+    let programs = programs(app, key);
+    if !programs.is_empty() {
+        v.push(PItem::head("Plugin programs"));
     }
+    v.extend(programs.into_iter().map(|(selector, index, name)| PItem::new(name, Cmd::Preset(PCmd::Native(key, selector, index)))));
     if v.is_empty() {
         v.push(PItem::new("(no presets)", Cmd::Nothing).off());
     }
@@ -528,17 +527,24 @@ pub fn popup(app: &App, key: usize, x: f32, y: f32) -> Popup {
 /// Runs a preset command; returns the status message.
 pub fn run(app: &mut App, c: PCmd) -> Option<String> {
     let msg = match c {
-        PCmd::Native(key,id,index)=>{
-            let loaded=app.plugins.hosted.get(&key)?.plugin.lock().ok()?.select_program(id,index);
-            if loaded{app.plugins.presets.remove(&key);app.plugins.mark_edited(key);app.state.params.lists.remove(&key);app.invalidate();}
-            Some(if loaded {"Plugin program loaded"}else{"Plugin declined the program"}.into())
+        PCmd::Native(key, id, index) => {
+            let program = programs(app, key).into_iter().find(|p| (p.0, p.1) == (id, index))?;
+            load_program(app, key, program)
         }
         PCmd::Load(key, path) => load_into(app, key, &path),
         PCmd::Step(key, dir) => {
             let h = header(app, key)?;
-            let l = list(&h.plugin);
-            match step(&l, app.plugins.presets.get(&key).map(PathBuf::as_path), dir) {
-                Some(i) => load_into(app, key, &l[i].path),
+            let files = list(&h.plugin);
+            let programs = programs(app, key);
+            let current = app.plugins.presets.get(&key)
+                .and_then(|path| files.iter().position(|p| &p.path == path))
+                .or_else(|| {
+                    let (id, index, _) = app.plugins.hosted.get(&key)?.preset_program.as_ref()?;
+                    programs.iter().position(|p| (p.0, p.1) == (*id, *index)).map(|i| files.len() + i)
+                });
+            match step(files.len() + programs.len(), current, dir) {
+                Some(i) if i < files.len() => load_into(app, key, &files[i].path),
+                Some(i) => load_program(app, key, programs.into_iter().nth(i - files.len())?),
                 None => Some(format!("No presets for {} yet (Save preset as... stores one)", h.plugin)),
             }
         }
@@ -573,9 +579,33 @@ pub fn run(app: &mut App, c: PCmd) -> Option<String> {
     msg
 }
 
+fn programs(app: &App, key: usize) -> Vec<(u32, u32, String)> {
+    app.plugins.hosted.get(&key).and_then(|h| h.plugin.lock().ok())
+        .map(|plugin| plugin.programs()).unwrap_or_default()
+}
+
+fn load_program(app: &mut App, key: usize, program: (u32, u32, String)) -> Option<String> {
+    if crate::mixer::locked_effect(&app.state, key) { return Some(crate::mixer::LOCK_MESSAGE.into()); }
+    let hosted = app.plugins.hosted.get_mut(&key)?;
+    if !hosted.plugin.lock().ok()?.select_program(program.0, program.1) {
+        return Some("Plugin declined the program".into());
+    }
+    let message = format!("Preset: {}", program.2);
+    #[cfg(plugin_windows)]
+    if let Some(window) = hosted.window.as_ref() {
+        window.set_preset(Some(program.2.clone()));
+    }
+    hosted.preset_program = Some(program);
+    app.plugins.presets.remove(&key);
+    app.plugins.mark_edited(key);
+    app.state.params.lists.remove(&key);
+    Some(message)
+}
+
 /// Loads preset `path` (any [`IMPORT_EXTS`] type, or a factory preset) into the instance under `key`; returns the
 /// status message.
 pub fn load_into(app: &mut App, key: usize, path: &Path) -> Option<String> {
+    if crate::mixer::locked_effect(&app.state, key) { return Some(crate::mixer::LOCK_MESSAGE.into()); }
     let d = app.plugins.descriptor(key)?;
     let first = match crate::citrus::fst_state(path) {
         // An FL preset file (Citrus's list of an FL install's presets) holds the original's state.
@@ -998,11 +1028,11 @@ mod tests {
         let l = list_in(&dir);
         let names: Vec<&str> = l.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["A", "b", "c", "Pads/warm"]);
-        assert_eq!(step(&l, None, 1), Some(0));
-        assert_eq!(step(&l, None, -1), Some(3));
-        assert_eq!(step(&l, Some(&l[3].path), 1), Some(0), "wraps");
-        assert_eq!(step(&l, Some(&l[0].path), -1), Some(3));
-        assert_eq!(step(&[], None, 1), None);
+        assert_eq!(step(l.len(), None, 1), Some(0));
+        assert_eq!(step(l.len(), None, -1), Some(3));
+        assert_eq!(step(l.len(), Some(3), 1), Some(0), "wraps");
+        assert_eq!(step(l.len(), Some(0), -1), Some(3));
+        assert_eq!(step(0, None, 1), None);
         assert_eq!(folder_name("a/b:c. "), "a_b_c");
         assert_eq!(free_file(&dir, "b"), dir.join("b 2.ospreset"));
         assert_eq!(free_file(&dir, "d"), dir.join("d.ospreset"));
@@ -1186,7 +1216,13 @@ mod tests {
         let names: Vec<String> = user(&h.plugin).iter().map(|p| p.name.clone()).collect();
         assert_eq!(names, ["Default", "Rim"]);
         assert!(run(&mut app, PCmd::Step(0, -1)).unwrap().contains("Rim") || !factory(&h.plugin).is_empty(), "back from no preset = last");
-        run(&mut app, PCmd::Load(0, file_for(&dir_for(&h.plugin).unwrap(), "Rim")));
+        let folder = dir_for(&h.plugin).unwrap();
+        let path = file_for(&folder, "Rim");
+        app.state.browser_folders.push(folder.clone());
+        app.state.browser_open.insert(crate::views::browser::disk_key(&folder));
+        let row = crate::views::browser::rows(&app.state).iter().position(|r|
+            matches!(&r.item, crate::views::browser::Item::Preset(p) if Path::new(p) == path)).expect("preset browser row");
+        app.browser_row_middle(row);
         assert_eq!(app.plugins.sampler_path(0).as_deref(), Some("C:/x/rim.wav"));
         assert_eq!(app.plugins.preset_name(0).as_deref(), Some("Rim"));
         // spec: ui/settings-choices.md "Miscellaneous: naming, detached plugins and startup": "Auto name channels" is

@@ -692,12 +692,25 @@ impl Engine {
                         v.phase[o][u] = (phase + freq / self.rate).fract();
                         // Phase bend is an original two-slope warp; conservative mip selection limits added harmonics.
                         let pivot = 0.5 + p[b + 7] / 200.;
-                        let warped = if phase < pivot {
-                            phase / pivot * 0.5
+                        let fm = p[A_PHASE_FM + o * 2] / 2000.;
+                        let (shaped, fm_slope) = if fm > 0. && self.custom.samples[o].is_none() {
+                            let ratio = discrete[A_FM_RATIO + o * 2].round().clamp(1., 8.);
+                            let fm = fm * (1. - (freq * ratio / self.rate - 0.10) / 0.27).clamp(0., 1.);
+                            if fm > 0. {
+                                ((phase + (phase * ratio * std::f32::consts::TAU).sin() * fm).rem_euclid(1.),
+                                    1. + std::f32::consts::TAU * ratio * fm)
+                            } else {
+                                (phase, 1.)
+                            }
                         } else {
-                            0.5 + (phase - pivot) / (1. - pivot) * 0.5
+                            (phase, 1.)
                         };
-                        let max_slope = 0.5 / pivot.min(1. - pivot);
+                        let warped = if shaped < pivot {
+                            shaped / pivot * 0.5
+                        } else {
+                            0.5 + (shaped - pivot) / (1. - pivot) * 0.5
+                        };
+                        let max_slope = 0.5 / pivot.min(1. - pivot) * fm_slope;
                         let s = if freq < self.rate * 0.45 {
                             if let Some(sample) = &self.custom.samples[o] {
                                 sample.tick(&mut v.sample_cursor[o][u], freq, self.rate)
@@ -750,6 +763,13 @@ impl Engine {
                     }
                 }
                 for o in 0..2 {for ch in 0..2 {oscillator[o][ch]*=p[if o==0{A_ON}else{B_ON}];}}
+                let ring = p[B_RING] / 1000.;
+                if ring > 0. {
+                    for ch in 0..2 {
+                        let modulator = (oscillator[0][ch] * 2.).clamp(-1., 1.);
+                        oscillator[1][ch] *= 1. - ring + ring * modulator;
+                    }
+                }
                 for ch in 0..2 {sig[ch]=oscillator[0][ch]+oscillator[1][ch];}
                 let sub_base=if discrete[SUB_TRACK]>0.5 {base}else{261.62558};
                 let sub_step=(sub_base*2_f32.powf(p[SUB_OCT])/self.rate).min(0.49);
@@ -917,6 +937,43 @@ fn read_delay(data: &[f32], head: usize, delay: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phase_fm_ratio_and_ring_modulation_change_audio_with_a_dry_default() {
+        let render = |patch, note| {
+            let mut engine = Engine::new(48000.);
+            engine.set(patch);
+            engine.reset();
+            engine.on(note, 0.8, 0, None);
+            let mut l = vec![0.; 8192];
+            let mut r = l.clone();
+            engine.render(&mut l, &mut r);
+            assert!(l.iter().chain(&r).all(|s| s.is_finite() && s.abs() < 2.));
+            l
+        };
+        let mut p = defaults();
+        p[A_LEVEL] = 650.;
+        p[B_LEVEL] = 550.;
+        p[B_TUNE] = 7.;
+        let dry = render(p, 60);
+        p[A_FM_RATIO] = 4.;
+        assert_eq!(render(p, 60), dry);
+        p[A_PHASE_FM] = 660.;
+        let fm = render(p, 60);
+        assert_ne!(fm, dry);
+        p[A_FM_RATIO] = 2.;
+        assert_ne!(render(p, 60), fm);
+        p[A_PHASE_FM] = 0.;
+        p[B_PHASE_FM] = 660.;
+        assert_ne!(render(p, 60), dry);
+        p[B_PHASE_FM] = 0.;
+        p[B_RING] = 1000.;
+        assert_ne!(render(p, 60), dry);
+        p[A_PHASE_FM] = 1000.;
+        p[B_PHASE_FM] = 1000.;
+        p[A_FM_RATIO] = 8.;
+        p[B_FM_RATIO] = 8.;
+        render(p, 108);
+    }
     #[test]
     fn dedicated_sources_power_pitch_pan_and_dual_filter_routes() {
         let mut engine=Engine::new(48000.);

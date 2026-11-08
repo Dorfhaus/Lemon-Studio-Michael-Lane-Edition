@@ -98,7 +98,7 @@ const PREFS_FILE: &str = "plugins.json";
 const CACHE_FILE: &str = "plugin_cache.json";
 
 /// Reads a JSON file from the user folder (nothing under test: tests never see the user's files).
-fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
     if cfg!(test) {
         return None;
     }
@@ -107,7 +107,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
 }
 
 /// Writes a JSON file into the user folder through a temporary file, so a failed write keeps the old one.
-fn write_json<T: Serialize>(name: &str, v: &T) {
+pub(crate) fn write_json<T: Serialize + ?Sized>(name: &str, v: &T) {
     if cfg!(test) {
         return;
     }

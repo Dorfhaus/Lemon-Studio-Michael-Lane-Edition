@@ -663,14 +663,28 @@ impl App {
         true
     }
 
-    /// Middle click on row `i` (spec §7): selects it, and a sample goes into the selected channel as the row menu's
-    /// "Send to selected channel" sends it (§8). Returns whether there was a row.
+    /// Send the clicked sample, preset or MIDI file to the current instrument.
     pub(crate) fn browser_row_middle(&mut self, i: usize) -> bool {
-        let s = &mut self.state;
-        let Some(row) = view::rows(s).into_iter().nth(i) else { return false };
-        select(s, &row.key);
-        if let Item::Sample(path) = &row.item {
-            s.message = send_sample(s, path, &row.label);
+        let Some(row) = view::rows(&self.state).into_iter().nth(i) else { return false };
+        select(&mut self.state, &row.key);
+        match row.item {
+            Item::Sample(_) => self.state.message = self.browser_row_cmd(RowCmd::Send),
+            Item::Preset(path) => {
+                let target = sample_target(&self.state);
+                self.state.message = if self.plugins.hosted.contains_key(&target) {
+                    crate::presets::load_into(self, target, std::path::Path::new(&path))
+                } else {
+                    Some("Select a compatible plugin to load this preset".into())
+                };
+            }
+            Item::File(path) if crate::midi_file::is_midi_path(std::path::Path::new(&path)) => {
+                if crate::piano::channel(&self.state).is_some() {
+                    self.midi_drop(path.into(), true, None);
+                } else {
+                    self.state.message = Some("Select a channel to receive these MIDI notes".into());
+                }
+            }
+            _ => {}
         }
         self.invalidate();
         true
@@ -1118,6 +1132,10 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
 
 /// The browser options menu, from the FL screenshot (spec §4).
 pub fn options_menu(s: &crate::app::State) -> Vec<PItem> {
+    crate::menu_layout::Menu::Browser.apply(default_options_menu(s))
+}
+
+pub(crate) fn default_options_menu(s: &crate::app::State) -> Vec<PItem> {
     let b = |label: &'static str, c: BCmd| PItem::new(label, Cmd::Browser(c));
     let t = |label: &'static str, k: &'static str| b(label, BCmd::Toggle(k)).mark(Mark::Check(view::opt(s, k)));
     let searching=!s.browser_search.is_empty();

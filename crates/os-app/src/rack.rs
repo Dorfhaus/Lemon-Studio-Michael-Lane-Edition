@@ -1547,6 +1547,10 @@ fn opt(s: &State, label: &'static str) -> PItem {
 }
 
 pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::Rack.popup(default_options_menu(s, x, y))
+}
+
+pub(crate) fn default_options_menu(s: &State, x: f32, y: f32) -> Popup {
     let r = &s.rack;
     let none = r.sel.is_empty();
     let off = |i: PItem, cond: bool| if cond { i.off() } else { i };
@@ -1704,20 +1708,26 @@ pub fn empty_menu(s: &State, x: f32, y: f32) -> Popup {
 
 /// Channel actions first, with pattern editing grouped in the second column.
 pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::RackChannel.popup(default_channel_menu(s, r, x, y, false))
+}
+
+pub(crate) fn default_channel_menu(s: &State, r: usize, x: f32, y: f32, catalog: bool) -> Popup {
     use crate::plugin_menu::{PlugCmd, Target};
-    let sampler = s.project.channels.get(r).is_some_and(|c| c.kind.is_sampler());
+    let channel = s.project.channels.get(r);
+    let sampler = catalog || channel.is_some_and(|c| c.kind.is_sampler());
     let piano_on = s.shown(Win::PianoRoll) && s.selected_channel == r;
     let mut items = vec![
         it("Piano roll", RCmd::PianoRoll(r)).key("F7").mark(Mark::Check(piano_on)),
         PItem::new("Plugin picker - replace instrument...", Cmd::Plugin(PlugCmd::Picker(Target::Replace(r)))),
         it("Graph editor", RCmd::Graph(r)),
+        it("Follow global pitch", RCmd::PitchFollow(r)).mark(Mark::Check(channel.is_some_and(|c| c.misc.main_pitch))),
         PItem::sep(),
     ];
     if sampler {
-        let misc=s.project.channels[r].misc;
+        let misc=channel.map(|c| c.misc).unwrap_or_default();
         items.extend([
             it("Load sample...", RCmd::LoadSample(r)),
-            {let entry=PItem::sub("Tempo / stretching",crate::loop_fit::channel_items(r));if s.project.channels[r].sample_path.is_some(){entry}else{entry.off()}},
+            {let entry=PItem::sub("Tempo / stretching",crate::loop_fit::channel_items(r));if channel.is_some_and(|c| c.sample_path.is_some()){entry}else{entry.off()}},
             it("Cut itself",RCmd::CutSelf(r)).mark(Mark::Check(misc.cut!=0 && misc.cut==misc.cut_by)),
             PItem::sep(),
         ]);
@@ -1726,7 +1736,12 @@ pub fn channel_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
         PItem::sub("Insert instrument", crate::plugin_menu::items(s, Target::Gen(Some(r)), true)),
         PItem::sub("Replace instrument", crate::plugin_menu::items(s, Target::Replace(r), true)),
     ]);
-    items.extend(crate::instrument_stack::menu(s,r));
+    let stack = crate::instrument_stack::menu(s, r);
+    if catalog && stack.is_empty() {
+        items.push(PItem::sub("Channel instruments", Vec::new()));
+    } else {
+        items.extend(stack);
+    }
     let paste = it("Paste", RCmd::Paste(r));
     items.extend([
         PItem::sep(),

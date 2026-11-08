@@ -72,8 +72,15 @@ pub enum Then {
     ExportFolder,
     OpenProject,
     LoadTheme,
+    ExportTheme,
+    ThemeWallpaper,
+    MixerSkinArt(crate::mixer_skin::Part),
+    ThemeFont,
     CommunityAvatar,
     PluginPicture(String),
+    ImportEffectChain,
+    ExportEffectChain(usize),
+    DeleteEffectChain(usize),
     /// The Arpeggiate dialog's folder button (spec: ui/piano-arpeggiate.md §1).
     ArpPattern,
     /// The Quantize dialog's folder button (spec: ui/piano-quantize.md §1).
@@ -222,6 +229,7 @@ pub enum Body {
     Normalize(crate::clip_normalize::Form),
     StripSilence(crate::strip_silence::Form),
     Warp(crate::warp::Form),
+    VocalAlign(crate::vocal_align::Form),
     Ai,
     Headphones(crate::headphones::Form),
     RoutePicker(crate::route_picker::Form),
@@ -258,6 +266,7 @@ pub enum DHit {
     Normalize(crate::clip_normalize::Command),
     StripSilence(crate::strip_silence::Command),
     Warp(crate::warp::Command),
+    VocalAlign(crate::vocal_align::Command),
     AiEnable,
     AiApprove(bool),
     AiRemember,
@@ -503,6 +512,7 @@ impl App {
         }
         self.modal_changed();
         let then = match m.body {
+            Body::VocalAlign(_) => { crate::vocal_align::closed(self); return; }
             Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_)=>{self.drag=None;return;},
             Body::Msg(m) => {
                 // Ok with Remember my choice ticked turns the message off; Cancel never does.
@@ -547,7 +557,7 @@ impl App {
         Some(match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Reply::Button(m.escape()),
             Body::File(_) => Reply::File(None),
-            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
+            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::VocalAlign(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
             Body::TimeSig(_) => Reply::Button(Answer::Cancel),
             Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => Reply::Button(Answer::Cancel),
         })
@@ -556,7 +566,7 @@ impl App {
     fn top_file(&mut self) -> Option<&mut FileDlg> {
         match &mut self.state.dialogs.last_mut()?.body {
             Body::File(f) => Some(f),
-            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::VocalAlign(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
         }
     }
 
@@ -629,7 +639,7 @@ impl App {
             DHit::Button(i) => {
                 let a = match &m.body {
                     Body::Msg(msg) => msg.buttons.get(i).copied().filter(|a| !(*a==Answer::Ok && matches!(msg.then,Then::StemChoose(_,0)))),
-                    Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+                    Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
                 };
                 if let Some(a) = a {
                     self.answer(Reply::Button(a));
@@ -642,6 +652,7 @@ impl App {
             DHit::NoteProperties(c)=>crate::piano_note_properties::command(self,c),
             DHit::Normalize(c)=>crate::clip_normalize::command(self,c),
             DHit::StripSilence(c)=>crate::strip_silence::command(self,c),
+            DHit::VocalAlign(c) => crate::vocal_align::command(self, c),
             DHit::Warp(c)=>crate::warp::command(self,c),
             DHit::CommandShortcut(i)=>{if let Body::Shortcuts(f)=&mut m.body{f.capture=Some(i);f.open=None;f.notice="Press a shortcut. Backspace clears; Esc cancels.".into();}}
             DHit::CommandPage=>{if let Body::Shortcuts(f)=&mut m.body{f.page=(f.page+1)%crate::shortcuts::COMMANDS.len().div_ceil(crate::shortcuts::COMMAND_PAGE);f.capture=None;}}
@@ -749,6 +760,7 @@ impl App {
             Body::NoteProperties(_)=>{crate::piano_note_properties::key(self,key,ctrl,alt);}
             Body::Normalize(_)=>{crate::clip_normalize::key(self,key,ctrl,alt);}
             Body::StripSilence(_)=>{crate::strip_silence::key(self,key,ctrl,alt);}
+            Body::VocalAlign(_) => { if matches!(key, Key::Named(NamedKey::Escape)) { self.answer(Reply::Button(Answer::Cancel)); } }
             Body::Warp(_)=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}else if matches!(key,Key::Named(NamedKey::Delete|NamedKey::Backspace)){crate::warp::command(self,crate::warp::Command::Delete);}}
             Body::ClipFx(..) | Body::Ai=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}}
             Body::RoutePicker(f)=>{
@@ -886,7 +898,7 @@ impl App {
     pub fn top_message(&self) -> Option<(String, String)> {
         match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Some((m.title.clone(), m.plain())),
-            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::Warp(_) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
         }
     }
 }

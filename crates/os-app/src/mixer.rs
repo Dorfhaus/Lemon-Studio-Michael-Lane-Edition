@@ -25,6 +25,7 @@ pub enum MHit {
     /// Anywhere on a strip that is not a control.
     Strip(u16),
     Led(u16),
+    Lock(u16),
     Polarity(u16),
     Swap(u16),
     Effects(u16),
@@ -65,6 +66,7 @@ pub enum MHit {
     EqGraph,
     OpenEq,
     EqPosition,
+    EqBypass,
 }
 
 /// Navigation only: destinations are resolved afresh so moved tracks keep working.
@@ -74,6 +76,15 @@ impl Section {
     pub const ALL: [Self; 5] = [Self::Drums, Self::Instruments, Self::Vocals, Self::Effects, Self::Buses];
     pub fn label(self) -> &'static str {
         match self { Self::Drums=>"DRUM", Self::Instruments=>"INST", Self::Vocals=>"VOX", Self::Effects=>"FX", Self::Buses=>"BUS" }
+    }
+    pub(crate) const fn visibility(self) -> &'static str {
+        match self {
+            Self::Drums => "visible_mixer-jump-drums",
+            Self::Instruments => "visible_mixer-jump-instruments",
+            Self::Vocals => "visible_mixer-jump-vocals",
+            Self::Effects => "visible_mixer-jump-effects",
+            Self::Buses => "visible_mixer-jump-buses",
+        }
     }
     pub fn target(self, s: &State) -> Option<u16> {
         let names: Vec<_> = s.project.mixer.iter().filter(|m| m.index > 0)
@@ -116,6 +127,7 @@ pub enum MCmd {
     RecordInput(u16,Option<crate::capture::Input>),
     ArmDisk(u16),
     Rename(u16),
+    ToggleLock(u16),
     Color(u16, Option<Rgb>),
     RandomColor(u16),
     Reset(u16),
@@ -140,6 +152,7 @@ pub enum MCmd {
     /// Route the selected tracks to `dst`: only = drop their other routes, side = sidechain (level 0).
     Route { dst: u16, only: bool, side: bool },
     QuickSidechain(u16),
+    SaveEffectChain(u16),
     /// Compact or full mixer view.
     Layout(u8),
     InspectorLeft,
@@ -183,11 +196,30 @@ pub const WIDE: u8 = 3;
 pub const COMPACT: u8 = 0;
 pub const TRADITIONAL: u8 = 10;
 pub const TRADITIONAL_LAYOUTS: [&str; 8] = ["Compact", "Compact 2", "Compact alt", "Wide", "Wide 2", "Wide 3", "Wide alt", "Extra large"];
-pub fn traditional(s: &State) -> bool {(TRADITIONAL..TRADITIONAL+8).contains(&s.mixer.layout)}
+pub fn view(s: &State) -> u8 {
+    if s.vintage_2005 { s.mixer.vintage_layout } else { s.mixer.layout }
+}
+
+pub fn traditional(s: &State) -> bool {
+    (TRADITIONAL..TRADITIONAL + 8).contains(&view(s))
+}
 pub fn set_layout(s: &mut State, layout: u8) {
-    let old=crate::views::mixer::strip_width(s);
+    if s.vintage_2005 {
+        let old = crate::views::mixer::strip_width(s);
+        s.mixer.vintage_layout = if layout == WIDE { WIDE } else { TRADITIONAL };
+        crate::settings_file::set_flag("vintage_full_mixer", s.mixer.vintage_layout == WIDE);
+        s.mixer_scroll *= crate::views::mixer::strip_width(s) / old;
+        return;
+    }
+    set_regular_layout(s, layout);
+}
+
+pub(crate) fn set_regular_layout(s: &mut State, layout: u8) {
+    let old = crate::views::mixer::strip_width(s);
     s.mixer.layout=if layout==crate::rack_mixer::VIEW{layout}else if layout==COMPACT {TRADITIONAL} else if (TRADITIONAL..TRADITIONAL+8).contains(&layout) {layout} else {WIDE};
-    if traditional(s) {s.mixer.traditional_layout=s.mixer.layout-TRADITIONAL;}
+    if (TRADITIONAL..TRADITIONAL + 8).contains(&s.mixer.layout) {
+        s.mixer.traditional_layout = s.mixer.layout - TRADITIONAL;
+    }
     s.mixer_scroll*=crate::views::mixer::strip_width(s)/old;
 }
 
@@ -210,6 +242,7 @@ pub struct MixerUi {
     pub sel: Vec<u16>,
     pub layout: u8,
     pub traditional_layout: u8,
+    pub vintage_layout: u8,
     pub rack_width:f32,
     pub rack_min_height:std::collections::BTreeMap<u16,f32>,
     pub rack_pages:std::collections::BTreeMap<u16,(usize,usize)>,
@@ -233,7 +266,7 @@ pub struct MixerUi {
 
 impl Default for MixerUi {
     fn default() -> Self {
-        MixerUi { insertion_hover:None,insertion_ready:false,slot_scroll: HashMap::new(), slots_shown: HashMap::new(), mini_eq: Default::default(), clipboard:None, recording: Default::default(), all_fx_bypassed: false, peak_view: Default::default(), sel: Vec::new(), layout: WIDE, traditional_layout: 3, rack_width:128.,rack_min_height:Default::default(),rack_pages:Default::default(),rack_auto_width:Default::default(),rack_errors:Default::default(), slot_names: HashMap::new(), pending: Vec::new(), meters: Vec::new(),
+        MixerUi { insertion_hover:None,insertion_ready:false,slot_scroll: HashMap::new(), slots_shown: HashMap::new(), mini_eq: Default::default(), clipboard:None, recording: Default::default(), all_fx_bypassed: false, peak_view: Default::default(), sel: Vec::new(), layout: WIDE, traditional_layout: 3, vintage_layout: if crate::settings_file::flag("vintage_full_mixer", false) { WIDE } else { TRADITIONAL }, rack_width:128.,rack_min_height:Default::default(),rack_pages:Default::default(),rack_auto_width:Default::default(),rack_errors:Default::default(), slot_names: HashMap::new(), pending: Vec::new(), meters: Vec::new(),
             meter_cfg: Default::default(), meter_at: None, solo: None, wheel_grab: None }
     }
 }
@@ -396,7 +429,7 @@ pub fn select(s: &mut State, n: u16, ctrl: bool) {
 
 pub(crate) fn fader_group(s:&State,t:u16)->Vec<(u16,f64)> {
     let group=if selected(s).contains(&t){selected(s)}else{vec![t]};
-    group.into_iter().filter_map(|n|track(s,n).map(|m|(n,m.volume.unwrap_or(0.8)))).collect()
+    group.into_iter().filter_map(|n|track(s,n).filter(|m| !m.edit_locked).map(|m|(n,m.volume.unwrap_or(0.8)))).collect()
 }
 pub(crate) fn move_faders(s:&mut State,group:&[(u16,f64)],leader:u16,start:f64,delta:f64)->f64{
     let end=(start+delta).clamp(0.,1.);
@@ -414,8 +447,85 @@ pub(crate) fn snapshot_faders(s:&mut State,group:&[(u16,f64)]) {
     crate::history::record(s,"Mixer group volume",crate::history::Snap::Several(snaps));
 }
 
+pub const LOCK_MESSAGE: &str = "Mixer channel is locked. Use its padlock to make changes.";
+
+pub fn locked(s: &State, track: u16) -> bool {
+    s.project.mixer.get(usize::from(track)).filter(|m| m.index == track)
+        .or_else(|| self::track(s, track)).is_some_and(|m| m.edit_locked)
+}
+
+fn protected_routes(s: &State, t: u16) -> bool {
+    locked(s, t)
+        || track(s, t).is_some_and(|m| m.routes.iter().any(|&dst| locked(s, dst)))
+        || s.project.mixer.iter().any(|m| m.edit_locked && m.routes.contains(&t))
+}
+
+pub fn locked_effect(s: &State, key: usize) -> bool {
+    crate::plugins::fx_of(key).is_some_and(|(t, _)| locked(s, t))
+}
+
+pub fn locked_knob(s: &State, id: crate::knobs::KnobId) -> bool {
+    use crate::knobs::KnobId::*;
+    match id {
+        MixPan(t) | MixSep(t) | SlotMix(t, _) | Eq(t, ..) | Strip(t, _) => locked(s, t),
+        Send(src, dst) => locked(s, src) || locked(s, dst),
+        _ => false,
+    }
+}
+
+fn locked_hit(s: &State, hit: MHit) -> bool {
+    match hit {
+        MHit::Led(t) | MHit::Polarity(t) | MHit::Swap(t) | MHit::Effects(t) | MHit::StripBypass(t)
+        | MHit::Disk(t) | MHit::Input(t) | MHit::CompProfile(t) | MHit::TuneLearn(t)
+        | MHit::TunePower(t) | MHit::DriveType(t) | MHit::TrackSlot(t, _) => locked(s, t),
+        MHit::Route(dst) | MHit::Unroute(dst) => locked(s, dst) || locked(s, s.selected_mixer),
+        MHit::SlotName(_) | MHit::SlotArrow(_) | MHit::SlotLed(_) | MHit::AddSlot
+        | MHit::EqGraph | MHit::OpenEq | MHit::EqPosition | MHit::EqBypass => locked(s, s.selected_mixer),
+        MHit::MasterAssistant | MHit::MasterAssistantToggle => locked(s, 0),
+        _ => false,
+    }
+}
+
+pub(crate) fn locked_action(s: &State, action: &Action) -> bool {
+    match *action {
+        Action::Mix(hit) => locked_hit(s, hit),
+        Action::Fader(t) => locked(s, t),
+        Action::Knob(id) => locked_knob(s, id),
+        Action::GenericValue(key, _) => locked_effect(s, key),
+        _ => false,
+    }
+}
+
+fn toggle_lock(app: &mut App, t: u16) -> Option<String> {
+    let was = track(&app.state, t)?.edit_locked;
+    crate::history::record(&mut app.state, "Mixer channel lock", crate::history::Snap::MixerLock(t, was));
+    track_mut(&mut app.state, t)?.edit_locked = !was;
+    if !was { close_locked_editors(app); }
+    app.invalidate();
+    Some(format!("{} {}", name(&app.state, t), if was { "unlocked" } else { "locked" }))
+}
+
+pub(crate) fn close_locked_editors(app: &mut App) {
+    if app.state.params.generic_editor.is_some_and(|key| locked_effect(&app.state, key)) {
+        app.state.params.generic_editor = None;
+    }
+    #[cfg(plugin_windows)]
+    {
+        let keys: Vec<_> = app.plugins.hosted.keys().copied()
+            .filter(|&key| locked_effect(&app.state, key)).collect();
+        for key in keys {
+            app.plugins.close_if_open(key);
+            #[cfg(any(windows, target_os = "macos"))]
+            app.plugins.close_rack(key);
+            app.state.hide(Win::Hosted(key));
+        }
+    }
+}
+
 /// Left click (or press) on a mixer control.
 pub fn hit(app: &mut App, h: MHit) -> Option<String> {
+    if let MHit::Lock(t) = h { return toggle_lock(app, t); }
+    if locked_hit(&app.state, h) { return Some(LOCK_MESSAGE.into()); }
     if h==MHit::MasterAssistant {crate::master_assistant::open(app,false);return None;}
     if h==MHit::MasterAssistantToggle {crate::master_assistant::open(app,true);return None;}
     if h==MHit::Headphones {crate::headphones::open(app);return None;}
@@ -432,7 +542,10 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
     let at = app.mouse;
     let s = &mut app.state;
     match h {
-        MHit::View(mode)=>{set_layout(s,mode);None}
+        MHit::View(mode) => {
+            set_layout(s, mode);
+            None
+        }
         MHit::Input(t)=>{s.playlist.popup=Some(crate::mixer_recording::input_menu(s,t,at.0,at.1+10.));None}
         MHit::Disk(_) | MHit::Headphones | MHit::HeadphonesToggle | MHit::MasterAssistant | MHit::MasterAssistantToggle=>None,
         MHit::TunePower(n)=>{
@@ -497,7 +610,7 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
             if s.project.mixer.iter().all(|m| !m.slots_enabled) {
                 let snaps=s.project.mixer.iter().map(|m|crate::history::Snap::Effects(m.index,m.slots_enabled,s.mixer.all_fx_bypassed)).collect();
                 crate::history::record(s,"Enable all mixer effects",crate::history::Snap::Several(snaps));
-                for m in &mut s.project.mixer {m.slots_enabled=true;}
+                for m in &mut s.project.mixer {if !m.edit_locked {m.slots_enabled=true;}}
                 s.mixer.all_fx_bypassed=false;
             } else {
                 crate::history::record(s, "All mixer effects bypass", crate::history::Snap::AllEffects(s.mixer.all_fx_bypassed));
@@ -516,7 +629,7 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
         MHit::Effects(n) => {
             let group=if is_selected(s,n){selected(s)}else{select(s,n,ctrl);selected(s)};let enabled=track(s,n)?.slots_enabled;let global=s.mixer.all_fx_bypassed;
             let snaps=group.iter().filter_map(|t|track(s,*t).map(|m|crate::history::Snap::Effects(*t,m.slots_enabled,global))).collect();crate::history::record(s,"Selected mixer effects",crate::history::Snap::Several(snaps));s.mixer.all_fx_bypassed=false;
-            for t in group{if let Some(m)=track_mut(s,t){m.slots_enabled=global||!enabled;}}changed(s);None
+            for t in group{if !locked(s,t) && let Some(m)=track_mut(s,t){m.slots_enabled=global||!enabled;}}changed(s);None
         }
         MHit::Unroute(dst) => {
             let cur = s.selected_mixer;
@@ -577,7 +690,7 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
             changed(s);
             None
         }
-        MHit::Scale | MHit::EqGraph | MHit::OpenEq | MHit::EqPosition => None,
+        MHit::Lock(_) | MHit::Scale | MHit::EqGraph | MHit::OpenEq | MHit::EqPosition | MHit::EqBypass => None,
     }
 }
 
@@ -609,6 +722,7 @@ pub fn eq_graph_hint(s: &State, g: os_ui::Rect, x: f32) -> String {
 
 /// Right click on a mixer control. Returns false when it is not handled here (knob menus).
 pub fn right(app: &mut App, h: MHit) -> bool {
+    if locked_hit(&app.state, h) { app.state.message = Some(LOCK_MESSAGE.into()); return true; }
     if let MHit::TrackSlot(t,i)=h {
         app.state.selected_mixer=t;
         let s=&mut app.state;
@@ -673,6 +787,7 @@ pub fn right(app: &mut App, h: MHit) -> bool {
 
 /// Middle click: rename a filled slot (§7).
 pub fn middle(app: &mut App, h: MHit) -> bool {
+    if locked_hit(&app.state, h) { app.state.message = Some(LOCK_MESSAGE.into()); return true; }
     if let MHit::SlotName(i) = h {
         let t = app.state.selected_mixer;
         if slot_name(&app.state, t, i).is_some() {
@@ -720,6 +835,7 @@ pub fn solo(s: &mut State, n: u16) {
 /// previous state after solo" on, to the states from before the first solo (a solo moved to another track keeps them;
 /// spec: ui/settings-choices.md "Miscellaneous").
 pub fn solo_with(s: &mut State, n: u16, alt: bool) {
+    if locked(s, n) { return; }
     let group=if is_selected(s,n){selected(s)}else{vec![n]};
     let mut keep=Vec::new();for t in group{keep.extend(reach(s,t,true));if alt{keep.extend(reach(s,t,false));}}
     keep.sort_unstable();keep.dedup();
@@ -727,21 +843,24 @@ pub fn solo_with(s: &mut State, n: u16, alt: bool) {
     let soloed = audible_set(s, &keep);
     // A solo still in effect (the last solo's set, untouched since) keeps the states saved when it started.
     let in_solo = s.mixer.solo.as_ref().is_some_and(|(k, _)| audible_set(s, k));
-    let before = match s.mixer.solo.take() {
-        Some((_, b)) if in_solo => b,
+    let before = match &s.mixer.solo {
+        Some((_, b)) if in_solo => b.clone(),
         _ => s.project.mixer.iter().map(|m| (m.index, m.enabled)).collect(),
     };
     let back = soloed && in_solo && crate::prefs::check(&crate::prefs::RESTORE_AFTER_SOLO);
-    for m in s.project.mixer.iter_mut() {
-        m.enabled = if back {
-            before.iter().find(|b| b.0 == m.index).is_none_or(|b| b.1)
-        } else {
-            soloed || keep.contains(&m.index)
-        };
+    let enabled = |track| if back {
+        before.iter().find(|b| b.0 == track).is_none_or(|b| b.1)
+    } else {
+        soloed || keep.contains(&track)
+    };
+    if s.project.mixer.iter().any(|m| m.edit_locked && m.enabled != enabled(m.index)) {
+        s.message = Some(LOCK_MESSAGE.into());
+        return;
     }
-    if !soloed {
-        s.mixer.solo = Some((keep, before));
+    for m in &mut s.project.mixer {
+        m.enabled = enabled(m.index);
     }
+    s.mixer.solo = (!soloed).then_some((keep, before));
     changed(s);
 }
 
@@ -806,11 +925,15 @@ pub fn route_channels(s: &mut State, dst: u16, spread: bool) -> Option<String> {
         if t > max {
             break;
         }
+        if locked(s, t) || locked(s, s.project.channels[r].mixer_track) { continue; }
         s.project.channels[r].mixer_track = t;
         if spread || k == 0 {
             name_after(s, t, r);
         }
         moved += 1;
+    }
+    if moved == 0 && (locked(s, dst) || rows.iter().any(|&r| locked(s, s.project.channels[r].mixer_track))) {
+        return Some(LOCK_MESSAGE.into());
     }
     s.mixer.sel.clear();
     s.selected_mixer = dst;
@@ -829,11 +952,12 @@ pub fn route_free(s: &mut State, rows: &[usize]) -> Option<String> {
     let mut last = None;
     for &r in rows {
         let Some(cur) = s.project.channels.get(r).map(|c| c.mixer_track) else { continue };
+        if locked(s, cur) { continue; }
         let alone = cur != 0 && cur <= inserts(s) && !s.project.channels.iter().enumerate().any(|(i, c)| i != r && c.mixer_track == cur);
         let t = if alone {
             cur
         } else {
-            match (1..=inserts(s)).find(|t| !s.project.channels.iter().any(|c| c.mixer_track == *t)) {
+            match (1..=inserts(s)).find(|t| !locked(s, *t) && !s.project.channels.iter().any(|c| c.mixer_track == *t)) {
                 Some(t) => t,
                 None => add_track(s, None),
             }
@@ -898,6 +1022,7 @@ pub fn trim_list(s: &State, non_empty: bool) -> Vec<u16> {
 /// Deletes the tracks in `gone`: the others close up in order, channels and sends follow them, the mixer gets
 /// shorter (spec: ui/mixer-track-commands.md §4).
 fn remove_tracks(s: &mut State, gone: &[u16]) -> Option<String> {
+    if gone.iter().any(|&t| protected_routes(s, t)) { return Some(LOCK_MESSAGE.into()); }
     if gone.is_empty() {
         return Some("No unused mixer tracks".into());
     }
@@ -948,9 +1073,14 @@ fn remove_tracks(s: &mut State, gone: &[u16]) -> Option<String> {
 /// Routes the selected tracks to `dst` (§5): a normal route at unity, a sidechain at level 0, `only` drops their
 /// other routes.
 pub fn route(s: &mut State, dst: u16, only: bool, side: bool) -> Option<String> {
+    if locked(s, dst) { return Some(LOCK_MESSAGE.into()); }
     let mut msg = None;
     for src in selected(s) {
         if src == dst || src == 0 {
+            continue;
+        }
+        if locked(s, src) || only && track(s, src).is_some_and(|m| m.routes.iter().any(|&t| locked(s, t))) {
+            msg = Some(LOCK_MESSAGE.into());
             continue;
         }
         if makes_loop(s, src, dst) {
@@ -1112,6 +1242,7 @@ pub fn reorder(s: &mut State, from: u16, to: u16, remember: bool) {
 
 /// Stable block movement of the selected inserts, retaining routing and plugin identity.
 pub fn reorder_selected(s:&mut State,from:u16,to:u16){
+    if locked(s, from) || selected(s).into_iter().any(|t| locked(s, t)) { return; }
  if from==0||to==0||from>inserts(s)||to>inserts(s)||s.rec.audio||s.rec.recording()||!s.mixer.recording.live.is_empty(){return;}
  let mut group=if is_selected(s,from){selected(s)}else{vec![from]};group.retain(|t|*t>0&&*t<=inserts(s));group.sort_unstable();group.dedup();if group.contains(&to){return;}
  let mut order:Vec<_>=(1..=inserts(s)).filter(|t|!group.contains(t)).collect();let Some(at)=order.iter().position(|t|*t==to)else{return};let at=at+usize::from(to>from);order.splice(at..at,group);
@@ -1162,6 +1293,7 @@ fn move_track(s:&mut State,n:u16,d:i32)->Option<String>{let group=if is_selected
 
 /// Deletes track `n`: later tracks move one left, a default track is added at the end (§6.1 Delete).
 fn delete_track(s: &mut State, n: u16) -> Option<String> {
+    if protected_routes(s, n) { return Some(LOCK_MESSAGE.into()); }
     if n == 0 || n > inserts(s) {
         return Some("The master track can't be deleted".into());
     }
@@ -1246,7 +1378,14 @@ const COLORS: [(&str, u32); 8] = [
 
 /// Track menu (right click on a strip), §6.1.
 pub fn track_menu(s: &State, n: u16, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::MixerTrack.popup(default_track_menu(s, n, x, y))
+}
+
+pub(crate) fn default_track_menu(s: &State, n: u16, x: f32, y: f32) -> Popup {
     let mut items = vec![PItem::head(format!("Mixer track ({})", name(s, n)))];
+    if locked(s, n) || crate::workspace_visibility::shown("visible_mixer-channel-lock") {
+        items.push(PItem::new(if locked(s, n) { "Unlock channel" } else { "Lock channel" }, Cmd::Mixer(MCmd::ToggleLock(n))));
+    }
     items.extend(track_items(s, n));
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
@@ -1257,6 +1396,7 @@ fn track_items(s: &State, n: u16) -> Vec<PItem> {
     colors.extend(COLORS.iter().map(|&(l, c)| PItem::new(l, mx(MCmd::Color(n, Some(Rgb::new((c >> 16) as u8, (c >> 8) as u8, c as u8)))))));
     vec![
         PItem::new("Rename, color and icon...", mx(MCmd::Rename(n))).key("F2"),
+        PItem::new("Save effect chain…", mx(MCmd::SaveEffectChain(n))),
         PItem::sub("Change color...", colors),
         PItem::not_yet("Change icon..."),
         PItem::sep(),
@@ -1291,6 +1431,10 @@ fn trim_items(s: &State) -> Vec<PItem> {
 
 /// Mixer options (title-bar ▸), §6.2: its own items, then the track menu's.
 pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::Mixer.popup(default_options_menu(s, x, y))
+}
+
+pub(crate) fn default_options_menu(s: &State, x: f32, y: f32) -> Popup {
     let mut items = vec![
         PItem::head("Options"),
         PItem::new("Inspector on left", Cmd::Mixer(MCmd::InspectorLeft)).mark(Mark::Check(inspector_left())),
@@ -1313,6 +1457,12 @@ pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
 
 /// The compact and full views also available on the mixer toolbar.
 pub fn layout_menu(s: &State, x: f32, y: f32) -> Popup {
+    if s.vintage_2005 {
+        return Popup { x, y, items: vec![
+            PItem::new("Vintage compact mixer", Cmd::Mixer(MCmd::Layout(TRADITIONAL))).mark(Mark::Radio(view(s) == TRADITIONAL)),
+            PItem::new("Full Original mixer — vintage", Cmd::Mixer(MCmd::Layout(WIDE))).mark(Mark::Radio(view(s) == WIDE)),
+        ], sub: None, scroll: [0; 2], cascade: Vec::new() };
+    }
     let mut items = vec![PItem::new("Channel Strip mixer",Cmd::Mixer(MCmd::Layout(crate::rack_mixer::VIEW)))];
     if traditional(s) {
         for (i,label) in TRADITIONAL_LAYOUTS.iter().enumerate() {
@@ -1335,6 +1485,10 @@ pub fn effect_menu(s: &State, slot: u8, x: f32, y: f32) -> Popup {
 
 /// Filled slot ▸ (§7.2).
 pub fn slot_menu(s: &State, slot: u8, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::MixerSlot.popup(default_slot_menu(s, slot, x, y))
+}
+
+pub(crate) fn default_slot_menu(s: &State, slot: u8, x: f32, y: f32) -> Popup {
     let mx = |c: MCmd| Cmd::Mixer(c);
     let replace = crate::plugin_menu::items(s, crate::plugin_menu::Target::Fx(Some(slot)), true);
     let items = vec![
@@ -1398,10 +1552,27 @@ pub fn sidechain_items(s: &State, t:u16, slot: u8) -> Vec<PItem> {
 // Commands
 
 pub fn run(app: &mut App, c: MCmd) -> Option<String> {
+    let s = &app.state;
+    let blocked = match c {
+        MCmd::Color(t, _) | MCmd::RandomColor(t) => targets(s, t).into_iter().any(|t| locked(s, t)),
+        MCmd::Reset(t) | MCmd::ResetRouting(t) | MCmd::UnrouteTo(t) =>
+            targets(s, t).into_iter().any(|t| protected_routes(s, t))
+                || matches!(c, MCmd::Reset(_) | MCmd::ResetRouting(_)) && locked(s, 0),
+        MCmd::Rename(t) | MCmd::MoveLeft(t) | MCmd::MoveRight(t) | MCmd::Separator(t) | MCmd::Solo(t)
+        | MCmd::AltSolo(t) | MCmd::ChannelLayout(t, _) | MCmd::TuneSetting(t, ..) | MCmd::DriveType(t, _)
+        | MCmd::CompProfile(t, _) | MCmd::RecordInput(t, _) | MCmd::ArmDisk(t) | MCmd::AudioEditor(t)
+        | MCmd::AudioEditorRecord(t) | MCmd::SlotSidechain(t, ..) => locked(s, t),
+        MCmd::AddEffect(..) | MCmd::SlotDelete(_) | MCmd::SlotMove(..) | MCmd::SlotRename(_)
+        | MCmd::SlotView(_) => locked(s, s.selected_mixer),
+        _ => false,
+    };
+    if blocked { return Some(LOCK_MESSAGE.into()); }
+    if let MCmd::ToggleLock(t) = c { return toggle_lock(app, t); }
     if let MCmd::Rack(c)=c{return crate::rack_mixer::run(app,c);}
     if app.audio_rec.is_some()&&matches!(c,MCmd::MoveLeft(_)|MCmd::MoveRight(_)|MCmd::Delete(_)|MCmd::InsertOne(_)|MCmd::Trim{..}){return Some("Stop the take before moving or removing mixer tracks".into());}
     match c {
         MCmd::QuickSidechain(dst)=>return crate::quick_sidechain::run(app,dst),
+        MCmd::SaveEffectChain(track) => return crate::plugin_picker::chains::capture(app, track),
         MCmd::Detach=>{app.act(Action::DetachWin(Win::Mixer));return None;},
         MCmd::RecordInput(t,i)=>return app.set_mixer_input(t,i),
         MCmd::ArmDisk(t)=>return app.arm_mixer_disk(t),
@@ -1414,7 +1585,7 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
         crate::history::record(s,"Mixer track color",crate::history::Snap::Several(snaps));
     }
     let msg = match c {
-        MCmd::RecordInput(..)|MCmd::ArmDisk(_)=>None,
+        MCmd::RecordInput(..)|MCmd::ArmDisk(_)|MCmd::ToggleLock(_)=>None,
         MCmd::TuneSetting(n,k,v)=>{
             if !(1..=3).contains(&k) {return None;}
             let old=track(s,n)?.tune;
@@ -1429,7 +1600,7 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
             changed(s);
             None
         }
-        MCmd::Rack(_) | MCmd::Detach | MCmd::QuickSidechain(_) => None,
+        MCmd::Rack(_) | MCmd::Detach | MCmd::QuickSidechain(_) | MCmd::SaveEffectChain(_) => None,
         MCmd::ChannelLayout(n,p) => {
             if n==0 {return None;}
             let old=track(s,n)?.channel_layout;
@@ -1476,7 +1647,7 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
         MCmd::RemoveTeslasNow => {
             let gone = teslas(s);
             for &(t, k) in &gone {
-                clear_slot(s, t, k);
+                if !locked(s, t) { clear_slot(s, t, k); }
             }
             changed(s);
             Some(match gone.len() {
@@ -1544,7 +1715,10 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
             Some(format!("Inserted {}", name(s, n)))
         }
         MCmd::Route { dst, only, side } => route(s, dst, only, side),
-        MCmd::Layout(mode) => {set_layout(s,mode);None},
+        MCmd::Layout(mode) => {
+            set_layout(s, mode);
+            None
+        },
         MCmd::Separator(n) => {
             let mut names: Vec<String> = crate::prefs::text("mixer_separators").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
             let key = name(s, n);
@@ -1677,9 +1851,12 @@ fn copy_channel(app:&mut App,n:u16)->Option<String> {
 }
 
 fn paste_channel(app:&mut App,n:u16)->Option<String> {
+    if protected_routes(&app.state, n) { return Some(LOCK_MESSAGE.into()); }
     if app.state.rec.audio {return Some("Stop the take before pasting a mixer channel".into());}
     let Some(mut c)=app.state.mixer.clipboard.clone() else {return Some("Copy a mixer channel first (Ctrl+C)".into());};
     if n==0 {return Some("Paste onto an insert channel, not the master".into());}
+    if c.track.routes.iter().any(|&dst| locked(&app.state, dst)) { return Some(LOCK_MESSAGE.into()); }
+    c.track.edit_locked = false;
     if c.track.routes.iter().any(|&dst|dst==n || makes_loop(&app.state,n,dst)) {
         return Some("Cannot paste this routing here: it would create a feedback loop".into());
     }
@@ -1964,6 +2141,7 @@ impl App {
     }
 
     pub(crate) fn open_fx(&mut self, track: u16, slot: u8) {
+        if locked(&self.state, track) { self.state.message = Some(LOCK_MESSAGE.into()); return; }
         let key = crate::plugins::fx_key(track, slot);
         if !self.plugins.hosted.contains_key(&key) {
             self.state.message = Some("This slot's plugin is not hosted (no Lemon Studio version of it yet)".into());

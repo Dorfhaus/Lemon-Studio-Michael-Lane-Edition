@@ -69,7 +69,15 @@ pub(super) fn paint_synth(u:&mut Ui,p:&WaveParams,cycles:[usize;2],hint:&str){
   let br=crate::sound_browser::button(o);dropdown(u.c,br,&source_name(u.m,&tables,o),theme_ink(),u.hover(br));
   if detail_open(p,o) {
    u.select(source,Rect::new(x+24.,196.,180.,30.),color);u.select(source+1,Rect::new(x+218.,196.,w-242.,30.),color);
-   for (i,(k,name)) in [(base+7,"Bend"),(phase+1,"Random")].into_iter().enumerate(){dial(u,k,x+110.+190.*i as f32,285.,name,color);}
+   if crate::visibility::shown(1) {
+    let controls = [(base+7,"Bend"),(phase+1,"Random"),(A_PHASE_FM+o*2,"Phase FM"),(A_FM_RATIO+o*2,"Ratio"),(B_RING,"Ring A×B")];
+    let count = if o == 0 { 4 } else { 5 };
+    for (i, &(k, name)) in controls[..count].iter().enumerate() {
+     u.dial(k, x+51.+(w-102.)*i as f32/(count-1) as f32, 284., name, color, 22.);
+    }
+   } else {
+    for (i,(k,name)) in [(base+7,"Bend"),(phase+1,"Random")].into_iter().enumerate(){dial(u,k,x+110.+190.*i as f32,285.,name,color);}
+   }
   }else{surface(u,&tables,o,Rect::new(x+12.,180.,w-24.,166.),color);}
   for (i,(k,name)) in [(base+1,"Position"),(base+3,"Tune"),(base+4,"Unison"),(base+5,"Detune"),(phase+2,"Blend")].into_iter().enumerate(){dial(u,k,x+56.+(w-108.)*i as f32/4.,415.,name,color);}
   for (i,(k,name)) in [(source+2,"Warp"),(phase,"Phase"),(base+6,"Pan"),(base+2,"Level")].into_iter().enumerate(){dial(u,k,x+56.+(w-128.)*i as f32/3.,550.,name,color);}

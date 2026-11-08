@@ -62,6 +62,9 @@ impl Layout {
     }
     pub fn of(v: &ViewState) -> Self {
         let mut l = Self::new(v.size, v.ui_scale);
+        if v.details_open || v.harsh_open {
+            l.plot.h = (l.plot.h - 116. * l.scale).max(100.);
+        }
         if v.range_db > 0. {
             l.range = v.range_db;
         }
@@ -106,12 +109,32 @@ impl Layout {
     }
     pub fn panel_for(&self, s: &Settings, v: &ViewState, expanded: bool) -> Rect {
         let mut r = self.panel(s.bands[v.selected.min(6)].freq, expanded);
-        let node = self.node(s, v.selected.min(6));
-        let z = r.w / if expanded { 610. } else { 452. };
-        if !v.harsh_open && r.outset(12. * z).contains(node.0, node.1) {
-            r.y = (node.1 - r.h - 24. * z).max(self.plot.y + 38. * z);
-        }
+        r.y = self.plot.bottom() + 24. * self.scale;
         r
+    }
+    fn band_card(&self, settings: &Settings, k: usize, drawer_open: bool) -> Rect {
+        let s = self.scale;
+        let (x, y) = self.node(settings, k);
+        let y = y.clamp(self.plot.y, self.plot.bottom());
+        let (w, h) = (218. * s, 48. * s);
+        let left = self.plot.x + 3. * s;
+        let right = (self.plot.right() - w - 3. * s).max(left);
+        let top = self.plot.y + 32. * s;
+        let bottom = if drawer_open { self.plot.bottom() } else { self.size.1 - 30. * s };
+        let gap = 15. * s;
+        let above = y - h - gap;
+        let below = y + gap;
+        let center = (x - w / 2.).clamp(left, right);
+        if settings.bands[k].db >= 0. && above >= top {
+            Rect::new(center, above, w, h)
+        } else if below + h <= bottom {
+            Rect::new(center, below, w, h)
+        } else {
+            // A deep cut can sit right on the graph floor. Move sideways to keep its
+            // center and the immediately surrounding curve clear.
+            let side = if self.plot.right() - x > x - self.plot.x { x + gap } else { x - w - gap };
+            Rect::new(side.clamp(left, right), (y - h * 0.5).clamp(top, (bottom - h).max(top)), w, h)
+        }
     }
     pub fn ring(&self, s: &Settings, v: &ViewState, expanded: bool) -> (f32, f32, f32) {
         let r = self.panel_for(s, v, expanded);
@@ -390,6 +413,10 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         false,
         s,
     );
+    button(
+        c, &mut hits, Rect::new(w - 449. * s, 6. * s, 89. * s, 22. * s),
+        Target::Details, "Band controls", v.details_open, s,
+    );
     c.fill_rrect(l.plot.outset(1. * s), 5. * s, Color::rgb(0x070d10));
     c.fill_rect_gradient(l.plot, Color::rgb(0x253137), Color::rgb(0x141b1f), 4. * s);
     c.push_clip(l.plot.inset(1. * s));
@@ -640,8 +667,14 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         c.stroke_rrect(r, 0., 1., Color::rgb(0xf0d465));
     }
     c.pop_clip();
-    if v.show_dynamics || v.harsh_open {
+    if v.harsh_open || (v.show_dynamics && v.details_open) {
         panel(c, look, &v, &l, &mut hits);
+    }
+    if v.show_dynamics && !v.harsh_open && !v.hide_band_card {
+        let k = v.selected.min(BANDS - 1);
+        if settings.bands[k].kind != 0 {
+            band_card(c, &mut hits, &v, &l, settings, k);
+        }
     }
     // Familiar Lemon footer, kept slim so the graph remains the main editing surface.
     let fy = h - 26. * s;
@@ -691,6 +724,87 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     }
     hits
 }
+fn card_control(c: &mut Canvas, hits: &mut Vec<Hit>, v: &ViewState, r: Rect, target: Target, on: bool) -> Color {
+    let hovered = v.mouse.is_some_and(|(x, y)| r.contains(x, y));
+    if on || hovered {
+        c.fill_rrect(r, 4., Color::rgb(if on { 0xefd065 } else { 0x38444e }));
+    }
+    hits.push(Hit { r, t: target });
+    Color::rgb(if on { 0x222323 } else { 0xd0d9e0 })
+}
+
+fn band_card(c: &mut Canvas, hits: &mut Vec<Hit>, v: &ViewState, l: &Layout, settings: &Settings, k: usize) {
+    let r = l.band_card(settings, k, v.details_open);
+    let s = l.scale;
+    let band = settings.bands[k];
+    let color = band_color(k);
+    let face = Color::rgb(0x21282f);
+    let cell = |x: f32, y: f32, w: f32| Rect::new(r.x + x * s, r.y + y * s, w * s, 19. * s);
+    let (x, y) = l.node(settings, k);
+    if x > r.x + 10. * s && x < r.right() - 10. * s {
+        let edge = if y < r.y { r.y } else { r.bottom() };
+        let tip = if y < r.y { edge - 5. * s } else { edge + 5. * s };
+        c.fill_polygon(&[(x - 6. * s, edge), (x + 6. * s, edge), (x, tip)], color.with_alpha(165));
+    }
+    c.fill_rrect(r.outset(2. * s), 8. * s, Color::rgb(0x080c10).with_alpha(125));
+    c.fill_rect_gradient(r, Color::rgb(0x303941), face, 6. * s);
+    c.stroke_rrect(r.inset(0.5 * s), 6. * s, s, color.with_alpha(150));
+    hits.push(Hit { r, t: Target::BandCard });
+
+    let power = cell(5., 4., 22.);
+    let on = settings.audible(k);
+    let ink = card_control(c, hits, v, power, Target::Switch(k), on);
+    c.arc(power.cx(), power.cy() + s, 4.5 * s, -PI / 3., 5. * PI / 3., 1.2 * s, ink);
+    c.line(power.cx(), power.cy() - 6. * s, power.cx(), power.cy() - s, 1.3 * s, ink);
+
+    let freq = cell(30., 4., 105.);
+    let ink = card_control(c, hits, v, freq, Target::Freq(k), false);
+    txt(c, freq, 11., s, ink, &params::hz_text(band.hz()));
+
+    let phones = cell(164., 4., 24.);
+    let ink = card_control(c, hits, v, phones, Target::Audition(k), v.audition == Some(k));
+    let (cx, cy) = (phones.cx(), phones.cy());
+    c.arc(cx, cy, 5. * s, PI, PI, 1.4 * s, ink);
+    for x in [cx - 6. * s, cx + 3. * s] {
+        c.fill_rrect(Rect::new(x, cy - s, 3. * s, 6. * s), s, ink);
+    }
+
+    let delete = cell(191., 4., 22.);
+    let ink = card_control(c, hits, v, delete, Target::DeleteBand, false);
+    let (cx, cy) = (delete.cx(), delete.cy());
+    c.line(cx - 3.5 * s, cy - 3.5 * s, cx + 3.5 * s, cy + 3.5 * s, 1.3 * s, ink);
+    c.line(cx + 3.5 * s, cy - 3.5 * s, cx - 3.5 * s, cy + 3.5 * s, 1.3 * s, ink);
+
+    let shape = cell(5., 25., 86.);
+    let ink = card_control(c, hits, v, shape, Target::BandMenu(k), false);
+    shape_icon(c, shape.x + 4. * s, shape.cy(), s, band.kind, color);
+    let name = if band.kind == eq::PEAKING { "Bell" } else { params::TYPE_NAMES[band.kind.clamp(0, 7) as usize] };
+    txt(c, Rect::new(shape.x + 24. * s, shape.y, shape.w - 28. * s, shape.h), 9., s, ink, name);
+    let gain = cell(92., 25., 61.);
+    if has_level(band.kind) {
+        let ink = card_control(c, hits, v, gain, Target::Fader(k), false);
+        txt(c, gain, 10., s, ink, &params::db_text(band.db));
+    }
+    let q = cell(154., 25., 59.);
+    let ink = card_control(c, hits, v, q, Target::Q(k), false);
+    txt(c, q, 9., s, ink, &format!("Q {:.2}", q_of(band.width)));
+}
+
+fn shape_icon(c: &mut Canvas, x: f32, y: f32, scale: f32, kind: i32, ink: Color) {
+    let points = match kind {
+        1 => [-2., -2., -2., -1., 1., 3., 4.],
+        2 => [4., 3., 0., -4., 0., 3., 4.],
+        3 => [4., 3., 1., -1., -2., -2., -2.],
+        4 => [-2., -2., -1., 4., -1., -2., -2.],
+        5 => [-4., -4., -3., -1., 0., 0., 0.],
+        6 => [2., 2., 0., -4., 0., 2., 2.],
+        7 => [0., 0., 0., -1., -3., -4., -4.],
+        _ => [0.; 7],
+    };
+    let line: [(f32, f32); 7] = std::array::from_fn(|i| (x + i as f32 * 2.6 * scale, y + points[i] * scale));
+    c.polyline(&line, 1.4 * scale, ink);
+}
+
 fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<Hit>) {
     let k = v.selected.min(6);
     let cfg = eq::dynamic::Config::load(look.extra, false);

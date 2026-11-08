@@ -184,7 +184,12 @@ pub const ARP_ORDER: usize = 366;
 pub const ARP_RATE: usize = 367;
 pub const ARP_OCT: usize = 368;
 pub const ARP_GATE: usize = 369;
-pub const COUNT:usize=370;
+pub const A_PHASE_FM: usize = 370;
+pub const A_FM_RATIO: usize = 371;
+pub const B_PHASE_FM: usize = 372;
+pub const B_FM_RATIO: usize = 373;
+pub const B_RING: usize = 374;
+pub const COUNT:usize=375;
 pub const FILTER_INPUTS:[[usize;4];2]=[[F1_A,F1_B,F1_S,F1_N],[F2_A,F2_B,F2_S,F2_N]];
 pub const FX_ROUTES: [[usize; 2]; 5] = [[DIST_A,DIST_B],[OTT_A,OTT_B],[CHORUS_A,CHORUS_B],[DELAY_A,DELAY_B],[REVERB_A,REVERB_B]];
 pub const MOD_SOURCES: [&str; 5] = ["Off", "LFO 1", "Envelope 2", "Velocity", "Key track"];
@@ -1298,6 +1303,11 @@ pub const SETTINGS: [Setting; COUNT] = [
     Setting {id:"arp_rate",name:"Arp division",range:(0,5),start:1,magnet:None},
     Setting {id:"arp_oct",name:"Arp octaves",range:(0,2),start:0,magnet:None},
     Setting {id:"arp_gate",name:"Arp gate",range:(0,3),start:2,magnet:None},
+    Setting {id:"a_phase_fm",name:"A Phase FM",range:(0,1000),start:0,magnet:None},
+    Setting {id:"a_fm_ratio",name:"A FM ratio",range:(1,8),start:1,magnet:None},
+    Setting {id:"b_phase_fm",name:"B Phase FM",range:(0,1000),start:0,magnet:None},
+    Setting {id:"b_fm_ratio",name:"B FM ratio",range:(1,8),start:1,magnet:None},
+    Setting {id:"b_ring",name:"B Ring modulation",range:(0,1000),start:0,magnet:None},
 ];
 pub const CONTROLS: [Control; 50] = [
     Control::Knob {
@@ -1852,6 +1862,7 @@ pub fn text(k: usize, v: i32) -> String {
             .into(),
         A_TUNE | B_TUNE => format!("{v:+} st"),
         A_UNISON | B_UNISON => format!("{v} voices"),
+        A_FM_RATIO | B_FM_RATIO => format!("{v}:1"),
         A_DETUNE | B_DETUNE => format!("{v} cents"),
         CUTOFF => format!("{:.0} Hz", cutoff(v as f32)),
         ATTACK | DECAY | RELEASE | ENV_ATTACK | ENV_DECAY | ENV_RELEASE => {
@@ -1866,6 +1877,9 @@ pub fn text(k: usize, v: i32) -> String {
 fn parse(k: usize, s: &str) -> Option<i32> {
     if let Some(names)=crate::performance::labels(k){return names.iter().position(|n|n.eq_ignore_ascii_case(s.trim())).map(|i|i as i32);}
     let s = s.trim();
+    if matches!(k, A_FM_RATIO | B_FM_RATIO) {
+        return s.strip_suffix(":1").unwrap_or(s).parse::<i32>().ok().filter(|v| (1..=8).contains(v));
+    }
     if k>=A_ON && (SETTINGS[k].range==(0,1)||matches!(k,SUB_SHAPE|NOISE_TYPE|FILTER_TOPOLOGY|F2_FILTER|F2_MODEL)) {return (SETTINGS[k].range.0..=SETTINGS[k].range.1).find(|v|text(k,*v).eq_ignore_ascii_case(s));}
     if matches!(k,SUB_PAN|NOISE_PAN|F1_PAN|F2_PAN) {if s.eq_ignore_ascii_case("center"){return Some(0);}if let Some(v)=s.strip_suffix('L').and_then(|s|s.parse::<i32>().ok()){return Some(-v.clamp(0,100));}if let Some(v)=s.strip_suffix('R').and_then(|s|s.parse::<i32>().ok()){return Some(v.clamp(0,100));}}
     if ROUTES[2..].iter().any(|s| k == *s || k == s + 1)

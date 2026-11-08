@@ -179,6 +179,12 @@ impl TableEditor {
     }
 }
 impl Extension for TableEditor {
+    fn modulation_routes(&self, id: &str) -> Vec<(usize, &'static str, &'static str)> {
+        if crate::visibility::shown(0) { self.modulation.routes_for(id) } else { Vec::new() }
+    }
+    fn remove_modulation(&self, id: &str, route: usize, context: Option<&Arc<dyn GuiContext>>) {
+        self.modulation.remove_route(id, route, context);
+    }
     fn accepts_files(&self)->bool{true}
     fn file_dropped(&self,path:&std::path::Path){
         self.library.lock().unwrap().close();
@@ -644,6 +650,38 @@ mod user_table_tests {
         let value=params.base.v(k);logic.wheel(h.cx(),h.cy(),-1.,Mods::default());assert_eq!(params.base.v(k),value);assert_eq!(params.fx_scroll.load(Ordering::Relaxed),48);
     }
     #[test]
+    fn destination_knob_menu_removes_or_automates_the_selected_route() {
+        use crate::controls::*;
+        use lemon_small_fx::editor::{Act, Btn, Logic, Mods};
+        let params = Arc::new(WaveParams::default());
+        let editor = Arc::new(TableEditor::new(params.clone()));
+        let mut values = os_plugkit::vals::Vals::new(&*params.base, params.base.live.clone(), None);
+        for (k, value) in [(MOD3_SOURCE, 5.), (MOD3_TARGET, 1.), (MOD3_AMOUNT, 250.),
+            (MOD4_SOURCE, 2.), (MOD4_TARGET, 1.), (MOD4_AMOUNT, -300.)] {
+            values.edit_plain(SETTINGS[k].id, value);
+        }
+        let shared = Arc::new(lemon_small_fx::Shared { extension: Some(editor), ..Default::default() });
+        let mut logic = Logic::new(SPEC, params.base.clone(), shared, None);
+        logic.hosted = true;
+        let mut canvas = Canvas::new(1584, 1056, 1.).unwrap();
+        logic.paint(&mut canvas, &os_plugkit::palette());
+        let knob = logic.hits.iter().find(|hit| hit.t.id() == SETTINGS[CUTOFF].id).unwrap().r;
+        let events = logic.down(knob.cx(), knob.cy(), Btn::Right, Mods::default(), false);
+        let (request, x, y) = events.iter().find_map(|action| match action {
+            Act::Menu(req, x, y) => Some((req, *x, *y)), _ => None,
+        }).unwrap();
+        let menu = logic.menu(request);
+        let automation = menu.find("Automate LFO 2 depth").unwrap();
+        assert_eq!(logic.pick(request, automation, x, y), vec![Act::Automate(MOD3_AMOUNT)]);
+        let remove = menu.find("Remove LFO 2 modulation").unwrap();
+        logic.pick(request, remove, x, y);
+        assert_eq!(params.base.v(MOD3_SOURCE), 0);
+        assert_eq!(params.base.v(MOD3_AMOUNT), 250);
+        assert_eq!(params.base.v(MOD4_SOURCE), 2);
+        assert!(logic.menu(request).find("Remove LFO 2 modulation").is_none());
+        assert!(logic.menu(request).find("Automate Envelope 2 depth").is_some());
+    }
+    #[test]
     fn dedicated_module_power_filter_tabs_and_noise_embedded_recall() {
         use crate::{controls::*,instrument_view::*};
         use lemon_small_fx::editor::{Logic,Btn,Mods};
@@ -663,7 +701,8 @@ mod user_table_tests {
         logic.paint(&mut canvas,&os_plugkit::palette());
         for i in 0..7{let r=detail_button(i);assert!(editor.click(r.cx(),r.cy(),None));assert!(detail_open(&params,i));}
         logic.paint(&mut canvas,&os_plugkit::palette());
-        for key in [A_MODE,B_MODE,A_RANDOM,B_RANDOM,SUB_DIRECT,NOISE_ONESHOT,F1_KEY,F1_PAN,AMP_HOLD+1,LFO_TARGET]{assert!(logic.hits.iter().any(|h|h.t.id()==SETTINGS[key].id),"missing inline detail {}",SETTINGS[key].id);}
+        for key in [A_MODE,B_MODE,A_RANDOM,B_RANDOM,A_PHASE_FM,A_FM_RATIO,B_PHASE_FM,B_FM_RATIO,B_RING,SUB_DIRECT,NOISE_ONESHOT,F1_KEY,F1_PAN,AMP_HOLD+1,LFO_TARGET]{assert!(logic.hits.iter().any(|h|h.t.id()==SETTINGS[key].id),"missing inline detail {}",SETTINGS[key].id);}
+        if let Some(path) = std::env::var_os("LEMON_HARMONICS_RENDER") { canvas.pixmap.save_png(path).unwrap(); }
         let r=detail_button(6);editor.click(r.cx(),r.cy(),None);
         let (_,r,_,_)=quick_choices(&params).into_iter().find(|(k,_,v,_)|*k==LFO_SYNC&&*v==6).unwrap();editor.click(r.cx(),r.cy(),None);assert_eq!(params.base.v(LFO_SYNC),6);assert!(editor.browser.lock().unwrap().menu.is_none());
         editor.click(FX_ADD.cx(),FX_ADD.cy(),None);let r=fx_menu_button(4);editor.click(r.cx(),r.cy(),None);params.fx_scroll.store(0,Ordering::Relaxed);logic.paint(&mut canvas,&os_plugkit::palette());

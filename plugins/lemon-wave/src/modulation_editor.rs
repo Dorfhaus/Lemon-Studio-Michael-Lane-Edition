@@ -29,6 +29,22 @@ pub struct ModEditor {
     envelope_context: Mutex<Option<Arc<dyn GuiContext>>>,
 }
 impl ModEditor {
+    pub fn routes_for(&self, id: &str) -> Vec<(usize, &'static str, &'static str)> {
+        let Some(target) = SPEC.index(id).and_then(mod_target) else { return Vec::new() };
+        ROUTES.into_iter().filter_map(|slot| {
+            let source = self.params.base.v(slot) as usize;
+            if source == 0 || self.params.base.v(slot + 1) as usize != target { return None; }
+            Some((slot, ALL_MOD_SOURCES[source], SETTINGS[slot + 2].id))
+        }).collect()
+    }
+
+    pub fn remove_route(&self, id: &str, route: usize, context: Option<&Arc<dyn GuiContext>>) {
+        if self.routes_for(id).iter().any(|entry| entry.0 == route) {
+            // Disable with one host edit, so one Undo can restore the assignment at its previous depth.
+            self.edit(&[(route, 0.)], context);
+        }
+    }
+
     pub fn new(params: Arc<WaveParams>) -> Self {
         Self {
             params,

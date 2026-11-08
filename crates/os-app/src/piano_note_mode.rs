@@ -5,7 +5,17 @@ use os_ui::{Color,Rect,Font};
 use os_model::Note;
 const COLORS:[u32;16]=[0x9fcf8d,0xdca4b6,0xc5a7dd,0xaba8df,0x95b3dd,0x8bc8d5,0x8bd1bb,0xbed08d,0xd4cb88,0xd8b080,0xd99b88,0xd99b9d,0xc5aaba,0xb2b5c6,0x9bbeb7,0xc8c5a0];
 pub fn current(s:&State)->u8{s.piano.last_controls.map_or(0,|n|n.group&15)}
-pub fn color(t:&os_theme::Palette,n:u8)->Color{if n&15==0{t.note_top.mix(t.note_bottom,0.6)}else{Color::rgb(COLORS[usize::from(n&15)])}}
+pub fn custom_color(t: &os_theme::Palette, group: u8) -> Option<Color> {
+    let group = usize::from(group & 15);
+    (t.appearance.note_groups & (1 << group) != 0)
+        .then(|| t.get(os_theme::appearance::NOTE_GROUPS[group]).expect("note group color"))
+}
+pub fn color(t: &os_theme::Palette, group: u8) -> Color {
+    custom_color(t, group).unwrap_or_else(|| {
+        if group & 15 == 0 { t.note_top.mix(t.note_bottom, 0.6) }
+        else { Color::rgb(COLORS[usize::from(group & 15)]) }
+    })
+}
 pub fn menu(s:&State,x:f32,y:f32)->Popup{
     let mut items=vec![PItem::head("Note color group")];
     for n in 0..16 {items.push(PItem::new(format!("●  Color {:02}",n+1),Cmd::Piano(NCmd::NoteColor(n))).mark(Mark::Radio(current(s)==n)));}

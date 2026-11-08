@@ -366,11 +366,25 @@ pub fn item_at(menu: usize, i: usize) -> Option<&'static Item> {
 
 /// Menu bar font: Cuprum 18 px condensed (spec §3).
 pub const BAR_FONT: Font = Font::condensed(18, 6);
+pub const VINTAGE_TITLES:[&str;8]=["File","Edit","Add","Patterns","View","Options","Tools","Help"];
 
 /// Menu bar item layout: (x0, x1, average character width of the font). Left edges are the measured word
 /// starts. The words are as wide as the font makes them; where a text engine sets them wider than the slots
 /// were measured for, all eight are condensed one step further so that no word runs into the next.
-pub fn bar_layout(c: &mut os_ui::Canvas) -> [(f32, f32, f32); 8] {
+pub fn bar_layout(c: &mut os_ui::Canvas, vintage: bool) -> [(f32, f32, f32); 8] {
+    if vintage && crate::vintage_skin::available() {
+        let mut x=12.;
+        return VINTAGE_TITLES.map(|title| {let start=x;let w=crate::vintage_skin::lettering_width(title);x+=w+8.;(start,start+w,11.)});
+    }
+    if vintage {
+        // Measure natural glyph widths; never squeeze letter shapes to historic slots.
+        let size=[13,12,11].into_iter().find(|&n| VINTAGE_TITLES.iter().map(|m|c.text_width(Font::vintage(n),m)).sum::<f32>()+48.<=284.).unwrap_or(11);
+        let font=Font::vintage(size);
+        let widths:[f32;8]=std::array::from_fn(|i|c.text_width(font,VINTAGE_TITLES[i]).ceil());
+        let gap=((284.-widths.iter().sum::<f32>())/8.).max(3.);
+        let mut x=8.;
+        return widths.map(|w|{let left=x;x+=w+gap;(left,left+w,f32::from(size))});
+    }
     const X: [f32; 8] = [8.0, 35.0, 61.0, 88.0, 143.0, 176.0, 226.0, 266.0];
     const END: f32 = 300.0;
     let mut out = [(0.0, 0.0, 6.0); 8];
@@ -683,11 +697,16 @@ pub fn pick(menu: usize, i: usize) -> Action {
 
 /// Compact root menus retain stable action indices and use the shared scrolling popup.
 pub fn organized_items(s:&State,menu:usize)->Vec<crate::playlist::PItem> {
+    if menu >= MENUS.len() { return Vec::new(); }
+    crate::menu_layout::Menu::Main(menu).apply(default_organized_items(s, menu, false))
+}
+
+pub(crate) fn default_organized_items(s:&State,menu:usize,catalog:bool)->Vec<crate::playlist::PItem> {
  use crate::playlist::{Cmd,PItem,Mark as PM};
  let Some(m)=MENUS.get(menu) else{return vec![];};
  let all:Vec<_>=m.cols.iter().flat_map(|(_,items)|items.iter()).collect();
- let entry=|i:usize|->Option<PItem>{let it=*all.get(i)?;if it.kind!=Kind::Item||!works(menu,it)||!in_menu(s,menu,it){return None;}
-  let label=label_now(s,menu,it);let mut p=if let Some(build)=submenu(menu,it.label){PItem::sub(label,build(s))}else{PItem::new(label,Cmd::MainMenu(menu,i))};
+ let entry=|i:usize|->Option<PItem>{let it=*all.get(i)?;if it.kind!=Kind::Item||!works(menu,it)||(!catalog&&!in_menu(s,menu,it)){return None;}
+  let label=if catalog {it.label.into()} else {label_now(s,menu,it)};let mut p=if let Some(build)=submenu(menu,it.label){PItem::sub(label,build(s))}else{PItem::new(label,Cmd::MainMenu(menu,i))};
   p.key=shortcut_now(it);p.enabled=active(s,menu,it);p.mark=match mark_of(s,menu,it){Mark::None=>PM::None,Mark::Check(v)=>PM::Check(v),Mark::Radio(v)=>PM::Radio(v)};Some(p)
  };
  let groups:Vec<(&str,Vec<usize>)>=match menu {
@@ -703,7 +722,7 @@ pub fn organized_items(s:&State,menu:usize)->Vec<crate::playlist::PItem> {
  // Retain any implemented command not covered by a group as menus grow.
  for i in 0..all.len(){if !included.contains(&i)&&!(menu==0&&i==FILE_EXIT){if let Some(p)=entry(i){out.push(p);}}}
  if menu==PATTERNS {out.insert(0,PItem::sub("Select pattern",crate::patterns::listed(s).into_iter().map(|n|PItem::new(crate::patterns::name_of(s,n),Cmd::MainMenu(menu,PATTERN_PICK+n as usize)).mark(PM::Radio(n==s.pattern))).collect()));}
- if menu==0 {let recent=recent_rows().into_iter().filter_map(|r|match r{Recent::Head=>None,Recent::More=>Some(PItem::sub("Older projects",crate::recent::more_items(s))),_=>{let(label,key,_)=recent_text(&r);Some(PItem::new(label,Cmd::MainMenu(0,match r{Recent::Project(n,_)=>RECENT_PICK+n,_=>RECENT_MORE})).key(key))}}).collect::<Vec<_>>();if !recent.is_empty(){out.push(PItem::sub("Recent projects",recent));}out.push(PItem::sep());if let Some(p)=entry(FILE_EXIT){out.push(p);}}
+ if menu==0 {let recent=recent_rows().into_iter().filter_map(|r|match r{Recent::Head=>None,Recent::More=>Some(PItem::sub("Older projects",crate::recent::more_items(s))),_=>{let(label,key,_)=recent_text(&r);Some(PItem::new(label,Cmd::MainMenu(0,match r{Recent::Project(n,_)=>RECENT_PICK+n,_=>RECENT_MORE})).key(key))}}).collect::<Vec<_>>();if catalog||!recent.is_empty(){out.push(PItem::sub("Recent projects",recent));}out.push(PItem::sep());if let Some(p)=entry(FILE_EXIT){out.push(p);}}
  out
 }
 
@@ -721,7 +740,7 @@ fn row_h(m: &os_ui::kit::menu::Metrics, it: &Item) -> f32 {
 pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     if s.menu_sub.is_none()&&s.playlist.popup.is_some(){return;}
     let Some(m) = MENUS.get(menu) else { return };
-    let x0 = bar_layout(ui.c)[menu].0;
+    let x0 = bar_layout(ui.c,s.vintage_2005)[menu].0;
     let t = ui.t;
     let mt = os_ui::kit::menu::metrics(ui.c.scale);
     let (row, border) = (mt.row, mt.border);
@@ -733,7 +752,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     } else {
         Vec::new()
     };
-    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(Font::new(14), n) + 28.0).fold(80.0f32, f32::max).ceil();
+    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(os_ui::kit::menu::app_font(t, 12), n) + 28.0).fold(80.0f32, f32::max).ceil();
     // FILE's Recent projects section (spec: ui/recent-projects.md §2).
     let recent = if menu == 0 { recent_rows() } else { Vec::new() };
     let recent_h: f32 = recent.iter().map(|r| if *r == Recent::Head { mt.head } else { row }).sum();
@@ -746,7 +765,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
             col_ws.push(list_w);
             continue;
         }
-        let f = Font::new(14);
+        let f = os_ui::kit::menu::app_font(t, 12);
         let mut need = *w;
         for it in items.iter().filter(|it| matches!(it.kind, Kind::Item) && in_menu(s, menu, it)) {
             let key = if it.shortcut.is_empty() { 0.0 } else { ui.c.text_width(f.italic(), shortcut_now(it)) + 16.0 };
@@ -779,7 +798,9 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     let (ax, ay) = match (menu == PATTERNS, s.pat_ui.menu_at) {
         (true, Some(at)) => at,
         _ => {
-            let at = super::band_rect(s, Rect::new(x0 - 4.0, 78.0, 0.0, 0.0));
+            let at = if super::vintage_toolbar::active(s,s.screen.0/super::band_k(s)) {
+                super::scale_rect(Rect::new(x0-4.,49.,0.,0.),super::band_k(s))
+            } else {super::band_rect(s, Rect::new(x0 - 4.0, 78.0, 0.0, 0.0))};
             (at.x, at.y)
         }
     };
@@ -787,7 +808,9 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     let away = !r.contains(ui.mouse.0, ui.mouse.1);
     // Lemon (spec: ui/lemon-design.md §9): a rounded panel, rounded row highlights.
     let lemon = super::lemon(ui);
-    if lemon {
+    if t.style.vintage_2005 {
+        os_ui::kit::menu::vintage_frame(ui.c, t, r, &mt);
+    } else if lemon {
         os_ui::kit::popup(ui.c, t, r);
     } else {
         ui.c.fill_rect(r, t.menu_pop);
@@ -795,7 +818,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     }
     ui.hit(r, Action::Swallow, "");
 
-    let font = Font::new(14);
+    let font = os_ui::kit::menu::app_font(t, 12);
     // Text sits where it does at 100 %, moved by half of what the row lost.
     let dy = (row - os_ui::kit::menu::ROW) / 2.0;
     // The ▸ entry whose submenu is open stays lit, as in the app's popups.
@@ -887,13 +910,15 @@ fn head_row(ui: &mut Ui, rr: Rect, label: &str) {
     } else {
         ui.c.fill_rect(rr, t.menu_pop_head);
     }
-    ui.c.text(Font::new(12), rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, label);
+    ui.c.text(os_ui::kit::menu::app_font(t, 10), rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, label);
 }
 
 /// A row under the mouse, or the ▸ row whose submenu is open.
 fn light(ui: &mut Ui, rr: Rect) {
     let t = ui.t;
-    if super::lemon(ui) {
+    if t.style.vintage_2005 {
+        os_ui::kit::menu::vintage_highlight(ui.c, t, rr);
+    } else if super::lemon(ui) {
         os_ui::kit::row_highlight(ui.c, t, rr);
     } else {
         ui.c.fill_rect(rr, t.menu_pop_hi);
@@ -903,7 +928,7 @@ fn light(ui: &mut Ui, rr: Rect) {
 /// A row's text: its label, its key (italic, at the right) and its ▸ (`sub`); dim when it cannot be chosen (`ok`).
 fn row_text(ui: &mut Ui, rr: Rect, label: &str, key: &str, sub: bool, ok: bool) {
     let t = ui.t;
-    let font = Font::new(14);
+    let font = os_ui::kit::menu::app_font(t, 12);
     // Text sits where it does at 100 %, moved by half of what the row lost.
     let (dy, my) = ((rr.h - os_ui::kit::menu::ROW) / 2.0, rr.cy());
     let color = if ok { t.menu_pop_text } else { t.menu_pop_dim };
@@ -1118,7 +1143,11 @@ pub fn toolbar_items(s: &State) -> Vec<crate::playlist::PItem> {
         PItem::sep(),
         switch("Hint bar", Switch::HintBar, o.hint_bar),
         switch("Tesla audio editor",Switch::Tesla,crate::settings_file::flag("toolbar_tesla",false)),
-        switch("CPU and memory", Switch::CpuMemory, crate::settings_file::flag("toolbar_cpu_visible",true)),
+        if s.vintage_2005 {
+            switch("Vintage CPU meter", Switch::CpuMemory, crate::workspace_visibility::shown("visible_vintage_cpu"))
+        } else {
+            switch("CPU and memory", Switch::CpuMemory, crate::settings_file::flag("toolbar_cpu_visible",true))
+        },
         // A command: always the dim mark (§1).
         switch("Hide", Switch::Hide, false).key("Ctrl+F11"),
     ];

@@ -9,7 +9,7 @@ use os_ui::Canvas;
 pub struct Windows { stems:Option<(u16,u32,Vec<std::path::PathBuf>)>, panes:Vec<Pane>, screens:Vec<[i32;4]>, main:Option<crate::app::ViewContext>, changed:bool, layout_generation:u64 }
 struct Pane {
     kind:Win, window:Rc<Window>, surface:softbuffer::Surface<Rc<Window>,Rc<Window>>, canvas:Canvas,
-    cursor:Option<(crate::app::Cursor,u16)>,
+    cursor:Option<(crate::app::Cursor,u16,u8)>,
     eq_visible: bool,
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
 }
@@ -38,7 +38,7 @@ impl Windows {
         }
     }
     pub fn save(&self) {for p in &self.panes {layout::save_native(key(p.kind),p.frame);}}
-    pub fn sync(&mut self,app:&mut App,el:&ActiveEventLoop,cache:&mut Vec<(crate::playlist::PlTool,u8,u16,winit::window::CustomCursor)>) {
+    pub fn sync(&mut self,app:&mut App,el:&ActiveEventLoop,cache:&mut crate::CursorCache) {
         let screens=crate::screens(el);let changed=screens!=self.screens;self.screens=screens.clone();
         if self.layout_generation!=app.state.native_layout_generation {
             self.layout_generation=app.state.native_layout_generation;
@@ -75,7 +75,7 @@ impl Windows {
             p.kind == Win::Mixer && p.eq_visible && p.window.is_minimized() != Some(true)
         });
     }
-    pub fn event(&mut self,app:&mut App,_el:&ActiveEventLoop,id:WindowId,event:WindowEvent,cache:&mut Vec<(crate::playlist::PlTool,u8,u16,winit::window::CustomCursor)>) {
+    pub fn event(&mut self,app:&mut App,_el:&ActiveEventLoop,id:WindowId,event:WindowEvent,cache:&mut crate::CursorCache) {
         if app.loading() && matches!(event,WindowEvent::MouseInput{state:ElementState::Pressed,..}|WindowEvent::KeyboardInput{..}|WindowEvent::MouseWheel{..}|WindowEvent::DroppedFile(_)){return;}
         // Mouse input is consumed once per frame, not at the mouse polling rate.
         if let WindowEvent::CursorMoved{position,..}=&event {
@@ -160,8 +160,8 @@ impl Windows {
         }
         #[cfg(windows)] if p.kind==Win::Mixer && redraw && p.refresh_editors {for h in app.plugins.hosted.values(){if let Some(e)=&h.rack_editor{e.refresh();}}}
         if matches!(p.kind,Win::PianoRoll|Win::Playlist){
-            let key=(app.cursor(),(scale*100.).round().clamp(50.,400.) as u16);
-            if p.cursor!=Some(key){crate::apply_window_cursor(&p.window,_el,key.0,key.1,cache);p.cursor=Some(key);}
+            let key=(app.cursor(),(scale*100.).round().clamp(50.,400.) as u16,app.theme.colors.appearance.icon_pack);
+            if p.cursor!=Some(key){crate::apply_window_cursor(&p.window,_el,key.0,key.1,key.2,cache);p.cursor=Some(key);}
         }
         p.hover=app.hover.clone();
         if redraw {p.refresh_editors=false;}

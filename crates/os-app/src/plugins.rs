@@ -37,6 +37,8 @@ pub struct Hosted {
     pub ara_dirty: bool,
     pub ara_source: Option<String>,
     pub plugin: SharedPlugin,
+    /// Last program selected through the host, for the preset label and stepping.
+    pub preset_program: Option<(u32, u32, String)>,
     /// Processing time and voices, read without locking the instance (spec: ui/plugin-performance.md §3,
     /// audio/voices.md §5).
     pub meter: Option<Arc<os_host::Meter>>,
@@ -106,6 +108,7 @@ impl Hosted {
             ara_dirty: false,
             ara_source: None,
             plugin,
+            preset_program: None,
             meter,
             name,
             #[cfg(plugin_windows)]
@@ -585,9 +588,19 @@ impl Plugins {
         self.create_effect_inner(track,slot,index,state,true)
     }
     fn create_effect_inner(&mut self, track:u16,slot:u8,index:usize,state:Option<&[u8]>,strict:bool)->Result<String,String> {
-        let a = self.effects.get(index).ok_or("no such effect")?.clone();
         let key = fx_key(track, slot);
+        if self.effects.get(index).is_none() {
+            return Err("no such effect".into());
+        }
         self.drop_key(key);
+        let hosted = self.prepare_effect(index, state, strict)?;
+        let name = hosted.name.clone();
+        self.hosted.insert(key, hosted);
+        Ok(name)
+    }
+
+    pub(crate) fn prepare_effect(&mut self, index: usize, state: Option<&[u8]>, strict: bool) -> Result<Hosted, String> {
+        let a = self.effects.get(index).ok_or("no such effect")?.clone();
         self.native_check(&a.desc)?;
         let plugin = a.lib.clone().create(&a.desc.id)?;
         let mut p = plugin.lock().map_err(|_| "plugin busy")?;
@@ -601,8 +614,7 @@ impl Plugins {
             return Err(format!("{} could not start", a.desc.name));
         }
         drop(p);
-        self.hosted.insert(key, Hosted::new(plugin));
-        Ok(a.desc.name)
+        Ok(Hosted::new(plugin))
     }
 
     /// The user just added the instance under `key` (a new channel's plugin, a new effect in a slot): its window opens
@@ -626,6 +638,9 @@ impl Plugins {
 
     /// Remembers the preset the instance under `key` holds and shows its name in the window's Presets box.
     pub fn set_preset(&mut self, key: usize, path: Option<PathBuf>) {
+        if let Some(hosted) = self.hosted.get_mut(&key) {
+            hosted.preset_program = None;
+        }
         match path {
             Some(p) => self.presets.insert(key, p),
             None => self.presets.remove(&key),
@@ -639,6 +654,7 @@ impl Plugins {
     /// The name of the preset the instance under `key` holds.
     pub fn preset_name(&self, key: usize) -> Option<String> {
         self.presets.get(&key).map(|p| crate::presets::shown_name(p))
+            .or_else(|| self.hosted.get(&key)?.preset_program.as_ref().map(|(_, _, name)| name.clone()))
     }
 
     /// Moves mixer slot instances: `m(track, slot)` gives the new place, `None` drops the instance.
@@ -755,6 +771,10 @@ impl Plugins {
     /// listed names the plugin does not have; `None` when nothing is hosted under `key`.
     pub fn apply_params(&self, key: usize, list: &[(String, f64)]) -> Option<Vec<String>> {
         let mut p = self.hosted.get(&key)?.plugin.lock().ok()?;
+        Some(Self::apply_plugin_params(&mut *p, list))
+    }
+
+    pub(crate) fn apply_plugin_params(p: &mut dyn os_host::Plugin, list: &[(String, f64)]) -> Vec<String> {
         let infos: Vec<os_host::ParamInfo> = (0..p.param_count()).filter_map(|i| p.param_info(i)).collect();
         for i in infos.iter().filter(|i| !i.read_only && !i.bypass) {
             p.set_param(i.id, i.default);
@@ -770,7 +790,7 @@ impl Plugins {
                 None => missing.push(name.clone()),
             }
         }
-        Some(missing)
+        missing
     }
 
     /// The project-file state of the Lemon Parametric EQ in mixer slot `key` (its plugin state converted back),

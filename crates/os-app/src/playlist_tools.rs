@@ -14,6 +14,104 @@ pub const STRETCH: u8 = 9;
 pub const GAIN: u8 = 10;
 pub const POP_MS: u128 = 180;
 
+// Append-only role IDs, persisted in portable theme text.
+pub const CURSOR_CHOICES: &[(&str, Cursor)] = &[
+    ("Pointer", Cursor::Default),
+    ("Draw", Cursor::Playlist(PlTool::Draw, 3)),
+    ("Paint", Cursor::Playlist(PlTool::Paint, 3)),
+    ("Slice", Cursor::Playlist(PlTool::Slice, 3)),
+    ("Erase", Cursor::Playlist(PlTool::Delete, 3)),
+    ("Select", Cursor::Playlist(PlTool::Select, 3)),
+    ("Mute", Cursor::Playlist(PlTool::Mute, 3)),
+    ("Playback", Cursor::Playlist(PlTool::Playback, 3)),
+    ("Zoom", Cursor::Playlist(PlTool::Zoom, 3)),
+    ("Slip", Cursor::Playlist(PlTool::Slip, 3)),
+    ("Comp", Cursor::Playlist(PlTool::Comp, 3)),
+    ("Resize horizontally", Cursor::EwResize),
+    ("Resize vertically", Cursor::NsResize),
+    ("Resize diagonal \\", Cursor::NwseResize),
+    ("Resize diagonal /", Cursor::NeswResize),
+    ("Point / gain", Cursor::Playlist(PlTool::Draw, GAIN)),
+    ("Open hand", Cursor::Playlist(PlTool::Draw, GRAB)),
+    ("Grabbed hand", Cursor::Playlist(PlTool::Draw, GRABBING)),
+    ("Copy hand", Cursor::Playlist(PlTool::Draw, COPYING)),
+    ("Stretch", Cursor::Playlist(PlTool::Draw, STRETCH)),
+    ("Vocal Main", Cursor::Playlist(PlTool::Draw, 11)),
+    ("Vocal Select", Cursor::Playlist(PlTool::Draw, 12)),
+    ("Vocal Modulation", Cursor::Playlist(PlTool::Draw, 13)),
+    ("Vocal Drift", Cursor::Playlist(PlTool::Draw, 14)),
+    ("Vocal Transition", Cursor::Playlist(PlTool::Draw, 15)),
+    ("Vocal Formant", Cursor::Playlist(PlTool::Draw, 16)),
+    ("Vocal Amplitude", Cursor::Playlist(PlTool::Draw, 17)),
+    ("Vocal Time", Cursor::Playlist(PlTool::Draw, 18)),
+    ("Vocal Attack", Cursor::Playlist(PlTool::Draw, 19)),
+    ("Vocal Split", Cursor::Playlist(PlTool::Draw, 20)),
+    ("Vocal Draw", Cursor::Playlist(PlTool::Draw, 21)),
+    ("Vocal Hand", Cursor::Playlist(PlTool::Draw, 22)),
+    ("Vocal Zoom", Cursor::Playlist(PlTool::Draw, 23)),
+];
+
+pub fn cursor_role(cursor: Cursor) -> usize {
+    let normalized = match cursor {
+        Cursor::Playlist(_, RESIZE) => Cursor::EwResize,
+        Cursor::Playlist(_, phase @ 5..=23) => Cursor::Playlist(PlTool::Draw, phase),
+        Cursor::Playlist(tool, _) => Cursor::Playlist(tool, 3),
+        other => other,
+    };
+    CURSOR_CHOICES.iter().position(|(_, c)| *c == normalized).unwrap_or(0)
+}
+
+pub fn resolved_cursor_pack(appearance: os_theme::appearance::Appearance, cursor: Cursor) -> u8 {
+    let role = cursor_role(cursor);
+    appearance.cursor_variants[role / 16][role % 16].checked_sub(1)
+        .unwrap_or_else(|| appearance.cursor_family.unwrap_or(appearance.icon_pack))
+}
+
+pub const CURSOR_PACK_COUNT: u8 = crate::vintage_cursors::PACK + 1;
+
+pub fn cursor_pack_name(pack: u8) -> &'static str {
+    if pack == crate::vintage_cursors::PACK { "FL Studio 2005" } else { os_ui::icon_packs::get(pack).name }
+}
+
+fn cursor_art_pack(pack: u8) -> u8 {
+    if pack == crate::vintage_cursors::PACK { os_theme::appearance::VINTAGE_ICON_PACK } else { pack }
+}
+
+
+/// Lightweight preview: uses the same semantic artwork without generating a native bitmap.
+pub fn paint_cursor_sample(cv: &mut Canvas, cursor: Cursor, pack: u8, rect: Rect, color: Color) {
+    if pack == crate::vintage_cursors::PACK && crate::vintage_cursors::preview(cv, cursor, rect) { return; }
+    let pack = cursor_art_pack(pack);
+    use icons::Gesture;
+    let old = cv.icon_pack();
+    let old_color = cv.icon_color();
+    cv.set_icon_color(None);
+    cv.set_icon_pack(pack, true);
+    let shape = match cursor {
+        Cursor::Playlist(_, GAIN) => Some(icons::gesture(Gesture::Point, pack.max(1))),
+        Cursor::Playlist(_, GRAB) => Some(icons::gesture(Gesture::Grab, pack.max(1))),
+        Cursor::Playlist(_, GRABBING | COPYING) => Some(icons::gesture(Gesture::Grabbed, pack.max(1))),
+        Cursor::Playlist(_, phase @ 11..=23) => Some(crate::vocal::packed_art(crate::vocal::TOOLS[usize::from(phase - 11)], pack.max(1))),
+        Cursor::Playlist(tool, phase) => {
+            let icon = match phase { RESIZE => Icon::Slip, STRETCH => Icon::StretchBand, _ => icons::playlist_tool(tool) };
+            if pack == 0 { cv.icon(icons::default_shape(icon), rect, color); None }
+            else { Some(icons::artwork(icon, pack)) }
+        }
+        _ if pack == 0 => {
+            cv.text_center(os_ui::Font::new(10), rect, color, "OS");
+            None
+        }
+        Cursor::Default => Some(icons::gesture(Gesture::Pointer, pack)),
+        Cursor::EwResize => Some(icons::artwork(Icon::Slip, pack)),
+        Cursor::NsResize => Some(icons::gesture(Gesture::ResizeVertical, pack)),
+        Cursor::NwseResize => Some(icons::gesture(Gesture::ResizeDiagonal, pack)),
+        Cursor::NeswResize => Some(icons::gesture(Gesture::ResizeBackDiagonal, pack)),
+    };
+    if let Some(art) = shape { cv.art_icon(&art.shape, rect, color); }
+    cv.set_icon_color(old_color);
+    cv.set_icon_pack(old, false);
+}
+
 pub fn select(s: &mut State, tool: PlTool) {
     s.playlist.tool = tool;
     s.playlist.tool_changed = Some(std::time::Instant::now());
@@ -146,10 +244,16 @@ fn hotspot(tool: PlTool, scale: f32) -> (u16,u16) {
 /// The tool is the pointer: its tip stays on the edit position through the small size animation.
 /// Canvas icons use an opaque-surface RGB compositor, so render a coverage mask first and explicitly
 /// build valid premultiplied RGBA. Drawing them straight onto transparent pixels loses their alpha.
+#[cfg(test)]
 pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
+    packed_cursor_canvas(tool, phase, scale, 0)
+}
+
+fn default_cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
     let scale = scale.clamp(0.5,4.0);
     let px = (32.0*scale).ceil() as u32;
     let mut mask = Canvas::new(px,px,scale).ok()?;
+    mask.set_icon_pack(0, true);
     mask.begin_frame(None);
     mask.clear(Color::rgb(0x000000));
     let icon = match tool { PlTool::Draw => Icon::Pencil, PlTool::Paint => Icon::Brush, PlTool::Slice => Icon::Slice, PlTool::Select | PlTool::Comp => Icon::Select, PlTool::Delete => Icon::Delete, PlTool::Mute => Icon::Mute, PlTool::Zoom => Icon::Zoom, PlTool::Slip => Icon::Slip, PlTool::Playback => Icon::Play };
@@ -172,22 +276,93 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
             "M 7 12 L 7 9 Q 7 7 9 7 Q 11 7 11 9 L 11 11 L 11 8 Q 11 6 13 6 Q 15 6 15 8 L 15 11 L 15 9 Q 15 7 17 8 Q 18 8 18 10 L 18 12 Q 21 11 21 14 L 21 17 Q 21 21 17 22 L 11 22 Q 8 21 6 18 L 3 14 Q 2 11 5 11 L 8 14"
         }};
         let rect=Rect::new(4.,3.,24.,24.);
-        if phase==STRETCH {mask.icon_stroke(icons::shape(Icon::StretchBand),rect,Color::rgb(0xffffff),1.55);}
+        if phase==STRETCH {mask.icon_stroke(icons::default_shape(Icon::StretchBand),rect,Color::rgb(0xffffff),1.55);}
         else if phase==RESIZE {mask.icon_stroke(&os_ui::tabler::ARROWS_HORIZONTAL,rect,Color::rgb(0xffffff),1.55);}
         else{mask.icon_stroke(&hand,rect,Color::rgb(0xffffff),1.55);}
     } else {
         // Cursor-only weight: toolbar icons keep their existing artwork and stroke.
         let brush=os_ui::tabler::TablerIcon{filled:false,d:"M 3.0000 21.0000 L 3.3600 17.3600 C 3.5588 15.3498 5.3498 13.5588 7.3600 13.3600 C 9.3702 13.1612 10.8388 14.6298 10.6400 16.6400 C 10.4412 18.6502 8.6502 20.4412 6.6400 20.6400 L 3.0000 21.0000 M 21.0000 3.0000 C 15.6377 4.2467 10.8145 8.2515 8.4340 13.4340 M 21.0000 3.0000 C 19.7533 8.3623 15.7485 13.1855 10.5660 15.5660 M 10.9960 9.3960 C 12.6834 10.0374 13.9626 11.3166 14.6040 13.0040"};
-        let shape=if tool==PlTool::Paint{&brush}else{icons::shape(icon)};
+        let shape=if tool==PlTool::Paint{&brush}else{icons::default_shape(icon)};
         mask.icon_stroke(shape,r,Color::rgb(0xffffff),1.55*size/24.);
     }
     if phase==4 || phase==COPYING {
         mask.fill_rrect(Rect::new(19.,17.,12.,13.),2.,Color::rgb(0));
         mask.fill_polygon(&[(25.,18.),(30.,23.),(27.,23.),(27.,28.),(23.,28.),(23.,23.),(20.,23.)],Color::rgb(0xffffff));
     }
+    cursor_rgba(mask, 0)
+}
+
+pub fn packed_cursor_canvas(tool: PlTool, phase: u8, scale: f32, pack: u8) -> Option<Canvas> {
+    if pack == 0 {
+        return default_cursor_canvas(tool, phase, scale);
+    }
+    use icons::Gesture;
+    let cursor_pack = pack;
+    let pack = cursor_art_pack(pack);
+    let scale = scale.clamp(0.5, 4.0);
+    let px = (32.0 * scale).ceil() as u32;
+    let mut mask = Canvas::new(px, px, scale).ok()?;
+    mask.set_icon_pack(pack, true);
+    mask.begin_frame(None);
+    mask.clear(Color::rgb(0));
+    let white = Color::rgb(0xffffff);
+    let draw = |mask: &mut Canvas, art: &icons::Art, r: Rect| mask.art_icon(&art.shape, r, white);
+    let aligned = |art: &icons::Art, size: f32, target: (f32, f32)| {
+        let (x, y) = art.hotspot.expect("cursor artwork has an anchor");
+        Rect::new(target.0 - x * size / 24.0, target.1 - y * size / 24.0, size, size)
+    };
+    let center = Rect::new(4.0, 4.0, 24.0, 24.0);
+    match phase {
+        GAIN => {
+            let art = icons::gesture(Gesture::Point, pack);
+            draw(&mut mask, art, aligned(art, 23.0, (15.0, 5.0)));
+        }
+        GRAB => draw(&mut mask, icons::gesture(Gesture::Grab, pack), center),
+        GRABBING | COPYING => draw(&mut mask, icons::gesture(Gesture::Grabbed, pack), center),
+        RESIZE => draw(&mut mask, icons::artwork(Icon::Slip, pack), center),
+        STRETCH => draw(&mut mask, icons::artwork(Icon::StretchBand, pack), center),
+        11..=u8::MAX => {
+            let t = crate::vocal::TOOLS[usize::from(phase - 11).min(crate::vocal::TOOLS.len() - 1)];
+            draw(&mut mask, crate::vocal::packed_art(t, pack), center);
+        }
+        _ => {
+            let icon = icons::playlist_tool(tool);
+            let art = icons::artwork(icon, pack);
+            let size = [20.0, 21.8, 21.4, 21.0][usize::from(phase.min(3))];
+            if art.hotspot.is_some() {
+                let target = if matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Slice) {
+                    (6.0, 26.0)
+                } else {
+                    (6.0, 6.0)
+                };
+                draw(&mut mask, art, aligned(art, size, target));
+            } else {
+                // The small pointer marks the real click location. The adjacent glyph names the active tool.
+                let pointer = icons::gesture(Gesture::Pointer, pack);
+                draw(&mut mask, pointer, aligned(pointer, 15.0, (6.0, 6.0)));
+                draw(&mut mask, art, Rect::new(12.0, 10.0, 18.0, 18.0));
+            }
+        }
+    }
+    if phase == 4 || phase == COPYING {
+        mask.fill_rrect(Rect::new(21.0, 19.0, 10.0, 11.0), 2.0, Color::rgb(0));
+        draw(&mut mask, icons::artwork(Icon::Plus, pack), Rect::new(21.0, 19.0, 10.0, 11.0));
+    }
+    cursor_rgba(mask, cursor_pack)
+}
+
+fn cursor_rgba(mask: Canvas, pack: u8) -> Option<Canvas> {
+    let scale = mask.scale;
+    let px = mask.pixmap.width();
+    let style = os_ui::icon_packs::get(cursor_art_pack(pack));
+    let stock = Color::rgb(if pack == crate::vintage_cursors::PACK { 0xf5f5f5 } else { style.tint });
+    let tint = if pack == 0 || crate::vintage::enabled() { stock } else {
+        os_theme::current().appearance.cursor_color.unwrap_or(stock)
+    };
     let coverage:Vec<u8>=mask.pixmap.pixels().iter().map(|p| p.red().max(p.green()).max(p.blue())).collect();
     let mut c=Canvas::new(px,px,scale).ok()?;
-    let radius=scale.round().max(1.) as i32;
+    let radius=(scale * if style.shadow { 1.5 } else { 1.0 }).round().max(1.) as i32;
+    let shadow = if pack == crate::vintage_cursors::PACK { [0; 3] } else { [16, 19, 22] };
     let w=px as i32;
     for y in 0..w { for x in 0..w {
         let fg=u32::from(coverage[(y*w+x) as usize]);
@@ -201,7 +376,7 @@ pub fn cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> {
         let alpha=fg+back;
         let i=(y*w+x) as usize*4;
         let pixel=&mut c.pixmap.data_mut()[i..i+4];
-        for (ch,(tint,shadow)) in [(244u32,16u32),(228,19),(182,22)].into_iter().enumerate() {
+        for (ch,(tint,shadow)) in [tint.r, tint.g, tint.b].map(u32::from).into_iter().zip(shadow).enumerate() {
             pixel[ch]=((tint*fg+shadow*back)/255) as u8;
         }
         pixel[3]=alpha as u8;
@@ -215,9 +390,17 @@ fn native_cursor_scale(scale: f32) -> f32 {
     scale.clamp(0.5, 4.0)
 }
 
+#[cfg(test)]
 pub fn cursor_source(tool: PlTool, phase: u8, scale: f32) -> Option<winit::window::CustomCursorSource> {
+    packed_cursor_source(tool, phase, scale, 0)
+}
+
+pub fn packed_cursor_source(tool: PlTool, phase: u8, scale: f32, pack: u8) -> Option<winit::window::CustomCursorSource> {
     let scale = native_cursor_scale(scale);
-    let c=cursor_canvas(tool,phase,scale)?;
+    if pack == crate::vintage_cursors::PACK {
+        if let Some(source) = crate::vintage_cursors::source(Cursor::Playlist(tool, phase), scale) { return Some(source); }
+    }
+    let c=packed_cursor_canvas(tool,phase,scale,pack)?;
     let bytes: Vec<u8> = c.pixmap.pixels().iter().flat_map(|p| { let p=p.demultiply(); [p.red(),p.green(),p.blue(),p.alpha()] }).collect();
     let (hx, hy) = if phase == GAIN {
         ((15. * scale).round() as u16, (5. * scale).round() as u16)
@@ -228,6 +411,38 @@ pub fn cursor_source(tool: PlTool, phase: u8, scale: f32) -> Option<winit::windo
         hotspot(tool, scale)
     };
     winit::window::CustomCursor::from_rgba(bytes,c.pixmap.width() as u16,c.pixmap.height() as u16,hx,hy).ok()
+}
+
+pub fn window_cursor_source(cursor: Cursor, scale: f32, pack: u8) -> Option<winit::window::CustomCursorSource> {
+    if pack == 0 { return None; }
+    use icons::Gesture;
+    let scale = native_cursor_scale(scale);
+    if pack == crate::vintage_cursors::PACK {
+        if let Some(source) = crate::vintage_cursors::source(cursor, scale) { return Some(source); }
+    }
+    let cursor_pack = pack;
+    let pack = cursor_art_pack(pack);
+    let px = (32.0 * scale).ceil() as u32;
+    let mut mask = Canvas::new(px, px, scale).ok()?;
+    mask.set_icon_pack(pack, true);
+    mask.clear(Color::rgb(0));
+    let art = match cursor {
+        Cursor::Default => icons::gesture(Gesture::Pointer, pack),
+        Cursor::EwResize => icons::artwork(Icon::Slip, pack),
+        Cursor::NsResize => icons::gesture(Gesture::ResizeVertical, pack),
+        Cursor::NwseResize => icons::gesture(Gesture::ResizeDiagonal, pack),
+        Cursor::NeswResize => icons::gesture(Gesture::ResizeBackDiagonal, pack),
+        Cursor::Playlist(..) => return None,
+    };
+    let hot = art.hotspot.map_or((16.0, 16.0), |(x, y)| (x + 4.0, y + 4.0));
+    mask.art_icon(&art.shape, Rect::new(4.0, 4.0, 24.0, 24.0), Color::rgb(0xffffff));
+    let image = cursor_rgba(mask, cursor_pack)?;
+    let bytes: Vec<u8> = image.pixmap.pixels().iter().flat_map(|p| {
+        let p = p.demultiply();
+        [p.red(), p.green(), p.blue(), p.alpha()]
+    }).collect();
+    winit::window::CustomCursor::from_rgba(bytes, px as u16, px as u16,
+        (hot.0 * scale).round() as u16, (hot.1 * scale).round() as u16).ok()
 }
 
 pub fn sources(s: &State, kind: PickKind) -> Vec<ClipSource> {
@@ -254,6 +469,33 @@ pub fn clips_menu(s: &State, x: f32, y: f32) -> Popup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn individual_cursor_choices_resolve_independently() {
+        let mut a = os_theme::appearance::Appearance::default();
+        assert_eq!(CURSOR_CHOICES.len(), 33);
+        a.icon_pack = 22;
+        a.cursor_family = Some(23);
+        for (role, (_, cursor)) in CURSOR_CHOICES.iter().enumerate() {
+            assert_eq!(cursor_role(*cursor), role);
+            assert_eq!(resolved_cursor_pack(a, *cursor), 23);
+            a.cursor_variants[role / 16][role % 16] = 27;
+            assert_eq!(resolved_cursor_pack(a, *cursor), 26);
+            a.cursor_variants[role / 16][role % 16] = 1;
+            assert_eq!(resolved_cursor_pack(a, *cursor), 0);
+            a.cursor_variants[role / 16][role % 16] = 0;
+        }
+        assert_eq!(cursor_role(Cursor::Playlist(PlTool::Paint, RESIZE)), 11);
+        assert_eq!(cursor_role(Cursor::Playlist(PlTool::Delete, GRAB)), 16);
+        for phase in 0..5 {
+            assert_eq!(cursor_role(Cursor::Playlist(PlTool::Draw, phase)), 1);
+        }
+        a.icon_pack = 0;
+        a.cursor_family = None;
+        a.cursor_variants[0][1] = 23;
+        assert_eq!(resolved_cursor_pack(a, Cursor::Playlist(PlTool::Draw, 3)), 22);
+        assert_eq!(resolved_cursor_pack(a, Cursor::Default), 0);
+    }
+
     #[test]
     fn native_tool_cursors_are_transparent_and_scale_correctly() {
         #[cfg(target_os = "macos")]

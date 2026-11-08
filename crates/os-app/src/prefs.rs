@@ -569,7 +569,14 @@ pub const CHECKS: &[&Check] = &[
     &TOGGLE_ON_RELEASE,
 ];
 /// The declared combos.
-pub const COMBOS: &[&Combo] = &[&MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
+pub const PIANO_ZOOM_KEYS: Combo = Combo {
+    key: "piano_zoom_keys",
+    label: "Piano Roll zoom keys",
+    choices: &["Page Up / Page Down", "Ctrl + Page keys", "Alt + Page keys", "Shift + Page keys"],
+    default: 0,
+};
+
+pub const COMBOS: &[&Combo] = &[&PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
 /// The declared combos no settings page shows (a window of their own does): General ▸ Input ▸ Manage shortcuts' rows
 /// (`crate::shortcuts`). Read by the declaration tests.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -762,6 +769,14 @@ impl App {
     pub(crate) fn pref_choose(&mut self, c: &'static Combo, i: usize) -> Option<String> {
         let band = crate::views::band_h(&self.state);
         set_choice(c, i);
+        if c.key == MIXER_STYLE.key
+            && let Some(text) = &self.state.fl_text
+            && os_theme::fl::get_key(text, crate::mixer_skin::FINISH).is_some() {
+            let next = os_theme::fl::remove_key(text, crate::mixer_skin::FINISH);
+            self.theme_mark(crate::theme_library::Step::Other);
+            self.theme_edit(next);
+            self.theme_store();
+        }
         // Toolbars scaling: the workspace's top follows the band's new height, the floating windows with it (spec:
         // ui/ui-scaling.md §1).
         if c.key == TOOLBARS_SCALING.key && !self.state.toolbar.hidden {

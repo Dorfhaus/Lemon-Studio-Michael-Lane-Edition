@@ -221,6 +221,7 @@ pub enum Cmd {
     MainMenu(usize, usize),
     StripSilence(usize),
     Warp(usize),
+    VocalAlign(usize),
     Normalize(usize, crate::clip_normalize::Mode),
     WaveDetail(u8),
     CompTrack(u16),
@@ -264,6 +265,7 @@ pub enum Cmd {
     FreezeTrack(u16),
     UnfreezeTrack(u16),
     BounceTrack(u16),
+    BounceReplaceTrack(u16),
     SelectAll,
     Deselect,
     InvertSelection,
@@ -310,6 +312,7 @@ pub enum Cmd {
     ClipSelectSimilar(usize),
     ClipRename(usize),
     ClipRandomColor(usize),
+    ClipColor(usize),
     ClipPreview(usize),
     ClipRoute(usize),
     FitLoop(usize, crate::loop_fit::Fit),
@@ -480,6 +483,7 @@ pub enum Cmd {
     Messages(crate::messages::Pick),
     /// Settings > Project ▸ Data folder's menus and the forms' lists (`crate::data_folder`).
     DataFolder(crate::data_folder::DCmd),
+    MenuLayout(crate::menu_layout::Action),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -828,7 +832,7 @@ impl Rows {
     pub fn new(s: &State) -> Rows {
         let tracks = s.project.arrangement().map(|a| a.tracks.as_slice()).unwrap_or(&[]);
         // On the drawing grid, so tops and heights add up exactly (`PGeom::xs64`).
-        let row_h = snap(f64::from(s.playlist.row_h.clamp(ROW_MIN, ROW_MAX)));
+        let row_h = snap(f64::from((if s.vintage_2005 { s.playlist.row_h / 3.0 } else { s.playlist.row_h }).clamp(ROW_MIN, ROW_MAX)));
         let mut base=Vec::with_capacity(usize::from(TRACKS));
         let mut top = Vec::with_capacity(usize::from(TRACKS) + 1);
         // Only automation projected onto another lane can hide a populated row.
@@ -1496,7 +1500,7 @@ pub fn snap_place(s: &State, g: &PGeom, tick: f32, alt: bool) -> u32 {
         return t as u32;
     }
     let u = sn.ticks(g.ppq, g.bar_w);
-    if sn == Snap::Cell { t as u32 / u * u } else { (t / u as f32).round() as u32 * u }
+    if sn == Snap::Cell { t as u32 / u * u } else { ((t / u as f32).round() as u32).saturating_mul(u) }
 }
 
 /// The song position set on the ruler: down to the unit (Alt: the tick under the pointer).
@@ -1519,6 +1523,57 @@ pub fn snap_delta(s: &State, g: &PGeom, dt: f32, alt: bool) -> i64 {
     }
     let u = grid_snap(s).ticks(g.ppq, g.bar_w) as f32;
     ((dt / u).round() * u) as i64
+}
+
+/// Place the edited pattern without resizing, moving or creating linked clips.
+pub(crate) fn place_current_pattern(app: &mut App) -> String {
+    use crate::app::Win;
+    let s = &mut app.state;
+    let source = ClipSource::Pattern(s.pattern);
+    let length = source_len(s, source);
+    let tick = if app.transport.state() != crate::transport::State::Stopped && app.transport.song() {
+        app.transport.tick()
+    } else {
+        f64::from(s.playlist.pos)
+    };
+    let (frame, client) = crate::views::frame_rects(s, Win::Playlist, s.win_rect(Win::Playlist));
+    let rect = crate::views::playlist::grid_rect(s, frame, client);
+    let geom = PGeom::new(s, rect);
+    let start = snap_place(s, &geom, tick as f32, false);
+    let Some(end) = start.checked_add(length) else { return "The playhead is past the last usable Playlist tick.".into(); };
+    let mut busy = [false; TRACKS as usize];
+    for c in clips(s).iter().filter(|c| c.position < end && c.end() > start) {
+        if let Some(row) = busy.get_mut(usize::from(c.track)) { *row = true; }
+    }
+    let rows = &geom.rows;
+    let Some(row) = (0..TRACKS).find(|&row| {
+        !busy[usize::from(row)] && rows.height(row) > 0.
+            && !track_info(s, row).is_some_and(|t| t.locked || t.frozen.is_some() || t.folder || t.comp.is_some())
+            && crate::comping::parent(s, row).is_none()
+            && !s.playlist.automation_views.contains_key(&row)
+            && !s.mixer.recording.live.iter().any(|r| r.row == row)
+    }) else { return format!("No free space at the playhead within the {TRACKS}-track Playlist limit."); };
+
+    snapshot_as(s, "Place Pattern to Playlist");
+    let a = arr_mut(s);
+    let index = a.clips.len();
+    a.clips.push(Clip::new(start, length, row, source));
+    s.playlist.track = row;
+    s.playlist.sel = vec![index];
+    s.playlist.source = Some(source);
+    s.playlist.picker = PickKind::Pattern;
+    s.piano.dirty = true;
+    s.raise(Win::Playlist);
+    let row_y = rows.top(row);
+    let tick_x = geom.x_of(start as f32) - rect.x + s.playlist_scroll.0;
+    if tick_x < s.playlist_scroll.0 || tick_x >= s.playlist_scroll.0 + rect.w {
+        s.playlist_scroll.0 = tick_x.max(0.);
+    }
+    if row_y < s.playlist_scroll.1 || row_y + rows.height(row) > s.playlist_scroll.1 + rect.h {
+        s.playlist_scroll.1 = row_y;
+    }
+    app.invalidate();
+    format!("Placed {} on {}", source_name(&app.state, source), track_name(&app.state, row))
 }
 
 /// Place a clip of the current source on `track` at `tick`; returns its index.
@@ -2724,8 +2779,20 @@ pub fn parse_value(s: &State, ch: u16, text: &str) -> Option<f64> {
 // Menus (§10)
 
 pub fn options_menu(s: &State, x: f32, y: f32) -> Popup {
+    crate::menu_layout::Menu::Playlist.popup(default_options_menu(s, x, y))
+}
+
+pub(crate) fn default_options_menu(s: &State, x: f32, y: f32) -> Popup {
     let snap_items = snap_items(s);
-    let tools = PlTool::ALL.iter().map(|&t| PItem::new(match t { PlTool::Draw => "Pencil (P)", PlTool::Paint => "Brush (B)", PlTool::Comp => "Comp (G)", PlTool::Slice => "Slice (C)", PlTool::Select => "Select (E)", PlTool::Delete => "Delete (D)", PlTool::Mute => "Mute (T)", _ => "Zoom (Z)" }, Cmd::Tool(t)).mark(Mark::Radio(s.playlist.tool == t))).collect();
+    let tools = PlTool::ALL.into_iter().chain([PlTool::Slip, PlTool::Playback]).map(|t| {
+        let label = match t {
+            PlTool::Draw => "Pencil (P)", PlTool::Paint => "Brush (B)", PlTool::Comp => "Comp (G)",
+            PlTool::Slice => "Slice (C)", PlTool::Select => "Select (E)", PlTool::Delete => "Delete (D)",
+            PlTool::Mute => "Mute (T)", PlTool::Zoom => "Zoom (Z)", PlTool::Slip => "Slip (S)",
+            PlTool::Playback => "Playback (Y)",
+        };
+        PItem::new(label, Cmd::Tool(t)).mark(Mark::Radio(s.playlist.tool == t))
+    }).collect();
     let items = vec![
         PItem::sub(
             "Edit",
@@ -2859,58 +2926,109 @@ pub fn snap_menu(s: &State, x: f32, y: f32) -> Popup {
 }
 
 pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
-    let c=clips(s)[i];
-    let kind=source_kind(s,c.source);
+    use crate::menu_layout::Menu;
+    let c = clips(s)[i];
+    let kind = source_kind(s, c.source);
+    let menu = match kind {
+        PickKind::Audio => Menu::AudioClip,
+        PickKind::Pattern => Menu::PatternClip,
+        PickKind::Automation => Menu::AutomationClip,
+    };
+    let align = kind == PickKind::Audio
+        && crate::workspace_visibility::shown("visible_playlist-vocal-align")
+        && crate::vocal_align::available(s, i);
+    let comp = kind == PickKind::Audio && crate::comping::parent(s, c.track).is_some();
+    let items = clip_menu_items(kind, i, c.muted, align, comp, s.playlist.range.is_some(), s.playlist.stretch);
+    menu.popup(Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() })
+}
+
+pub(crate) fn clip_menu_items(
+    kind: PickKind, i: usize, muted: bool, align: bool, comp: bool, range: bool, stretch: bool,
+) -> Vec<PItem> {
+    if kind == PickKind::Audio {
+        use crate::loop_fit::Fit;
+        let mut time = vec![
+            PItem::new("Detect sample tempo", Cmd::FitLoop(i, Fit::Detect)),
+            PItem::new("Make it fit", Cmd::FitLoop(i, Fit::Auto)),
+            PItem::new("Warp markers...", Cmd::Warp(i)),
+            PItem::sep(),
+            PItem::new("Half length (double time)", Cmd::FitLoop(i, Fit::Half)),
+            PItem::new("Double length (half time)", Cmd::FitLoop(i, Fit::Double)),
+            PItem::sub("Fit to bars", [1, 2, 4, 8, 16].into_iter()
+                .map(|n| PItem::new(format!("Fit to {n} bar(s)"), Cmd::FitLoop(i, Fit::Bars(n)))).collect()),
+            PItem::new("Reset to original duration", Cmd::FitLoop(i, Fit::Reset)),
+            PItem::sep(),
+            PItem::new("Stretch clip edges", Cmd::FitLoop(i, Fit::Edges)).mark(Mark::Radio(stretch)),
+            PItem::new("Trim clip edges", Cmd::FitLoop(i, Fit::Trim)).mark(Mark::Radio(!stretch)),
+        ];
+        // Keep quick fit at the top and use the submenu for detailed timing edits.
+        let quick_fit = time.remove(1);
+        let mut items = vec![
+            PItem::head("Audio clip"),
+            PItem::new("Preview", Cmd::ClipPreview(i)),
+            PItem::new("Muted", Cmd::ClipMute(i)).mark(Mark::Check(muted)),
+            PItem::new("Rename...", Cmd::ClipRename(i)),
+            PItem::new("Make Unique", Cmd::ClipUnique(i)),
+            PItem::new("Send to mixer track...", Cmd::ClipRoute(i)),
+            PItem::sep(),
+            PItem::new("Clip effects...", Cmd::ClipEffects(i)),
+            quick_fit,
+        ];
+        if align {
+            items.push(PItem::new("Vocal Align to this clip…", Cmd::VocalAlign(i)));
+        }
+        items.extend([
+            PItem::sub("Time / stretching", time),
+            PItem::sub("Audio processing", vec![
+                PItem::new("Strip silence...", Cmd::StripSilence(i)),
+                PItem::sub("Normalize audio clips", crate::clip_normalize::Mode::ALL.into_iter()
+                    .map(|mode| PItem::new(mode.label(), Cmd::Normalize(i, mode))).collect()),
+                PItem::new("Edit with ARA...", Cmd::AraMenu(i)),
+                PItem::new("Stem separation...", Cmd::SeparateStems(i)),
+            ]),
+            PItem::sub("Select & organize", {
+                let mut organize = vec![PItem::new("Select all similar clips", Cmd::ClipSelectSimilar(i))];
+                if crate::workspace_visibility::shown("visible_playlist-custom-swatches") {
+                    organize.push(PItem::new("Change color...", Cmd::ClipColor(i)));
+                }
+                organize.push(PItem::new("Random color", Cmd::ClipRandomColor(i)));
+                organize
+            }),
+        ]);
+        if comp {
+            let selected = PItem::new("Use selected time range in comp", Cmd::CompUse(i, true));
+            items.push(PItem::sub("Comping", vec![
+                PItem::new("Use entire take in comp", Cmd::CompUse(i, false)),
+                if range { selected } else { selected.off() },
+            ]));
+        }
+        items.extend([PItem::sep(), PItem::new("Delete", Cmd::ClipDelete(i))]);
+        return items;
+    }
     let mut items=vec![
         PItem::head(match kind {PickKind::Pattern=>"Pattern clip",PickKind::Audio=>"Audio clip",PickKind::Automation=>"Automation clip"}),
         PItem::new("Preview",Cmd::ClipPreview(i)),
-        PItem::new("Muted",Cmd::ClipMute(i)).mark(Mark::Check(c.muted)),
+        PItem::new("Muted",Cmd::ClipMute(i)).mark(Mark::Check(muted)),
         PItem::new("Rename...",Cmd::ClipRename(i)),
         PItem::new("Random color",Cmd::ClipRandomColor(i)),
         PItem::sep(),
     ];
     match kind {
-        PickKind::Audio => {
-            items.push(PItem::new("Strip silence...",Cmd::StripSilence(i)));
-            items.push(PItem::sub("Normalize audio clips", crate::clip_normalize::Mode::ALL.into_iter()
-                .map(|mode| PItem::new(mode.label(), Cmd::Normalize(i,mode))).collect()));
-            items.push(PItem::new("Clip effects...",Cmd::ClipEffects(i)));
-            items.push(PItem::new("Send to mixer track...",Cmd::ClipRoute(i)));
-            use crate::loop_fit::Fit;
-            items.push(PItem::new("Detect sample tempo",Cmd::FitLoop(i,Fit::Detect)));
-            items.push(PItem::new("Make it fit",Cmd::FitLoop(i,Fit::Auto)));
-            let mut fitting=vec![
-                PItem::new("Make it fit",Cmd::FitLoop(i,Fit::Auto)),
-                PItem::new("Warp markers...",Cmd::Warp(i)),
-                PItem::new("Half length (double time)",Cmd::FitLoop(i,Fit::Half)),
-                PItem::new("Double length (half time)",Cmd::FitLoop(i,Fit::Double)),
-            ];
-            for n in [1,2,4,8,16] {fitting.push(PItem::new(format!("Fit to {n} bar(s)"),Cmd::FitLoop(i,Fit::Bars(n))));}
-            fitting.extend([
-                PItem::new("Reset to original duration",Cmd::FitLoop(i,Fit::Reset)),
-                PItem::sep(),
-                PItem::new("Stretch clip edges",Cmd::FitLoop(i,Fit::Edges)).mark(Mark::Radio(s.playlist.stretch)),
-                PItem::new("Trim clip edges",Cmd::FitLoop(i,Fit::Trim)).mark(Mark::Radio(!s.playlist.stretch)),
-            ]);
-            items.push(PItem::sub("Time / stretching",fitting));
-            items.push(PItem::sub("Audio processing",vec![PItem::new("Edit with ARA...",Cmd::AraMenu(i)),PItem::new("Stem separation...",Cmd::SeparateStems(i))]));
-            if crate::comping::parent(s,c.track).is_some() {
-                let range=PItem::new("Use selected time range in comp",Cmd::CompUse(i,true));
-                items.push(PItem::sub("Comping",vec![PItem::new("Use entire take in comp",Cmd::CompUse(i,false)),if s.playlist.range.is_some(){range}else{range.off()}]));
-            }
-        }
         PickKind::Pattern => {
             items.push(PItem::new("Edit selected MIDI clips together",Cmd::ClipSession(i)));
             items.push(PItem::new("Edit pattern",Cmd::ClipEditSource(i)));
             items.push(PItem::new("Reset pattern stretch",Cmd::ResetPatternStretch(i)));
         }
-        PickKind::Automation => {}
+        _ => {}
     }
-    if matches!(kind,PickKind::Pattern|PickKind::Audio) {items.push(PItem::new("Make Unique",Cmd::ClipUnique(i)));}
+    if crate::workspace_visibility::shown("visible_playlist-custom-swatches") {
+        items.insert(4, PItem::new("Change color...", Cmd::ClipColor(i)));
+    }
+    if kind == PickKind::Pattern {items.push(PItem::new("Make Unique",Cmd::ClipUnique(i)));}
     items.push(PItem::new("Select all similar clips",Cmd::ClipSelectSimilar(i)));
     items.push(PItem::sep());
     items.push(PItem::new("Delete",Cmd::ClipDelete(i)));
-    Popup{x,y,items,sub:None,scroll:[0;2],cascade:Vec::new()}
+    items
 }
 
 /// The commands of a picker item's menu (§10a).
@@ -3052,12 +3170,16 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
     .into_iter()
     .map(|(n, c)| PItem::new(n, Cmd::TrackColor(t, c)))
     .collect();
-    let items = vec![
+    let mut items = vec![
         PItem::head("Track"),
         PItem::new("Create folder",Cmd::CreateFolder(t)),
         if track_info(s,t).is_some_and(|r|r.folder){PItem::new("Dissolve folder (keep tracks)",Cmd::DissolveFolder(t))}else{PItem::sep()},
         if track_info(s,t).is_some_and(|t|t.frozen.is_some()) { PItem::new("Unfreeze track (resume editing)", Cmd::UnfreezeTrack(t)) } else { PItem::new("Freeze track (save CPU)", Cmd::FreezeTrack(t)) },
-        PItem::new("Bounce track", Cmd::BounceTrack(t)),
+        PItem::sub("Bounce audio", vec![
+            PItem::new("Bounce audio in new track", Cmd::BounceTrack(t)),
+            PItem::new("Bounce and replace track", Cmd::BounceReplaceTrack(t))
+                .dim(track_info(s, t).is_some_and(|track| track.locked || track.frozen.is_some())),
+        ]),
         PItem::sep(),
         PItem::new("Create take lanes / comp", Cmd::CompTrack(t)),
         PItem::new("Rename...", Cmd::TrackRename(t)),
@@ -3082,6 +3204,9 @@ pub fn track_menu(s: &State, t: u16, x: f32, y: f32) -> Popup {
         PItem::new("Move up", Cmd::TrackUp(t)),
         PItem::new("Move down", Cmd::TrackDown(t)),
     ];
+    if !crate::workspace_visibility::shown(crate::track_render::VISIBILITY) {
+        items.retain(|item| item.label != "Bounce audio");
+    }
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
@@ -4574,12 +4699,14 @@ pub fn commit_edit(s: &mut State) {
             }
         }
         EditTarget::MixerName(n) => {
+            if crate::mixer::locked(s, n) { return; }
             let def = if n == 0 { "Master".to_string() } else { format!("Insert {n}") };
             if let Some(m) = s.project.mixer.iter_mut().find(|m| m.index == n) {
                 m.name = (!text.is_empty() && text != def).then_some(text);
             }
         }
         EditTarget::SlotName(t, k) => {
+            if crate::mixer::locked(s, t) { return; }
             if text.is_empty() {
                 s.mixer.slot_names.remove(&(t, k));
             } else {
@@ -4617,6 +4744,11 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::BrowseMissingSample(row)=>{crate::import_report::browse(app,row as usize);return None;},
         Cmd::UseMissingSample(row,old,path)=>{crate::import_report::relink(app,row as usize,&old,&path);return None;},
 
+        Cmd::MenuLayout(action) => {
+            crate::menu_layout::act(&mut app.state, action, app.mouse);
+            app.invalidate();
+            return None;
+        }
         Cmd::Browser(b) => return app.browser_cmd(b),
         Cmd::Plugin(c) => return crate::plugin_menu::run(app, c),
         Cmd::Project(c) => return crate::project_picker::run(app, c),
@@ -4680,6 +4812,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::Normalize(i, mode) => {return crate::clip_normalize::open(app,i,mode).err();}
         Cmd::StripSilence(i)=>{return crate::strip_silence::open(app,i).err();},
         Cmd::Warp(i)=>{return crate::warp::open(app,i).err();},
+        Cmd::VocalAlign(i) => return crate::vocal_align::open(app, i).err(),
         Cmd::PeakLink(c)=>{if let crate::peak_link::Command::Open(t,v)=c {let(x,y)=app.mouse;app.state.playlist.popup=Some(crate::peak_link::popup(&app.state,t,v,x,y));}else{crate::peak_link::run(&mut app.state,c);}app.invalidate();return None;},
         Cmd::Remote(c) => {
             app.remote_cmd(c);
@@ -4862,8 +4995,14 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             app.invalidate();
             return None;
         }
-        Cmd::FreezeTrack(t) | Cmd::BounceTrack(t) => {
-            app.render_track(t, matches!(cmd, Cmd::FreezeTrack(_)));
+        Cmd::FreezeTrack(t) | Cmd::BounceTrack(t) | Cmd::BounceReplaceTrack(t) => {
+            use crate::track_render::Mode;
+            let mode = match cmd {
+                Cmd::FreezeTrack(_) => Mode::Freeze,
+                Cmd::BounceTrack(_) => Mode::BounceNew,
+                _ => Mode::BounceReplace,
+            };
+            app.render_track(t, mode);
             return None;
         }
         Cmd::UnfreezeTrack(t) => { return Some(crate::track_render::unfreeze(&mut app.state,t)); }
@@ -4931,7 +5070,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             crate::playlist_tools::select(s, PlTool::Paint);
             None
         }
-        Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::TypingLayout(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
+        Cmd::MenuLayout(_) | Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::TypingLayout(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {
             crate::playlist_tools::select(s, t);
@@ -5044,7 +5183,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             (!delete_space(s)).then(|| "Delete space: make a time selection first (right-drag the ruler)".into())
         }
         Cmd::ImportReport | Cmd::ExportImportReport | Cmd::ImportOptions | Cmd::FindMissingSamples | Cmd::ApproveSubstitutes | Cmd::LocateMissingSample(_) | Cmd::BrowseMissingSample(_) | Cmd::UseMissingSample(..) |
-        Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
+        Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::VocalAlign(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::BounceReplaceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
         Cmd::StretchMode => {
             s.playlist.stretch = !s.playlist.stretch;
             if s.playlist.stretch { crate::playlist_tools::select(s, PlTool::Paint); }
@@ -5241,6 +5380,19 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
                 Some(ClipSource::Pattern(n)) => start_edit(s, EditTarget::PatternName(n), at),
                 _ => return Some("Rename: only pattern clips can be renamed here".into()),
             }
+            None
+        }
+        Cmd::ClipColor(i) => {
+            let src = clips(s).get(i)?.source;
+            let at = crate::patterns::box_at_mouse(app.mouse);
+            match src {
+                ClipSource::Pattern(n) => crate::patterns::open_name_box(s, crate::patterns::BoxTarget::Name(n), at),
+                ClipSource::Channel(id) => {
+                    let row = s.project.channels.iter().position(|c| c.index == id)?;
+                    crate::rack::open_box(s, crate::rack::RBox::Channel(row), at);
+                }
+            }
+            if let Some(b) = &mut s.pat_ui.name_box { b.palette = true; }
             None
         }
         Cmd::ClipRandomColor(i) => {

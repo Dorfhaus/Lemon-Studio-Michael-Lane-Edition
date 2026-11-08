@@ -322,6 +322,7 @@ struct Pace {
     read: (u64, u64),
     frames: u64,
     at: Instant,
+    playback_at: Option<Instant>,
     rate: u32,
 }
 
@@ -791,6 +792,22 @@ impl Transport {
         let rate = self.shared.sample_rate.load(Ordering::Relaxed).max(1);
         let frame = self.paced().map_or_else(|| self.shared.position.load(Ordering::Relaxed), |p| p.at(Instant::now()).0);
         frame as f64 / f64::from(rate)
+    }
+
+    /// The last block's start on the song timeline and its predicted hardware playback time.
+    /// This clock is used for placing recordings. The UI playhead still uses its existing clock.
+    pub(crate) fn recording_output(&self) -> Option<(f64, Instant)> {
+        let pace = self.paced()?;
+        Some((pace.from.0 as f64 / f64::from(pace.rate.max(1)), pace.playback_at?))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pretend_recording_output(&self, frame: u64, tick: f64, rate: u32, playback_at: Instant) {
+        self.shared.sample_rate.store(rate, Ordering::Relaxed);
+        *self.shared.pace.lock().unwrap() = Some(Pace {
+            from: (frame, tick), to: (frame, tick), read: (0, 0), frames: 0,
+            at: Instant::now(), playback_at: Some(playback_at), rate,
+        });
     }
 
     /// The playback's last block, while it plays.
@@ -2172,9 +2189,14 @@ impl Renderer {
     }
 
     /// Renders one block (see `render_block`) and copies it to the monitor tap, unless the stream is held.
+    #[cfg(test)]
     fn render(&mut self, stereo: &mut [f32]) {
+        self.render_at(stereo, None);
+    }
+
+    fn render_at(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
         let held = self.gain == 0.0 && self.ctl.paused.load(Ordering::Relaxed);
-        self.render_block(stereo);
+        self.render_block(stereo, playback_at);
         if self.tap && !held {
             if let Ok(mut t) = self.shared.tap.try_lock() {
                 t.push(stereo, crate::device::blocks(), Instant::now(), self.shared.sample_rate.load(Ordering::Relaxed));
@@ -2184,7 +2206,7 @@ impl Renderer {
 
     /// Plays `stereo.len() / 2` frames (interleaved L/R) from the queue. A paused stream, once faded out, reads
     /// nothing, so its position and the queued ticks stay exactly where they were.
-    fn render_block(&mut self, stereo: &mut [f32]) {
+    fn render_block(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
         let target = if self.ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
         if self.gain == 0.0 && target == 0.0 {
             stereo.fill(0.0);
@@ -2236,7 +2258,8 @@ impl Renderer {
                 self.shared.tick.store(tick.to_bits(), Ordering::Relaxed);
                 if let Ok(mut p) = self.shared.pace.try_lock() {
                     let rate = self.shared.sample_rate.load(Ordering::Relaxed);
-                    *p = Some(Pace { from: from.unwrap_or((frame, tick)), to: (frame, tick), read: (read, read + (got / 2) as u64), frames: (got / 2) as u64, at: Instant::now(), rate });
+                    *p = Some(Pace { from: from.unwrap_or((frame, tick)), to: (frame, tick), read: (read, read + (got / 2) as u64), frames: (got / 2) as u64, at: Instant::now(),
+                        playback_at: playback_at.filter(|_| got > 0 && from.is_some()), rate });
                 }
             }
         }
@@ -2253,7 +2276,11 @@ impl Renderer {
 /// What the device plays of a stream: its block, and its own peaks for the meters.
 impl Source for Renderer {
     fn play(&mut self, stereo: &mut [f32]) {
-        self.render(stereo);
+        self.play_at(stereo, None);
+    }
+
+    fn play_at(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
+        self.render_at(stereo, playback_at);
         let (mut pl, mut pr) = (0.0f32, 0.0f32);
         for s in stereo.chunks_exact(2) {
             pl = pl.max(s[0].abs());
@@ -2855,7 +2882,7 @@ mod tests {
     #[test]
     fn the_position_moves_through_the_block() {
         let t0 = Instant::now();
-        let p = Pace { from: (1000, 10.0), to: (5800, 14.0), read: (0, 4800), frames: 4800, at: t0, rate: 48000 };
+        let p = Pace { from: (1000, 10.0), to: (5800, 14.0), read: (0, 4800), frames: 4800, at: t0, playback_at: None, rate: 48000 };
         assert_eq!(p.at(t0), (1000, 10.0));
         assert_eq!(p.at(t0 + Duration::from_millis(25)), (2200, 11.0));
         assert_eq!(p.played(t0 + Duration::from_millis(25)), 1200);

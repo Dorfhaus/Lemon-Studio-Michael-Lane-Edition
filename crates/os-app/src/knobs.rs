@@ -354,11 +354,13 @@ impl crate::app::App {
         let s = &mut self.state;
         match c {
             Control::Knob(id) => {
+                if crate::mixer::locked_knob(s, id) { return; }
                 s.reset_knob(id);
                 self.hint = Cow::Owned(s.knob_text(id));
             }
             Control::Fader(t) => {
-                let tracks=if crate::mixer::is_selected(s,t){crate::mixer::selected(s)}else{vec![t]};
+                if crate::mixer::locked(s, t) { return; }
+                let tracks = crate::mixer::fader_group(s, t).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
                 if crate::prefs::check(&crate::prefs::UNDO_KNOB_TWEAKS){let snaps=tracks.iter().filter_map(|&n|crate::mixer::track(s,n).map(|m|crate::history::Snap::Fader(n,m.volume))).collect();crate::history::record(s,"Reset selected mixer volumes",crate::history::Snap::Several(snaps));}
                 let v = os_model::MixerTrack::new(t).volume.unwrap_or(0.8);
                 for n in tracks{if let Some(m)=crate::mixer::track_mut(s,n){m.volume=Some(v);}}

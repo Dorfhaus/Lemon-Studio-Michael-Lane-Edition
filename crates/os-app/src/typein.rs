@@ -159,6 +159,13 @@ pub(crate) fn get(s: &State, t: Target) -> Option<f64> {
 }
 
 fn set(s: &mut State, t: Target, v: f64) {
+    let locked = match t {
+        Target::Fader(track) => crate::mixer::locked(s, track),
+        Target::Knob(id) => crate::mixer::locked_knob(s, id),
+        Target::Param(key, _) => crate::mixer::locked_effect(s, key),
+        _ => false,
+    };
+    if locked { s.message = Some(crate::mixer::LOCK_MESSAGE.into()); return; }
     match t {
         Target::SampleTempo(row) => s.sample_tempo_requests.push((row,(v*1000.).round() as u32)),
         Target::Knob(k) => {

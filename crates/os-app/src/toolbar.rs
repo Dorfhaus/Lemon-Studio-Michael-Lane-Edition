@@ -185,7 +185,7 @@ impl Panel {
         match self {
             Panel::Caption => 63.0,
             Panel::Hint => 221.0,
-            Panel::Transport => 570.0,
+            Panel::Transport => 572.0,
             Panel::Recording => 610.0,
             Panel::Time => 873.0,
             Panel::Monitor => 1045.0,

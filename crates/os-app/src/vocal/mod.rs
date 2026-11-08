@@ -8,7 +8,8 @@ mod editing;
 pub mod navigation;
 use editing::begin;
 pub use editing::drag;
-pub use view::{paint,head,keys,icon as tool_icon,TOOLS};
+pub use view::{paint,head,keys,packed_art,TOOLS};
+pub use view::icon as tool_icon;
 use crate::{app::{App,State,Drag},playlist as pl};
 use os_model::{ClipSource,vocal::{Edit,Note,STEP}};
 use std::{sync::{mpsc,Arc,atomic::{AtomicBool,Ordering}},path::PathBuf,time::{Duration,Instant},collections::HashSet};
@@ -278,7 +279,16 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   let file=os_flp::project::create(&app.state.project).unwrap();let loaded=os_flp::project::load(&file).unwrap();assert_eq!(loaded.vocal_edits,app.state.project.vocal_edits);assert_eq!(loaded.arrangement().unwrap().clips.len(),pl::clips(&app.state).len());for(a,b)in loaded.arrangement().unwrap().clips.iter().zip(pl::clips(&app.state)){assert_eq!((a.position,a.length,a.track,a.source,a.window),(b.position,b.length,b.track,b.source,b.window));}
   command(&mut app,Command::Toggle(2));assert_eq!(app.state.playlist.vocal.row,None);assert_eq!(pl::Rows::new(&app.state).height(2),old);assert_eq!(app.state.project.vocal_edits,before);
   command(&mut app,Command::Toggle(2));assert_eq!(app.state.playlist.vocal.row,Some(2));
-  if let Some(out)=std::env::var_os("OS_SHOT_DIR"){std::fs::create_dir_all(&out).unwrap();command(&mut app,Command::Tool(Tool::Select));paint(&mut app,&mut canvas);canvas.pixmap.save_png(PathBuf::from(out).join("vocal-inline.png")).unwrap();}
+  if let Some(out) = std::env::var_os("OS_SHOT_DIR") {
+    std::fs::create_dir_all(&out).unwrap();
+    command(&mut app, Command::Tool(Tool::Select));
+    paint(&mut app, &mut canvas);
+    canvas.pixmap.save_png(PathBuf::from(&out).join("vocal-inline.png")).unwrap();
+    app.state.vintage_2005 = true;
+    let mut vintage = Canvas::new(1600, 1125, 1.25).unwrap();
+    paint(&mut app, &mut vintage);
+    vintage.pixmap.save_png(PathBuf::from(out).join("vocal-inline-vintage.png")).unwrap();
+  }
   assert_eq!(std::fs::read(dir.join("Vocal.wav")).unwrap(),original_audio);
  }
  #[test]fn vocal_download_requires_consent_and_cancel_keeps_project(){

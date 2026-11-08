@@ -159,8 +159,15 @@ mod save_form;
 mod scroll_speed;
 mod search_folders;
 mod settings_file;
+mod workspace_visibility;
+mod vintage;
+mod vintage_cursors;
+mod vintage_rack_art;
+mod vintage_skin;
+mod menu_layout;
 mod shortcuts;
 mod warp;
+mod vocal_align;
 mod vocal;
 mod smooth;
 mod snap;
@@ -190,6 +197,9 @@ mod record;
 mod record_lead;
 mod recent;
 mod theme_adjust;
+mod advanced_theme;
+mod mixer_skin;
+mod theme_identity;
 mod theme_library;
 mod templates;
 mod timesig;
@@ -234,7 +244,9 @@ struct Shell {
     pointer_locked: bool,
     cursor: app::Cursor,
     cursor_scale: u16,
-    tool_cursors: Vec<(playlist::PlTool, u8, u16, winit::window::CustomCursor)>,
+    cursor_pack: u8,
+    cursor_color: Option<os_theme::Color>,
+    tool_cursors: CursorCache,
     /// Main-window border in device pixels (left, top, right, bottom); zero when maximized.
     inset: (u32, u32, u32, u32),
     /// The border edge under the mouse (drags resize the OS window).
@@ -551,11 +563,24 @@ impl Shell {
             Some(_) => app::Cursor::NeswResize,
             None => self.app.cursor(),
         };
-        let scale = (ui_scale(window)*100.0).round().clamp(50.0,400.0) as u16;
-        if c != self.cursor || self.cursor_scale != scale {
+        let appearance = if self.app.state.vintage_2005 {
+            os_theme::design::vintage_2005().appearance
+        } else {
+            self.app.theme.colors.appearance
+        };
+        let pack = playlist_tools::resolved_cursor_pack(appearance, c);
+        let size = if pack == 0 { 100.0 } else { appearance.cursor_size.unwrap_or(100.0) };
+        let scale = (ui_scale(window)*f64::from(size)).round().clamp(50.0,400.0) as u16;
+        let color = if pack == 0 { None } else { appearance.cursor_color };
+        if self.cursor_color != color {
+            self.tool_cursors.clear();
+        }
+        if c != self.cursor || self.cursor_scale != scale || self.cursor_pack != pack || self.cursor_color != color {
+            self.cursor_color = color;
             self.cursor = c;
             self.cursor_scale = scale;
-            apply_window_cursor(window,el,c,scale,&mut self.tool_cursors);
+            self.cursor_pack = pack;
+            apply_window_cursor(window, el, c, scale, pack, &mut self.tool_cursors);
         }
     }
 
@@ -658,9 +683,16 @@ impl Shell {
             edited_sample::finish(&mut self.app);
         }
         // Animate while playing; otherwise repaint a few times a second (peaks, clock).
-        let ms = if self.app.animating() || self.app.state.sample_drop.active() { 16 } else { 100 };
+        let animating = self.app.animating();
+        let interval = if animating || self.app.state.sample_drop.active() {
+            paced(self.frame, animating)
+        } else if self.app.vintage_title_scrolling() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(100)
+        };
         let now = Instant::now();
-        let mut wake = now + Duration::from_millis(ms);
+        let mut wake = now + interval;
         // Unsaved changes were answered (or there were none): the window closes.
         if self.app.want_exit {
             el.exit();
@@ -1360,7 +1392,7 @@ impl ApplicationHandler for Shell {
                 // Retire the splash only after the visible window received its full frame.
                 if presented && !self.shown && self.app.project_loading().is_none() {
                     self.shown = true;
-                    startup_sound::play();
+                    startup_sound::play_launch(self.app.state.vintage_2005);
                 }
                 if !presented {self.app.invalidate();self.pending=true;}
                 if let Some(log) = &mut self.frames {
@@ -1798,7 +1830,7 @@ fn screenshot(args: &[String]) {
         // Playback: what each tick repaints (spec: audio/transport.md; no device, the shown state is set directly).
         // About 4 ticks per frame = 60 frames a second at 140 BPM, 96 PPQ.
         for song in [false, true] {
-            let shown = |tick: f64, sounding: Vec<(u16, u16)>| app::Shown { playing: true, paused: false, tick, song, sounding, tempo: None };
+            let shown = |tick: f64, sounding: Vec<(u16, u16)>| app::Shown { playing: true, paused: false, tick, piano_tick: None, song, sounding, tempo: None };
             app.show_playback(shown(0.0, Vec::new()));
             let d = app.take_damage();
             app.paint_region(&mut canvas, d.flatten().as_deref());
@@ -1886,16 +1918,26 @@ fn wake_ui() {
     }
 }
 
-fn apply_window_cursor(window:&Window, el:&ActiveEventLoop, c:app::Cursor, scale:u16, cache:&mut Vec<(playlist::PlTool,u8,u16,winit::window::CustomCursor)>) {
-            if let app::Cursor::Playlist(tool,phase) = c {
-                let found=cache.iter().position(|(t,p,k,_)| *t==tool && *p==phase && *k==scale);
-                let index=found.or_else(|| {
-                    let source=playlist_tools::cursor_source(tool,phase,f32::from(scale)/100.)?;
-                    cache.push((tool,phase,scale,el.create_custom_cursor(source)));
-                    Some(cache.len()-1)
-                });
-                if let Some(i)=index { window.set_cursor(cache[i].3.clone()); return; }
-            }
+type CursorCache = Vec<((app::Cursor, u16, u8), winit::window::CustomCursor)>;
+
+fn apply_window_cursor(window: &Window, el: &ActiveEventLoop, c: app::Cursor, scale: u16, pack: u8, cache: &mut CursorCache) {
+    let key = (c, scale, pack);
+    if let Some((_, cursor)) = cache.iter().find(|(k, _)| *k == key) {
+        window.set_cursor(cursor.clone());
+        return;
+    }
+    let size = f32::from(scale) / 100.0;
+    let source = match c {
+        app::Cursor::Playlist(tool, phase) => playlist_tools::packed_cursor_source(tool, phase, size, pack),
+        _ => playlist_tools::window_cursor_source(c, size, pack),
+    };
+    if let Some(source) = source {
+        let cursor = el.create_custom_cursor(source);
+        if cache.len() >= 96 { cache.remove(0); }
+        cache.push((key, cursor.clone()));
+        window.set_cursor(cursor);
+        return;
+    }
             window.set_cursor(match c {
                 app::Cursor::Playlist(_,playlist_tools::RESIZE) => CursorIcon::EwResize,
                 app::Cursor::Playlist(_,playlist_tools::GAIN) => CursorIcon::Pointer,
@@ -2064,6 +2106,8 @@ fn main() {
         pointer_locked: false,
         cursor: app::Cursor::Default,
         cursor_scale: 0,
+        cursor_pack: 0,
+        cursor_color: None,
         tool_cursors: Vec::new(),
         inset: (0, 0, 0, 0),
         edge: None,

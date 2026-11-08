@@ -1352,6 +1352,8 @@ pub struct MixerTrack {
     pub runtime_id: u64,
     pub clip_fx:bool,
     pub rack_strip: Option<RackStrip>,
+    /// Protects the channel from manual configuration edits.
+    pub edit_locked: bool,
     /// 0 = Master.
     pub index: u16,
     pub name: Option<String>,
@@ -1419,6 +1421,7 @@ impl PartialEq for MixerTrack {
             runtime_id: _,
             clip_fx,
             rack_strip,
+            edit_locked,
             index,
             name,
             color,
@@ -1472,6 +1475,7 @@ impl PartialEq for MixerTrack {
             && *channel_layout == o.channel_layout
             && *strip_bypassed == o.strip_bypassed
             && *rack_strip == o.rack_strip
+            && *edit_locked == o.edit_locked
             && *parametric_pre == o.parametric_pre
             && *eq == o.eq
             && *latency_out == o.latency_out
@@ -1501,6 +1505,7 @@ impl MixerTrack {
             runtime_id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             clip_fx: false,
             rack_strip: None,
+            edit_locked: false,
             index,
             name: None,
             color: None,

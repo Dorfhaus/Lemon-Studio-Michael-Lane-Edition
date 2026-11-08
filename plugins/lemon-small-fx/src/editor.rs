@@ -26,6 +26,9 @@ use crate::{Shared, Spec};
 
 /// Optional non-parameter instrument controls, called only on the editor thread.
 pub trait Extension: Send + Sync {
+    /// (Route id, source label, automatable depth parameter id).
+    fn modulation_routes(&self, _id: &str) -> Vec<(usize, &'static str, &'static str)> { Vec::new() }
+    fn remove_modulation(&self, _id: &str, _route: usize, _context: Option<&Arc<dyn GuiContext>>) {}
     fn editor_closed(&self) {}
     fn accepts_files(&self)->bool { false }
     fn file_dropped(&self,_path:&std::path::Path) {}
@@ -142,6 +145,7 @@ pub enum Cmd {
     PasteValue(String),
     TypeIn(String),
     Automate(String),
+    RemoveModulation(String, usize),
     About,
 }
 
@@ -350,6 +354,13 @@ impl Logic {
                 // Automation belongs to the host: offered when Lemon Studio hosts the editor (host link).
                 m.sep(Cmd::None);
                 m.add(MenuItem::item("Create automation clip").enabled(self.hosted), Cmd::Automate(id.clone()));
+                if let Some(extension) = &self.shared.extension {
+                    for (route, source, depth) in extension.modulation_routes(id) {
+                        m.sep(Cmd::None);
+                        m.add(MenuItem::item(&format!("Remove {source} modulation")), Cmd::RemoveModulation(id.clone(), route));
+                        m.add(MenuItem::item(&format!("Automate {source} depth")).enabled(self.hosted), Cmd::Automate(depth.into()));
+                    }
+                }
                 m.sep(Cmd::None);
                 m.add(MenuItem::item(&format!("About {}...", self.spec.name)), Cmd::About);
                 m
@@ -376,6 +387,11 @@ impl Logic {
             }
             Cmd::TypeIn(id) => return vec![Act::TypeIn(id, x, y)],
             Cmd::Automate(id) => return self.spec.index(&id).map(Act::Automate).into_iter().collect(),
+            Cmd::RemoveModulation(id, route) => {
+                if let Some(extension) = &self.shared.extension {
+                    extension.remove_modulation(&id, route, self.context.as_ref());
+                }
+            }
             Cmd::About => return vec![Act::Menu(MenuReq::About, x, y)],
         }
         vec![Act::Repaint]

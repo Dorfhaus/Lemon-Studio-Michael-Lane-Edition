@@ -590,16 +590,22 @@ fn max_w(st: &State) -> f32 {
     if st.resizable() { 19.0 } else { 0.0 }
 }
 
-fn page_tabler(p: PageIcon) -> &'static tb::TablerIcon {
+fn page_icon(p: PageIcon) -> crate::icons::Icon {
+    use crate::icons::Icon;
     match p {
-        PageIcon::Plugin => &tb::PLUG,
-        PageIcon::Sample => &tb::WAVE_SINE,
-        PageIcon::Envelope => &tb::TIMELINE,
+        PageIcon::Plugin => Icon::Plug,
+        PageIcon::Sample => Icon::Wave,
+        PageIcon::Envelope => Icon::Envelope,
     }
 }
 
-fn icon_at(c: &mut Canvas, t: &tb::TablerIcon, cx: f32, cy: f32, size: f32, col: Color) {
-    c.icon(t, Rect::new(cx - size / 2.0, cy - size / 2.0, size, size), col);
+fn icon_at(c: &mut Canvas, icon: crate::icons::Icon, cx: f32, cy: f32, size: f32, col: Color) {
+    let r = Rect::new(cx - size / 2.0, cy - size / 2.0, size, size);
+    if icon == crate::icons::Icon::Gear {
+        crate::icons::draw_with_default(c, icon, &tb::SETTINGS_FILLED, r, col);
+    } else {
+        crate::icons::draw(c, icon, r, col);
+    }
 }
 
 /// The title bar's text font (FL: 8 px cap height, baseline under row 18).
@@ -611,6 +617,10 @@ fn sidechain_button(st:&State)->Rect {Rect::new(BORDER+8.,st.area_y()+28.,(st.si
 
 fn paint(c: &mut Canvas, st: &State) {
     let (w, h) = st.size();
+    c.set_icon_pack(os_theme::current().appearance.icon_pack, false);
+    c.set_icon_color(os_theme::current().appearance.icon_color);
+    c.set_icon_overrides(os_theme::current().appearance);
+    c.set_chrome_art(crate::icons::chrome);
     c.begin_frame(None);
     c.clear(c_frame());
     // 1 px outline around the window, a lighter line under its top edge.
@@ -643,7 +653,7 @@ fn paint(c: &mut Canvas, st: &State) {
 /// Title bar, left to right: menu arrow, gear (boxed while the strip is shown), channel name, "(mixer target)", the
 /// plugin's hint; right side: Presets box with previous / next arrows, minimize, close.
 fn title_bar(c: &mut Canvas, st: &State, w: f32) {
-    icon_at(c, &tb::CARET_RIGHT, 14.4, 15.5, 15.4, c_arrow());
+    icon_at(c, crate::icons::Icon::ArrowRight, 14.4, 15.5, 15.4, c_arrow());
     let g = GEAR_RECT;
     let lemon = os_ui::kit::lemon::on(&os_theme::current());
     if st.strip && lemon {
@@ -653,7 +663,7 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
         c.stroke_rrect(Rect::new(g.x + 1.0, g.y + 1.0, g.w - 2.0, g.h - 2.0), 3.5, 2.0, c_gear_on());
     }
     let gear = if st.strip && lemon { os_ui::kit::lemon::ink_on_lemon() } else if st.strip { c_gear_on() } else { c_icon() };
-    icon_at(c, &tb::SETTINGS_FILLED, g.cx(), g.cy(), 18.4, gear);
+    icon_at(c, crate::icons::Icon::Gear, g.cx(), g.cy(), 18.4, gear);
     let p = presets_rect(st);
     let f = title_font();
     let ty = (19.0 - c.ascent(f)).round();
@@ -688,14 +698,22 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
     // Presets box: the loaded preset's name, or "Presets" (spec: plugins/presets.md).
     c.fill_rrect(p, if lemon { 6.0 } else { 3.0 }, c_presets());
     c.text_clip(f, p.x + 9.0, ty, p.w - 9.0 - 31.0, c_text(), st.preset.as_deref().unwrap_or("Presets"));
-    icon_at(c, &tb::CARET_LEFT, p.right() - 22.2, 15.5, 18.9, c_icon());
-    icon_at(c, &tb::CARET_RIGHT, p.right() - 7.8, 15.5, 18.9, c_icon());
+    icon_at(c, crate::icons::Icon::ArrowLeft, p.right() - 22.2, 15.5, 18.9, c_icon());
+    icon_at(c, crate::icons::Icon::ArrowRight, p.right() - 7.8, 15.5, 18.9, c_icon());
     let mw = max_w(st);
-    c.icon_stroke(&tb::MINUS, Rect::new(w - 39.5 - mw, 7.0, 12.0, 12.0), c_icon(), 2.0);
-    if mw > 0.0 {
-        c.icon(&tb::SQUARES, Rect::new(w - 40.0, 9.0, 13.0, 13.0), c_icon());
+    if c.icon_pack() == 0 {
+        c.icon_stroke(&tb::MINUS, Rect::new(w - 39.5 - mw, 7.0, 12.0, 12.0), c_icon(), 2.0);
+    } else {
+        crate::icons::draw(c, crate::icons::Icon::Minimize, Rect::new(w - 39.5 - mw, 7.0, 12.0, 12.0), c_icon());
     }
-    c.icon_stroke(&tb::X, Rect::new(w - 22.25, 7.75, 15.5, 15.5), c_icon(), 1.6);
+    if mw > 0.0 {
+        crate::icons::draw(c, crate::icons::Icon::Restore, Rect::new(w - 40.0, 9.0, 13.0, 13.0), c_icon());
+    }
+    if c.icon_pack() == 0 {
+        c.icon_stroke(&tb::X, Rect::new(w - 22.25, 7.75, 15.5, 15.5), c_icon(), 1.6);
+    } else {
+        crate::icons::draw(c, crate::icons::Icon::Close, Rect::new(w - 22.25, 7.75, 15.5, 15.5), c_icon());
+    }
 }
 
 fn strip(c: &mut Canvas, st: &State, w: f32) {
@@ -714,7 +732,7 @@ fn strip(c: &mut Canvas, st: &State, w: f32) {
             c.fill_rect(cell, c_body());
         }
         let col = if active { os_theme::current().a(0x49f1b1) } else { c_icon() };
-        let t = if i == n { &tb::TOOL } else { page_tabler(st.pages[i]) };
+        let t = if i == n { crate::icons::Icon::Wrench } else { page_icon(st.pages[i]) };
         icon_at(c, t, cell.cx(), cell.cy(), 26.0, col);
     }
     // ON LED.

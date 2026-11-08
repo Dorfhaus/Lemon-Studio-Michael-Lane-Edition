@@ -204,6 +204,12 @@ impl PianoState {
         self.overlay = None;
     }
 
+    /// Use the picked note's type for subsequent placements.
+    pub fn use_note_type(&mut self, note: &Note) {
+        self.draw_slide = note.slide();
+        self.draw_porta = note.porta();
+    }
+
     /// Selected note indices (into the pattern's notes) for this pattern and channel.
     pub fn selection(&self, pattern: u16, channel: Option<u16>) -> Vec<usize> {
         match channel {
@@ -358,6 +364,41 @@ pub fn song_spans(s: &State) -> Vec<(u32, u32, u32)> {
         .collect();
     v.sort_unstable();
     v
+}
+
+/// A display clock that follows transport without drawing the audio callback's small timing steps.
+#[derive(Default)]
+pub(crate) struct PlayheadClock {
+    last: Option<(std::time::Instant, u64, f64, f64)>,
+}
+
+impl PlayheadClock {
+    pub(crate) fn sample(&mut self, at: std::time::Instant, generation: u64, tick: f64, rate: f64) -> f64 {
+        let shown = self.last.map_or(tick, |(before, session, raw, drawn)| {
+            let elapsed = at.saturating_duration_since(before).as_secs_f64();
+            let step = elapsed * rate;
+            let predicted = drawn + step;
+            let error = tick - predicted;
+            if generation != session || elapsed > 0.150 || raw - tick > rate * 0.015 || error > rate * 0.120 {
+                return tick;
+            }
+            // Follow the musical rate, correcting modest clock error gradually. If audio stalls, hold
+            // within 45 ms of it until it catches up instead of snapping the line backward.
+            let adjustment = (error * 0.22).clamp(-step * 0.18, step * 0.18);
+            (predicted + adjustment).min(tick + rate * 0.045).max(drawn)
+        });
+        self.last = Some((at, generation, tick, shown));
+        shown
+    }
+}
+
+pub(crate) fn playhead_x(s: &State, g: &Geom, tick: f64, song: bool) -> Option<f32> {
+    if song && s.song_mode && g.source_window.is_some() {
+        let ppt = f64::from(s.piano.px_per_beat) / f64::from(s.project.ppq.max(4));
+        return Some(g.grid.x + ((tick - f64::from(s.piano.scroll_x)) * ppt) as f32);
+    }
+    let tick = if song { pattern_tick_in_song(s, tick)? } else { tick };
+    Some(g.grid.x + ((tick - f64::from(g.scroll_x)) * f64::from(g.ppt)) as f32)
 }
 
 /// The pattern tick at song tick `t`, when a clip of the current pattern plays there (the latest-starting one).

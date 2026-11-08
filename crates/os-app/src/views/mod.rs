@@ -33,6 +33,7 @@ pub mod tapper;
 pub mod touch;
 pub mod theme_preview;
 pub mod toolbar;
+pub mod vintage_toolbar;
 pub mod typein;
 
 use std::borrow::Cow;
@@ -52,6 +53,7 @@ pub struct FrameInfo {
     /// Playback position in ticks of the running mode (a pattern wraps at its end), and whether that mode is
     /// the playlist. Every playhead and the time display read these, never the UI's own tempo or mode.
     pub tick: f64,
+    pub piano_tick: f64,
     pub song: bool,
     /// The tempo the toolbar shows: the one playback plays at (tempo automation moves it), else the project's.
     pub tempo: f64,
@@ -143,6 +145,9 @@ pub fn band_rect(s: &State, r: Rect) -> Rect {
 /// The parts of rect `r` of the top band, given in its panels' home px (`band_rect`), in the window's px where each of
 /// those panels is drawn now: to repaint them (`App::damage_band`). Panels that are not on the toolbar give none.
 pub fn band_rects(s: &State, r: Rect) -> Vec<Rect> {
+    if vintage_toolbar::active(s,s.screen.0/band_k(s)) {
+        return vec![scale_rect(toolbar::band(s,s.screen.0/band_k(s)),band_k(s))];
+    }
     let k = band_k(s);
     placed(s)
         .into_iter()
@@ -189,7 +194,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     let work = Rect::new(left, top, w - left, h - top);
     let docked = s.docked();
     // spec: ui/flstheme.md §3 (BackMode, BackPicFilename); no watermark over a picture (`wallpaper`).
-    if docked.is_none() && !crate::wallpaper::paint(ui, work) {
+    if docked.is_none() && !crate::wallpaper::paint(ui, work) && crate::workspace_visibility::shown("visible_watermark") {
         let wm = ui.t.watermark;
         icons::logo(ui.c, work.cx(), work.cy() + 40.0, 170.0, wm);
         let version = concat!("Lemon Studio v", env!("CARGO_PKG_VERSION"), " - pre-alpha");
@@ -253,6 +258,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     // Hints live only in the top toolbar; there is no floating duplicate.
     let overlays = ui.hit_count();
     if s.native_view != s.native_input {return overlays;}
+    if crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
     crate::plugin_downloads::paint_tooltip(ui, s);
     // The toolbar editor's palette goes over the windows, which docked plugin windows leave free like any overlay (spec:
     // ui/toolbar-menu.md §8).
@@ -291,6 +297,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     if let Some(b) = &s.link_box {
         remote_box::paint(ui, s, b);
     }
+    if !crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
     // Message boxes and file dialogs go over everything (spec: ui/dialogs.md).
     dialog::paint(ui, s);
     if over_dialog {
@@ -368,7 +375,11 @@ pub fn window_buttons(ui: &mut Ui, win: Win, x0: f32, y: f32, _normal: Color, _h
             hovered = Some(i);
         }
     }
-    kit::window_buttons(ui.c, ui.t, x0, y, hovered);
+    if ui.t.style.vintage_2005 && crate::vintage_skin::has_frame("WindowButtonFaces", 5) {
+        for i in 0..3 {
+            crate::vintage_skin::native(ui.c,"WindowButtonFaces",[0,2,4][i]+usize::from(hovered==Some(i)),(x0+i as f32*19.5+1.).round(),y+6.);
+        }
+    } else {kit::window_buttons(ui.c, ui.t, x0, y, hovered);}
 }
 
 /// Window frame with a title bar (§5); the bar drags the window. `buttons` = draw the window
@@ -382,7 +393,11 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
     let t = ui.t;
     ui.c.fill_rect(r, t.window_title);
     let bar = Rect::new(r.x, r.y, r.w, 23.0);
-    if kit::lemon::on(t) {
+    if t.style.vintage_2005 {
+        crate::vintage::window_caption(ui.c,bar);
+    } else if kit::panel_finish(ui.c, t, bar, t.window_title) {
+        // The finish stays inside the same draggable title rectangle.
+    } else if kit::lemon::on(t) {
         // Lemon (spec: ui/lemon-design.md §3): a flat bar, a hairline under it.
         if !flat {
             ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
@@ -391,7 +406,13 @@ pub fn window_frame_ex(ui: &mut Ui, win: Win, r: Rect, title: &str, title_x: f32
         ui.c.fill_rect_gradient(bar, t.window_title.shade(0.04), t.window_title.shade(-0.03), 0.0);
         ui.c.fill_rect(Rect::new(r.x, r.y + 22.0, r.w, 1.0), t.splitter_dark);
     }
-    ui.c.text(os_ui::Font::new(17), r.x + title_x, r.y + 1.0, t.text, title);
+    let font = if t.style.vintage_2005 {os_ui::Font::vintage(12)}else{kit::title_font(t, os_ui::Font::new(17))};
+    if t.appearance.title_text.is_some() {
+        let width = (r.w - title_x - if buttons { 66.0 } else { 4.0 }).max(0.0);
+        ui.c.text_clip(font, r.x + title_x, r.y + 1.0, width, t.text, title);
+    } else {
+        ui.c.text(font, r.x + title_x, r.y + 1.0, t.text, title);
+    }
     ui.hit(bar, Action::WinDrag(win), "Drag to move");
     // Minimize / maximize / close glyphs at the right (1862, 1881, 1901 at full width).
     if buttons {
@@ -411,7 +432,11 @@ pub fn float_frame(ui: &mut Ui, s: &State, win: Win, r: Rect) -> Option<Rect> {
     }
     let t = ui.t;
     let inner = Rect::new(r.x + 7.0, r.y + 5.0, r.w - 14.0, r.h - 12.0);
-    if kit::lemon::on(t) {
+    if t.style.vintage_2005 {
+        crate::vintage::metal(ui.c,r,t.window_title);
+        ui.c.stroke_rrect(r.inset(3.),0.,1.,Color::rgb(0x28373d));
+        ui.c.fill_rect(Rect::new(inner.x-1.,inner.y+23.,inner.w+2.,inner.h-22.),Color::rgb(0x202b32));
+    } else if kit::lemon::on(t) {
         kit::float_frame(ui.c, t, r);
     } else {
         ui.c.fill_rect(r, ui.t.s(0x191d1f));
@@ -472,7 +497,7 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     if target==Scroll::PlaylistY {
         ui.c.fill_rect(track,ui.t.scrollbar);
         let r=Rect::new(track.x+1.,track.y+thumb_at,(track.w-2.).max(1.),thumb);
-        ui.c.fill_rrect(r,2.,kit::scroll_thumb(ui.t,st,kit::high_visibility()));
+        kit::scroll_thumb_face(ui.c, ui.t, r, true, st);
     } else if target == Scroll::PlaylistX {
         // The Playlist paints its translucent thumb over the clip overview.
         ui.c.fill_rect(track, ui.t.scrollbar);
@@ -520,7 +545,10 @@ impl Look {
 /// FL-style raised button face (spec §1): 1 px border with softened corners, an elliptical radial
 /// face (light centre, darker edges) and a darker 1 px inner rim.
 pub fn button_face(ui: &mut Ui, r: Rect, look: Look) {
-    kit::button(ui.c, ui.t, r, look.state());
+    if ui.t.style.vintage_2005 {
+        let face=if matches!(look,Look::On|Look::Hot) {ui.t.on_bottom} else if matches!(look,Look::Hover) {ui.t.button_hi} else {ui.t.button};
+        crate::vintage::metal(ui.c,r,face);
+    } else {kit::button(ui.c, ui.t, r, look.state());}
 }
 
 /// A square toolbar button's face for `look` and the colour of its icon. With the Toolbars menu's Flat buttons on
@@ -537,11 +565,7 @@ pub fn tool_face(ui: &mut Ui, r: Rect, look: Look) -> Color {
         ui.c.fill_rect(Rect::new(r.x, r.y + 1.0, r.w, r.h - 2.0), ui.t.s(0x282c2e));
         return ui.t.a(0x4589c7);
     }
-    match look {
-        Look::On | Look::Hot => ui.t.on_glyph,
-        Look::Hover => ui.t.tx(0xffffff),
-        Look::Off => ui.t.glyph,
-    }
+    kit::ink(ui.t, look.state())
 }
 
 /// A 30×33 toolbar button (§1). `on` draws the orange "on" state.

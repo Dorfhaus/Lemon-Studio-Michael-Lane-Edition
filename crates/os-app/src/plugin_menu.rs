@@ -477,6 +477,7 @@ pub fn replace_generator(app: &mut App, index: usize, row: usize) -> Option<Stri
 
 /// Effect `index` into the selected mixer track (spec §1): slot `slot`, else the first empty one.
 pub fn add_effect(app: &mut App, index: usize, slot: Option<u8>) -> Option<String> {
+    if crate::mixer::locked(&app.state, app.state.selected_mixer) { return Some(crate::mixer::LOCK_MESSAGE.into()); }
     let s = &app.state;
     let t = s.selected_mixer;
     let slot = slot.or_else(|| s.project.mixer.iter().find(|m| m.index == t).and_then(|m| m.slots.iter().enumerate().find(|(k,s)|*k!=10&&s.is_none()).map(|(k,_)|k)).map(|k| k as u8));
@@ -488,6 +489,7 @@ pub fn add_effect(app: &mut App, index: usize, slot: Option<u8>) -> Option<Strin
 
 /// Drop a picker selection into free slots in display order; existing effects are preserved.
 pub fn add_effects(app:&mut App,indices:&[usize],slot:Option<u8>)->Option<String>{
+    if crate::mixer::locked(&app.state, app.state.selected_mixer) { return Some(crate::mixer::LOCK_MESSAGE.into()); }
     if indices.is_empty(){return None;}if indices.iter().any(|&i|i>=app.plugins.effects.len()){return Some("An effect in this selection is unavailable".into());}
     let t=app.state.selected_mixer;
     let m=crate::mixer::track(&app.state,t)?;

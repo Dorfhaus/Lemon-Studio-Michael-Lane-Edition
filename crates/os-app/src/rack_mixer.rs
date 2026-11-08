@@ -77,6 +77,7 @@ fn choose(app:&mut App,n:u16,index:usize,all:bool,state:Option<Vec<u8>>)->Result
     let desc=app.plugins.effects.get(index).ok_or("That plugin is no longer in the list. Reopen the picker.")?.desc.clone();
     if n==0||!strip_kind(&desc){return Err("Choose a supported Waves or compatible resizable UAD channel strip. AudioTrack and other racks are excluded.".into());}
     let tracks:Vec<u16>=if all {(1..=mixer::inserts(&app.state)).filter(|t|state.is_none()||*t!=n).collect()}else{vec![n]};
+    if tracks.iter().any(|&t| mixer::locked(&app.state, t)) { return Err(mixer::LOCK_MESSAGE.into()); }
     let mut dest=Vec::new();for t in &tracks {let m=mixer::track(&app.state,*t).ok_or("The destination mixer channel no longer exists.")?;let Some(k)=(0..64).find(|k|*k!=10&&m.slots[*k].is_none())else{return Err(format!("{} has no empty effect slot. No channels changed.",mixer::name(&app.state,*t)))};dest.push((*t,k as u8));}
     if dest.is_empty(){return Err("No other insert channels to fill.".into());}
     let old=save(app,&tracks)?;let mut made=Vec::new();
@@ -100,6 +101,11 @@ fn report(app:&mut App,n:u16,result:Result<String,String>)->Option<String>{
     }
 }
 pub fn run(app:&mut App,c:Command)->Option<String>{
+    let target = match c {
+        Command::Choose(t, ..) | Command::Existing(t, _) | Command::Remove(t) | Command::Retry(t) => Some(t),
+        _ => None,
+    };
+    if target.is_some_and(|t| mixer::locked(&app.state, t)) { return Some(mixer::LOCK_MESSAGE.into()); }
     if let Command::Menu(n)=c {app.state.playlist.popup=Some(Popup{x:app.mouse.0,y:app.mouse.1,items:menu(&app.state,n),sub:None,scroll:[0;2],cascade:vec![]});app.invalidate();return None;}
     if let Command::Page(n,d)=c{#[cfg(any(windows,target_os="macos"))] if let Some(k)=slot(&app.state,n){if let Some(e)=app.plugins.hosted.get_mut(&crate::plugins::fx_key(n,k)).and_then(|h|h.rack_editor.as_mut()){e.page_by(d);}}app.invalidate();return None;}
     if app.state.rec.recording()||app.state.rec.audio{return Some("Stop recording before changing channel strips.".into());}

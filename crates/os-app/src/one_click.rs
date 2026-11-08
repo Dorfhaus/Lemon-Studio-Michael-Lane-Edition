@@ -7,6 +7,8 @@
 //! channel and its clip in the playlist where playback started, or (Into the audio editor) into Tesla on the master
 //! track (spec: plugins/tesla/README.md "Recording into Tesla from Lemon Studio").
 
+use std::time::Instant;
+
 use crate::app::{Action, App, State};
 use crate::capture::{self, capture, Input, InputStream, Recorder};
 use crate::playlist::{Cmd, Mark, PItem, Popup};
@@ -33,10 +35,24 @@ pub struct AudioRec {
     start_secs: f64,
     /// Where the song's start falls in what came in: a running sum and count (`one_click_tick`).
     est: (f64, u32),
+    /// A few early hardware-clock estimates avoid drifting against a separate input device on a long take.
+    timed_est: (f64, u32),
     /// Taking in has stopped; the writer is making the file.
     ending: bool,
     /// The take goes into Tesla on the master track instead of the playlist.
     editor: bool,
+}
+
+/// Where the requested song start falls in the file, given paired input and output time anchors.
+fn timestamped_head(input: (u64, Instant), output: (f64, Instant), start_secs: f64, input_rate: u32) -> Option<f64> {
+    let elapsed = if output.1 >= input.1 {
+        (output.1 - input.1).as_secs_f64()
+    } else {
+        -(input.1 - output.1).as_secs_f64()
+    };
+    // Ignore stale or invalid reports, for example while a driver is recovering.
+    if elapsed.abs() > 2.0 { return None; }
+    Some(input.0 as f64 + (elapsed - (output.0 - start_secs)) * f64::from(input_rate))
 }
 
 struct ExtraTake {
@@ -229,7 +245,7 @@ impl App {
         let start_secs = os_engine::laws::tick_to_frame(f64::from(start_tick), p.ppq.max(1), tempo, 48000) as f64 / 48000.0;
         self.state.rec.audio = true;
         let loop_span = if crate::record::Opt::Loop.on() { self.selection_loop() } else { None };
-        self.audio_rec = Some(AudioRec { loop_span, loop_wrapped:false, last_tick:start_tick as f64, others: Vec::new(), input, failure:None, destination:None,stream, recorder: Some(recorder), rate, start_tick, start_secs, est: (0.0, 0), ending: false, editor });
+        self.audio_rec = Some(AudioRec { loop_span, loop_wrapped:false, last_tick:start_tick as f64, others: Vec::new(), input, failure:None, destination:None,stream, recorder: Some(recorder), rate, start_tick, start_secs, est: (0.0, 0), timed_est: (0.0, 0), ending: false, editor });
         if !editor {
             let mixer=self.state.selected_mixer;
             self.set_audio_destination(crate::mixer_recording::Destination {
@@ -261,9 +277,18 @@ impl App {
             }
             // Position wraps on a loop, while recorded frame counts keep growing. Estimate
             // latency only on the first pass, never average later passes into the file trim.
-            if live && !r.loop_wrapped && self.state.rec.armed && t.song() && t.seconds()+0.001>=r.start_secs {
-                r.est.0 += capture().frames() as f64 - (t.seconds() - r.start_secs) * f64::from(rate);
+            let position = (live && !r.loop_wrapped && self.state.rec.armed && t.song()).then(|| t.seconds());
+            if let Some(position) = position.filter(|pos| pos + 0.001 >= r.start_secs) {
+                r.est.0 += capture().frames() as f64 - (position - r.start_secs) * f64::from(rate);
                 r.est.1 += 1;
+                if !r.input.asio && r.timed_est.1 < 8 {
+                    if let Some((input, output)) = capture().recording_clock().zip(t.recording_output()) {
+                        if let Some(head) = timestamped_head(input, output, r.start_secs, rate) {
+                            r.timed_est.0 += head;
+                            r.timed_est.1 += 1;
+                        }
+                    }
+                }
             }
             if t.playing() && !t.paused() && self.state.rec.armed {
                 return;
@@ -273,7 +298,13 @@ impl App {
                 (None, Some(d)) => i64::from(d.latency.unwrap_or(0)) + i64::from(d.input_latency.unwrap_or(0)),
                 _ => 0,
             };
-            let head = if r.est.1 > 0 { (r.est.0 / f64::from(r.est.1)).round() as i64 + latency } else { capture().frames() as i64 };
+            let head = if r.timed_est.1 > 0 {
+                (r.timed_est.0 / f64::from(r.timed_est.1)).round() as i64
+            } else if r.est.1 > 0 {
+                (r.est.0 / f64::from(r.est.1)).round() as i64 + latency
+            } else {
+                capture().frames() as i64
+            };
             capture::stop_group();
             r.stream = None;
             for extra in &r.others {
@@ -476,6 +507,48 @@ mod tests {
         assert_eq!(clip.position, 0);
         assert!(app.state.history.entries().iter().any(|e| e.1 == RECORDED));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recording_latency_places_system_input_at_the_audible_punch_point() {
+        use std::time::Duration;
+
+        let _one = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = app();
+        app.state.project.ppq = 96;
+        app.state.project.tempo = Some(120.);
+        app.state.tempo = 120.;
+        app.state.playlist.pos = 192;
+        app.input_monitor.rate = Some(44_100);
+        app.one_click_begin(Input { device: "Synthetic system input".into(), asio: false, first: 0, stereo: true }, None, false).unwrap();
+        app.state.rec.armed = true;
+
+        let now = Instant::now();
+        let heard_start = now + Duration::from_millis(20);
+        // The first input block starts 30 ms before the punch is audible. The output anchor is
+        // already 10 ms into the song after the punch and runs at a different sample rate.
+        capture::push_test_timed(4410, now - Duration::from_millis(10), |_, frame| {
+            if frame == 1323 { 1.0 } else { 0.0 }
+        });
+        app.transport.pretend_at(192., true);
+        app.transport.pretend_recording_output(48_480, 193.92, 48_000, heard_start + Duration::from_millis(10));
+        app.one_click_tick();
+        app.transport.stop();
+        for _ in 0..500 {
+            app.one_click_tick();
+            if app.audio_rec.is_none() { break; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let clip = crate::playlist::clips(&app.state).last().expect("placed take");
+        assert_eq!(clip.position, 192);
+        let os_model::ClipSource::Channel(channel) = clip.source else { panic!("expected audio clip"); };
+        let path = app.state.project.channel(channel).unwrap().sample_path.as_ref().unwrap();
+        let sample = os_engine::sample::load_shared(std::path::Path::new(path)).unwrap();
+        assert_eq!(sample.rate, 44_100);
+        assert_eq!(sample.frames(), 4410 - 1323);
+        assert_eq!(sample.left[0], 1.0, "the pulse lands at the punch point");
+        let _ = std::fs::remove_file(path);
     }
 
     /// Into the audio editor: asks for the input, then the take goes into Tesla on the master track instead of the

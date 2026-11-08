@@ -552,6 +552,7 @@ impl App {
     /// counts as the user's edit of the plugin; one undo step, "Plugin parameter" (`history::param`). Returns a message
     /// when the plugin did not take it.
     fn params_set(&mut self, key: usize, index: usize, v: f64) -> Option<String> {
+        if crate::mixer::locked_effect(&self.state, key) { return Some(crate::mixer::LOCK_MESSAGE.into()); }
         let before = param_value(&self.state, key, index);
         let ok = set_param_value(&self.state, key, index, v);
         if ok {
@@ -562,6 +563,7 @@ impl App {
     }
 
     pub(crate) fn open_generic_editor(&mut self,key:usize)->bool{
+        if crate::mixer::locked_effect(&self.state, key) { return false; }
         let no_editor=self.plugins.hosted.get(&key).is_some_and(|h|h.plugin.lock().is_ok_and(|p|!p.has_editor()));
         if !no_editor{return false;}
         self.state.params.generic_editor=Some(key);
@@ -1069,7 +1071,8 @@ mod tests {
     #[test]
     fn generic_editor_exposes_values_and_plugin_programs() {
         let (mut app,key)=eq_app();
-        let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        let mut desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        desc.name = "Test plugin with native programs only".into();
         let plugin=CapturePlugin{desc,events:Default::default(),value:0.2};
         app.plugins.hosted.insert(key,crate::plugins::Hosted::new(Arc::new(Mutex::new(plugin))));
         assert!(app.open_generic_editor(key));
@@ -1083,6 +1086,15 @@ mod tests {
         crate::presets::run(&mut app,program);
         app.params_tick();
         assert_eq!(param_value(&app.state,key,0),Some(0.8));
+        assert_eq!(app.plugins.preset_name(key).as_deref(), Some("Bright"));
+        crate::presets::run(&mut app, crate::presets::PCmd::Step(key, 1));
+        app.params_tick();
+        assert_eq!(param_value(&app.state, key, 0), Some(0.2));
+        assert_eq!(app.plugins.preset_name(key).as_deref(), Some("Soft"));
+        crate::presets::run(&mut app, crate::presets::PCmd::Step(key, -1));
+        app.params_tick();
+        assert_eq!(param_value(&app.state, key, 0), Some(0.8));
+        assert_eq!(app.plugins.preset_name(key).as_deref(), Some("Bright"));
     }
     struct CapturePlugin { desc: os_host::Descriptor, events: Arc<Mutex<Vec<os_host::ParamEvent>>>, value:f64 }
     impl os_engine::Instrument for CapturePlugin {
@@ -1094,10 +1106,15 @@ mod tests {
         fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
     }
     impl os_host::Plugin for CapturePlugin {
-        fn programs(&self)->Vec<(u32,u32,String)>{vec![(0,1,"Bright".into())]}
+        fn programs(&self) -> Vec<(u32, u32, String)> {
+            vec![(0, 0, "Soft".into()), (0, 1, "Bright".into())]
+        }
         fn select_program(&mut self,selector:u32,index:u32)->bool{
-            if (selector,index)!=(0,1){return false;}
-            self.value=0.8;
+            self.value = match (selector, index) {
+                (0, 0) => 0.2,
+                (0, 1) => 0.8,
+                _ => return false,
+            };
             true
         }
         fn desc(&self) -> &os_host::Descriptor {

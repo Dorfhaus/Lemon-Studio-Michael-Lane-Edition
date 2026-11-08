@@ -844,6 +844,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_peak_links(file,&mut p);
     read_channel_layouts(file,&mut p);
     read_strip_bypass(file,&mut p);
+    read_mixer_locks(file, &mut p);
     read_track_folders(file,&mut p);read_track_heights(file,&mut p);
     read_comp_groups(file, &mut p);
     read_frozen_tracks(file, &mut p);
@@ -3277,6 +3278,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_peak_links(project,file);
     write_channel_layouts(project,file);
     write_strip_bypass(project,file);
+    write_mixer_locks(project, file);
     write_track_folders(project,file);write_track_heights(project,file);
     write_comp_groups(project, file);
     write_frozen_tracks(project, file);
@@ -3816,6 +3818,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_peak_links(project,&mut file);
     write_channel_layouts(project,&mut file);
     write_strip_bypass(project,&mut file);
+    write_mixer_locks(project, &mut file);
     write_track_folders(project,&mut file);write_track_heights(project,&mut file);
     write_comp_groups(project, &mut file);
     write_frozen_tracks(project, &mut file);
@@ -6549,7 +6552,7 @@ fn read_parametric_chunk(file: &FlpFile, project: &mut Project) {
 fn write_parametric_chunk(project: &Project, file: &mut FlpFile) {
     let mut data = vec![1];
     for m in &project.mixer {
-        if m.slots[10].is_none() && !m.parametric_pre {continue;}
+        if m.slots[10].is_none() && !m.parametric_pre && m.slot_on[10] {continue;}
         data.extend(m.index.to_le_bytes());
         data.extend([u8::from(m.parametric_pre),u8::from(m.slot_on[10]),u8::from(m.slots[10].is_some())]);
         let mut state = [0u8;354];
@@ -6558,6 +6561,31 @@ fn write_parametric_chunk(project: &Project, file: &mut FlpFile) {
     }
     file.chunks.retain(|c|c.tag!=PARAMETRIC_TAG);
     if data.len()>1 {file.chunks.push(Chunk{tag:PARAMETRIC_TAG,body:ChunkBody::Raw(data)});}
+}
+
+const MIXER_LOCK_TAG: Tag = Tag(*b"LMLK");
+fn read_mixer_locks(file: &FlpFile, p: &mut Project) {
+    for chunk in file.chunks.iter().filter(|c| c.tag == MIXER_LOCK_TAG) {
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        if data.first() != Some(&1) { continue; }
+        for bytes in data[1..].chunks_exact(2) {
+            let index = u16::from_le_bytes([bytes[0], bytes[1]]);
+            if let Some(track) = p.mixer.iter_mut().find(|m| m.index == index) {
+                track.edit_locked = true;
+            }
+        }
+    }
+}
+
+fn write_mixer_locks(p: &Project, file: &mut FlpFile) {
+    let mut data = vec![1];
+    for m in p.mixer.iter().filter(|m| m.edit_locked) {
+        data.extend(m.index.to_le_bytes());
+    }
+    file.chunks.retain(|c| c.tag != MIXER_LOCK_TAG);
+    if data.len() > 1 {
+        file.chunks.push(Chunk { tag: MIXER_LOCK_TAG, body: ChunkBody::Raw(data) });
+    }
 }
 
 const STRIP_BYPASS_TAG:Tag=Tag(*b"LSKB");

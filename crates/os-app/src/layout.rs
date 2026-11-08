@@ -61,7 +61,8 @@ pub fn restore(s: &mut State) {
     s.startup_layout_pending = get("window_playlist").is_none() && get("window_mixer").is_none()
         && !["window_playlist_detached", "window_mixer_detached"].iter().any(|k|get(k).as_deref()==Some("1"));
     s.mixer.traditional_layout=get("mixer_traditional_layout").and_then(|v|v.parse::<u8>().ok()).filter(|v|*v<8).unwrap_or(3);
-    crate::mixer::set_layout(s,match get("mixer_view").as_deref() {
+    // The vintage view is already restored from its own profile setting by MixerUi.
+    crate::mixer::set_regular_layout(s,match get("mixer_view").as_deref() {
         Some("channel-strip")=>crate::rack_mixer::VIEW,
         Some("compact")=>crate::mixer::COMPACT,
         Some("traditional")=>crate::mixer::TRADITIONAL+s.mixer.traditional_layout,
@@ -121,7 +122,7 @@ pub fn apply_startup_layout(s: &mut State) {
 /// Keeps where the windows inside the main window are, for the next start. The monitor, tapper and touch controller only
 /// once they have a place (opened in this run or an earlier one).
 pub fn save(s: &State) {
-    write("mixer_view",if s.mixer.layout==crate::rack_mixer::VIEW {"channel-strip"}else if crate::mixer::traditional(s) {"traditional"} else if s.mixer.layout==crate::mixer::COMPACT {"compact"} else {"full"});
+    write("mixer_view",if s.mixer.layout==crate::rack_mixer::VIEW {"channel-strip"}else if (crate::mixer::TRADITIONAL..crate::mixer::TRADITIONAL + 8).contains(&s.mixer.layout) {"traditional"} else if s.mixer.layout==crate::mixer::COMPACT {"compact"} else {"full"});
     write("mixer_traditional_layout",&s.mixer.traditional_layout.to_string());
     for (w,k) in DETACHABLE {write(&format!("{k}_detached"),if s.native_detached.contains(&w){"1"}else{"0"});write(&format!("{k}_detached_open"),if s.shown(w){"1"}else{"0"});}
     for (w, key) in WINS {
@@ -198,6 +199,24 @@ mod tests {
 
     /// Moved, resized, maximized and collapsed windows come back as they were at the next start; the monitor, tapper and
     /// touch controller open where they were left instead of centred.
+    #[test]
+    fn vintage_mixer_restores_its_own_view() {
+        use crate::mixer::{self, TRADITIONAL, WIDE};
+        crate::vintage::set_enabled(true);
+        for (vintage, regular) in [(TRADITIONAL, WIDE), (WIDE, TRADITIONAL + 2)] {
+            let mut app = App::new(None);
+            mixer::set_regular_layout(&mut app.state, regular);
+            mixer::set_layout(&mut app.state, vintage);
+            save(&app.state);
+
+            let mut reopened = App::new(None);
+            restore(&mut reopened.state);
+            assert_eq!(mixer::view(&reopened.state), vintage);
+            assert_eq!(reopened.state.mixer.layout, regular);
+            assert_eq!(crate::settings_file::flag("vintage_full_mixer", false), vintage == WIDE);
+        }
+    }
+
     #[test]
     fn windows_come_back_where_they_were() {
         let mut app = App::new(None);

@@ -28,6 +28,7 @@ pub mod wavetable;
 pub mod sample;
 pub mod included_library;
 mod sound_browser;
+pub mod visibility;
 use lemon_small_fx::Shared;
 #[cfg(test)]
 mod import_tests;
@@ -90,7 +91,7 @@ impl Plugin for LemonWave {
             let hex = raw.trim_matches('"');
             if hex.starts_with("01000000") && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 let old_count = hex.len().saturating_sub(8) / 8;
-                if (old_count == 44 || old_count == 50 || old_count == 62 || old_count == 72 || old_count == 109 || old_count == 128 || old_count == 321 || old_count == 360)
+                if [44, 50, 62, 72, 109, 128, 321, 360, 370].contains(&old_count)
                     && hex.len() == 8 + old_count * 8
                 {
                     let suffix: String = controls::SETTINGS[old_count..]

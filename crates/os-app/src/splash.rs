@@ -1303,8 +1303,7 @@ mod tests {
         assert!(erfc(4.0) < 1e-7);
     }
 
-    /// "Silent startup" (spec, as above): stored and shown, off as found. Lemon Studio has no startup sound, so it
-    /// silences nothing yet.
+    /// The Windows startup sound preference is stored and defaults to off.
     #[test]
     fn silent_startup_is_stored() {
         assert_eq!(find_check("Silent startup").map(|c| c.key), Some(SILENT_STARTUP.key));
