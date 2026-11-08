@@ -916,13 +916,12 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     let fade_ms = pl::fade_ms_per_tick(s);
     let total_ms = f64::from(c.length) * fade_ms;
     let (fin, fout, gain) = (c.stored_fade_in(), c.stored_fade_out(), f64::from(c.gain()));
-    // Gain `d` px into the body. The fades count from the clip's start (`side + d`); the gain line from the body's
-    // left edge (`d`), the same origin `pl::x_ms` uses when nodes are placed, so the waveform bends exactly under
-    // the drawn line.
+    // Gain `d` px into the body. Fades and gain line both count from the clip's true start (`side + d`): that is
+    // the origin `pl::x_ms` places nodes from and the engine plays them from, so the waveform bends exactly under
+    // the drawn line (measuring from the drawn body edge put it one pixel late; spec GAIN-LINE-PRECISION S3).
     let shape = |d: f64| -> f64 {
-        let fade_at = (side + d) / ppt * fade_ms;
-        let line_at = d / ppt * fade_ms;
-        wave_gain(gain, &c.gain_line, fin, fout, total_ms, fade_at, line_at)
+        let ms = (side + d) / ppt * fade_ms;
+        wave_gain(gain, &c.gain_line, fin, fout, total_ms, ms, ms)
     };
     let detail=crate::prefs::text("playlist_wave_detail").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0);
     let fine=if detail>0 && ms_per_tick*frames_per_ms/ppt*px < w.per as f64 {
@@ -933,9 +932,12 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     }else{None};
     // Peaks from `da` to `db` px into the body.
     let reversed=s.project.channel(ch).is_some_and(|ch|ch.sound.fx.flags&os_model::SampleFx::REVERSE!=0);
+    // Measured from the clip's true start (`side + d`), not the drawn body edge a pixel in: the audio at the window's
+    // start plays at the clip's start, so a transient is drawn where it plays (spec GAIN-LINE-PRECISION S2; before,
+    // every waveform was drawn one pixel late).
     let range = |da: f64, db: f64| -> Option<(f32, f32)> {
-        let ms_a = w0 + da / ppt * ms_per_tick;
-        let ms_b = w0 + db / ppt * ms_per_tick;
+        let ms_a = w0 + (side + da) / ppt * ms_per_tick;
+        let ms_b = w0 + (side + db) / ppt * ms_per_tick;
         let (ms_a,ms_b)=if reversed{let end=w.frames as f64/frames_per_ms;((end-ms_b).max(0.),(end-ms_a).max(0.))}else{(ms_a,ms_b)};
         if let Some(sample)=&fine {
             let per=if detail==1 {8} else {1};
@@ -993,7 +995,7 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     ui.c.push_clip(br);
     match (colours, tones) {
         (Some((waves, dim)), Some(tones)) => {
-            let frames = |d: f64| (w0 + d / ppt * ms_per_tick) * frames_per_ms;
+            let frames = |d: f64| (w0 + (side + d) / ppt * ms_per_tick) * frames_per_ms;
             ui.c.fill_polygon_columns(&outline, &mut |x| {
                 let d = ((f64::from(x) - body.x) / px).floor() * px;
                 let t = tones.span(frames(d), frames(d + px));

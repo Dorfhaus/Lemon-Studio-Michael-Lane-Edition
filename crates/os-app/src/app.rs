@@ -19997,6 +19997,322 @@ mod tests {
         let _ = std::fs::remove_file(wav);
     }
 
+    // ---- Gain line precision (lemon-mle-test/GAIN-LINE-PRECISION-SPEC.md, S1-S5) ----------------------------
+    // Shared harness for the gain_line_precision_* tests. Nothing under test is mocked: the real App, playlist
+    // and renderer run; only the WAV fixture is synthesised.
+
+    /// Writes a 48 kHz stereo WAV of `frames` frames whose sample at frame i is `f(i)` (both channels).
+    fn glp_wav(tag: &str, frames: usize, f: impl Fn(usize) -> f32) -> std::path::PathBuf {
+        let wav = std::env::temp_dir().join(format!("os-app-glp-{tag}-{}.wav", std::process::id()));
+        let mut data = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let s = f(i);
+            data.push(s);
+            data.push(s);
+        }
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 48000, &data).unwrap();
+        wav
+    }
+
+    /// Adds the WAV as a clip on track 0 at `tick`; returns its index.
+    fn glp_clip(app: &mut App, wav: &std::path::Path, tick: u32) -> usize {
+        use crate::playlist as pl;
+        pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 0, tick).expect("audio clip added");
+        app.state.playlist.sel.clear();
+        pl::clips(&app.state).len() - 1
+    }
+
+    fn glp_px(c: &Canvas, x: i32, y: f32) -> [i32; 4] {
+        let p = c.pixmap.pixel(x as u32, y.round() as u32).expect("pixel on canvas");
+        [p.red() as i32, p.green() as i32, p.blue() as i32, p.alpha() as i32]
+    }
+
+    /// WHY 24: anti-aliased edges and the clip body's own tint vary by a few levels; waveform colour against the
+    /// body background differs by far more than 24 summed RGB levels.
+    fn glp_differs(a: [i32; 4], b: [i32; 4]) -> bool {
+        (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs() > 24
+    }
+
+    /// Stretches the clip's channel so audio_speed is as close to 2x (or 0.5x) as the candidates allow, and
+    /// asserts it is not 1.0. Returns the speed.
+    fn glp_stretch(app: &mut App, ci: usize) -> f64 {
+        use crate::playlist as pl;
+        let src = pl::clips(&app.state)[ci].source;
+        let os_model::ClipSource::Channel(ch) = src else { panic!("audio clip source is a channel: {src:?}") };
+        let mut best: Option<(f64, f64)> = None;
+        for beats in [2.0, 4.0, 8.0, 1.0, 16.0, 3.0, 6.0, 0.5, 32.0] {
+            app.state.project.channels.iter_mut().find(|c| c.index == ch).unwrap().sound.set_stretch_time(beats);
+            let s = pl::audio_speed(&app.state, src);
+            let score = (s.ln().abs() - 2f64.ln()).abs();
+            if s.is_finite() && s > 0.0 && (s - 1.0).abs() > 0.05 && best.map_or(true, |(_, b)| score < b) {
+                best = Some((beats, score));
+            }
+        }
+        let (beats, _) = best.expect("some stretch_time changes audio_speed away from 1.0");
+        app.state.project.channels.iter_mut().find(|c| c.index == ch).unwrap().sound.set_stretch_time(beats);
+        let s = pl::audio_speed(&app.state, src);
+        assert!((s - 1.0).abs() > 0.05, "stretched clip: expected audio_speed != 1.0, actual {s}");
+        s
+    }
+
+    /// Puts a five-node gain line on the clip spread across its length.
+    fn glp_put_line(app: &mut App, ci: usize) -> f32 {
+        use crate::playlist as pl;
+        let clip = pl::clips(&app.state)[ci];
+        let len_ms = (clip.length as f64 * pl::fade_ms_per_tick(&app.state)) as f32;
+        let line = &mut pl::arr_mut(&mut app.state).clips[ci].gain_line;
+        for (f, db) in [(0.1, -12.0), (0.3, 6.0), (0.45, -20.0), (0.7, 3.0), (0.9, -6.0)] {
+            line.add(os_model::GainNode { ms: len_ms * f, db });
+        }
+        assert_eq!(pl::clips(&app.state)[ci].gain_line.nodes().len(), 5, "harness: five nodes placed");
+        len_ms
+    }
+
+    /// Samples `n` points across [0, span) (including near the end) for comparisons.
+    fn glp_samples(span: f32, n: usize) -> Vec<f32> {
+        let mut v: Vec<f32> = (0..n).map(|k| span * k as f32 / n as f32).collect();
+        v.push((span - 0.5).max(0.0));
+        v
+    }
+
+    /// S1: a press on the gain line adds a node at exactly the pressed song time, and gain_node_xy draws it at
+    /// the pressed x, at three zoom levels, on a clip that does not start at tick 0.
+    #[test]
+    fn gain_line_precision_s1_place_node_at_pressed_x() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        let wav = glp_wav("s1", 96000, |_| 0.5);
+        let ci = glp_clip(&mut app, &wav, 0);
+        let empty = pl::clips(&app.state)[ci].gain_line;
+        // An off-grid start: ~200 px in at the highest zoom, plus one tick so it is not on a beat.
+        app.state.playlist_bar_w = 4000.0;
+        frame(&mut app, &mut c, None);
+        let ppt_hi = pl::PGeom::new(&app.state, app.pl_grid().unwrap()).ppt;
+        let pos = (200.0 / ppt_hi).round() as u32 + 1;
+        pl::arr_mut(&mut app.state).clips[ci].position = pos;
+        for zoom in [40.0, 400.0, 4000.0] {
+            app.state.playlist_bar_w = zoom;
+            pl::arr_mut(&mut app.state).clips[ci].gain_line = empty;
+            app.state.playlist.sel.clear();
+            frame(&mut app, &mut c, None);
+            let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
+            let clip = pl::clips(&app.state)[ci];
+            assert_eq!(clip.position, pos);
+            let body = g.body(&clip);
+            let start_x = g.x64(pos as f64);
+            let right = (body.right() as f64).min(1900.0);
+            assert!(start_x >= 0.0 && right - start_x > 8.0, "harness: clip on screen at zoom {zoom}: start {start_x} right {right}");
+            for frac in [0.23, 0.61] {
+                pl::arr_mut(&mut app.state).clips[ci].gain_line = empty;
+                let clip = pl::clips(&app.state)[ci];
+                // A fractional x: the press must not snap to a whole pixel or a grid line.
+                let x = (start_x + (right - start_x) * frac) as f32 + 0.37;
+                let y = pl::gain_line_y_at(&app.state, &g, &clip, x);
+                app.mouse_move(x, y);
+                assert_eq!(app.state.playlist.hover_handle, Some(pl::Handle::GainLine), "harness: hovering the line at zoom {zoom}, x {x}");
+                app.mouse_down();
+                app.mouse_up();
+                let clip = pl::clips(&app.state)[ci];
+                assert_eq!(clip.gain_line.nodes().len(), 1, "zoom {zoom}: one node after the press");
+                let expected_ms = (x as f64 - start_x) / g.ppt as f64 * pl::fade_ms_per_tick(&app.state);
+                let actual_ms = clip.gain_line.nodes()[0].ms as f64;
+                assert!(
+                    (actual_ms - expected_ms).abs() <= 0.01,
+                    "S1 zoom {zoom} frac {frac}: node ms expected {expected_ms:.4}, actual {actual_ms:.4} (diff {:.4} ms)",
+                    actual_ms - expected_ms
+                );
+                let (nx, _) = pl::gain_node_xy(&app.state, &g, &clip, 0).expect("node 0 has a position");
+                assert!(
+                    (nx - x).abs() <= 0.5,
+                    "S1 zoom {zoom} frac {frac}: node x expected {x:.3}, actual {nx:.3} (diff {:.3} px)",
+                    nx - x
+                );
+            }
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// First column at/after `from` on row `y` that differs from `bg`.
+    fn glp_first_diff(c: &Canvas, from: i32, to: i32, y: f32, bg: [i32; 4]) -> Option<i32> {
+        (from..to).find(|&x| glp_differs(glp_px(c, x, y), bg))
+    }
+
+    /// S2: silence then full scale: the waveform starts within 1 px of where the onset's song time is.
+    #[test]
+    fn gain_line_precision_s2_waveform_onset_at_true_time() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        let onset_ms = 1000.0f64;
+        // Full scale = alternating +1/-1 (Nyquist square) so every peak column spans -1..+1; a DC 1.0 would draw a
+        // band at the top only.
+        let wav = glp_wav("s2", 96000, |i| if i < 48000 { 0.0 } else if i % 2 == 0 { 1.0 } else { -1.0 });
+        let ci = glp_clip(&mut app, &wav, 0);
+        for zoom in [400.0, 1600.0] {
+            app.state.playlist_bar_w = zoom;
+            app.state.playlist.sel.clear();
+            frame(&mut app, &mut c, None);
+            let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
+            let clip = pl::clips(&app.state)[ci];
+            assert!((pl::audio_speed(&app.state, clip.source) - 1.0).abs() < 1e-9, "harness: unstretched");
+            let body = g.body(&clip);
+            let start_x = g.x64(clip.position as f64);
+            let expected = start_x + onset_ms / pl::fade_ms_per_tick(&app.state) * g.ppt as f64;
+            assert!(start_x >= 0.0 && expected + 20.0 < 1920.0f64.min(body.right() as f64),
+                "harness: onset on screen at zoom {zoom}: start {start_x} onset {expected} body {body:?}");
+            // WHY this row: below centre (the silent part's hairline is at the centre) and away from the 0 dB gain
+            // line (three quarters up); a full-scale waveform covers it.
+            let y = body.y + body.h * 0.5 + body.h * 0.2;
+            let bg = glp_px(&c, (start_x + (expected - start_x) * 0.5) as i32, y);
+            let from = (start_x + 3.0) as i32;
+            let found = glp_first_diff(&c, from, (expected + 40.0) as i32, y, bg);
+            let Some(found) = found else {
+                panic!("S2 zoom {zoom}: no waveform column found from x {from} to {} (expected onset at {expected:.2})", expected + 40.0)
+            };
+            assert!(
+                (found as f64 - expected).abs() <= 1.0,
+                "S2 zoom {zoom}: waveform onset expected x {expected:.2}, actual first column {found} (diff {:.2} px)",
+                found as f64 - expected
+            );
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// S3: a near-step in the gain line on a constant full-scale sample: the waveform becomes full height within
+    /// 1 px of the second node's x.
+    #[test]
+    fn gain_line_precision_s3_waveform_follows_gain_step() {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        let wav = glp_wav("s3", 96000, |i| if i % 2 == 0 { 1.0 } else { -1.0 }); // full scale, both polarities
+        let ci = glp_clip(&mut app, &wav, 0);
+        let a_ms = 600.0f32;
+        {
+            let line = &mut pl::arr_mut(&mut app.state).clips[ci].gain_line;
+            line.add(os_model::GainNode { ms: a_ms, db: -60.0 });
+            line.add(os_model::GainNode { ms: a_ms + 0.5, db: 0.0 });
+        }
+        for zoom in [400.0, 2000.0] {
+            app.state.playlist_bar_w = zoom;
+            app.state.playlist.sel.clear();
+            frame(&mut app, &mut c, None);
+            let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
+            let clip = pl::clips(&app.state)[ci];
+            assert_eq!(clip.gain_line.nodes().len(), 2, "harness: two nodes");
+            let body = g.body(&clip);
+            let start_x = g.x64(clip.position as f64) as f32;
+            let (nx, _) = pl::gain_node_xy(&app.state, &g, &clip, 1).expect("node 1 has a position");
+            assert!(start_x >= 0.0 && nx + 40.0 < 1920f32.min(body.right()), "harness: step on screen at zoom {zoom}: start {start_x} step {nx} body {body:?}");
+            // Rows off centre (the hairline) and away from the 0 dB line (body top + h/4) and the -60 dB line (bottom).
+            let rows: Vec<f32> = [-0.1f32, 0.1, 0.2, 0.3].iter().map(|f| body.y + body.h * (0.5 + f)).collect();
+            let ref_x = (start_x + (nx - start_x) * 0.5) as i32;
+            let bgs: Vec<[i32; 4]> = rows.iter().map(|&y| glp_px(&c, ref_x, y)).collect();
+            let full = |x: i32| rows.iter().zip(&bgs).all(|(&y, &bg)| glp_differs(glp_px(&c, x, y), bg));
+            // WHY a 6-column run: the vertical segment of the gain line itself crosses every row at the step, so one
+            // full column proves nothing; the waveform must stay full height from there on.
+            let from = (start_x + 3.0) as i32;
+            let to = (nx + 40.0) as i32;
+            let found = (from..to).find(|&x| (x..x + 6).all(|k| full(k)));
+            let Some(found) = found else {
+                panic!("S3 zoom {zoom}: no full-height waveform run found from x {from} to {to} (step node at {nx:.2})")
+            };
+            assert!(
+                (found as f32 - nx).abs() <= 1.0,
+                "S3 zoom {zoom}: full-height waveform expected from x {nx:.2}, actual from column {found} (diff {:.2} px)",
+                found as f32 - nx
+            );
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    fn glp_check_split(stretch: bool) {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        let tag = if stretch { "s4s" } else { "s4u" };
+        let wav = glp_wav(tag, 96000, |_| 0.5);
+        let ci = glp_clip(&mut app, &wav, 0);
+        let speed = if stretch { glp_stretch(&mut app, ci) } else { pl::audio_speed(&app.state, pl::clips(&app.state)[ci].source) };
+        if !stretch {
+            assert!((speed - 1.0).abs() < 1e-12, "unstretched: expected audio_speed 1.0, actual {speed}");
+        }
+        let len = pl::clips(&app.state)[ci].length;
+        pl::arr_mut(&mut app.state).clips[ci].position = len / 3 + 7;
+        glp_put_line(&mut app, ci);
+        let orig = pl::clips(&app.state)[ci];
+        let fmpt = pl::fade_ms_per_tick(&app.state);
+        let t = orig.position + (orig.length as f64 * 0.55) as u32;
+        let ri = pl::split(&mut app.state, ci, t).expect("split");
+        let (l, r) = (pl::clips(&app.state)[ci], pl::clips(&app.state)[ri]);
+        let left_ms = ((t - orig.position) as f64 * fmpt) as f32;
+        let right_ms = ((orig.position + orig.length - t) as f64 * fmpt) as f32;
+        for m in glp_samples(left_ms, 24) {
+            let (e, a) = (orig.gain_line.db_at(m), l.gain_line.db_at(m));
+            assert!((a - e).abs() <= 0.01, "S4 (speed {speed}) left half at {m:.2} ms: expected {e:.4} dB, actual {a:.4} dB");
+        }
+        for m in glp_samples(right_ms, 24) {
+            let (e, a) = (orig.gain_line.db_at(m + left_ms), r.gain_line.db_at(m));
+            assert!((a - e).abs() <= 0.01, "S4 (speed {speed}) right half at {m:.2} ms (orig {:.2} ms): expected {e:.4} dB, actual {a:.4} dB", m + left_ms);
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// S4: splitting a stretched clip keeps every gain node on the audio in both halves.
+    #[test]
+    fn gain_line_precision_s4_split_stretched() {
+        glp_check_split(true);
+    }
+
+    /// S4 unstretched: the same with speed exactly 1 (must not regress).
+    #[test]
+    fn gain_line_precision_s4_split_unstretched() {
+        glp_check_split(false);
+    }
+
+    fn glp_check_trim_left(stretch: bool) {
+        use crate::playlist as pl;
+        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        let tag = if stretch { "s5s" } else { "s5u" };
+        let wav = glp_wav(tag, 96000, |_| 0.5);
+        let ci = glp_clip(&mut app, &wav, 0);
+        let speed = if stretch { glp_stretch(&mut app, ci) } else { pl::audio_speed(&app.state, pl::clips(&app.state)[ci].source) };
+        if !stretch {
+            assert!((speed - 1.0).abs() < 1e-12, "unstretched: expected audio_speed 1.0, actual {speed}");
+        }
+        let len = pl::clips(&app.state)[ci].length;
+        pl::arr_mut(&mut app.state).clips[ci].position = len / 3 + 7;
+        glp_put_line(&mut app, ci);
+        let orig = pl::clips(&app.state)[ci];
+        let fmpt = pl::fade_ms_per_tick(&app.state);
+        let dt = (orig.length / 4) as i64 + 3;
+        pl::resize_left(&mut app.state, ci, &orig, dt);
+        let new = pl::clips(&app.state)[ci];
+        let d = new.position as i64 - orig.position as i64;
+        assert!(d > 0, "harness: trim-left by {dt} ticks moved the start: expected d > 0, actual {d}");
+        let d_ms = (d as f64 * fmpt) as f32;
+        let new_ms = (new.length as f64 * fmpt) as f32;
+        for m in glp_samples(new_ms, 24) {
+            let (e, a) = (orig.gain_line.db_at(m + d_ms), new.gain_line.db_at(m));
+            assert!((a - e).abs() <= 0.01, "S5 (speed {speed}, d {d} ticks) at {m:.2} ms (orig {:.2} ms): expected {e:.4} dB, actual {a:.4} dB", m + d_ms);
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// S5: trimming the left edge of a stretched clip keeps every gain node on the audio.
+    #[test]
+    fn gain_line_precision_s5_trim_left_stretched() {
+        glp_check_trim_left(true);
+    }
+
+    /// S5 unstretched: the same with speed exactly 1 (must not regress).
+    #[test]
+    fn gain_line_precision_s5_trim_left_unstretched() {
+        glp_check_trim_left(false);
+    }
+
     /// Audio clip handles (spec: ui/playlist.md §9a): dragging the fade triangles sets the fades, the tension ring
     /// bends the curve, the gain half-circle changes the gain; one undo step each.
     #[test]

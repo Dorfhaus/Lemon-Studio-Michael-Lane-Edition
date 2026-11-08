@@ -1801,9 +1801,11 @@ pub fn split(s: &mut State, i: usize, tick: u32) -> Option<usize> {
     right.position = tick;
     right.length = c.end() - tick;
     right.window = Some((w0 + cut, w1.max(w0 + cut)));
-    // An audio clip's gain line is split with its audio (its unit is milliseconds, as `cut` is for audio).
+    // An audio clip's gain line is split with its audio. The line counts SONG milliseconds from the clip's start
+    // (`fade_ms_per_tick`), while `cut` counts the sample's: they differ on a stretched or pitched clip, where
+    // splitting by `cut` moved the right half's nodes off the audio (spec GAIN-LINE-PRECISION S4).
     if matches!(c.source, ClipSource::Channel(_)) && !c.gain_line.is_empty() {
-        let (l, r) = c.gain_line.split(cut as f32);
+        let (l, r) = c.gain_line.split((f64::from(left_len) * fade_ms_per_tick(s)) as f32);
         left.gain_line = l;
         right.gain_line = r;
     }
@@ -1914,14 +1916,16 @@ pub fn resize_left(s: &mut State, i: usize, orig: &Clip, dt: i64) {
     let dt = dt.max(min_dt).max(-i64::from(orig.position)).min(i64::from(orig.length) - 1);
     let d = clip_to_src(s, orig, dt as f64);
     let is_automation = source_kind(s, orig.source) == PickKind::Automation;
+    let song_ms = fade_ms_per_tick(s);
     if let Some(c) = arr_mut(s).clips.get_mut(i) {
         c.position = (i64::from(orig.position) + dt) as u32;
         c.length = (i64::from(orig.length) - dt) as u32;
         c.window = if dt == 0 && orig.window.is_none() && is_automation { None } else { Some(((w0 + d).max(0.0), w1)) };
-        // The gain line stays with the audio (its unit is milliseconds, as `d` is for an audio clip).
+        // The gain line stays with the audio: it moves by the song milliseconds the start moved (`dt` ticks), not by
+        // the sample's `d`, which differs on a stretched or pitched clip (spec GAIN-LINE-PRECISION S5).
         if matches!(orig.source, ClipSource::Channel(_)) {
             c.gain_line = orig.gain_line;
-            c.gain_line.shift(-(d as f32));
+            c.gain_line.shift(-((dt as f64 * song_ms) as f32));
         }
     }
     s.piano.dirty = true;
