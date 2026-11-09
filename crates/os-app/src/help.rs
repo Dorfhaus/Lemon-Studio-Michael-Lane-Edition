@@ -131,7 +131,7 @@ fn results(query: &str) -> Vec<usize> {
 }
 
 pub fn is_open(s: &State) -> bool {
-    s.settings.open && s.settings.tab == PAGE
+    s.settings.open && matches!(s.settings.tab, PAGE | crate::change_log::PAGE)
 }
 
 pub fn open(app: &mut App) {
@@ -209,7 +209,7 @@ pub fn key(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
         Key::Named(NamedKey::Escape) if !view.search.text.is_empty() => act(app, Hit::Clear),
         Key::Named(NamedKey::Escape) => act(app, Hit::Close),
         Key::Character(c) if ctrl && !alt && c.eq_ignore_ascii_case("f") => act(app, Hit::Search),
-        Key::Named(NamedKey::Enter) if view.topic.is_none() => {
+        Key::Named(NamedKey::Enter) if st.tab == PAGE && view.topic.is_none() => {
             if let Some(index) = results(&view.search.text).first().copied() {
                 act(app, Hit::Topic(index));
             }
@@ -262,11 +262,27 @@ fn button(ui: &mut Ui, r: Rect, label: &str, action: Hit) {
     ui.c.text_center(Font::new(12), r, ui.t.text, label);
 }
 
+pub(crate) fn wrap_lines(ui:&mut Ui,font:Font,value:&str,width:f32)->Vec<String>{
+ let mut out=Vec::new();
+ for paragraph in value.lines(){
+  let mut line=String::new();
+  for word in paragraph.split_whitespace(){
+   let candidate=if line.is_empty(){word.to_string()}else{format!("{line} {word}")};
+   if ui.c.text_width(font,&candidate)<=width {line=candidate;continue;}
+   if !line.is_empty(){out.push(std::mem::take(&mut line));}
+   for ch in word.chars(){let candidate=format!("{line}{ch}");if !line.is_empty()&&ui.c.text_width(font,&candidate)>width {out.push(std::mem::take(&mut line));}line.push(ch);}
+  }
+  out.push(line);
+ }
+ out
+}
+
 pub fn paint(ui: &mut Ui, s: &State) {
     let r = rect(s);
     let body = body(s);
     let st = &s.settings;
     let view = &st.help;
+    let change_log = st.tab == crate::change_log::PAGE;
     let t = ui.t;
 
     ui.hit(r, Action::Settings(SAct::Body), "");
@@ -280,7 +296,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         r.y + 12.,
         r.w - 98.,
         t.text,
-        "Lemon Studio User Guide",
+        if change_log { crate::change_log::LABEL } else { "Lemon Studio User Guide" },
     );
     button(
         ui,
@@ -294,11 +310,12 @@ pub fn paint(ui: &mut Ui, s: &State) {
         r.y + 41.,
         r.w - 32.,
         t.text_dim,
-        "Browse topics or search by feature, task, or shortcut. Available offline.",
+        if change_log { "Michael Lane Edition release history · available offline" }
+        else { "Browse topics or search by feature, task, or shortcut. Available offline." },
     );
 
     let search = Rect::new(r.x + 16., r.y + 61., r.w - 100., 30.);
-    let hover = ui.hit(search, hit(Hit::Search), "Search the User Guide");
+    let hover = ui.hit(search, hit(Hit::Search), if change_log { "Search the Change Log" } else { "Search the User Guide" });
     crate::views::sunken(ui, search, t.sunken);
     settings::cell_text(
         ui,
@@ -314,7 +331,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
             search.y + 7.,
             search.w - 14.,
             t.text_dim,
-            "Try audio timing, no sound, or Ctrl wheel",
+            if change_log { "Search by date or change" } else { "Try audio timing, no sound, or Ctrl wheel" },
         );
     }
     button(
@@ -324,21 +341,23 @@ pub fn paint(ui: &mut Ui, s: &State) {
         Hit::Clear,
     );
 
-    let matches = results(&view.search.text);
+    let matches = if change_log { Vec::new() } else { results(&view.search.text) };
     let offset = st
         .scroll
         .clamp(0., (view.content_height.get() - body.h).max(0.));
     ui.c.push_clip(body);
     ui.clip_hit_rect(body, |ui| {
         let mut y = body.y - offset;
-        if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
-            for line in crate::feature_votes::comment_lines(ui, topic.title, body.w) {
+        if change_log {
+            y += crate::change_log::paint_rows(ui, body, offset, &view.search.text);
+        } else if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
+            for line in wrap_lines(ui, Font::new(12).bold(), topic.title, body.w) {
                 ui.c.text_clip(Font::new(12).bold(), body.x, y, body.w, t.text, &line);
                 y += 19.;
             }
             y += 9.;
             for paragraph in &topic.paragraphs {
-                for line in crate::feature_votes::comment_lines(ui, paragraph, body.w - 8.) {
+                for line in wrap_lines(ui, Font::new(12), paragraph, body.w - 8.) {
                     ui.c.text_clip(Font::new(12), body.x, y, body.w, t.text, &line);
                     y += 19.;
                 }
@@ -404,7 +423,9 @@ pub fn paint(ui: &mut Ui, s: &State) {
     });
     ui.c.pop_clip();
 
-    if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
+    if change_log {
+        ui.c.text_clip(Font::new(12), body.x, r.y + 98., body.w, t.text_dim, "Newest changes first");
+    } else if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
         button(
             ui,
             Rect::new(body.x, r.y + 94., 61., 21.),

@@ -454,16 +454,18 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
         None => {}
     }
-    if let Some(crate::clip_picker::Destination::Playlist { track, mut tick }) = s.playlist.picker_ui.destination {
-        for source in crate::clip_picker::selected(s, pl::source(s)) {
-            let len = pl::picker_source_len(s, source);
-            let ghost = os_model::Clip::new(tick, len, track, source);
-            let face = g.clip_rect(&ghost).intersect(&grid);
-            if !face.is_empty() {
-                ui.c.fill_rect(face, t.accent.with_alpha(65));
-                ui.c.stroke_rrect(face, 1.0, 1.0, t.accent);
+    if let Some(crate::clip_picker::Destination::Playlist { track, tick }) = s.playlist.picker_ui.destination {
+        let items = crate::clip_picker::selected(s, pl::source(s));
+        if let Ok(rows) = pl::picker_drop_rows(s, &g.rows, &items, track, tick) {
+            for (row, source) in rows.zip(items) {
+                let len = pl::picker_source_len(s, source);
+                let ghost = os_model::Clip::new(tick, len, row, source);
+                let face = g.clip_rect(&ghost).intersect(&grid);
+                if !face.is_empty() {
+                    ui.c.fill_rect(face, t.accent.with_alpha(65));
+                    ui.c.stroke_rrect(face, 1.0, 1.0, t.accent);
+                }
             }
-            tick = tick.saturating_add(len);
         }
     }
     // Playhead.
@@ -1450,7 +1452,12 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         let left = if lead { hr.x + k } else { hr.x };
         ui.c.fill_rect(Rect::new(left, hr.bottom() - k, hr.right() - left, k), bottom);
     }
-    ui.hit(hr, Action::PlHeader(row), "Drag to move a track; Shift-drag selects a range, Ctrl/Cmd toggles a track; right-click to create a folder");
+    let hint = if crate::workspace_visibility::shown(crate::playlist_tools::RANGE_SELECTION_VISIBILITY) {
+        "Drag to move. Ctrl/Cmd+Shift-drag selects tracks and their clips."
+    } else {
+        "Drag to move a track; Shift-drag selects a range, Ctrl/Cmd toggles a track; right-click to create a folder"
+    };
+    ui.hit(hr, Action::PlHeader(row), hint);
     if s.playlist.header_selection.contains(&row) || s.playlist.drop_folder==Some(row){
         ui.c.fill_rrect(Rect::new(hr.x+1.,hr.y+3.,3.,(hr.h-6.).max(1.)),1.5,t.accent);
     }

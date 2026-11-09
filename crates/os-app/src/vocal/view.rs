@@ -4,11 +4,11 @@ use crate::{app::{Ui,State,Action},playlist::{self as pl,PGeom}};
 use os_model::ClipSource;
 use os_ui::{Rect,Color,Font,tabler::TablerIcon};
 const VOCAL_MIC:TablerIcon=TablerIcon{filled:true,d:"M 6 6 C 6 2.7 8.7 0 12 0 C 15.3 0 18 2.7 18 6 L 18 12 C 18 15.3 15.3 18 12 18 C 8.7 18 6 15.3 6 12 Z M 8.8 5 L 8.8 9.3 Q 8.8 12.3 10.8 12.9 L 10.8 15 Q 10.8 16.2 12 16.2 Q 13.2 16.2 13.2 15 L 13.2 12.9 Q 15.2 12.3 15.2 9.3 L 15.2 5 Q 15.2 3.8 14 3.8 Q 12.8 3.8 12.8 5 L 12.8 9.3 Q 12.8 10.6 12 10.6 Q 11.2 10.6 11.2 9.3 L 11.2 5 Q 11.2 3.8 10 3.8 Q 8.8 3.8 8.8 5 Z M 2 12 Q 2 10.8 3.2 10.8 Q 4.4 10.8 4.4 12 C 4.4 16.2 7.8 19.6 12 19.6 C 16.2 19.6 19.6 16.2 19.6 12 Q 19.6 10.8 20.8 10.8 Q 22 10.8 22 12 C 22 17.1 18.2 21.3 13.2 21.9 L 13.2 23 Q 13.2 24 12 24 Q 10.8 24 10.8 23 L 10.8 21.9 C 5.8 21.3 2 17.1 2 12 Z"};
-fn font(vintage: bool, size: u16) -> Font {
+pub(crate) fn font(vintage: bool, size: u16) -> Font {
     if vintage { Font::vintage(size) } else { Font::new(size) }
 }
 
-fn control_face(ui: &mut Ui, r: Rect, on: bool, hot: bool) {
+pub(crate) fn control_face(ui: &mut Ui, r: Rect, on: bool, hot: bool) {
     if ui.t.style.vintage_2005 {
         let face = Color::rgb(if hot { 0x74838a } else { 0x57636a });
         if on { crate::vintage::recess(ui.c, r, Color::rgb(0x37494f)); }
@@ -18,12 +18,65 @@ fn control_face(ui: &mut Ui, r: Rect, on: bool, hot: bool) {
     }
 }
 
+pub(crate) fn editor_face(ui: &mut Ui, r: Rect) {
+    if ui.t.style.vintage_2005 {
+        crate::vintage::recess(ui.c, r, Color::rgb(0x424d53));
+    } else {
+        ui.c.fill_rect(r, ui.t.s(0x171f24));
+    }
+}
+
+pub(crate) fn inspector_face(ui: &mut Ui, r: Rect) {
+    if ui.t.style.vintage_2005 {
+        crate::vintage::recess(ui.c, r, Color::rgb(0x29363c));
+    } else {
+        ui.c.fill_rrect(r, 3., ui.t.s(0x222c32));
+    }
+}
+
+pub(crate) fn control_mark(ui: &mut Ui, r: Rect) {
+    let mark = Rect::new(r.x + 7., r.bottom() - 3., r.w - 14., 1.);
+    if ui.t.style.vintage_2005 {
+        ui.c.fill_rect(mark, Color::rgb(0xddb473));
+    } else {
+        ui.c.fill_rrect(Rect::new(mark.x, mark.y, mark.w, 1.5), 0.7, ui.t.glyph);
+    }
+}
+
+pub(crate) fn toolbar_slot(area: Rect, x: &mut f32, y: &mut f32, width: f32) -> Rect {
+    if *x + width > area.right() - 5. {
+        *x = area.x + 5.;
+        *y += 31.;
+    }
+    let r = Rect::new(*x, *y, width, 27.);
+    *x += width + 3.;
+    r
+}
+
+pub(crate) fn time_grid(ui: &mut Ui, s: &State, g: &PGeom, r: Rect) {
+    let step = (f32::from(s.project.ppq.max(4)) / 4. * g.ppt).max(1.);
+    let beat = step * (18. / step).ceil().max(1.);
+    let offset = (s.playlist_scroll.0 / beat).floor() * beat - s.playlist_scroll.0;
+    let mut x = r.x + offset;
+    while x < r.right() {
+        ui.c.line(x, r.y, x, r.bottom(), 0.5, ui.t.s(0x2c3a42));
+        x += beat;
+    }
+}
+
+pub(crate) fn track_button_face(ui: &mut Ui, r: Rect, open: bool, hot: bool) {
+    if ui.t.style.vintage_2005 {
+        control_face(ui, r, open, hot);
+    } else if open || hot {
+        ui.c.fill_rrect(r, 3., ui.t.glyph.with_alpha(if open { 58 } else { 24 }));
+    }
+}
+
 pub fn head(ui:&mut Ui,s:&State,row:u16,r:Rect){
  if !crate::workspace_visibility::shown("visible_playlist-vocal-tuning"){return;}
  let open=super::expanded(s,row);let tuned=pl::clips(s).iter().any(|c|c.track==row&&matches!(c.source,ClipSource::Channel(id) if s.project.vocal_edits.iter().any(|d|d.channel==id&&d.changed())));
  let hover=ui.hit(r,Action::Vocal(Command::Toggle(row)),if open{"Close vocal editor; keep tuning active"}else{"Vocal tuning: expand this track to edit notes and pitch"});
- if ui.t.style.vintage_2005 { control_face(ui, r, open, hover); }
- else if open||hover{ui.c.fill_rrect(r,3.,ui.t.glyph.with_alpha(if open{58}else{24}));}
+ track_button_face(ui, r, open, hover);
  let glyph = if ui.t.style.vintage_2005 { r.inset(2.0) } else { r };
  crate::icons::draw_with_default(ui.c,crate::icons::Icon::Mic,&VOCAL_MIC,glyph,if open||tuned{ui.t.glyph}else{ui.t.text_faint});
  if tuned{ui.c.fill_circle(r.right()-2.,r.bottom()-2.,1.6,ui.t.glyph);}
@@ -93,11 +146,7 @@ let themed = match (ui.c.icon_pack(), cmd) {
     _ => None,
 };
 if let Some(art)=themed { ui.c.art_icon(&art.shape, r.inset(5.), ink); }
-else { ui.c.icon_stroke(shape,r.inset(5.),ink,1.45); }if on {
-    let mark = Rect::new(r.x+7.,r.bottom()-3.,r.w-14.,1.0);
-    if ui.t.style.vintage_2005 { ui.c.fill_rect(mark, Color::rgb(0xddb473)); }
-    else { ui.c.fill_rrect(Rect::new(mark.x, mark.y, mark.w, 1.5), 0.7, ui.t.glyph); }
-}}
+else { ui.c.icon_stroke(shape,r.inset(5.),ink,1.45); }if on { control_mark(ui,r); }}
 fn text_btn(ui:&mut Ui,r:Rect,label:&str,cmd:Command,on:bool){let hot=ui.hit(r,Action::Vocal(cmd),label.to_string());if ui.t.style.vintage_2005 {control_face(ui,r,on,hot);}
 else {ui.c.fill_rrect(r,4.,if on{ui.t.glyph.with_alpha(40)}else if hot{ui.t.button_hi}else{ui.t.s(0x2a3339)});}
 ui.c.text_center(font(ui.t.style.vintage_2005,11),r,ui.t.text,label);}
@@ -117,13 +166,9 @@ pub fn paint(ui:&mut Ui,s:&State,g:&PGeom){
 fn editor(ui: &mut Ui, s: &State, g: &PGeom, row: u16, area: Rect) {
  let y = area.y;
  let vintage = ui.t.style.vintage_2005;
- if vintage {
-    crate::vintage::recess(ui.c, area, Color::rgb(0x424d53));
- } else {
-    ui.c.fill_rect(area, ui.t.s(0x171f24));
- }
+ editor_face(ui,area);
  ui.hit(area,Action::Swallow,"Vocal editor");
- let mut x=area.x+5.;let mut by=y+4.;let next=|x:&mut f32,by:&mut f32,w:f32|{if *x+w>area.right()-5.{*x=area.x+5.;*by+=31.;}let r=Rect::new(*x,*by,w,27.);*x+=w+3.;r};
+ let mut x=area.x+5.;let mut by=y+4.;let next=|x:&mut f32,by:&mut f32,w:f32|toolbar_slot(area,x,by,w);
  for tool in TOOLS{let rr=next(&mut x,&mut by,28.);button(ui,rr,Command::Tool(tool),label(tool),s.playlist.vocal.tool==tool,&icon(tool));}
  let key=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][s.playlist.vocal.key as usize];let scale=["Chromatic","Major","Minor"][s.playlist.vocal.scale as usize];
  text_btn(ui,next(&mut x,&mut by,46.),&format!("Key {key}"),Command::Key,false);text_btn(ui,next(&mut x,&mut by,70.),scale,Command::Scale,false);
@@ -132,14 +177,14 @@ fn editor(ui: &mut Ui, s: &State, g: &PGeom, row: u16, area: Rect) {
  // A compact inspector replaces paired +/- buttons. Values are draggable; Alt-click resets.
  let fields=[(super::Field::Pitch,"PITCH"),(if s.playlist.vocal.tool==Tool::Transition{super::Field::Transition}else{super::Field::Modulation},if s.playlist.vocal.tool==Tool::Transition{"TRANSITION"}else{"MODULATION"}),(super::Field::Drift,"DRIFT"),(super::Field::Formant,"FORMANT"),(super::Field::Amplitude,"LEVEL"),(super::Field::Strength,"CORRECTION")];
  let chosen:Vec<_>=s.project.vocal_edits.iter().flat_map(|d|d.notes.iter().enumerate().filter(|(ni,_)|s.playlist.vocal.selected.contains(&(d.channel,*ni))).map(move|(_,n)|(d,n))).collect();let cols=if g.grid.w<480.{3}else{6};let width=(area.w-10.)/cols as f32;let iy=y+toolbar_height(g);
- for(j,(field,name))in fields.into_iter().enumerate(){let rr=Rect::new(area.x+5.+(j%cols)as f32*width,iy+(j/cols)as f32*32.,width-4.,30.);let enabled=!chosen.is_empty()||field==super::Field::Strength;if vintage {crate::vintage::recess(ui.c,rr,Color::rgb(0x29363c));}else{ui.c.fill_rrect(rr,3.,ui.t.s(0x222c32));}if enabled{ui.hit(rr,Action::Vocal(Command::Param(field)),"Drag value up/down; Alt for fine changes, Alt-click resets");}ui.c.text(font(vintage,9),rr.x+6.,rr.y+2.,ui.t.text_dim,name);
+ for(j,(field,name))in fields.into_iter().enumerate(){let rr=Rect::new(area.x+5.+(j%cols)as f32*width,iy+(j/cols)as f32*32.,width-4.,30.);let enabled=!chosen.is_empty()||field==super::Field::Strength;inspector_face(ui,rr);if enabled{ui.hit(rr,Action::Vocal(Command::Param(field)),"Drag value up/down; Alt for fine changes, Alt-click resets");}ui.c.text(font(vintage,9),rr.x+6.,rr.y+2.,ui.t.text_dim,name);
   let values:Vec<f32>=chosen.iter().map(|(d,n)|match field{super::Field::Pitch=>n.base+n.shift,super::Field::Modulation=>n.variation*100.,super::Field::Drift=>n.drift*100.,super::Field::Transition=>n.transition*100.,super::Field::Formant=>n.formant,super::Field::Amplitude=>n.gain,super::Field::Strength=>d.strength*100.}).collect();let mixed=values.windows(2).any(|w|(w[0]-w[1]).abs()>0.01);let value=values.first().copied().or_else(||if field==super::Field::Strength{pl::clips(s).iter().enumerate().find_map(|(ci,c)|(c.track==row).then(||doc(s,ci).map(|d|d.strength*100.)).flatten())}else{None});let value=if mixed{"Mixed".into()}else if let Some(v)=value{match field{super::Field::Pitch=>{let p=v.round()as i32;let names=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];format!("{}{} {:+.0} ct",names[p.rem_euclid(12)as usize],p/12-1,(v-p as f32)*100.)},super::Field::Modulation|super::Field::Drift|super::Field::Transition|super::Field::Strength=>format!("{v:.0}%"),super::Field::Formant=>format!("{v:+.1} st"),super::Field::Amplitude=>format!("{v:+.1} dB")}}else{"—".into()};ui.c.text_clip(font(vintage,12),rr.x+6.,rr.y+13.,rr.w-10.,if enabled{ui.t.text}else{ui.t.text_faint},&value);
  }
  let r=pitch_rect(g,row);let(low,span)=(s.playlist.vocal.low,s.playlist.vocal.span);let py=|p:f32|r.bottom()-(p-low)/span*r.h;ui.c.push_clip(r);ui.c.fill_rect(r,ui.t.s(0x202b31));ui.hit(r,Action::Vocal(Command::Surface),"Wheel: pitch scroll · Shift: time scroll · Ctrl: time zoom · Ctrl+Shift: pitch zoom · drag empty space to select");
  for p in low.floor()as i32..=(low+span).ceil()as i32{let yy=py(p as f32);let h=r.h/span;let allowed=super::nearest(p as f32,s.playlist.vocal.key,s.playlist.vocal.scale)==p as f32;ui.c.fill_rect(Rect::new(r.x,yy-h/2.,r.w,h),if vintage {
     Color::rgb(if !allowed {0x222532} else if [1,3,6,8,10].contains(&p.rem_euclid(12)) {0x2a2e3b} else {0x343846})
    } else {ui.t.s(if !allowed{0x182127}else if [1,3,6,8,10].contains(&p.rem_euclid(12)){0x1c262c}else{0x253138})});ui.c.line(r.x,yy+h/2.,r.right(),yy+h/2.,0.6,ui.t.s(if p.rem_euclid(12)==0{0x50616a}else{0x34434c}));}
- let step=(f32::from(s.project.ppq.max(4))/4.*g.ppt).max(1.);let stride=(18./step).ceil().max(1.);let beat=step*stride;let offset=(s.playlist_scroll.0/beat).floor()*beat-s.playlist_scroll.0;let mut xx=r.x+offset;while xx<r.right(){ui.c.line(xx,r.y,xx,r.bottom(),0.5,ui.t.s(0x2c3a42));xx+=beat;}
+ time_grid(ui,s,g,r);
  let ink=ui.t.glyph.mix(Color::rgb(0xffcc70),0.82);let mut any=false;
  for(ci,clip)in pl::clips(s).iter().enumerate().filter(|(_,c)|c.track==row){let Some(d)=doc(s,ci)else{continue};any=true;let cr=g.clip_rect(clip);let(a,b)=pl::window(s,clip);let(a,b)=(a/1000.,b/1000.);if b<=a{continue;}let sx=|src:f64|cr.x+((d.destination(src)-a)/(b-a))as f32*cr.w;let bounds=Rect::new(cr.x.max(r.x),r.y,(cr.right().min(r.right())-cr.x.max(r.x)).max(0.),r.h);if bounds.w<=0.{continue;}ui.c.push_clip(bounds);ui.hit(bounds,Action::Vocal(Command::Grid(ci)),"Drag empty space to select; choose Draw to paint pitch");let pitches=super::contour(s,d);
   for(ni,note)in d.notes.iter().enumerate(){let Some(rr)=note_rect(s,g,ci,ni)else{continue};if rr.intersect(&bounds).is_empty(){continue;}let selected=s.playlist.vocal.selected.contains(&(d.channel,ni));let color=if note.muted{ui.t.text_faint}else{ink};let opacity=if !d.enabled{45}else if selected{200}else{105};

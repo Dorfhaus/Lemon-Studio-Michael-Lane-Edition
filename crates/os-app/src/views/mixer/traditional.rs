@@ -216,7 +216,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         strip(ui, s, n as u16, left, bottom, f, &ly);
     }
     for n in (first+1..first+1+count).filter(|n|*n<=usize::from(inserts)){
-        insertion_button(ui,s,area,client,n as u16,area.x+width*(n-1) as f32-s.mixer_scroll);
+        insertion_button(ui,s,area,bottom-ROUTING_DECK_H,n as u16,area.x+width*(n-1) as f32-s.mixer_scroll);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
     let px = area.x + width * f32::from(inserts) - s.mixer_scroll + 14.0;
@@ -340,8 +340,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         ui.c.fill_rect(Rect::new(left, ly.y(HEAD_Y1) + 1.0, width, bottom - ly.y(HEAD_Y1) - 1.0), body);
         ui.c.fill_rect(Rect::new(left + width - 1.0, ly.y(HEAD_Y1) + 1.0, 1.0, bottom - ly.y(HEAD_Y1) - 1.0), ui.t.s(0x1c1f21));
     }
-    // The whole strip selects (Ctrl adds, Shift renames); controls register on top of it (spec: ui/mixer.md §2).
-    ui.hit(Rect::new(left, ly.y(HEAD_Y0), width, bottom - ly.y(HEAD_Y0)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
+    // Select from the strip body. Below it, only explicit send controls and the footer take clicks.
+    let top = ly.y(HEAD_Y0);
+    ui.hit(Rect::new(left, top, width, (bottom - ROUTING_DECK_H - top).max(0.)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
     let hov = ui.hovering(Rect::new(left, ly.y(HEAD_Y0), width, ly.y(PANEL_Y1) - ly.y(HEAD_Y0)));
 
     // Header number (insert strips only; the master's "M" sits in the fixed header band).
@@ -423,11 +424,13 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
             if also { c.mix(ui.t.tx(0xffffff), 0.5) } else { c.mix(ui.t.s(0x7f868a), 0.4) }
         });
     if alt {
-        let font = label_font(ui.c, Font::new(11), &name, width - 4.);
-        ui.c.text_clip(font,left+2.,meter.bottom()+3.,width-4.,name_c,&name);
+        let name_width = width - 4.;
+        let font = label_font(ui.c, Font::new(11), &name, name_width);
+        ui.c.text_clip(font,left+2.,meter.bottom()+3.,name_width,name_c,&name);
     } else {
-        ui.c.push_clip(Rect::new(left + 2.0, ly.y(PANEL_Y0), cx-2., ly.y(METER_Y1) - ly.y(PANEL_Y0)));
-        let font = label_font(ui.c, Font::new(15), &name, meter.bottom() - ly.y(PANEL_Y0) - 2.);
+        let name_top = ly.y(PANEL_Y0);
+        ui.c.push_clip(Rect::new(left + 2.0, name_top, cx-2., (ly.y(METER_Y1) - name_top).max(0.)));
+        let font = label_font(ui.c, Font::new(15), &name, (meter.bottom() - name_top - 2.).max(1.));
         ui.c.text_vertical(font, sx - 7.0, meter.bottom() - 1.0, name_c, &name);
         ui.c.pop_clip();
     }

@@ -587,10 +587,18 @@ pub(super) fn play_start_marker(ui:&mut Ui,x:f32,y:f32){
     ui.c.fill_rect(Rect::new(mx - 5.0, y + 3.0, 10.0, 1.0), ui.t.h(0xffc08b));
 }
 
+fn keyboard_hint() -> &'static str {
+    if crate::workspace_visibility::shown(crate::playlist_tools::RANGE_SELECTION_VISIBILITY) {
+        "Keyboard. Ctrl/Cmd+Shift-drag selects notes across the chosen pitches."
+    } else {
+        "Keyboard"
+    }
+}
+
 fn keyboard(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
     if !crate::piano_tools::classic_keyboard() { keyboard_shaped(ui,l,g,lit); return; }
     let k=l.keys;
-    ui.hit(k,Action::PianoKeys,"Keyboard");ui.c.push_clip(k);
+    ui.hit(k,Action::PianoKeys,keyboard_hint());ui.c.push_clip(k);
     // Equal-width chromatic rows, including sharp labels, as in the classic piano roll.
     for &key in &g.keys {
         let r=Rect::new(k.x,g.y_of(key),k.w-1.,g.row);
@@ -634,7 +642,7 @@ fn keyboard_shaped(ui: &mut Ui, l: &Layout, g: &Geom, lit: &[i32]) {
 
     let t = ui.t;
     let k = l.keys;
-    ui.hit(k, Action::PianoKeys, "Keyboard");
+    ui.hit(k, Action::PianoKeys, keyboard_hint());
     ui.c.push_clip(k);
     // White keys: a stepped horizontal gradient (§4), with a dark right edge. Lemon: flat keys.
     let lemon = super::lemon(ui);

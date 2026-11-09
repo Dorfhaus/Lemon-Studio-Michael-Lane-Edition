@@ -443,6 +443,7 @@ pub(crate) fn tab_shown(tab: usize) -> bool {
         MENUS => crate::menu_layout::VISIBILITY,
         CONTROLS => crate::input_bindings::VISIBILITY,
         crate::help::PAGE => crate::help::VISIBILITY,
+        crate::change_log::PAGE => crate::change_log::VISIBILITY,
         _ => return tab < TABS.len(),
     };
     crate::workspace_visibility::shown(key)
@@ -492,7 +493,7 @@ pub enum Row {
     MenuControls(bool),
     MenuName,
     MenuEntry(crate::menu_layout::Entry),
-    InputBindings,
+    InputBindings(f32),
     /// Two checks side by side (second at x 340).
     Check2(&'static str, bool, &'static str, bool),
     /// Disabled check (drawn dim). No page has one at the moment.
@@ -608,7 +609,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
     use Row::*;
     let st = &s.settings;
     match tab {
-        CONTROLS => vec![g("Mouse and keyboard", vec![txt("Choose a context and event, then assign an action. Changes are saved per profile."), InputBindings])],
+        CONTROLS => vec![g("Mouse and keyboard", vec![InputBindings(crate::input_bindings::editor_height(s.settings.input_editor.advanced))])],
         MENUS => {
             let (entries, changed) = crate::menu_layout::entries(s);
             vec![
@@ -666,7 +667,11 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 g("Input", vec![
                     Midi(MRow::Inputs),
                     Midi(MRow::InOptions),
-                    combo(p::choice(&p::CONTROLLER_TYPE), 250.0, p::CONTROLLER_TYPE.label),
+                    if crate::workspace_visibility::shown(crate::controller::VISIBILITY) {
+                        combo(s.midi.selected_input().map_or("Select an input device", |d| crate::controller::label(&d.name)), 280.0, p::CONTROLLER_TYPE.label)
+                    } else { Gap(0.0) },
+                    if crate::workspace_visibility::shown(crate::controller::VISIBILITY) { txt("For MCU, use the DAW input and MCU hardware mode. Keep keys on Generic MIDI.") } else { Gap(0.0) },
+                    if crate::workspace_visibility::shown(crate::controller::VISIBILITY) { txt("Knobs use Link to controller. MCU covers basic mixer and transport input.") } else { Gap(0.0) },
                     pair(Midi(MRow::Link(CurveOf::Velocity)), ValueR(p::OMNI_CHANNEL.label, number_text(&p::OMNI_CHANNEL))),
                     pair(Midi(MRow::Link(CurveOf::Release)), ValueR(p::MARKER_CHANNEL.label, number_text(&p::MARKER_CHANNEL))),
                     pair(Check(p::PICKUP.label, false), ValueR(PERFORMANCE_CHANNEL, "---".into())),
@@ -947,7 +952,10 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 ]),
                 gf("Individual icons — family and color", true,
                     std::iter::once(txt("Mix any pack, even with Default. Arrows choose; Default restores; Pack inherits. Color is optional."))
-                        .chain((0..crate::icons::CHOICES.len()).map(|i| row(I::Icon(i)))).collect()),
+                        // Keep the saved icon IDs stable while omitting roles with no remaining controls.
+                        .chain(crate::icons::CHOICES.iter().enumerate()
+                            .filter(|(_, (icon, _, _))| !matches!(icon, crate::icons::Icon::Exchange | crate::icons::Icon::Vote))
+                            .map(|(i, _)| row(I::Icon(i)))).collect()),
                 gf("Individual cursors — mix tool, hand and resize designs", true,
                     std::iter::once(txt("Choose each cursor independently. Default restores the original; Pack follows the cursor selector."))
                         .chain((0..crate::playlist_tools::CURSOR_CHOICES.len()).map(|i| row(I::Cursor(i)))).collect()),
@@ -1168,7 +1176,7 @@ fn row_h(r: &Row) -> f32 {
         Row::Combo(..) | Row::Value(..) | Row::ValueR(..) => 27.0,
         Row::Buttons(..) | Row::VisibilitySearch | Row::MenuControls(..) | Row::MenuName => 36.0,
         Row::MenuEntry(..) => 30.0,
-        Row::InputBindings => 500.0,
+        Row::InputBindings(h) => *h,
         Row::Slider(..) | Row::PlaylistBrightness | Row::Ppi => 28.0,
         Row::List(c, _, n) => (if c.iter().any(|c| !c.0.is_empty()) { 18.0 } else { 0.0 }) + 17.0 * *n as f32 + 10.0,
         Row::Text(_, dim) => if *dim { 16.0 } else { 20.0 },
@@ -1723,6 +1731,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::Combo(v, w, label) if live_combo(label) || crate::prefs::find_combo(label).is_some() => {
             // A combo declared in `crate::prefs` shows its choice.
             let v = match crate::prefs::find_combo(label) {
+                Some(c) if c.key == crate::prefs::CONTROLLER_TYPE.key => v.as_str(),
                 Some(c) if c.key != crate::prefs::INTERFACE_LANGUAGE.key => language.text(crate::prefs::choice(c)),
                 Some(c) => crate::prefs::choice(c),
                 None => v,
@@ -1780,7 +1789,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::ThemeEditor(row) => {
             crate::advanced_theme::paint(ui, s, *row, Rect::new(x0, y, g.right() - x0 - 10.0, h));
         }
-        Row::InputBindings => crate::input_bindings::paint(ui, s, Rect::new(x0, y, g.w - 30., h)),
+        Row::InputBindings(_) => crate::input_bindings::paint(ui, s, Rect::new(x0, y, g.w - 30., h)),
         Row::MenuControls(changed) => {
             use crate::menu_layout::{self as layout, Action as M};
             let r = Rect::new(x0, y + 4., 274., 28.);

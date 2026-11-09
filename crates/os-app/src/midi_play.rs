@@ -60,6 +60,7 @@ struct Held {
 /// The input side's state.
 #[derive(Debug, Default)]
 pub struct Play {
+    pub(crate) surface_banks: std::collections::HashMap<String, u16>,
     held: Vec<Held>,
     /// The foot pedal is down.
     pedal: bool,
@@ -207,6 +208,7 @@ impl App {
             self.plugins.state(row).and_then(|b|serde_json::from_slice::<serde_json::Value>(b.get(8..)?).ok())
             .and_then(|v|v["fields"]["chop-document"].as_str().and_then(|s|serde_json::from_str::<lemon_chop::params::Document>(s).ok())).is_some_and(|d|d.slab);
         for mut ev in evs {
+            if self.controller_event(&ev) { continue; }
             if self.mpe_input(&ev.dev,ev.msg){continue;}
             // A held SLAB pad still releases after selecting another rack channel or disabling its profile.
             if !chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {

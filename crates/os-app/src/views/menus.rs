@@ -128,6 +128,7 @@ pub const OPT_INFO: usize = 9;
 pub const HELP_MENU: usize = 7;
 pub const HELP_ABOUT: usize = 6;
 pub const HELP_GUIDE: usize = 0;
+pub const HELP_CHANGE_LOG: usize = 4;
 /// Index of the ADD and TOOLS menus.
 pub const ADD_MENU: usize = 2;
 pub const TOOLS_MENU: usize = 6;
@@ -344,7 +345,7 @@ const HELP: &[Item] = &[
     it("Tutorials", "").sub(),
     head("Support"),
     it("Diagnostics", ""),
-    it("What's new", ""),
+    it(crate::change_log::LABEL, "").on(),
     SEP,
     it("About...", "").on(),
     it("Lemon Studio Discord", "").on(),
@@ -489,6 +490,9 @@ pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'stati
 /// Whether an entry is in its menu now: EDIT's Redo only with Alternate undo mode on and a history to act on (spec:
 /// ui/menus.md "EDIT": only Undo while the history is empty).
 pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
+    if menu == HELP_MENU && item.label == crate::change_log::LABEL {
+        return crate::workspace_visibility::shown(crate::change_log::VISIBILITY);
+    }
     if menu == HELP_MENU && item.label == crate::help::LABEL {
         return crate::workspace_visibility::shown(crate::help::VISIBILITY);
     }

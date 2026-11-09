@@ -405,10 +405,13 @@ impl Drop for PickerTicket {
     }
 }
 
+pub(crate) type WarpBuffer = Option<Arc<os_engine::Sample>>;
+type PlaybackUpdate = (Project, WarpBuffer);
+
 enum Cmd {
     /// Project, mode, start tick (the piano roll's play-start marker in pattern mode), request generation, and the
     /// transport settings as they were asked for.
-    Play(Box<Project>, PlayMode, f64, u64, Starts),
+    Play(Box<Project>, PlayMode, f64, u64, Starts, WarpBuffer),
     Pause,
     Resume,
     /// The newest edited project is in `Transport::latest` (older ones are skipped).
@@ -511,7 +514,7 @@ pub fn headless() {
 
 pub struct Transport {
     tx: Sender<Cmd>,
-    latest: Arc<Mutex<Option<Project>>>,
+    latest: Arc<Mutex<Option<PlaybackUpdate>>>,
     instruments: Instruments,
     shared: Arc<Shared>,
     /// The audio thread: joined when the transport goes (see `Drop`).
@@ -633,12 +636,11 @@ impl Transport {
     /// Start (or restart) playback from `start_tick`; replaces whatever is playing or paused. The transport settings
     /// (`Starts`) are read now.
     pub fn play(&self, project: &Project, mode: PlayMode, start_tick: f64) {
-        self.play_counted(project, mode, start_tick, 0);
+        self.play_counted_with_warp(project, mode, start_tick, 0, None);
     }
 
-    /// `play`, after a recording count-in of `bars` bars (spec: ui/recording.md §3): the position holds at
-    /// `start_tick` while the metronome counts in.
-    pub fn play_counted(&self, project: &Project, mode: PlayMode, start_tick: f64, bars: u32) {
+    /// Play after a count-in, optionally with a clip's transient warp buffer.
+    pub(crate) fn play_counted_with_warp(&self, project: &Project, mode: PlayMode, start_tick: f64, bars: u32, warp: WarpBuffer) {
         if let Ok(mut slot) = self.latest.lock() {
             *slot = None;
         }
@@ -648,7 +650,7 @@ impl Transport {
         self.shared.rewind(start_tick);
         self.shared.state.store(PLAYING, Ordering::Release);
         let starts = Starts { count_in: bars, ..Starts::from_prefs() };
-        let _ = self.tx.send(Cmd::Play(Box::new(project.clone()), mode, start_tick, generation, starts));
+        let _ = self.tx.send(Cmd::Play(Box::new(project.clone()), mode, start_tick, generation, starts, warp));
     }
 
     /// The song's loop points (the playlist's time selection; `None` = the whole song). Song playback follows them
@@ -660,9 +662,13 @@ impl Transport {
 
     /// Replace the playing project, continuing from the current position.
     pub fn update(&self, project: &Project) {
-        // Edits can come faster than engines are built: keep only the newest.
+        self.update_with_warp(project, None);
+    }
+
+    pub(crate) fn update_with_warp(&self, project: &Project, warp: WarpBuffer) {
+        // Keep the clip routing and its buffer in the same update.
         if let Ok(mut slot) = self.latest.lock() {
-            *slot = Some(project.clone());
+            *slot = Some((project.clone(), warp));
         }
         let _ = self.tx.send(Cmd::Update);
     }
@@ -1407,7 +1413,7 @@ fn audition_events(project:&Project,rate:u32)->Vec<(usize,u16,u8,u64,u64)>{
  }).collect()
 }
 
-fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option<Project>>>, inst: Instruments, mut library: SampleLibrary) {
+fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option<PlaybackUpdate>>>, inst: Instruments, mut library: SampleLibrary) {
     // Every stream below plays through it.
     let mut device = OutputDevice::default();
     // The playback: the pattern or the playlist, running or paused.
@@ -1493,7 +1499,8 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             // So is a device that failed, until it opens again.
             Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(..) | Cmd::PickerPreview(..) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
             Ok(Cmd::Update) => {
-                if let Some(project) = latest.lock().ok().and_then(|mut l| l.take()) {
+                if let Some((project, warp)) = latest.lock().ok().and_then(|mut l| l.take()) {
+                    library.replace_buffer(crate::warp::PREVIEW_PATH, warp);
                     for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
                         let next=if s.kind==Kind::Song{follow_pattern(s.mode,&project)}else{s.mode};
                         let switched=next!=s.mode;s.mode=next;
@@ -1644,11 +1651,12 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     Err(e) => report(&shared, e),
                 }
             }
-            Ok(Cmd::Play(project, mode, start, generation, starts)) => {
+            Ok(Cmd::Play(project, mode, start, generation, starts, warp)) => {
                 // A newer request (stop, another play) already superseded this one.
                 if generation != shared.generation.load(Ordering::Acquire) {
                     continue;
                 }
+                library.replace_buffer(crate::warp::PREVIEW_PATH, warp);
                 // A Play asked for while Auto close holds the output opens it (and drops the playback it held); so does
                 // one while the device that failed is being tried again.
                 closed = false;

@@ -2085,8 +2085,12 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
         }
         RCmd::MixerReset(r) => {
             // The default target: the insert the channel was made with (its own number).
-            if let Some(c) = s.project.channels.get_mut(r) {
-                c.mixer_track = (c.index + 1).min(crate::mixer::max_insert_of(&s.project.mixer));
+            if let Some(c) = s.project.channels.get(r) {
+                let dst = (c.index + 1).min(crate::mixer::max_insert_of(&s.project.mixer));
+                if crate::mixer::group_locked(s, c.mixer_track) || crate::mixer::group_locked(s, dst) {
+                    return Some(crate::mixer::LOCK_MESSAGE.into());
+                }
+                s.project.channels[r].mixer_track = dst;
                 s.piano.dirty = true;
             }
             None

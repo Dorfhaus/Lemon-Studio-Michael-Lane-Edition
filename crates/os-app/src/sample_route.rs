@@ -31,6 +31,7 @@ pub fn existing_recording(s: &State, path: &str) -> Option<usize> {
 }
 
 fn unused(s: &State, n: u16) -> bool {
+    if mixer::group_locked(s, n) { return false; }
     let Some(track) = mixer::track(s, n) else {
         return false;
     };

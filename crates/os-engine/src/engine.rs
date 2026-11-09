@@ -4648,15 +4648,23 @@ fn schedule(project: &Project, mode: PlayMode, report: &mut EngineReport) -> (Ve
                 match c.source {
                     // Pattern clips were placed above.
                     ClipSource::Pattern(_) => {}
-                    ClipSource::Channel(ch) => match project.channels.get(usize::from(ch)).map(|c| c.kind) {
-                        // An audio clip plays its channel's sample from the window start (milliseconds), cut at the clip end.
-                        Some(ChannelKind::AudioClip | ChannelKind::Sampler) => {
-                            let from_s = c.window.map_or(0.0, |w| w.0.max(0.0) / 1000.0);
-                            out.push(Sched { drive:0,expression:0, expression_len:0, release:64, origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: usize::from(ch), key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
+                    ClipSource::Channel(id) => {
+                        let slot = usize::from(id);
+                        let direct = project.channels.get(slot).map(|ch| (slot, ch));
+                        // Imported clips can refer to a stored ID rather than a dense rack row.
+                        let channel = direct.filter(|(_, ch)| ch.index == id)
+                            .or_else(|| project.channels.iter().enumerate().find(|(_, ch)| ch.index == id))
+                            .or(direct);
+                        match channel.map(|(row, ch)| (row, ch.kind)) {
+                            // A clip plays its sample from the window start, cut at the clip end.
+                            Some((row, ChannelKind::AudioClip | ChannelKind::Sampler)) => {
+                                let from_s = c.window.map_or(0.0, |w| w.0.max(0.0) / 1000.0);
+                                out.push(Sched { drive:0,expression:0, expression_len:0, release:64, origin: Some((c.track, start, len, from_s.to_bits())), tick: start, channel: row, key: 60, fine: 120, velocity: 100, pan: 64, mod_x: 128, mod_y: 128, cut: Some(start + len), len, from_s, clip: ClipFx::of(c, fx), slide: false, porta: false });
+                            }
+                            Some((_, ChannelKind::Automation)) => {}
+                            _ => report.automation_clips_ignored += 1,
                         }
-                        Some(ChannelKind::Automation) => {}
-                        _ => report.automation_clips_ignored += 1,
-                    },
+                    }
                 }
             }
             (out, end)

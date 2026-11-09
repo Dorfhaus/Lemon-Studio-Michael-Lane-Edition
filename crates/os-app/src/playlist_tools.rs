@@ -125,6 +125,36 @@ pub fn phase(s: &State) -> u8 {
         Some(0..=44) => 0, Some(45..=89) => 1, Some(90..=134) => 2, _ => 3,
     }
 }
+pub(crate) const RANGE_SELECTION_VISIBILITY: &str = "visible_ctrl-shift-range-selection";
+
+pub(crate) fn range_chord(app: &App) -> bool {
+    app.ctrl && app.shift && crate::workspace_visibility::shown(RANGE_SELECTION_VISIBILITY)
+}
+
+pub(crate) fn range_cursor(app: &App) -> Option<Cursor> {
+    if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() {
+        app.range_cursor.set(false);
+        return None;
+    }
+    let workspace = matches!(app.hover, Some(Action::PlaylistArea | Action::PlHeader(_) | Action::PlTrackGrip(_)
+        | Action::PlRowResize(_) | Action::PianoGrid | Action::PianoNote(_) | Action::PianoKeys));
+    let selecting = matches!(app.drag, Some(crate::app::Drag::Marquee { base: None, .. }
+        | crate::app::Drag::PianoPitchRange { .. } | crate::app::Drag::Pl(pl::PlDrag::Marquee { base: None, .. } | pl::PlDrag::HeaderRange { contents: true, .. })));
+    if (selecting || workspace && app.drag.is_none()) && range_chord(app) {
+        app.range_cursor.set(true);
+        return Some(Cursor::Playlist(PlTool::Select, 3));
+    }
+    // After either modifier is released, avoid immediately showing the legacy
+    // Ctrl-only cursor until the chord is fully released or the pointer leaves.
+    if !workspace || !app.ctrl && !app.shift {
+        app.range_cursor.set(false);
+    }
+    if selecting || workspace && app.drag.is_none() && app.range_cursor.get() {
+        return Some(Cursor::Default);
+    }
+    None
+}
+
 pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
     if matches!(app.drag, Some(crate::app::Drag::WarpMarker { .. })) {

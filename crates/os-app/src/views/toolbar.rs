@@ -382,7 +382,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         }
         if sizes.feedback > 0.0 {
             let r = Rect::new(x, 8.0, sizes.feedback - 6.0, 24.0);
-            ui.hit(r, Action::FeatureVote(0, 30), "Report a bug or send feedback: review technical details before submitting");
+            ui.hit(r, Action::ReportBug, "Report a bug or send feedback: review technical details before submitting");
             ui.c.fill_rrect(r, 3.0, t.accent);
             ui.c.text_center(Font::new(11), r, t.sunken, "Report a bug");
         }
@@ -1682,7 +1682,7 @@ mod tests {
                 assert!(super::display_layout(&app.state).rows.len() > 1);
             }
             let hint = app.hits.iter().find(|h| h.hint == "Hint bar").unwrap().rect;
-            let report = hit(&app, &Action::FeatureVote(0,30));
+            let report = hit(&app, &Action::ReportBug);
             assert!(hint.x >= report.right() && hint.right() <= hit(&app, &Action::Minimize).x);
             assert!(!has(&app, &Action::MenuItem(super::menus::OPTIONS_MENU, super::menus::OPT_INFO)));
             let mut last_right = 0.0;

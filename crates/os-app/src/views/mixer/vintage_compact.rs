@@ -33,7 +33,7 @@ pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
     for n in first..first.saturating_add(count).min(mx::inserts(s)+1) {
         let x=area.x+f32::from(n-1)*width-s.mixer_scroll;
         strip(ui,s,n,Rect::new(x,bank.y,width,bank.h),r);
-        insertion_button(ui,s,area,bank,n,x);
+        insertion_button(ui,s,area,bank.bottom()-52.,n,x);
     }
     });
     ui.c.pop_clip();
@@ -64,7 +64,8 @@ fn strip(ui:&mut Ui,s:&State,n:u16,r:Rect,window:Rect) {
     let track=mx::track(s,n);
     let chosen=s.selected_mixer==n;
     let name=mx::name(s,n);
-    ui.hit(r,Action::Mix(MHit::Strip(n)),name.clone());
+    let selection = Rect::new(r.x, r.y, r.w, r.h - 19.);
+    ui.hit(selection, Action::Mix(MHit::Strip(n)), name.clone());
     let base=track.and_then(|m|m.color).map(super::super::rgb).map_or(Color::rgb(0x5f686d),|c|c.mix(Color::rgb(0x5f686d),0.75));
     skin::metal(ui.c,r,base);
     let header = Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, 54.0);

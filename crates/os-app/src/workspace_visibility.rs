@@ -38,7 +38,9 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         (crate::prefs::INTERFACE_LANGUAGE.label, crate::prefs::language::VISIBILITY),
     ]),
     ("Input customization", &[
+        ("MIDI controller setup", crate::controller::VISIBILITY),
         ("Custom action buttons", "visible_custom-actions"),
+        ("Ctrl/Cmd+Shift drag range selection", crate::playlist_tools::RANGE_SELECTION_VISIBILITY),
     ]),
     ("Toolbar extras", &[
         ("CPU and live monitor", "visible_cpu"),
@@ -52,9 +54,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Report a Bug button", "visible_feedback"),
     ]),
     ("Browser", &[
-        ("Community Samples shortcuts", "visible_browser-community"),
         ("Plugin Downloads tab", "visible_browser-downloads"),
-        ("Feature Voting tab", "visible_browser-voting"),
         ("Favorites tab", "visible_browser-favorites"),
         ("Sample preview panel", "visible_browser-preview"),
         ("File information panel", "visible_browser-info"),
@@ -63,6 +63,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         (crate::theme_adjust::PLAYLIST_BRIGHTNESS, crate::theme_adjust::PLAYLIST_BRIGHTNESS_VISIBILITY),
         ("Vocal tuning button", "visible_playlist-vocal-tuning"),
         ("Audio warp editor", "visible_playlist-warp"),
+        ("Preview audio timing in Playlist playback", crate::warp::PREVIEW_VISIBILITY),
         ("Arrangement mini-map", "visible_playlist-map"),
         ("Follow new clips at the timeline end", crate::playlist::FOLLOW_PLACEMENT_VISIBILITY),
         (crate::prefs::PLAYLIST_SCROLLBAR_STYLE.label, crate::prefs::PLAYLIST_SCROLLBAR_STYLE_VISIBILITY),
@@ -95,6 +96,8 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Mixer", &[
         ("Mixer channel lock buttons", "visible_mixer-channel-lock"),
+        ("Group lock option in Mixer padlock menu", crate::mixer::GROUP_LOCK_VISIBILITY),
+        ("Insert Multiple Tracks menu item", crate::mixer::INSERT_MULTIPLE_VISIBILITY),
         ("Mixer section shortcuts", crate::views::mixer::SECTION_SHORTCUTS),
         ("Stereo separation on Full Mixer strips", crate::views::mixer::STEREO_SEPARATION),
         ("Scroll to Drums button", crate::mixer::Section::Drums.visibility()),
@@ -109,6 +112,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Workspace", &[
         ("Search User Guide menu item", crate::help::VISIBILITY),
+        (crate::change_log::LABEL, crate::change_log::VISIBILITY),
         ("User Guide: Show me where", crate::help::SPOTLIGHT_VISIBILITY),
         ("Background logo and version", "visible_watermark"),
         ("Vintage 0 dB markers", crate::vintage::GAIN_MARKS),

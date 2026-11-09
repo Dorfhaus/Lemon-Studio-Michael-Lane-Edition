@@ -234,6 +234,7 @@ pub enum Cmd {
     Remote(crate::remote::RCmd),
     /// Settings > MIDI ▸ External clock sync: the device chosen (`None` = Off).
     MidiExt(Option<String>),
+    Controller(String, usize),
     /// Plugin window menu > Detached: rack row, new state (spec: ui/plugin-window.md "Docking and the window menu").
     #[cfg_attr(not(windows), allow(dead_code))]
     WaveSize(usize,u16),
@@ -1604,29 +1605,44 @@ pub fn place(s: &mut State, track: u16, tick: u32) -> usize {
     i
 }
 
-/// Place a picker selection consecutively, using the usual clip length and linked automation.
-pub fn place_picker_sources(s: &mut State, items: &[ClipSource], track: u16, mut tick: u32) {
+/// The same consecutive lanes are used for the drag preview and the actual drop.
+pub(crate) fn picker_drop_rows(
+    s: &State, rows: &Rows, items: &[ClipSource], track: u16, tick: u32,
+) -> Result<std::ops::Range<u16>, &'static str> {
+    let end = u16::try_from(items.len()).ok()
+        .and_then(|count| track.checked_add(count))
+        .filter(|&end| end <= TRACKS)
+        .ok_or("There are too few Playlist tracks below the drop point")?;
+    for row in track..end {
+        if rows.strip(row) || s.playlist.automation_views.contains_key(&row)
+            || track_info(s, row).is_some_and(|t| t.locked || t.frozen.is_some() || t.folder || t.comp.is_some())
+        {
+            return Err("Drop onto consecutive editable Playlist tracks");
+        }
+    }
+    if items.iter().any(|&source| tick.checked_add(picker_source_len(s, source)).is_none()) {
+        return Err("A clip would extend past the last usable Playlist tick");
+    }
+    Ok(track..end)
+}
+
+/// Place a picker selection on separate tracks at the same timeline position.
+pub fn place_picker_sources(s: &mut State, items: &[ClipSource], track: u16, tick: u32) -> Result<(), &'static str> {
     if items.is_empty() {
-        return;
+        return Ok(());
     }
-    let mut end = tick;
-    for &source in items {
-        let length = picker_source_len(s, source);
-        let Some(next) = end.checked_add(length) else { return };
-        end = next;
-    }
+    let rows = picker_drop_rows(s, &Rows::new(s), items, track, tick)?;
     snapshot_as(s, "Drop clips from picker");
     let previous = s.playlist.source;
     let mut placed = Vec::with_capacity(items.len());
-    for &source in items {
+    for (row, &source) in rows.zip(items) {
         s.playlist.source = Some(source);
-        let index = place_clip(s, track, tick);
-        tick = clips(s)[index].end();
-        placed.push(index);
+        placed.push(place_clip(s, row, tick));
     }
     s.playlist.source = previous;
     extend_linked_automation(s, placed.iter().copied());
     s.playlist.sel = placed;
+    Ok(())
 }
 
 pub(crate) fn picker_source_len(s: &State, source: ClipSource) -> u32 {
@@ -3346,7 +3362,7 @@ pub fn knob_menu(s: &State, auto: Option<(u32, String, f64)>, typein: Option<cra
 #[derive(Debug, Clone)]
 pub enum PlDrag {
     Track { row:u16, y0:f32, started:bool },
-    HeaderRange {anchor:u16,base:Vec<u16>},
+    HeaderRange { anchor: u16, base: Vec<u16>, contents: bool },
     Comp { clip: usize, x0: f32, start: u32 },
     /// `fresh` = the clip was just placed (its undo step stays even without a move).
     Move { x0: f32, y0: f32, scroll_x: f32, track0: u16, orig: Vec<(usize, Clip)>, fresh: bool },
@@ -3357,7 +3373,7 @@ pub enum PlDrag {
     SweepErase{x:f32,y:f32, recorded:bool},
     Mute { on: bool },
     Paint { track: u16, start: u32, len: u32 },
-    Marquee { x0: f32, y0: f32, base: Vec<usize> },
+    Marquee { x0: f32, y0: f32, base: Option<Vec<usize>> },
     Slice { y0: f32 },
     /// Right button held on empty grid: a horizontal drag turns into a slice (§3).
     RightPending { x0: f32, y0: f32 },
@@ -3541,6 +3557,18 @@ fn edge(r: Rect, x: f32) -> i32 {
 /// Mouse press on the grid. `right` = the right button.
 pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     let (x, y) = app.mouse;
+    if !right && crate::playlist_tools::range_chord(app) {
+        let s = &mut app.state;
+        s.playlist.popup = None;
+        s.playlist.sel.clear();
+        s.playlist.selected_points = None;
+        s.playlist.last_clip = None;
+        app.drag = Some(Drag::Pl(PlDrag::Marquee {
+            x0: x, y0: y + s.playlist_scroll.1, base: None,
+        }));
+        app.damage_win(crate::app::Win::Playlist);
+        return;
+    }
     let placement_edge = if right { None } else { app.playlist_placement_edge(x) };
     let s = &mut app.state;
     s.playlist.popup = None;
@@ -3617,7 +3645,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
         let base=s.playlist.sel.clone();
         match hit {
             Some(i) => {
-                app.drag=Some(Drag::Pl(PlDrag::Marquee{x0:x,y0:y+s.playlist_scroll.1,base}));
+                app.drag=Some(Drag::Pl(PlDrag::Marquee{x0:x,y0:y+s.playlist_scroll.1,base:Some(base)}));
                 // A grouped clip toggles with its group.
                 let group = with_groups(s, vec![i]);
                 if s.playlist.sel.contains(&i) {
@@ -3628,7 +3656,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
             }
             None => {
                 let base = s.playlist.sel.clone();
-                app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base }));
+                app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base: Some(base) }));
             }
         }
         app.invalidate();
@@ -3688,7 +3716,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
 
     if tool == PlTool::Select && !right {
         s.playlist.sel = hit.map_or_else(Vec::new, |i| with_groups(s, vec![i]));
-        app.drag = Some(Drag::Pl(PlDrag::Marquee { x0:x, y0:y+s.playlist_scroll.1, base:Vec::new() }));
+        app.drag = Some(Drag::Pl(PlDrag::Marquee { x0:x, y0:y+s.playlist_scroll.1, base:Some(Vec::new()) }));
         app.invalidate();
         return;
     }
@@ -3831,7 +3859,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
         }
         PlTool::Select if hit.is_none() => {
             s.playlist.sel.clear();
-            app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base: Vec::new() }));
+            app.drag = Some(Drag::Pl(PlDrag::Marquee { x0: x, y0: y+s.playlist_scroll.1, base: Some(Vec::new()) }));
         }
         PlTool::Draw | PlTool::Paint | PlTool::Select => match hit {
             // Right-Shift+drag on empty grid with Draw / Paint: a quick slice line, as the Slice tool (§3).
@@ -3987,6 +4015,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             | PlDrag::ResizeR { .. }
             | PlDrag::Slip { .. }
             | PlDrag::Marquee { .. }
+            | PlDrag::HeaderRange { contents: true, .. }
             | PlDrag::ZoomBox { .. }
             | PlDrag::TimeSel { .. }
             | PlDrag::Marker { .. }
@@ -4023,10 +4052,12 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
         moved.iter().flatten().filter_map(|&i|clips(s).get(i).map(|c|(i,g.clip_rect(c)))).collect()
     }else{Vec::new()};
     match d {
-        PlDrag::HeaderRange{anchor,base}=>{
-            let target=g.track_at(y.clamp(grid.y,grid.bottom()-1.));
-            s.playlist.header_selection=base;
-            for t in anchor.min(target)..=anchor.max(target){if !s.playlist.header_selection.contains(&t){s.playlist.header_selection.push(t);}}
+        PlDrag::HeaderRange { anchor, base, contents } => {
+            let target = g.track_at(y.clamp(grid.y, grid.bottom() - 1.));
+            select_header_range(s, anchor, target, base, contents);
+            if contents {
+                header_range_band(s, &g, anchor, target);
+            }
         }
         PlDrag::Track {row,y0,started} => {
             if !started && (y-y0).abs()<5. {return;}
@@ -4135,10 +4166,10 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
         }
         PlDrag::Marquee { x0, y0, base } => {
             let y0 = y0 - s.playlist_scroll.1;
-            if (x-x0).hypot(y-y0)<3.{return app.invalidate();}
+            if base.is_some() && (x-x0).hypot(y-y0)<3.{return app.invalidate();}
             let r = Rect::span(x0.min(x), x0.max(x)+1., y0.min(y), y0.max(y)+1.);
             s.playlist.overlay = Some(Overlay::Marquee(r));
-            let mut sel = base.clone();
+            let mut sel = base.unwrap_or_default();
             for (i, c) in clips(s).iter().enumerate() {
                 if !sel.contains(&i) && g.clip_rect(c).intersect(&r).w > 0.0 && g.clip_rect(c).intersect(&r).h > 0.0 {
                     sel.push(i);
@@ -4361,7 +4392,10 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
         PlDrag::ZoomBox { x0, y0 } => zoom_to(app, grid, x0, y0),
-        PlDrag::Playback => app.transport.stop(),
+        PlDrag::Playback => {
+            crate::warp::cancel_play(app);
+            app.transport.stop();
+        }
         PlDrag::SongPos => {
             // The song jumps to the new position; a running pattern goes on as the song from there, a paused one
             // stops, as with the PAT / SONG switch (§7, audio/transport.md).
@@ -4639,7 +4673,29 @@ fn move_into_folder(s:&mut State,t:u16,folder:u16)->Option<String>{
     Some(format!("Moved {} track(s) into folder",rows.len()))
 }
 
+fn select_header_range(s: &mut State, anchor: u16, target: u16, mut base: Vec<u16>, contents: bool) {
+    for row in anchor.min(target)..=anchor.max(target) {
+        if !base.contains(&row) {
+            base.push(row);
+        }
+    }
+    if contents {
+        s.playlist.sel = clips(s).iter().enumerate()
+            .filter_map(|(i, clip)| base.contains(&clip.track).then_some(i))
+            .collect();
+    }
+    s.playlist.header_selection = base;
+}
+
+fn header_range_band(s: &mut State, g: &PGeom, anchor: u16, target: u16) {
+    let top = g.y_of(anchor.min(target));
+    let bottom = g.y_of(anchor.max(target)) + g.rows.height(anchor.max(target));
+    s.playlist.overlay = Some(Overlay::Marquee(Rect::new(g.grid.x, top, g.grid.w, bottom - top)));
+}
+
 pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
+    let contents = !right && crate::playlist_tools::range_chord(app);
+    let grid = app.pl_grid();
     let s = &mut app.state;
     s.playlist.popup = None;
     if right {
@@ -4651,14 +4707,18 @@ pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
     }
     let now = std::time::Instant::now();
     s.playlist.sel.clear();
-    let anchor=if app.shift{s.playlist.header_anchor.unwrap_or(s.playlist.track)}else{t};
+    let anchor = if app.shift && !contents { s.playlist.header_anchor.unwrap_or(s.playlist.track) } else { t };
     if app.ctrl || app.shift{
-        let mut base=if app.ctrl{s.playlist.header_selection.clone()}else{Vec::new()};
+        let mut base=if app.ctrl && !contents {s.playlist.header_selection.clone()}else{Vec::new()};
         if app.ctrl && !app.shift && base.contains(&t){base.retain(|&r|r!=t);s.playlist.header_selection=base;s.playlist.last_header=None;return app.invalidate();}
-        s.playlist.header_selection=base.clone();
-        for r in anchor.min(t)..=anchor.max(t){if !s.playlist.header_selection.contains(&r){s.playlist.header_selection.push(r);}}
+        select_header_range(s, anchor, t, base.clone(), contents);
+        if contents && let Some(grid) = grid {
+            let g = PGeom::new(s, grid);
+            header_range_band(s, &g, anchor, t);
+        }
         s.playlist.header_anchor=Some(anchor);s.playlist.track=t;s.playlist.last_header=None;
-        app.drag=Some(Drag::Pl(PlDrag::HeaderRange{anchor,base}));return app.invalidate();
+        app.drag = Some(Drag::Pl(PlDrag::HeaderRange { anchor, base, contents }));
+        return app.invalidate();
     }
     s.playlist.header_anchor=Some(t);s.playlist.header_selection=vec![t];
     let double = s.playlist.last_header.is_some_and(|(lt, when)| lt == t && now.duration_since(when).as_millis() < 450);
@@ -4758,7 +4818,7 @@ pub fn commit_edit(s: &mut State) {
             }
         }
         EditTarget::MixerName(n) => {
-            if crate::mixer::locked(s, n) { return; }
+            if crate::mixer::routing_locked(s, n) { return; }
             let def = if n == 0 { "Master".to_string() } else { format!("Insert {n}") };
             if let Some(m) = s.project.mixer.iter_mut().find(|m| m.index == n) {
                 m.name = (!text.is_empty() && text != def).then_some(text);
@@ -4879,6 +4939,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             return None;
         }
         Cmd::MidiExt(d) => return app.set_ext_sync(d),
+        Cmd::Controller(device, mode) => { app.midi_release_all(); app.midi_play.surface_banks.remove(&device); crate::controller::set_mode(&device, mode); app.invalidate(); return Some("Controller mode saved for this input. Use the matching mode on your hardware.".into()); }
         Cmd::Reset(c) => {
             app.reset_control(c);
             return None;
@@ -5243,7 +5304,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             (!delete_space(s)).then(|| "Delete space: make a time selection first (right-drag the ruler)".into())
         }
         Cmd::ImportReport | Cmd::ExportImportReport | Cmd::ImportOptions | Cmd::FindMissingSamples | Cmd::ApproveSubstitutes | Cmd::LocateMissingSample(_) | Cmd::BrowseMissingSample(_) | Cmd::UseMissingSample(..) |
-        Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::VocalAlign(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::BounceReplaceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) => None,
+        Cmd::StripSilence(_) | Cmd::Normalize(..) | Cmd::Warp(_) | Cmd::VocalAlign(_) | Cmd::FreezeTrack(_) | Cmd::UnfreezeTrack(_) | Cmd::BounceTrack(_) | Cmd::BounceReplaceTrack(_) | Cmd::Consolidate | Cmd::ExportTracks | Cmd::QuantizeStarts | Cmd::PointValue(..) | Cmd::ClipRoute(_) | Cmd::ClipPreview(_) | Cmd::SeparateStems(_) | Cmd::AraMenu(_) | Cmd::AraChoose(..) | Cmd::AraRemove(_) | Cmd::AraScan | Cmd::FitLoop(..) | Cmd::TypeIn(_) | Cmd::TypeTempo | Cmd::Mpe(_) | Cmd::ClipEffects(_) | Cmd::MarkerProfile(_) | Cmd::ResetPatternStretch(_) | Cmd::Reset(_) | Cmd::Remote(_) | Cmd::PeakLink(_) | Cmd::MidiExt(_) | Cmd::Controller(..) => None,
         Cmd::StretchMode => {
             s.playlist.stretch = !s.playlist.stretch;
             if s.playlist.stretch { crate::playlist_tools::select(s, PlTool::Paint); }

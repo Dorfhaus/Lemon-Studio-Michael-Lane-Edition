@@ -60,8 +60,14 @@ pub const WARP_BAKES_VOCAL_TUNING: Message = Message {
     kind: Kind::Question,
 };
 
+pub const RESET_MIXER_TRACKS: Message = Message {
+    check: Check { key: "msg_reset_mixer_tracks", label: "Reset Mixer tracks to default", default: true },
+    group: "Audio",
+    kind: Kind::Question,
+};
+
 /// Every message that can be skipped.
-pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE, &WARP_BAKES_VOCAL_TUNING];
+pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE, &WARP_BAKES_VOCAL_TUNING, &RESET_MIXER_TRACKS];
 
 /// Whether message `m` shows (its entry is on).
 pub fn on(m: &Message) -> bool {
@@ -234,6 +240,7 @@ mod tests {
                 ("Show none", false, Mark::None, false),
                 ("Audio", true, Mark::None, false),
                 ("Audio timing bakes vocal tuning", false, Mark::Check(true), false),
+                ("Reset Mixer tracks to default", false, Mark::Check(true), false),
                 ("", false, Mark::None, false),
                 ("File/Data", true, Mark::None, false),
                 ("Delete channel", false, Mark::Check(true), false),
@@ -241,7 +248,7 @@ mod tests {
                 ("Project data size warning", false, Mark::Check(true), false),
             ]
         );
-        assert_eq!(items[7].cmd, Cmd::Messages(Pick::Toggle(1)));
+        assert_eq!(items[8].cmd, Cmd::Messages(Pick::Toggle(1)));
     }
 
     /// Show all turns every entry on; Show none turns the notices off and leaves the questions on.

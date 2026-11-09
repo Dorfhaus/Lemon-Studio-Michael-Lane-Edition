@@ -7,10 +7,17 @@ use crate::{
 };
 use os_ui::{Font, Rect};
 use serde::{Deserialize, Serialize};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::HashSet,
+    rc::Rc,
+};
 use winit::keyboard::{Key, NamedKey};
 
 pub const VISIBILITY: &str = "visible_input_bindings";
 const STORE: &str = "input_bindings_v1";
+const PAGE_SIZE: usize = 4;
+const KEYBOARD: usize = 8;
 const CONTEXTS: &[&str] = &[
     "Global",
     "Piano Roll",
@@ -48,7 +55,7 @@ struct Binding {
     #[serde(default)]
     pinned: bool,
 }
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Editor {
     context: usize,
     event: usize,
@@ -62,6 +69,55 @@ pub struct Editor {
     previous: Vec<String>,
     name: crate::dialog::Field,
     naming: bool,
+    pub(crate) advanced: bool,
+    browser: RefCell<Option<ActionBrowser>>,
+}
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            context: 0,
+            event: KEYBOARD,
+            modifiers: 0,
+            key: String::new(),
+            capture: false,
+            search: Default::default(),
+            searching: false,
+            page: 0,
+            notice: String::new(),
+            previous: Vec::new(),
+            name: Default::default(),
+            naming: false,
+            advanced: false,
+            browser: RefCell::new(None),
+        }
+    }
+}
+impl Editor {
+    pub(crate) fn open(&mut self) {
+        self.capture = false;
+        self.searching = false;
+        self.naming = false;
+        self.browser.get_mut().take();
+        sync_name(self);
+    }
+}
+
+#[derive(Debug)]
+struct Choice {
+    id: String,
+    label: String,
+    search: String,
+    sequence: bool,
+}
+
+#[derive(Debug)]
+struct ActionBrowser {
+    context: usize,
+    bindings: Rc<Vec<Binding>>,
+    items: Vec<Choice>,
+    query: String,
+    pointers: bool,
+    filtered: Vec<usize>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
@@ -69,7 +125,7 @@ pub enum Edit {
     Event,
     Modifiers,
     Capture,
-    Choose,
+    Advanced,
     Assign(String),
     Append(String),
     Remove,
@@ -78,6 +134,7 @@ pub enum Edit {
     SelectEvent(usize),
     SelectModifiers(u8),
     Search,
+    ClearSearch,
     Page(i32),
     Saved,
     Load(usize),
@@ -114,20 +171,64 @@ pub struct Runtime {
     focused: Option<Win>,
 }
 
-fn bindings() -> Vec<Binding> {
-    crate::prefs::text(STORE)
-        .and_then(|s| serde_json::from_str::<Vec<Binding>>(&s).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|b| {
-            b.context < CONTEXTS.len() && b.modifiers < 8 && valid_actions(&b.event, &b.actions)
-        })
-        .take(2048)
-        .collect()
+#[derive(Default)]
+struct BindingCache {
+    text: String,
+    parsed: Rc<Vec<Binding>>,
 }
+
+thread_local! {
+    static BINDINGS: RefCell<BindingCache> = RefCell::new(BindingCache::default());
+}
+
+fn bindings() -> Rc<Vec<Binding>> {
+    crate::settings_file::read(|settings| {
+        let text = settings.get(STORE).unwrap_or("");
+        BINDINGS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.text != text {
+                let parsed = serde_json::from_str::<Vec<Binding>>(text)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|b| {
+                        b.context < CONTEXTS.len()
+                            && b.modifiers < 8
+                            && valid_actions(&b.event, &b.actions)
+                    })
+                    .take(2048)
+                    .collect();
+                cache.parsed = Rc::new(parsed);
+                cache.text.clear();
+                cache.text.push_str(text);
+            }
+            cache.parsed.clone()
+        })
+    })
+}
+
+fn current<'a>(e: &Editor, all: &'a [Binding]) -> Option<&'a Binding> {
+    let input = event(e);
+    all.iter()
+        .find(|b| b.context == e.context && b.event == input && b.modifiers == e.modifiers)
+}
+
+fn sync_name(e: &mut Editor) {
+    let all = bindings();
+    e.name.set(current(e, &all).map_or("", |b| b.name.as_str()));
+}
+
 fn binding_id(b: &Binding) -> String {
     format!("binding:{}:{}:{}", b.context, b.modifiers, b.event)
 }
+fn saved_binding<'a>(all: &'a [Binding], id: &str) -> Option<&'a Binding> {
+    let mut fields = id.strip_prefix("binding:")?.splitn(3, ':');
+    let context = fields.next()?.parse::<usize>().ok()?;
+    let modifiers = fields.next()?.parse::<u8>().ok()?;
+    let event = fields.next()?;
+    all.iter()
+        .find(|b| b.context == context && b.modifiers == modifiers && b.event == event)
+}
+
 pub fn has_pinned() -> bool {
     bindings().iter().any(|b| b.pinned && !b.name.is_empty())
 }
@@ -146,10 +247,7 @@ fn expand_from(
             if visiting.len() >= 8 || visiting.contains(id) {
                 return Err("Saved action contains a circular reference.".into());
             }
-            let b = all
-                .iter()
-                .find(|b| binding_id(b) == *id)
-                .ok_or("Saved action no longer exists.")?;
+            let b = saved_binding(all, id).ok_or("Saved action no longer exists.")?;
             if b.context != 0 && b.context != c && !(matches!(c, 6 | 7) && b.context == 1) {
                 return Err("Saved action requires its original editor context.".into());
             }
@@ -169,7 +267,7 @@ pub fn run_saved(app: &mut App, id: &str) {
     if !available(app) || app.drag.is_some() {
         return;
     }
-    if let Some(b) = bindings().into_iter().find(|b| binding_id(b) == id) {
+    if saved_binding(&bindings(), id).is_some() {
         let c = context(app.state.z.last().copied());
         match expand(&[id.into()], c, &mut Vec::new()) {
             Ok(actions) if !actions.iter().any(|id| is_pointer(id)) => execute(app, actions, c),
@@ -178,12 +276,11 @@ pub fn run_saved(app: &mut App, id: &str) {
             }
             Err(e) => app.state.message = Some(e),
         }
-        let _ = b;
     }
 }
 pub fn toolbar(ui: &mut Ui, r: Rect, edge: f32) -> bool {
     for (i, b) in bindings()
-        .into_iter()
+        .iter()
         .filter(|b| b.pinned && !b.name.is_empty())
         .take(4)
         .enumerate()
@@ -192,7 +289,7 @@ pub fn toolbar(ui: &mut Ui, r: Rect, edge: f32) -> bool {
         if rect.right() > edge {
             return false;
         }
-        let hover = ui.hit(rect, Action::InputAction(binding_id(&b)), b.name.clone());
+        let hover = ui.hit(rect, Action::InputAction(binding_id(b)), b.name.clone());
         os_ui::kit::bordered(
             ui.c,
             rect,
@@ -206,7 +303,7 @@ pub fn toolbar(ui: &mut Ui, r: Rect, edge: f32) -> bool {
     true
 }
 fn event(e: &Editor) -> String {
-    if e.event == 8 {
+    if e.event == KEYBOARD {
         format!("Key {}", e.key)
     } else {
         EVENTS[e.event].into()
@@ -243,23 +340,29 @@ fn available(app: &App) -> bool {
         && app.state.pat_ui.name_box.is_none()
         && !app.state.pat_ui.confirm
 }
+fn effective_binding<'a>(
+    all: &'a [Binding],
+    context: usize,
+    event: &str,
+    mods: u8,
+) -> Option<&'a Binding> {
+    let find = |scope| {
+        all.iter()
+            .find(|b| b.context == scope && b.event == event && b.modifiers == mods)
+    };
+    find(context)
+        .or_else(|| {
+            if matches!(context, 6 | 7) {
+                find(1)
+            } else {
+                None
+            }
+        })
+        .or_else(|| if context != 0 { find(0) } else { None })
+}
+
 fn lookup(context: usize, event: &str, mods: u8) -> Option<Vec<String>> {
-    let all = bindings();
-    all.iter()
-        .find(|b| b.context == context && b.event == event && b.modifiers == mods)
-        .or_else(|| {
-            all.iter().find(|b| {
-                matches!(context, 6 | 7)
-                    && b.context == 1
-                    && b.event == event
-                    && b.modifiers == mods
-            })
-        })
-        .or_else(|| {
-            all.iter()
-                .find(|b| b.context == 0 && b.event == event && b.modifiers == mods)
-        })
-        .map(|b| b.actions.clone())
+    effective_binding(&bindings(), context, event, mods).map(|b| b.actions.clone())
 }
 fn hovered(app: &App) -> usize {
     match app.top_hit(app.mouse.0, app.mouse.1) {
@@ -274,7 +377,7 @@ fn hovered(app: &App) -> usize {
         }
     }
 }
-fn catalog(s: &State, c: usize) -> Vec<(String, String, Option<Cmd>)> {
+fn catalog(s: &State, c: usize, all: &[Binding]) -> Vec<(String, String, Option<Cmd>)> {
     let mut out = vec![
         ("ignore".into(), "Do nothing".into(), None),
         (
@@ -298,12 +401,12 @@ fn catalog(s: &State, c: usize) -> Vec<(String, String, Option<Cmd>)> {
             out.push((id.into(), label.into(), None));
         }
     }
-    for b in bindings().into_iter().filter(|b| {
+    for b in all.iter().filter(|b| {
         !b.name.is_empty()
             && (b.context == c || b.context == 0 || matches!(c, 6 | 7) && b.context == 1)
     }) {
         if !b.actions.iter().any(|id| is_pointer(id)) {
-            out.push((binding_id(&b), format!("Saved actions / {}", b.name), None));
+            out.push((binding_id(b), format!("Saved actions / {}", b.name), None));
         }
     }
     let menus = match c {
@@ -469,37 +572,48 @@ fn builtin(app: &mut App, id: &str, c: usize) -> bool {
     true
 }
 fn command(s: &State, c: usize, id: &str) -> Option<Cmd> {
-    catalog(s, c)
-        .into_iter()
-        .chain(catalog(s, 0))
-        .find(|(key, _, _)| key == id)
-        .and_then(|(_, _, cmd)| cmd)
+    let all = bindings();
+    let find = |scope| {
+        catalog(s, scope, &all)
+            .into_iter()
+            .find(|(key, _, _)| key == id)
+            .and_then(|(_, _, cmd)| cmd)
+    };
+    find(c).or_else(|| if c == 0 { None } else { find(0) })
 }
-fn sequence_safe(s: &State, c: usize, id: &str) -> bool {
-    use crate::piano_tools::NCmd;
-    if id.starts_with("binding:") {
-        return expand(&[id.into()], c, &mut Vec::new())
-            .is_ok_and(|ids| ids.iter().all(|id| sequence_safe(s, c, id)));
-    }
+
+fn direct_action(c: usize, id: &str) -> bool {
     id == "ignore"
         || BUILTINS
             .iter()
             .any(|(key, _, scope)| *key == id && (c == *scope || *scope == 1 && matches!(c, 6 | 7)))
-        || matches!(
-            command(s, c, id),
-            Some(Cmd::Piano(
-                NCmd::Quantize { .. }
-                    | NCmd::Legato
-                    | NCmd::QuickChop
-                    | NCmd::Mute(_)
-                    | NCmd::Glue
-                    | NCmd::DiscardLengths
-                    | NCmd::Duplicate
-                    | NCmd::ApplyNoteColor
-                    | NCmd::SelectedNoteType(_)
-                    | NCmd::Tool(_)
-            ))
-        )
+}
+
+fn direct_command(cmd: Option<&Cmd>) -> bool {
+    use crate::piano_tools::NCmd;
+    matches!(
+        cmd,
+        Some(Cmd::Piano(
+            NCmd::Quantize { .. }
+                | NCmd::Legato
+                | NCmd::QuickChop
+                | NCmd::Mute(_)
+                | NCmd::Glue
+                | NCmd::DiscardLengths
+                | NCmd::Duplicate
+                | NCmd::ApplyNoteColor
+                | NCmd::SelectedNoteType(_)
+                | NCmd::Tool(_)
+        ))
+    )
+}
+
+fn sequence_safe(s: &State, c: usize, id: &str) -> bool {
+    if id.starts_with("binding:") {
+        return expand(&[id.into()], c, &mut Vec::new())
+            .is_ok_and(|ids| ids.iter().all(|id| sequence_safe(s, c, id)));
+    }
+    direct_action(c, id) || direct_command(command(s, c, id).as_ref())
 }
 fn execute(app: &mut App, actions: Vec<String>, c: usize) {
     let actions = match expand(&actions, c, &mut Vec::new()) {
@@ -893,6 +1007,8 @@ pub fn capture(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
         editor.key = name;
         editor.modifiers = modifiers(ctrl, alt, app.shift);
         editor.capture = false;
+        sync_name(editor);
+        app.invalidate();
     }
     true
 }
@@ -978,16 +1094,81 @@ fn mod_label(m: u8) -> String {
         .collect::<Vec<_>>()
         .join(" + ")
 }
-fn results(s: &State) -> Vec<(String, String, Option<Cmd>)> {
-    let e = &s.settings.input_editor;
-    let query = e.search.text.to_lowercase();
-    catalog(s, e.context)
-        .into_iter()
-        .filter(|(id, label, _)| {
-            (pointer_event(&event(e)) || !is_pointer(id)) && label.to_lowercase().contains(&query)
-        })
-        .collect()
+impl ActionBrowser {
+    fn new(s: &State, context: usize, bindings: Rc<Vec<Binding>>) -> Self {
+        let catalog = catalog(s, context, &bindings);
+        let global = if context != 0 && catalog.iter().any(|(id, _, _)| id.starts_with("binding:"))
+        {
+            self::catalog(s, 0, &bindings)
+        } else {
+            Vec::new()
+        };
+        let direct: HashSet<&str> = catalog
+            .iter()
+            .chain(&global)
+            .filter(|(id, _, cmd)| direct_action(context, id) || direct_command(cmd.as_ref()))
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+        let items = catalog
+            .iter()
+            .map(|(id, label, _)| {
+                let sequence = direct.contains(id.as_str())
+                    || id.starts_with("binding:")
+                        && expand_from(
+                            &bindings,
+                            std::slice::from_ref(id),
+                            context,
+                            &mut Vec::new(),
+                        )
+                        .is_ok_and(|ids| ids.iter().all(|id| direct.contains(id.as_str())));
+                Choice {
+                    id: id.clone(),
+                    label: label.clone(),
+                    search: label.to_lowercase(),
+                    sequence,
+                }
+            })
+            .collect();
+        Self {
+            context,
+            bindings,
+            items,
+            query: String::new(),
+            pointers: false,
+            filtered: Vec::new(),
+        }
+    }
 }
+
+fn action_browser(s: &State) -> RefMut<'_, ActionBrowser> {
+    let e = &s.settings.input_editor;
+    let all = bindings();
+    let mut slot = e.browser.borrow_mut();
+    let rebuild = slot
+        .as_ref()
+        .is_none_or(|b| b.context != e.context || !Rc::ptr_eq(&b.bindings, &all));
+    if rebuild {
+        *slot = Some(ActionBrowser::new(s, e.context, all));
+    }
+    let b = slot.as_mut().unwrap();
+    let pointers = e.event != KEYBOARD && pointer_event(EVENTS[e.event]);
+    if rebuild || b.query != e.search.text || b.pointers != pointers {
+        b.query.clone_from(&e.search.text);
+        b.pointers = pointers;
+        let query = b.query.to_lowercase();
+        b.filtered.clear();
+        b.filtered
+            .extend(b.items.iter().enumerate().filter_map(|(i, choice)| {
+                ((pointers || !is_pointer(&choice.id))
+                    && query
+                        .split_whitespace()
+                        .all(|term| choice.search.contains(term)))
+                .then_some(i)
+            }));
+    }
+    RefMut::map(slot, |slot| slot.as_mut().unwrap())
+}
+
 pub fn edit(app: &mut App, action: Edit) {
     if !app.state.settings.open || app.state.settings.tab != CONTROLS {
         return;
@@ -995,9 +1176,8 @@ pub fn edit(app: &mut App, action: Edit) {
     let pinning = matches!(action, Edit::Pin);
     if let Edit::Append(id) = &action {
         let e = &app.state.settings.input_editor;
-        let old = bindings()
-            .into_iter()
-            .find(|b| b.context == e.context && b.event == event(e) && b.modifiers == e.modifiers);
+        let all = bindings();
+        let old = current(e, &all);
         if !sequence_safe(&app.state, e.context, id)
             || old.is_some_and(|b| {
                 b.actions
@@ -1011,7 +1191,7 @@ pub fn edit(app: &mut App, action: Edit) {
             return;
         }
     }
-    if !matches!(action, Edit::Search) {
+    if !matches!(action, Edit::Search | Edit::ClearSearch) {
         app.state.settings.input_editor.searching = false;
     }
     if !matches!(action, Edit::Capture) {
@@ -1039,7 +1219,7 @@ pub fn edit(app: &mut App, action: Edit) {
         Edit::SaveName | Edit::Pin => {
             let e = &mut app.state.settings.input_editor;
             e.naming = false;
-            let mut all = bindings();
+            let mut all = bindings().as_ref().clone();
             let pin_count = all.iter().filter(|b| b.pinned).count();
             if let Some(b) = all.iter_mut().find(|b| {
                 b.context == e.context && b.event == event(e) && b.modifiers == e.modifiers
@@ -1106,7 +1286,7 @@ pub fn edit(app: &mut App, action: Edit) {
         Edit::SelectModifiers(m) if m < 8 => app.state.settings.input_editor.modifiers = m,
         Edit::Capture => {
             let e = &mut app.state.settings.input_editor;
-            e.event = 8;
+            e.event = KEYBOARD;
             e.capture = true;
             e.page = 0;
         }
@@ -1115,11 +1295,17 @@ pub fn edit(app: &mut App, action: Edit) {
             e.searching = true;
             e.search.select_all();
         }
-        Edit::Page(step) => {
-            let max = results(&app.state).len().saturating_sub(1) / 4;
+        Edit::ClearSearch => {
             let e = &mut app.state.settings.input_editor;
-            e.page = (e.page as i32 + step).max(0) as usize;
-            e.page = e.page.min(max);
+            e.search.set("");
+            e.page = 0;
+            e.searching = true;
+        }
+        Edit::Advanced => app.state.settings.input_editor.advanced ^= true,
+        Edit::Page(step) => {
+            let max = action_browser(&app.state).filtered.len().saturating_sub(1) / PAGE_SIZE;
+            let e = &mut app.state.settings.input_editor;
+            e.page = (e.page.min(max) as i32 + step).clamp(0, max as i32) as usize;
         }
         Edit::Saved => {
             let mut items: Vec<_> = bindings()
@@ -1127,12 +1313,19 @@ pub fn edit(app: &mut App, action: Edit) {
                 .enumerate()
                 .map(|(i, b)| {
                     pick(
-                        format!(
-                            "{} · {} · {}",
-                            CONTEXTS[b.context],
-                            b.event,
-                            mod_label(b.modifiers)
-                        ),
+                        {
+                            let trigger = format!(
+                                "{} · {} · {}",
+                                CONTEXTS[b.context],
+                                b.event,
+                                mod_label(b.modifiers)
+                            );
+                            if b.name.is_empty() {
+                                trigger
+                            } else {
+                                format!("{} · {trigger}", b.name)
+                            }
+                        },
                         Edit::Load(i),
                     )
                 })
@@ -1151,7 +1344,7 @@ pub fn edit(app: &mut App, action: Edit) {
                 e.search.set("");
                 e.name.set(&b.name);
                 if let Some(key) = b.event.strip_prefix("Key ") {
-                    e.event = 8;
+                    e.event = KEYBOARD;
                     e.key = key.into();
                 } else {
                     e.event = EVENTS.iter().position(|v| *v == b.event).unwrap_or(0);
@@ -1193,29 +1386,14 @@ pub fn edit(app: &mut App, action: Edit) {
             }
             app.file_dialog(dlg);
         }
-        Edit::Choose => {
-            let items = results(&app.state)
-                .into_iter()
-                .map(|(id, label, _)| {
-                    PItem::sub(
-                        label,
-                        vec![
-                            pick("Assign", Edit::Assign(id.clone())),
-                            pick("Append to sequence", Edit::Append(id)),
-                        ],
-                    )
-                })
-                .collect();
-            popup(app, items);
-        }
         change => {
             let editor = &mut app.state.settings.input_editor;
-            if editor.event == 8 && editor.key.is_empty() {
+            if editor.event == KEYBOARD && editor.key.is_empty() {
                 editor.notice = "Capture a keyboard key first.".into();
                 app.invalidate();
                 return;
             }
-            let mut all = bindings();
+            let mut all = bindings().as_ref().clone();
             let name = event(editor);
             let old = all.iter().position(|b| {
                 b.context == editor.context && b.event == name && b.modifiers == editor.modifiers
@@ -1264,17 +1442,11 @@ pub fn edit(app: &mut App, action: Edit) {
             }
             remember(editor);
             crate::prefs::set_text(STORE, &serde_json::to_string(&all).unwrap());
-            editor.notice = "Saved for this profile. Restore event removes its override.".into();
+            editor.notice = "Saved for this profile. Restore default removes this override.".into();
         }
     }
     if refresh_name {
-        let e = &mut app.state.settings.input_editor;
-        let name = bindings()
-            .into_iter()
-            .find(|b| b.context == e.context && b.event == event(e) && b.modifiers == e.modifiers)
-            .map(|b| b.name)
-            .unwrap_or_default();
-        e.name.set(&name);
+        sync_name(&mut app.state.settings.input_editor);
     }
     if pinning
         && has_pinned()
@@ -1296,191 +1468,341 @@ pub fn edit(app: &mut App, action: Edit) {
 }
 fn label(ui: &mut Ui, rect: Rect, text: &str) {
     let font = Font::new(13);
-    let mut clipped = text.to_string();
-    while ui.c.text_width(font, &clipped) > rect.w - 16. && !clipped.is_empty() {
-        clipped.pop();
-    }
-    if clipped != text {
-        clipped.pop();
-        clipped.push('…');
-    }
-    ui.c.text(font, rect.x + 8., rect.y + 7., ui.t.text, &clipped);
-}
-fn button(ui: &mut Ui, r: Rect, text: &str, action: Edit) {
-    let hover = ui.hit(
-        r,
-        Action::Settings(SAct::InputBindings(action)),
-        text.to_string(),
+    ui.c.text_clip(
+        font,
+        rect.x + 8.,
+        rect.y + 7.,
+        (rect.w - 16.).max(0.),
+        ui.t.text,
+        text,
     );
+}
+
+fn button(ui: &mut Ui, r: Rect, text: &str, action: Edit) {
+    control(ui, r, text, action, true, false);
+}
+
+fn control(ui: &mut Ui, r: Rect, text: &str, action: Edit, enabled: bool, focused: bool) {
+    let hover = enabled
+        && ui.hit(
+            r,
+            Action::Settings(SAct::InputBindings(action)),
+            text.to_string(),
+        );
     os_ui::kit::bordered(
         ui.c,
         r,
         1.,
-        ui.t.toolbar_edge,
+        if focused {
+            ui.t.accent
+        } else {
+            ui.t.toolbar_edge
+        },
         os_ui::kit::face(ui.t.toolbar, os_ui::kit::State::hover(hover)),
     );
-    label(ui, r, text);
+    let font = Font::new(13);
+    let ink = if enabled { ui.t.text } else { ui.t.text_dim };
+    ui.c.text_clip(font, r.x + 8., r.y + 7., (r.w - 16.).max(0.), ink, text);
 }
+
+pub(crate) fn editor_height(advanced: bool) -> f32 {
+    if advanced { 514. } else { 404. }
+}
+
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let e = &s.settings.input_editor;
     let gap = 8.;
     let w = r.w;
     let half = (w - gap) / 2.;
     let rect = |col: f32, row: f32, width: f32| Rect::new(r.x + col, r.y + row, width, 29.);
+    let right = half + gap;
+    let ready = e.event != KEYBOARD || !e.key.is_empty();
+    let browser = action_browser(s);
+    let active = current(e, &browser.bindings);
+
+    label(
+        ui,
+        rect(0., 0., w - 146.),
+        "1. Choose a shortcut or gesture",
+    );
+    button(ui, rect(w - 138., 0., 138.), "Saved bindings…", Edit::Saved);
     button(
         ui,
-        rect(0., 0., half),
-        &format!("Context: {}", CONTEXTS[e.context]),
+        rect(0., 33., half),
+        &format!("Scope: {}  ▾", CONTEXTS[e.context]),
         Edit::Context,
     );
     button(
         ui,
-        rect(half + gap, 0., half),
-        &format!("Event: {}", EVENTS[e.event]),
+        rect(right, 33., half),
+        &format!("Input: {}  ▾", EVENTS[e.event]),
         Edit::Event,
     );
     button(
         ui,
-        rect(0., 36., half),
-        &format!("Modifiers: {}", mod_label(e.modifiers)),
+        rect(0., 66., half),
+        &format!("Modifiers: {}  ▾", mod_label(e.modifiers)),
         Edit::Modifiers,
     );
-    button(
+    let capture_label = if e.capture {
+        "Press a key… (Esc cancels)".into()
+    } else if e.event == KEYBOARD && !e.key.is_empty() {
+        format!("Key: {}  ·  Change…", e.key)
+    } else {
+        "Capture keyboard shortcut…".into()
+    };
+    control(
         ui,
-        rect(half + gap, 36., half),
-        if e.capture {
-            "Press a key… (Esc cancels)"
-        } else if e.key.is_empty() {
-            "Capture keyboard key…"
-        } else {
-            &e.key
-        },
+        rect(right, 66., half),
+        &capture_label,
         Edit::Capture,
+        true,
+        e.capture,
     );
-    button(
-        ui,
-        rect(0., 78., w),
-        &format!(
-            "Search actions: {}{}",
-            e.search.text,
-            if e.searching { " |" } else { "" }
-        ),
-        Edit::Search,
+
+    let effective =
+        active.or_else(|| effective_binding(&browser.bindings, e.context, &event(e), e.modifiers));
+    let assigned = effective.map_or_else(
+        || "Default behavior".into(),
+        |b| {
+            let friendly = |id: &str| {
+                browser
+                    .items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| {
+                        item.label
+                            .as_str()
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&item.label)
+                            .trim()
+                    })
+                    .unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id))
+                    .to_owned()
+            };
+            let mut summary = b
+                .actions
+                .iter()
+                .take(2)
+                .map(|id| friendly(id))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            if b.actions.len() > 2 {
+                summary.push_str(&format!("  +{} steps", b.actions.len() - 2));
+            }
+            if b.name.is_empty() {
+                summary
+            } else {
+                format!("{} · {summary}", b.name)
+            }
+        },
     );
-    let found = results(s);
-    let page = e.page.min(found.len().saturating_sub(1) / 4);
-    for (row, (id, text, _)) in found.iter().skip(page * 4).take(4).enumerate() {
-        let y = 114. + row as f32 * 33.;
-        button(ui, rect(0., y, w - 82.), text, Edit::Assign(id.clone()));
-        if sequence_safe(s, e.context, id) {
-            button(
-                ui,
-                rect(w - 74., y, 74.),
-                "Append",
-                Edit::Append(id.clone()),
-            );
+    let summary = if ready {
+        if let Some(inherited) = effective.filter(|b| b.context != e.context) {
+            format!("Inherited from {}: {assigned}", CONTEXTS[inherited.context])
         } else {
-            label(ui, rect(w - 74., y, 74.), "Single");
+            format!("Current assignment: {assigned}")
+        }
+    } else {
+        "Current assignment: Choose a key first".into()
+    };
+    label(ui, rect(0., 104., w - 142.), &summary);
+    control(
+        ui,
+        rect(w - 134., 104., 134.),
+        "Restore default",
+        Edit::Remove,
+        active.is_some(),
+        false,
+    );
+
+    let clear = !e.search.text.is_empty();
+    let search_w = w - if clear { 64. } else { 0. };
+    let search = if e.search.text.is_empty() {
+        "2. Search actions…".into()
+    } else {
+        format!("Search: {}", e.search.text)
+    };
+    control(
+        ui,
+        rect(0., 139., search_w),
+        &search,
+        Edit::Search,
+        true,
+        e.searching,
+    );
+    if clear {
+        button(ui, rect(w - 56., 139., 56.), "Clear", Edit::ClearSearch);
+    }
+
+    let count = browser.filtered.len();
+    let pages = count.div_ceil(PAGE_SIZE).max(1);
+    let page = e.page.min(pages - 1);
+    let can_append = e.advanced
+        && active.is_some_and(|b| {
+            b.actions.len() < 32
+                && b.actions.iter().all(|id| {
+                    direct_action(e.context, id)
+                        || browser
+                            .items
+                            .iter()
+                            .any(|item| &item.id == id && item.sequence)
+                })
+        });
+    for (row, &i) in browser
+        .filtered
+        .iter()
+        .skip(page * PAGE_SIZE)
+        .take(PAGE_SIZE)
+        .enumerate()
+    {
+        let choice = &browser.items[i];
+        let y = 172. + row as f32 * 33.;
+        let append = choice.sequence && can_append;
+        let verb = if active.is_some() {
+            "Replace"
+        } else {
+            "Assign"
+        };
+        control(
+            ui,
+            rect(0., y, w - if append { 94. } else { 0. }),
+            &format!("{verb} · {}", choice.label),
+            Edit::Assign(choice.id.clone()),
+            ready,
+            false,
+        );
+        if append {
+            control(
+                ui,
+                rect(w - 86., y, 86.),
+                "Add step",
+                Edit::Append(choice.id.clone()),
+                ready,
+                false,
+            );
         }
     }
-    if found.is_empty() {
+    if count == 0 {
         label(
             ui,
-            rect(0., 114., w),
-            "No matching actions in this context.",
+            rect(0., 172., w),
+            "No matching actions. Try a different search or scope.",
         );
     }
-    button(ui, rect(0., 250., 85.), "Previous", Edit::Page(-1));
+    control(
+        ui,
+        rect(0., 306., 85.),
+        "Previous",
+        Edit::Page(-1),
+        page > 0,
+        false,
+    );
     label(
         ui,
-        rect(93., 250., w - 186.),
-        &format!(
-            "Page {} / {} · {} actions",
-            page + 1,
-            found.len().div_ceil(4).max(1),
-            found.len()
-        ),
+        rect(93., 306., w - 186.),
+        &format!("Page {} of {pages}  ·  {count} actions", page + 1),
     );
-    button(ui, rect(w - 85., 250., 85.), "Next", Edit::Page(1));
-    let active = bindings()
-        .into_iter()
-        .find(|b| b.context == e.context && b.event == event(e) && b.modifiers == e.modifiers);
-    let assigned = active
-        .map(|b| b.actions.join(" → "))
-        .unwrap_or_else(|| "Default / inherited behavior".into());
+    control(
+        ui,
+        rect(w - 85., 306., 85.),
+        "Next",
+        Edit::Page(1),
+        page + 1 < pages,
+        false,
+    );
+
     button(
         ui,
-        rect(0., 286., w),
-        &format!("Assigned: {assigned}"),
-        Edit::Choose,
-    );
-    button(
-        ui,
-        rect(0., 322., half),
-        "Remove last step",
-        Edit::ClearChain,
-    );
-    button(
-        ui,
-        rect(half + gap, 322., half),
-        "Restore event",
-        Edit::Remove,
-    );
-    let quarter = (w - gap * 3.) / 4.;
-    for (i, (text, act)) in [
-        ("Saved…", Edit::Saved),
-        ("Undo change", Edit::Undo),
-        ("Import…", Edit::Import),
-        ("Export…", Edit::Export),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        button(
-            ui,
-            rect(i as f32 * (quarter + gap), 358., quarter),
-            text,
-            act,
-        );
-    }
-    button(
-        ui,
-        rect(0., 394., w - 100.),
-        &format!(
-            "Action name: {}{}",
-            e.name.text,
-            if e.naming { " |" } else { "" }
-        ),
-        Edit::Name,
-    );
-    button(ui, rect(w - 92., 394., 92.), "Save name", Edit::SaveName);
-    let pinned = bindings().iter().any(|b| {
-        b.context == e.context && b.event == event(e) && b.modifiers == e.modifiers && b.pinned
-    });
-    button(
-        ui,
-        rect(0., 430., w),
-        if pinned {
-            "Unpin toolbar button"
+        rect(0., 339., half),
+        if e.advanced {
+            "Hide sequence & profile tools"
         } else {
-            "Pin as toolbar button"
+            "Sequence & profile tools  ▸"
         },
-        Edit::Pin,
+        Edit::Advanced,
+    );
+    control(
+        ui,
+        rect(right, 339., half),
+        "Undo last binding change",
+        Edit::Undo,
+        !e.previous.is_empty(),
+        false,
     );
     label(
         ui,
-        rect(0., 466., w),
+        rect(0., 371., w),
         if e.notice.is_empty() {
-            "Click an action to assign it. Append builds an ordered sequence."
+            "Changes save to this profile. Use Undo or Restore default to revert."
         } else {
             &e.notice
         },
     );
+
+    if e.advanced {
+        let named = if e.name.text.is_empty() {
+            "Name this saved action…".into()
+        } else {
+            format!("Action name: {}", e.name.text)
+        };
+        control(
+            ui,
+            rect(0., 406., w - 100.),
+            &named,
+            Edit::Name,
+            active.is_some(),
+            e.naming,
+        );
+        control(
+            ui,
+            rect(w - 92., 406., 92.),
+            "Save name",
+            Edit::SaveName,
+            active.is_some(),
+            false,
+        );
+        control(
+            ui,
+            rect(0., 439., half),
+            if active.is_some_and(|b| b.pinned) {
+                "Unpin toolbar button"
+            } else {
+                "Pin as toolbar button"
+            },
+            Edit::Pin,
+            active
+                .is_some_and(|b| !b.name.is_empty() && !b.actions.iter().any(|id| is_pointer(id))),
+            false,
+        );
+        control(
+            ui,
+            rect(right, 439., half),
+            "Remove last step",
+            Edit::ClearChain,
+            active.is_some_and(|b| b.actions.len() > 1),
+            false,
+        );
+        button(
+            ui,
+            rect(0., 472., half),
+            "Import controls or action script…",
+            Edit::Import,
+        );
+        button(
+            ui,
+            rect(right, 472., half),
+            "Export controls…",
+            Edit::Export,
+        );
+    }
 }
+
 pub fn file_done(app: &mut App, path: &std::path::Path, export: bool) {
     let result = (|| -> Result<String, String> {
         if export {
-            let json = serde_json::to_vec_pretty(&bindings()).map_err(|e| e.to_string())?;
+            let json = serde_json::to_vec_pretty(bindings().as_ref()).map_err(|e| e.to_string())?;
             std::fs::write(path, json).map_err(|e| e.to_string())?;
             return Ok("Controls exported.".into());
         }
@@ -1496,7 +1818,7 @@ pub fn file_done(app: &mut App, path: &std::path::Path, export: bool) {
                 std::str::from_utf8(&bytes).map_err(|_| "Action scripts must be UTF-8 text.")?;
             let (name, actions) = parse_script(script)?;
             let e = &app.state.settings.input_editor;
-            if e.event == 8 && e.key.is_empty() {
+            if e.event == KEYBOARD && e.key.is_empty() {
                 return Err("Capture the shortcut for this script before importing it.".into());
             }
             if !actions
@@ -1515,7 +1837,7 @@ pub fn file_done(app: &mut App, path: &std::path::Path, export: bool) {
                 name: name.clone(),
                 pinned: false,
             };
-            let mut all = bindings();
+            let mut all = bindings().as_ref().clone();
             all.retain(|old| binding_id(old) != binding_id(&b));
             all.push(b);
             remember(&mut app.state.settings.input_editor);
@@ -1609,7 +1931,7 @@ mod tests {
     use os_ui::Canvas;
 
     fn bind(context: usize, name: &str, actions: &[&str]) {
-        let mut all = bindings();
+        let mut all = bindings().as_ref().clone();
         all.push(Binding {
             context,
             event: name.into(),
@@ -1809,13 +2131,38 @@ mod tests {
         file_done(&mut app, &path, false);
         assert_eq!(bindings(), saved);
         std::fs::remove_file(&path).unwrap();
+        let items = action_browser(&app.state).items.as_ptr();
         edit(&mut app, Edit::Search);
-        capture(&mut app, &Key::Character("velocity".into()), false, false);
-        assert!(
-            results(&app.state)
-                .iter()
-                .all(|(_, label, _)| label.to_lowercase().contains("velocity"))
+        capture(
+            &mut app,
+            &Key::Character("velocity decrease".into()),
+            false,
+            false,
         );
+        {
+            let browser = action_browser(&app.state);
+            assert_eq!(
+                browser.items.as_ptr(),
+                items,
+                "search reuses the action catalog"
+            );
+            assert_eq!(browser.filtered.len(), 1);
+            assert_eq!(browser.items[browser.filtered[0]].id, "piano.velocity-down");
+        }
+        let mut canvas = Canvas::new(800, 600, 1.).unwrap();
+        app.paint(&mut canvas, None);
+        app.paint(&mut canvas, None);
+        assert_eq!(
+            action_browser(&app.state).items.as_ptr(),
+            items,
+            "repaints reuse the catalog"
+        );
+        edit(&mut app, Edit::ClearSearch);
+        assert!(app.state.settings.input_editor.search.text.is_empty());
+        assert_eq!(action_browser(&app.state).items.as_ptr(), items);
+        edit(&mut app, Edit::Advanced);
+        assert!(app.state.settings.input_editor.advanced);
+        assert!(editor_height(true) > editor_height(false));
         assert!(!app.typing_key(winit::keyboard::KeyCode::KeyA, true, false, false));
         edit(&mut app, Edit::Load(0));
         assert_eq!(app.state.settings.input_editor.key, "Enter");

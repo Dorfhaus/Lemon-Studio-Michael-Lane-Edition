@@ -2,15 +2,23 @@
 //! Editable audio timing anchors, rendered off the audio/UI threads with the source kept intact.
 use crate::{
     app::{Action, App, State, Ui},
+    icons::{self, Icon},
     playlist as pl,
+    vocal::view as editor_style,
 };
 use os_model::{AudioWarp, ClipSource};
-use os_ui::{Color, Font, Rect};
+use os_ui::{Color, Rect};
 use std::{
     cell::Cell,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
 };
+mod preview;
+pub(crate) use preview::{
+    PREVIEW_PATH, Play, cancel_play, mark_started, playback, resume, wait_for_play,
+};
+pub(crate) const PREVIEW_VISIBILITY: &str = preview::VISIBILITY;
+
 pub struct Loading {
     pub original: os_model::Clip,
     arrangement: usize,
@@ -51,6 +59,7 @@ pub struct Form {
     pub channel: os_model::Channel,
     pub edit: AudioWarp,
     initial_points: Vec<(f64, f64)>,
+    preview: preview::Preview,
     pub sample: Arc<os_engine::Sample>,
     pub selected: Option<usize>,
     pub select_mode: bool,
@@ -64,7 +73,7 @@ pub struct Form {
     pub pending: Option<Job>,
     pub message: String,
 }
-pub const EXTRA: f32 = 248.0;
+pub const EXTRA: f32 = crate::vocal::EXTRA;
 const GRIDS: [f64; 6] = [1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0];
 const GRID_NAMES: [&str; 6] = ["1/4", "1/8", "1/16", "1/32", "1/8 triplet", "1/16 triplet"];
 pub fn expanded(s: &State, row: u16) -> bool {
@@ -108,10 +117,9 @@ fn move_bounds(points: &[(f64, f64)], i: usize, rate: u32, tempo: f64) -> Option
 
 pub fn busy(s: &State) -> bool {
     s.playlist.warp_loading.is_some()
-        || s.playlist
-            .warp
-            .as_ref()
-            .is_some_and(|form| form.analysis.is_some() || form.pending.is_some())
+        || s.playlist.warp.as_ref().is_some_and(|form| {
+            form.analysis.is_some() || form.pending.is_some() || form.preview.busy()
+        })
 }
 
 pub(crate) fn applying(s: &State) -> bool {
@@ -122,6 +130,33 @@ pub(crate) fn applying(s: &State) -> bool {
 }
 
 impl Form {
+    fn has_edits(&self) -> bool {
+        if self.edit.points == self.initial_points {
+            return false;
+        }
+        let tolerance = self.tempo / (120. * self.sample.rate as f64);
+        let matches = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+            a.iter()
+                .all(|&(src, beat)| (interpolate(b, src, false) - beat).abs() < tolerance)
+        };
+        !matches(&self.edit.points, &self.initial_points)
+            || !matches(&self.initial_points, &self.edit.points)
+    }
+
+    fn frame_points(&self) -> Vec<(usize, usize)> {
+        let rate = self.sample.rate as f64;
+        self.edit
+            .points
+            .iter()
+            .map(|&(src, beat)| {
+                (
+                    (src * rate).round() as usize,
+                    (beat * 60. / self.tempo * rate).round() as usize,
+                )
+            })
+            .collect()
+    }
+
     fn select_to(&mut self, x: f32) {
         let r = self.wave.get();
         let beat = ((x - r.x) / r.w).clamp(0., 1.) as f64 * self.end();
@@ -228,7 +263,7 @@ pub fn open(app: &mut App, i: usize) -> Result<(), String> {
     let arrangement = app.state.project.arrangement_index();
     let done = Arc::new(Mutex::new(None));
     app.state.playlist.vocal.row = None;
-    app.state.playlist.warp = None;
+    clear_form(app);
     app.state.playlist.warp_loading = Some(Loading {
         original: clip.clone(),
         arrangement,
@@ -306,6 +341,7 @@ fn prepare(
         original: clip,
         channel: ch,
         initial_points: edit.points.clone(),
+        preview: preview::Preview::default(),
         edit,
         sample,
         selected: None,
@@ -354,8 +390,7 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
 
     if let Command::Toggle(row) = c {
         if expanded(&app.state, row) {
-            app.state.playlist.warp = None;
-            app.state.playlist.warp_loading = None;
+            clear_form(app);
             app.invalidate();
             return;
         }
@@ -380,8 +415,7 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
     }
     if c == Command::Close {
         app.drag = None;
-        app.state.playlist.warp = None;
-        app.state.playlist.warp_loading = None;
+        clear_form(app);
         app.invalidate();
         return;
     }
@@ -604,14 +638,7 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
         }
         Command::Snap => f.snap = !f.snap,
         Command::Apply => {
-            let tolerance = f.tempo / (120. * f.sample.rate as f64);
-            let matches = |a: &[(f64, f64)], b: &[(f64, f64)]| {
-                a.iter()
-                    .all(|&(src, beat)| (interpolate(b, src, false) - beat).abs() < tolerance)
-            };
-            if matches(&f.edit.points, &f.initial_points)
-                && matches(&f.initial_points, &f.edit.points)
-            {
+            if !f.has_edits() {
                 f.message =
                     "No timing changes to apply. Drag a marker or use Quantize first.".into();
                 app.invalidate();
@@ -638,26 +665,19 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
                 app.show_msg(message);
                 return;
             }
-            let points: Vec<_> = f
-                .edit
-                .points
-                .iter()
-                .map(|&(src, beat)| {
-                    (
-                        (src * f.sample.rate as f64).round() as usize,
-                        (beat * 60. / f.tempo * f.sample.rate as f64).round() as usize,
-                    )
-                })
-                .collect();
+            let points = f.frame_points();
             let sample = f.sample.clone();
+            let previewed = f.preview.sample(&f.edit.points);
             let (send, receive) = mpsc::channel();
             f.pending = Some(receive);
             f.message = "Applying audio timing...".into();
             let dir = crate::pattern_render::folder(&app.state).join("Warped");
             std::thread::spawn(move || {
                 let result = (|| {
-                    let (l, r) =
-                        os_dsp::stretch::warp(&sample.left, &sample.right, sample.rate, &points)?;
+                    let rendered = match previewed {
+                        Some(rendered) => rendered,
+                        None => preview::render(&sample, &points)?,
+                    };
                     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                     let stamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -669,7 +689,12 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
                         .create_new(true)
                         .open(&path)
                         .map_err(|e| e.to_string())?;
-                    let stereo: Vec<_> = l.into_iter().zip(r).flat_map(|(l, r)| [l, r]).collect();
+                    let stereo: Vec<_> = rendered
+                        .left
+                        .iter()
+                        .zip(&rendered.right)
+                        .flat_map(|(&l, &r)| [l, r])
+                        .collect();
                     os_engine::wav::write_f32_stereo(&mut file, sample.rate, &stereo)
                         .map_err(|e| e.to_string())?;
                     Ok(path)
@@ -720,6 +745,13 @@ pub fn wheel(app: &mut App, dx: f32, dy: f32, ctrl: bool) -> bool {
     app.invalidate();
     true
 }
+fn clear_form(app: &mut App) {
+    if app.state.playlist.warp.take().is_some() {
+        app.state.piano.dirty = true;
+    }
+    app.state.playlist.warp_loading = None;
+}
+
 pub fn poll(app: &mut App) {
     if let Some(load) = app.state.playlist.warp_loading.as_ref() {
         let valid = load.arrangement == app.state.project.arrangement_index()
@@ -752,11 +784,11 @@ pub fn poll(app: &mut App) {
                     .into(),
             );
         }
-        app.state.playlist.warp = None;
-        app.state.playlist.warp_loading = None;
+        clear_form(app);
         app.invalidate();
         return;
     }
+    preview::poll(app);
     let Some(f) = app.state.playlist.warp.as_mut() else {
         return;
     };
@@ -766,7 +798,7 @@ pub fn poll(app: &mut App) {
         f.analysis = None;
         if f.pending.is_none() {
             f.message = format!(
-                "{} transients detected. Drag markers or Quantize, then Apply to hear.",
+                "{} transients detected. Drag markers or Quantize. Apply to keep your edits.",
                 f.transients.len()
             );
         }
@@ -909,14 +941,13 @@ pub fn head(ui: &mut Ui, s: &State, row: u16, r: Rect) {
         Action::Warp(Command::Toggle(row)),
         "Audio timing: detect transients and warp this track",
     );
-    let color = if on || hot {
-        ui.t.accent
+    editor_style::track_button_face(ui, r, on, hot);
+    let color = if on { ui.t.glyph } else { ui.t.text_faint };
+    let r = if ui.t.style.vintage_2005 {
+        r.inset(2.)
     } else {
-        ui.t.text_dim
+        r
     };
-    if ui.t.style.vintage_2005 {
-        crate::vintage::metal(ui.c, r, ui.t.button);
-    }
     // A movable timing pin with outward arrows.
     let x = r.cx();
     let y = r.cy();
@@ -935,130 +966,226 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
     if !crate::workspace_visibility::shown("visible_playlist-warp") {
         return;
     }
-    if let Some(load) = s.playlist.warp_loading.as_ref() {
-        let y = g.y_of(load.original.track) + g.rows.base_height(load.original.track);
-        let r = Rect::new(g.grid.x, y, g.grid.w, EXTRA).intersect(&g.grid);
-        ui.c.fill_rect(r, ui.t.window_title);
-        crate::loading::activity_icon(ui.c, r.x + 15., r.y + 20., ui.t.accent);
-        ui.c.text_clip(
-            Font::new(13),
-            r.x + 27.,
-            r.y + 12.,
-            r.w - 24.,
-            ui.t.text,
-            "Loading audio for transient detection...",
-        );
-        return;
-    }
-    let Some(f) = s.playlist.warp.as_ref() else {
+    let form = s.playlist.warp.as_ref();
+    let loading = s.playlist.warp_loading.as_ref();
+    let Some(row) = loading
+        .map(|f| f.original.track)
+        .or_else(|| form.map(|f| f.original.track))
+    else {
         return;
     };
-    let y = g.y_of(f.original.track) + g.rows.base_height(f.original.track);
-    let r = Rect::new(g.grid.x, y, g.grid.w, EXTRA);
-    ui.c.push_clip(r.intersect(&g.grid));
-    ui.c.fill_rect(r, ui.t.window_title);
-    let mut x = r.x + 8.;
-    let mut top = r.y + 7.;
-    let buttons = [
-        ("Detect".to_string(), Command::Analyze),
-        ("Next clip".into(), Command::Next),
-        ("Fit".into(), Command::Fit),
-        (format!("Grid: {}", GRID_NAMES[f.grid]), Command::Grid),
-        (format!("Strength: {}%", f.strength * 25), Command::Strength),
+    if g.rows.strip(row) || g.rows.height(row) == 0. {
+        return;
+    }
+    let y = g.y_of(row) + g.rows.base_height(row);
+    let area = Rect::new(g.grid.x, y, g.grid.w, EXTRA - 3.);
+    let visible = area.intersect(&g.grid);
+    if visible.is_empty() || !ui.c.visible(visible) {
+        return;
+    }
+    ui.c.push_clip(visible);
+    ui.clip_hit_rect(visible, |ui| {
+        editor_style::editor_face(ui, area);
+        ui.hit(area, Action::Swallow, "Audio timing editor");
+        if loading.is_some() {
+            crate::loading::activity_icon(ui.c, area.x + 12., area.y + 17., ui.t.accent);
+            ui.c.text_clip(
+                editor_style::font(ui.t.style.vintage_2005, 11),
+                area.x + 23.,
+                area.y + 10.,
+                area.w - 29.,
+                ui.t.text,
+                "Loading audio for transient detection...",
+            );
+        } else if let Some(f) = form {
+            inline_editor(ui, s, g, area, f);
+        }
+    });
+    ui.c.pop_clip();
+}
+
+fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
+    let vintage = ui.t.style.vintage_2005;
+    let applying = f.pending.is_some();
+    let mut x = area.x + 5.;
+    let mut top = area.y + 4.;
+    let tools = [
+        (Command::Analyze, Icon::Wave, "Detect transients", false),
         (
-            if f.select_mode {
-                "Select: on".into()
-            } else {
-                "Select".into()
-            },
+            Command::Next,
+            Icon::ArrowRight,
+            "Edit next audio clip on this track",
+            false,
+        ),
+        (
             Command::Select,
+            Icon::Select,
+            "Select transients and timing markers",
+            f.select_mode,
         ),
         (
-            if f.select_mode {
-                format!("Quantize ({})", f.selection.len())
-            } else {
-                "Quantize".into()
-            },
             Command::Quantize,
+            Icon::Tick,
+            "Quantize to the timing grid",
+            false,
         ),
         (
-            if f.snap {
-                "Snap on".into()
-            } else {
-                "Snap off".into()
-            },
             Command::Snap,
+            Icon::Magnet,
+            "Snap markers to the timing grid",
+            f.snap,
         ),
-        ("Remove".into(), Command::Delete),
-        ("Reset".into(), Command::Reset),
-        ("Undo".into(), Command::Undo),
-        ("Redo".into(), Command::Redo),
         (
-            if f.pending.is_some() {
-                "Applying...".into()
-            } else {
-                "Apply".into()
-            },
-            Command::Apply,
+            Command::Delete,
+            Icon::Delete,
+            "Remove selected timing markers",
+            false,
         ),
-        ("Close".into(), Command::Close),
+        (Command::Reset, Icon::Repeat, "Reset timing markers", false),
+        (Command::Undo, Icon::Undo, "Undo timing edit", false),
+        (Command::Redo, Icon::Redo, "Redo timing edit", false),
     ];
-    for (label, cmd) in buttons {
-        let applying = cmd == Command::Apply && f.pending.is_some();
-        let width = ui.c.text_width(Font::new(11), &label) + if applying { 34. } else { 18. };
-        if x + width > r.right() - 8. {
-            x = r.x + 8.;
-            top += 28.;
-        }
-        let b = Rect::new(x, top, width, 23.);
-        x += width + 4.;
-        let hot = if f.pending.is_none() {
-            ui.hit(b, Action::Warp(cmd), label.clone())
-        } else {
-            false
-        };
-        let face = if cmd == Command::Apply {
-            ui.t.accent
-        } else if hot {
-            ui.t.button_hi
-        } else {
-            ui.t.button
-        };
-        if ui.t.style.vintage_2005 {
-            crate::vintage::metal(ui.c, b, face);
-        } else {
-            ui.c.fill_rrect(b, 3., face);
-        }
-        let ink = if cmd == Command::Apply {
-            Color::rgb(0x000000)
+    for (cmd, icon, hint, on) in tools {
+        let r = editor_style::toolbar_slot(area, &mut x, &mut top, 28.);
+        let hot = !applying && ui.hit(r, Action::Warp(cmd), hint);
+        editor_style::control_face(ui, r, on, hot);
+        let ink = if applying {
+            ui.t.text_faint
+        } else if on {
+            ui.t.glyph
         } else {
             ui.t.text
         };
-        let label_rect = if applying {
-            crate::loading::activity_icon(ui.c, b.x + 11., b.cy(), ink);
-            Rect::new(b.x + 15., b.y, b.w - 15., b.h)
-        } else {
-            b
-        };
-        ui.c.text_center(Font::new(11), label_rect, ink, &label);
+        icons::draw(ui.c, icon, r.inset(5.), ink);
+        if on {
+            editor_style::control_mark(ui, r);
+        }
     }
+
+    let apply =
+        editor_style::toolbar_slot(area, &mut x, &mut top, if applying { 88. } else { 51. });
+    let apply_hot = !applying && ui.hit(apply, Action::Warp(Command::Apply), "Apply timing edits");
+    let face = if apply_hot {
+        ui.t.accent.mix(Color::rgb(0xffffff), 0.18)
+    } else {
+        ui.t.accent
+    };
+    if vintage {
+        crate::vintage::metal(ui.c, apply, face);
+    } else {
+        ui.c.fill_rrect(apply, 4., face);
+    }
+    let ink = Color::rgb(0x000000);
+    let (label_rect, label) = if applying {
+        crate::loading::activity_icon(ui.c, apply.x + 11., apply.cy(), ink);
+        (
+            Rect::new(apply.x + 16., apply.y, apply.w - 16., apply.h),
+            "Applying...",
+        )
+    } else {
+        (apply, "Apply")
+    };
+    ui.c.text_center(editor_style::font(vintage, 11), label_rect, ink, label);
+    let close = editor_style::toolbar_slot(area, &mut x, &mut top, 28.);
+    let hot = !applying && ui.hit(close, Action::Warp(Command::Close), "Close timing editor");
+    editor_style::control_face(ui, close, false, hot);
+    icons::draw(
+        ui.c,
+        Icon::Close,
+        close.inset(5.),
+        if applying { ui.t.text_faint } else { ui.t.text },
+    );
+
+    let card_width = ((area.w - 10.) / 3.).min(180.);
+    let strength = format!("{}%", f.strength * 25);
+    let selected = f.selection.len().to_string();
+    let inspector_y = top + 34.;
+    for (i, (label, value, control)) in [
+        (
+            "GRID",
+            GRID_NAMES[f.grid],
+            Some((Command::Grid, "Click to cycle timing grid divisions")),
+        ),
+        (
+            "STRENGTH",
+            strength.as_str(),
+            Some((Command::Strength, "Click to cycle quantize strength")),
+        ),
+        ("SELECTED", selected.as_str(), None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let card = Rect::new(
+            area.x + 5. + i as f32 * card_width,
+            inspector_y,
+            card_width - 4.,
+            30.,
+        );
+        editor_style::inspector_face(ui, card);
+        if let Some((cmd, hint)) = control
+            && !applying
+            && ui.hit(card, Action::Warp(cmd), hint)
+        {
+            ui.c.stroke_rrect(
+                card.inset(1.),
+                if vintage { 0. } else { 3. },
+                1.,
+                ui.t.text_dim.with_alpha(85),
+            );
+        }
+        ui.c.text_clip(
+            editor_style::font(vintage, 9),
+            card.x + 6.,
+            card.y + 2.,
+            card.w - 10.,
+            ui.t.text_dim,
+            label,
+        );
+        ui.c.text_clip(
+            editor_style::font(vintage, 12),
+            card.x + 6.,
+            card.y + 13.,
+            card.w - 10.,
+            ui.t.text,
+            value,
+        );
+    }
+
+    let surface_y = inspector_y + 43.;
+    let surface = Rect::new(
+        area.x + 1.,
+        surface_y,
+        (area.w - 16.).max(1.),
+        (area.bottom() - surface_y - 44.).max(1.),
+    );
     let wave = Rect::new(
         g.x_of(f.original.position as f32),
-        top + 32.,
-        (g.x_of(f.original.position as f32 + f.end() as f32 * s.project.ppq as f32)
-            - g.x_of(f.original.position as f32))
-        .max(1.),
-        (r.bottom() - top - 62.).max(30.),
+        surface.y,
+        (f.end() as f32 * s.project.ppq as f32 * g.ppt).max(1.),
+        surface.h,
     );
     f.wave.set(wave);
-    let visible = wave.intersect(&Rect::new(g.grid.x, wave.y, g.grid.w, wave.h));
-    ui.c.fill_rect(visible, Color::rgb(0x172025));
+    let visible = wave.intersect(&surface).intersect(&g.grid);
+    ui.c.fill_rect(surface, ui.t.s(0x202b31));
+    ui.c.push_clip(surface);
+    editor_style::time_grid(ui, s, g, surface);
+    ui.c.pop_clip();
     ui.hit(
         visible,
         Action::Warp(Command::Source),
         if f.select_mode {"Drag to select points; Shift-drag adds. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"} else {"Click to add a marker; drag its line. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"},
     );
     ui.c.push_clip(visible);
+    ui.c.line(
+        visible.x,
+        wave.cy(),
+        visible.right(),
+        wave.cy(),
+        0.6,
+        ui.t.s(0x50616a),
+    );
+    let signal = ui.t.s(0x91b4bd);
     let rate = f.sample.rate as f64;
     for col in 0..visible.w.ceil() as usize {
         let x = visible.x + col as f32;
@@ -1084,7 +1211,7 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
             x,
             wave.cy() + (peak * f.amplitude).min(1.) * wave.h * 0.42,
             1.,
-            Color::rgb(0x91b4bd),
+            signal,
         );
     }
     for &src in &f.transients {
@@ -1139,20 +1266,40 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         }
     }
     ui.c.pop_clip();
-    let working = f.pending.is_some() || f.analysis.is_some();
-    if working {
-        crate::loading::activity_icon(ui.c, r.x + 15., r.bottom() - 16., ui.t.accent);
-    }
-    let inset = if working { 27. } else { 8. };
-    ui.c.text_clip(
-        Font::new(11),
-        r.x + inset,
-        r.bottom() - 22.,
-        r.w - inset - 8.,
-        ui.t.text,
-        &f.message,
+    let preview_status = if f.pending.is_none() && preview::enabled(s) {
+        f.preview.status(f)
+    } else {
+        None
+    };
+    let working = f.pending.is_some()
+        || f.analysis.is_some()
+        || (preview_status.is_some() && f.preview.busy());
+    let fit = Rect::new(surface.right() - 46., surface.bottom() + 3., 41., 19.);
+    let hot = !applying
+        && ui.hit(
+            fit,
+            Action::Warp(Command::Fit),
+            "Fit waveform to the timing editor",
+        );
+    editor_style::control_face(ui, fit, false, hot);
+    ui.c.text_center(
+        editor_style::font(vintage, 11),
+        fit,
+        if applying { ui.t.text_faint } else { ui.t.text },
+        "Fit",
     );
-    ui.c.pop_clip();
+    if working {
+        crate::loading::activity_icon(ui.c, area.x + 12., area.bottom() - 9., ui.t.accent);
+    }
+    let inset = if working { 23. } else { 6. };
+    ui.c.text_clip(
+        editor_style::font(vintage, 10),
+        area.x + inset,
+        area.bottom() - 14.,
+        area.w - inset - 6.,
+        ui.t.text_dim,
+        preview_status.unwrap_or(&f.message),
+    );
 }
 
 #[cfg(test)]
@@ -1424,6 +1571,9 @@ mod tests {
             formant: 0.,
         });
         let before = app.state.project.clone();
+        app.state.z = vec![crate::app::Win::Playlist];
+        app.state.song_mode = true;
+        crate::settings_file::set_flag(PREVIEW_VISIBILITY, true);
         open(&mut app, 0).unwrap();
         wait_loaded(&mut app);
         command(&mut app, Command::Apply);
@@ -1457,6 +1607,58 @@ mod tests {
         f.analysis = None;
         f.transients = vec![0.49, 0.5, 0.51, 0.510001];
         command(&mut app, Command::Quantize);
+
+        // A normal global Play waits for the latest warp, including when starting inside the clip.
+        app.state.playlist.pos = u32::from(ppq);
+        app.act(Action::Play);
+        assert!(!app.transport.playing());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app.transport.playing() && std::time::Instant::now() < deadline {
+            poll(&mut app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.transport.playing() && app.transport.song());
+        app.act(Action::Stop);
+        assert_eq!(
+            app.state.project, before,
+            "audition must preserve the project"
+        );
+        assert!(
+            !dir.join("Warped").exists(),
+            "preview creates no render file"
+        );
+        let mut p = crate::rack::play_project(&app.state);
+        let preview = playback(&app.state, &mut p).unwrap();
+        let clip = &p.arrangement().unwrap().clips[0];
+        let ClipSource::Channel(preview_id) = clip.source else {
+            panic!()
+        };
+        assert_ne!(preview_id, id);
+        assert_eq!(p.channel(id), before.channel(id));
+        assert_eq!(
+            p.channel(preview_id).unwrap().sample_path.as_deref(),
+            Some(PREVIEW_PATH)
+        );
+        let mut library = os_engine::SampleLibrary::new(None);
+        library.replace_buffer(PREVIEW_PATH, Some(preview.clone()));
+        let mut engine = os_engine::Engine::new(&p, &mut library, rate, os_engine::PlayMode::Song);
+        engine.seek_tick(u64::from(ppq));
+        let mut audible = [0.; 1024];
+        engine.process(&mut audible);
+        assert!(
+            audible.iter().any(|v| v.abs() > 0.005),
+            "seek into the warped buffer must sound"
+        );
+
+        crate::settings_file::set_flag(PREVIEW_VISIBILITY, false);
+        let mut original = crate::rack::play_project(&app.state);
+        assert!(playback(&app.state, &mut original).is_none());
+        assert_eq!(
+            original.arrangement().unwrap().clips[0].source,
+            ClipSource::Channel(id)
+        );
+        crate::settings_file::set_flag(PREVIEW_VISIBILITY, true);
+
         use crate::dialog::DHit;
         let warning = &crate::messages::WARP_BAKES_VOCAL_TUNING;
         command(&mut app, Command::Apply);
@@ -1501,6 +1703,8 @@ mod tests {
         let rendered =
             os_engine::sample::load_shared(std::path::Path::new(&warped.rendered)).unwrap();
         assert_eq!(rendered.frames(), 16000);
+        assert_eq!(preview.left, rendered.left);
+        assert_eq!(preview.right, rendered.right);
         let file = os_flp::project::create(&after).unwrap();
         let loaded = os_flp::project::load(&file).unwrap();
         assert_eq!(loaded.audio_warps, after.audio_warps);

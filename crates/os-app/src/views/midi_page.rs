@@ -138,7 +138,7 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
                 .iter()
                 .map(|i| {
                     let c = cfg::input(&i.name);
-                    let kind = if i.failed { "(in use)".to_string() } else { crate::prefs::choice(&crate::prefs::CONTROLLER_TYPE).to_string() };
+                    let kind = if i.failed { "(in use)".to_string() } else { crate::controller::label(&i.name).to_string() };
                     (i.name.clone(), format!("{kind}   port {}", port_text(c.port)), c.enabled)
                 })
                 .collect();

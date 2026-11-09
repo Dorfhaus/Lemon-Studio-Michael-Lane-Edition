@@ -57,10 +57,9 @@ pub enum Then {
     InputBindings(bool),
     VocalDownload(u16),
     WarpApply,
+    ResetMixerTracks(Vec<u16>),
     VocalReanalyse(u16),
     TrashBrowserSample(PathBuf),
-    CommunitySample,
-    CommunityNewsletter(bool),
     /// Nothing (an information box).
     Nothing,
     StemDownload(usize, u8),
@@ -78,7 +77,6 @@ pub enum Then {
     ThemeWallpaper,
     MixerSkinArt(crate::mixer_skin::Part),
     ThemeFont,
-    CommunityAvatar,
     PluginPicture(String),
     ImportEffectChain,
     ExportEffectChain(usize),
@@ -234,6 +232,7 @@ pub enum Body {
     Ai,
     Headphones(crate::headphones::Form),
     RoutePicker(crate::route_picker::Form),
+    MixerInsert(crate::mixer::InsertTracks),
     Msg(Msg),
     File(Box<FileDlg>),
     /// General ▸ Input ▸ Manage shortcuts (`crate::shortcuts`).
@@ -279,6 +278,7 @@ pub enum DHit {
     HeadphoneCredits,
     RoutePick(u16),
     RouteSearch,
+    MixerCount,
     RoutePage(bool),
     /// The dialog itself (clicks on nothing in particular), its caption (drag), the caption's ×.
     Body,
@@ -532,6 +532,12 @@ impl App {
             }
             Body::Shortcuts(f) => return self.shortcuts_closed(&f, reply == Reply::Button(Answer::Ok)),
             Body::Project(f) => return self.form_closed(f, reply),
+            Body::MixerInsert(form) => {
+                if reply == Reply::Button(Answer::Ok) && let Some(count) = form.count() {
+                    crate::mixer::confirm_insert_tracks(self, form.after, count);
+                }
+                return;
+            }
             Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => return,
             Body::TimeSig(f) => {
                 // Its value list goes with it.
@@ -559,14 +565,14 @@ impl App {
             Body::File(_) => Reply::File(None),
             Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
             Body::TimeSig(_) => Reply::Button(Answer::Cancel),
-            Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => Reply::Button(Answer::Cancel),
+            Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => Reply::Button(Answer::Cancel),
         })
     }
 
     fn top_file(&mut self) -> Option<&mut FileDlg> {
         match &mut self.state.dialogs.last_mut()?.body {
             Body::File(f) => Some(f),
-            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
         }
     }
 
@@ -614,6 +620,11 @@ impl App {
                 let row=if let Body::RoutePicker(f)=&m.body {Some(f.row)} else {None};
                 if let Some(row)=row {self.answer(Reply::Button(Answer::Ok));self.route_sample_to(row,t);}
             }
+            DHit::MixerCount => {
+                if let Body::MixerInsert(form) = &mut m.body {
+                    form.field.select_all();
+                }
+            }
             DHit::RouteSearch=>{if let Body::RoutePicker(f)=&mut m.body {f.search.select_all();}}
             DHit::RoutePage(next)=>{if let Body::RoutePicker(f)=&mut m.body {f.scroll(if next {4}else{-4});}}
             DHit::HeadphoneCredits => self.tell(Kind::Info,"AutoEq credits",spans(&[include_str!("../assets/headphones/AutoEq-LICENSE.txt")])),
@@ -639,7 +650,7 @@ impl App {
             DHit::Button(i) => {
                 let a = match &m.body {
                     Body::Msg(msg) => msg.buttons.get(i).copied().filter(|a| !(*a==Answer::Ok && matches!(msg.then,Then::StemChoose(_,0)))),
-                    Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+                    Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
                 };
                 if let Some(a) = a {
                     self.answer(Reply::Button(a));
@@ -672,6 +683,8 @@ impl App {
             }
             // The time signature dialog (spec: ui/pattern-time-signature.md §1-2).
             DHit::SigValue(den) => self.sig_list(den),
+            DHit::Accept if matches!(&m.body, Body::MixerInsert(form) if form.count().is_some()) =>
+                self.answer(Reply::Button(Answer::Ok)),
             DHit::Accept if matches!(m.body, Body::TimeSig(_)) => self.answer(Reply::Button(Answer::Ok)),
             // Rename project, Save as and New project: a part that closes the form answers it.
             DHit::Form(h) => {
@@ -761,6 +774,13 @@ impl App {
             Body::StripSilence(_)=>{crate::strip_silence::key(self,key,ctrl,alt);}
             Body::VocalAlign(_) => { if matches!(key, Key::Named(NamedKey::Escape)) { self.answer(Reply::Button(Answer::Cancel)); } }
             Body::ClipFx(..) | Body::Ai=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}}
+            Body::MixerInsert(form) => match key {
+                Key::Named(NamedKey::Escape) => self.answer(Reply::Button(Answer::Cancel)),
+                Key::Named(NamedKey::Enter) if form.count().is_some() => self.answer(Reply::Button(Answer::Ok)),
+                Key::Character(c) if !ctrl && !c.bytes().all(|b| b.is_ascii_digit()) => {}
+                Key::Named(NamedKey::Space) => {}
+                _ => { form.field.key(key, ctrl, alt); }
+            },
             Body::RoutePicker(f)=>{
                 if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}
                 else if f.search.key(key,ctrl,alt){f.filter();}
@@ -896,7 +916,7 @@ impl App {
     pub fn top_message(&self) -> Option<(String, String)> {
         match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Some((m.title.clone(), m.plain())),
-            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::Ai => None,
+            Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
         }
     }
 }

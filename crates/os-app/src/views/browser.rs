@@ -59,7 +59,6 @@ pub const PROJECT_DATA: &str = "Project data";
 /// The Current project and Plugin database tabs (spec §1).
 pub const PROJECT_TAB: usize = 1;
 pub const PLUGIN_TAB: usize = 2;
-pub const EXCHANGE_BUTTON: usize = 8;
 pub const PARAMETERS_TAB: usize = 7;
 
 /// Tree key of the Current project tab's root.
@@ -165,15 +164,11 @@ pub fn tabs(s:&State)->Vec<(usize,Icon,&'static str)> {
     let mut tabs = vec![
         (0, Icon::Wave, "Samples"),
         (3, Icon::Star, "Favorites"),
-        (EXCHANGE_BUTTON, Icon::Exchange, "Community Samples"),
         (5, Icon::Download, "Plugin Downloads"),
-        (6, Icon::Vote, "Feature voting"),
     ];
     tabs.retain(|(id, _, _)| *id == s.browser_tab || match *id {
         3 => crate::workspace_visibility::shown("visible_browser-favorites"),
         5 => crate::workspace_visibility::shown("visible_browser-downloads"),
-        6 => crate::workspace_visibility::shown("visible_browser-voting"),
-        EXCHANGE_BUTTON => crate::workspace_visibility::shown("visible_browser-community"),
         _ => true,
     });
     for (key,id,icon,label) in [(OPT_PROJECT,1,Icon::Page,"Current project"),(OPT_PLUGINS,2,Icon::Plug,"Plugin database"),(OPT_PRESETS,4,Icon::FilePreset,"Plugin presets"),(OPT_PARAMETERS,PARAMETERS_TAB,Icon::Slide,"Parameters")] {
@@ -223,8 +218,6 @@ pub fn search_changed(s: &State) -> bool {
 }
 
 pub fn rows(s: &State) -> Vec<Row> {
-    if s.browser_tab==EXCHANGE_BUTTON {return crate::community_samples::rows(s);}
-    if s.browser_tab==6 {return Vec::new();}
     if s.browser_tab==5 {return crate::plugin_downloads::rows(s)}
     if matches!(s.browser_tab,0|3) && opt(s,OPT_SINGLE_FOLDER) {
         if let Some(folder)=&s.browser_single_folder {
@@ -759,14 +752,13 @@ fn paint_info(ui: &mut Ui, s: &State, path: &Path, r: Rect) {
 /// Top of the rows: below the search box when "Search box on top" is on (spec §4).
 pub fn list_top(s: &State) -> f32 {
     let lift = super::work_y(s) - super::WORK_Y;
-    let community = if s.browser_tab == EXCHANGE_BUTTON {crate::community_samples::height(s)} else {0.};
-    lift + if s.vintage_2005 {128.0}else{LIST_Y} + community + if opt(s,OPT_TOP) {SEARCH_ROW} else {0.}
+    lift + if s.vintage_2005 {128.0}else{LIST_Y} + if opt(s,OPT_TOP) {SEARCH_ROW} else {0.}
 }
 
 /// Height of the search row above the list ("Search box on top").
 const SEARCH_ROW: f32 = 27.0;
 
-pub fn row_h(s:&State)->f32 {if s.browser_tab==EXCHANGE_BUTTON{return 60.;}if s.browser_tab==6{return crate::feature_votes::ROW_H;}if s.browser_tab==5 {crate::plugin_downloads::ROW_H}else if s.vintage_2005 {if s.params.generic_editor.is_some(){17.0}else{13.0}}else{ROW_H}}
+pub fn row_h(s:&State)->f32 {if s.browser_tab==5 {crate::plugin_downloads::ROW_H}else if s.vintage_2005 {if s.params.generic_editor.is_some(){17.0}else{13.0}}else{ROW_H}}
 
 /// Largest useful scroll offset.
 /// Scroll geometry shared by painting and pointer handling.
@@ -781,7 +773,6 @@ pub fn scrollbar(s: &State) -> Option<(Rect, Rect)> {
 }
 
 pub fn max_scroll(s: &State) -> f32 {
-    if s.browser_tab==6{return crate::feature_votes::max_scroll(s);}
     (rows(s).len() as f32 * row_h(s) - list_h(s)).max(0.0)
 }
 
@@ -847,19 +838,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         }
         icons::draw(ui.c, icon, Rect::new(r.x + 1.0, 87.0 + dy, 12.0, 14.0), if hov { t.glyph } else { t.text_dim });
     }
-    if crate::workspace_visibility::shown("visible_browser-community") {
-        let font = os_ui::Font::new(12);
-        let width = if s.vintage_2005 {23.}else{ui.c.text_width(font, "Community Samples") + 24.0};
-        let left = (bw - width - 4.0).max(51.0);
-        let button = Rect::new(left, 85.0 + dy, (bw - left - 3.0).max(1.0), 18.0);
-        if left > 105.0 {
-            ui.c.text(os_ui::Font::new(14), 52.0, 85.0 + dy, t.text_dim, crate::prefs::language::Language::current().text("Browser"));
-        }
-        let hover = ui.hit(button, Action::BrowserTab(EXCHANGE_BUTTON), "Open Community Samples");
-        ui.c.fill_rrect(button, 3.0, if hover { t.menu_drop_hi } else { t.browser_tabs });
-        icons::draw(ui.c, Icon::Exchange, Rect::new(left + 3.0, button.y + 2.0, 14.0, 14.0), t.glyph);
-        if !s.vintage_2005 {ui.c.text_clip(font, left + 20.0, button.y + 1.0, (button.w - 21.0).max(0.0), t.glyph, "Community Samples");}
-    }
+    ui.c.text_clip(os_ui::Font::new(14), 52.0, 85.0 + dy, (bw - 56.0).max(0.0),
+        t.text_dim, crate::prefs::language::Language::current().text("Browser"));
     // Tabs (spec ui/browser.md §1): FL's five without Online content, sharing the strip.
     ui.c.fill_rect(Rect::span(0.0, bw - 1.0, 106.0 + dy, (if s.vintage_2005 {127.0}else{141.0}) + dy), t.browser_tabs);
     let tabs=tabs(s);
@@ -881,9 +861,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.fill_rect(Rect::new(0.0, (if s.vintage_2005 {128.0}else{LIST_Y}) + dy, bw, SEARCH_ROW), t.browser_footer);
         search_box(ui, s, Rect::new(13.0, (if s.vintage_2005 {128.0}else{LIST_Y}) + dy + 4.0, bw - 38.0, 20.0));
     }
-    if s.browser_tab==EXCHANGE_BUTTON {crate::community_samples::paint(ui,s,bw,top-crate::community_samples::height(s));}
-    if s.browser_tab==6 {crate::feature_votes::paint(ui,s,Rect::new(0.,top,bw,(r.bottom()-FOOTER_H-top).max(0.)));}
-    else if s.browser_tab==5 {
+    if s.browser_tab==5 {
         crate::plugin_downloads::paint(ui,s,Rect::new(0.,top,bw,(r.bottom()-FOOTER_H-top).max(0.)));
     } else {
     let rows = rows(s);
@@ -919,10 +897,6 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         let hov = ui.hit(rect, Action::BrowserRow(i), hint);
         if sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key) || hov {
             ui.c.fill_rect(rect, t.browser_row_hi);
-        }
-        if s.browser_tab==EXCHANGE_BUTTON {
-            crate::community_samples::paint_row(ui,s,&row.key,rect);
-            continue;
         }
         let base = match row.cat {
             FOLDER => t.browser_folder,
@@ -1015,25 +989,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     // Footer: the search field takes the width the splitter adds.
     let fy = r.bottom() - 27.0;
     ui.c.fill_rect(Rect::new(0.0, fy, bw, 27.0), t.browser_footer);
-    if s.browser_tab==6&&s.feature_votes.community_forum {ui.c.text_center(os_ui::Font::new(10),Rect::new(0.,fy,bw,27.),t.text_dim,"Lemon community · Be kind");}else{
-    let community = s.browser_tab==EXCHANGE_BUTTON;
-    let field = Rect::new(13.0, fy + 4.0, bw - if community {78.} else {38.}, 20.0);
+    let field = Rect::new(13.0, fy + 4.0, bw - 38.0, 20.0);
     if !search_on_top {
         search_box(ui, s, field);
     } else {
         ui.c.fill_rrect(field, 3.0, t.sunken);
     }
     icons::draw(ui.c, Icon::Folder, Rect::new(field.right() - 18.0, fy + 7.0, 14.0, 14.0), t.text_faint);
-    if community {
-        let terms=Rect::new(bw-61.,fy+3.,58.,21.);
-        ui.hit(terms,Action::Community(7),"Royalty-free upload terms");
-        ui.c.text_center(os_ui::Font::new(11),terms,t.glyph,"License");
-    } else {
     let glass = Rect::new(bw - 23.0, fy + 3.0, 21.0, 21.0);
     let hov = ui.hit(glass, Action::BrowserSearch, "Search the browser (Enter = find next, Esc = clear)");
     icons::draw(ui.c, Icon::Search, Rect::new(glass.x + 2.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
-    }
-    }
     if t.style.vintage_2005 {
         let frame = Rect::new(1., r.y+1., bw-2., r.h-2.);
         ui.c.stroke_rrect(frame,0.,1.,t.window_border);
@@ -1106,7 +1071,7 @@ fn search_box(ui: &mut Ui, s: &State, r: Rect) {
         shown = &shown[cut..];
     }
     if shown.is_empty() && !s.browser_search_focus {
-        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==6 {"Search suggestions..."}else if s.browser_tab==5 {"Search plugins..."}else if s.browser_tab==PARAMETERS_TAB {"Search parameters..."}else{"Search samples..."});
+        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==5 {"Search plugins..."}else if s.browser_tab==PARAMETERS_TAB {"Search parameters..."}else{"Search samples..."});
     } else {
         ui.c.text_clip(f, r.x + 5.0+label_w, r.y + 1.0, text_w, t.glyph, shown);
     }

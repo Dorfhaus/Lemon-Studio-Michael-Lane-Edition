@@ -169,11 +169,6 @@ pub fn destination(app: &App, grid: Option<Rect>) -> Option<Destination> {
     let grid = grid.filter(|grid| grid.contains(x, y))?;
     let geom = PGeom::new(&app.state, grid);
     let track = geom.track_at(y);
-    if geom.rows.strip(track) || geom.automation_views.contains_key(&track) || pl::track_info(&app.state, track)
-        .is_some_and(|track| track.locked || track.frozen.is_some() || track.folder || track.comp.is_some())
-    {
-        return None;
-    }
     let tick = pl::snap_place(&app.state, &geom, geom.tick_at(x), app.alt);
     Some(Destination::Playlist { track, tick })
 }
@@ -208,9 +203,12 @@ pub fn drop(app: &mut App, source: ClipSource, destination: Option<Destination>)
     match destination {
         Some(Destination::Playlist { track, tick }) => {
             let before = pl::clips(s).len();
-            pl::place_picker_sources(s, &items, track, tick);
-            if pl::clips(s).len() > before {
-                s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
+            match pl::place_picker_sources(s, &items, track, tick) {
+                Ok(()) if pl::clips(s).len() > before => {
+                    s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
+                }
+                Ok(()) => {}
+                Err(reason) => s.message = Some(reason.into()),
             }
         }
         Some(Destination::Row(target, after, _)) => reorder(s, &items, Some((target, after))),

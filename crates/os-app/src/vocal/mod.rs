@@ -3,7 +3,7 @@
 mod engine;
 mod incremental;
 pub mod audition;
-mod view;
+pub(crate) mod view;
 mod editing;
 pub mod navigation;
 use editing::begin;

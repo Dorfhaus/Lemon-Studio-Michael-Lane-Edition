@@ -613,6 +613,21 @@ impl SampleLibrary {
     /// Supply decoded audio in this library only (for isolated preview buffers).
     pub fn insert_buffer(&mut self, key: String, sample: Arc<Sample>) { self.cache.insert(key,Some(sample)); }
 
+    /// Replace a transient buffer without retaining its old stretch copies.
+    pub fn replace_buffer(&mut self, key: &str, sample: Option<Arc<Sample>>) {
+        if self.cache.get(key).and_then(|entry| entry.as_ref()).zip(sample.as_ref())
+            .is_some_and(|(old, new)| Arc::ptr_eq(old, new))
+        {
+            return;
+        }
+        if let Some(Some(old)) = self.cache.remove(key) {
+            self.stretched.retain(|(source, _, _, _)| !Arc::ptr_eq(source, &old));
+        }
+        if let Some(sample) = sample {
+            self.insert_buffer(key.into(), sample);
+        }
+    }
+
     pub fn get(&mut self, project_path: &str) -> Option<Arc<Sample>> {
         if let Some(s) = self.cache.get(project_path) {
             return s.clone();

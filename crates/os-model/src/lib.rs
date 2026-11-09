@@ -1360,6 +1360,8 @@ pub struct MixerTrack {
     pub rack_strip: Option<RackStrip>,
     /// Protects the channel from manual configuration edits.
     pub edit_locked: bool,
+    /// Protects the structure and routing of the section starting at this separator.
+    pub group_locked: bool,
     /// 0 = Master.
     pub index: u16,
     pub name: Option<String>,
@@ -1428,6 +1430,7 @@ impl PartialEq for MixerTrack {
             clip_fx,
             rack_strip,
             edit_locked,
+            group_locked,
             index,
             name,
             color,
@@ -1482,6 +1485,7 @@ impl PartialEq for MixerTrack {
             && *strip_bypassed == o.strip_bypassed
             && *rack_strip == o.rack_strip
             && *edit_locked == o.edit_locked
+            && *group_locked == o.group_locked
             && *parametric_pre == o.parametric_pre
             && *eq == o.eq
             && *latency_out == o.latency_out
@@ -1512,6 +1516,7 @@ impl MixerTrack {
             clip_fx: false,
             rack_strip: None,
             edit_locked: false,
+            group_locked: false,
             index,
             name: None,
             color: None,
@@ -2025,6 +2030,10 @@ pub mod target {
     /// A slot's switch and mix level, at the slot's place.
     pub const SLOT_ON: u8 = 0;
     pub const SLOT_MIX: u8 = 1;
+    /// A modern mixer send record stores the destination as an unsigned byte.
+    pub const MAX_MIXER_INSERT: u16 = u8::MAX as u16;
+    const MIXER_TRACKS: u16 = MAX_MIXER_INSERT + 1;
+
     /// Send levels from FL 24.2 on: `0x2000 + destination` at the sending track's place.
     pub const SEND: u16 = 0x2000;
 
@@ -2099,8 +2108,8 @@ pub mod target {
         }
         let hi = (t >> 16) as u16;
         let lo = t as u16;
-        if (0x6000..0x6080).contains(&hi) && (lo <= 4 || lo == 7 || lo == 8) { return Target::MixerStrip(hi-0x6000,lo as u8); }
-        if (0x7000..0x7000 + 128 * 64).contains(&hi) && lo >= PLUGIN_PARAM {
+        if (0x6000..0x6000 + MIXER_TRACKS).contains(&hi) && (lo <= 4 || lo == 7 || lo == 8) { return Target::MixerStrip(hi-0x6000,lo as u8); }
+        if (0x7000..0x7000 + MIXER_TRACKS * 64).contains(&hi) && lo >= PLUGIN_PARAM {
             let loc = hi - 0x7000;
             return Target::SlotParam(loc / 64, (loc % 64) as u8, lo - PLUGIN_PARAM);
         }
@@ -2108,7 +2117,7 @@ pub mod target {
             return Target::ChannelParam(hi, lo - PLUGIN_PARAM);
         }
         // Mixer places from FL 24.2 on (spec: flp/layouts.md "Mixer places", "Parameter ids in an automation link").
-        if (0x7000..0x7000 + 127 * 64).contains(&hi) {
+        if (0x7000..0x7000 + MIXER_TRACKS * 64).contains(&hi) {
             let (track, slot) = ((hi - 0x7000) / 64, ((hi - 0x7000) % 64) as u8);
             let id = lo as u8;
             return match lo >> 8 {
@@ -2116,7 +2125,7 @@ pub mod target {
                 0x1F if id == SLOT_MIX => Target::SlotMix(track, slot),
                 _ if slot != 0 => Target::Other(t),
                 // Send levels: 0x2000 + d, and 0x1F00 + 64 + d as in the mixer's records.
-                0x20 if lo - SEND < 127 => Target::MixerSend(track, lo - SEND),
+                0x20 if lo - SEND <= MAX_MIXER_INSERT => Target::MixerSend(track, lo - SEND),
                 0x1F => match id {
                     64..=190 => Target::MixerSend(track, u16::from(id - 64)),
                     MIXER_VOLUME => Target::MixerVolume(track),

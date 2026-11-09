@@ -60,6 +60,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
             }
             Body::Ai => ai_box(ui,s,m),
             Body::RoutePicker(f) => route_picker_box(ui,s,m,f),
+            Body::MixerInsert(f) => mixer_insert_box(ui, s, m, f),
             Body::Headphones(f) => headphones_box(ui,s,m,f),
             Body::Msg(msg) => msg_box(ui, s, m, msg),
             Body::File(f) => file_box(ui, s, m, f),
@@ -121,6 +122,31 @@ pub(super) fn panel(ui: &mut Ui, r: Rect) {
 }
 
 // ---------------------------------------------------------------- message box
+
+fn mixer_insert_box(ui: &mut Ui, s: &State, m: &Modal, form: &crate::mixer::InsertTracks) {
+    let r = place(s, m, 332., 150.);
+    frame(ui, r, "Insert Multiple Tracks");
+    panel(ui, Rect::new(r.x + 5., r.y + 28., r.w - 10., 72.));
+    let prompt = format!("Insert after {}", crate::mixer::name(s, form.after));
+    ui.c.text_clip(Font::new(14), r.x + 16., r.y + 36., r.w - 32., ui.t.text, &prompt);
+    field(ui, Rect::new(r.x + 16., r.y + 63., 88., 27.), &form.field, true, DHit::MixerCount, "Number of Mixer tracks");
+    ui.c.text(
+        Font::new(12), r.x + 116., r.y + 70.,
+        if form.count().is_some() { ui.t.text_dim } else { ui.t.text },
+        &format!("Enter 1 to {}", form.max),
+    );
+
+    for (label, action, x, primary) in [
+        ("✓ Confirm", DHit::Accept, r.right() - 202., true),
+        ("✕ Cancel", DHit::Cancel, r.right() - 105., false),
+    ] {
+        let b = Rect::new(x, r.bottom() - 40., 92., BTN_H);
+        let valid = !primary || form.count().is_some();
+        let hover = valid && hit(ui, b, action, label);
+        let down = valid && ui.down(b, &Action::Dlg(action));
+        button(ui, b, label, primary && valid, hover, down, false);
+    }
+}
 
 fn msg_box(ui: &mut Ui, s: &State, m: &Modal, msg: &Msg) {
     let t = ui.t;

@@ -4,6 +4,22 @@
   "sections": [
     {
       "date": "2026-11-09",
+      "title": "Controller setup, selection and mixer workflow improvements \u00b7 public build 2026110905",
+      "changes": [
+        "Added per-device MIDI controller modes for basic Mackie Control (MCU) transport and mixer input, with presets for MCU-capable Komplete Kontrol, Arturia KeyLab and Behringer X-Touch models, plus Korg nanoKONTROL2 factory CC mappings. Hardware mode must match; HUI, NKS browsing, displays and motor-fader feedback are not included.",
+        "Ctrl/Cmd+Shift-drag selects clips and notes with a rectangle in the Playlist and Piano Roll. Drag from Playlist headers to select whole tracks' clips, or Piano Roll keys to select whole pitch rows across time.",
+        "Fixed Piano Roll key highlights remaining lit after note audition ends.",
+        "Multiple clips dragged from the Clip Picker are placed on consecutive Playlist tracks at the same timeline position.",
+        "Audio Timing edits can be auditioned through normal Playlist playback before Apply. The timing editor now shares Vocal Tuning's panel styling and layout.",
+        "Added Mixer group locks to protect organization and routing while allowing normal mixing. Right-click a channel padlock to lock its group; red indicates a group lock and yellow an individual channel lock.",
+        "Added batch Mixer track insertion with confirmation, support for up to 255 visible inserts, F2 renaming and a confirmation before resetting tracks and removing their effects.",
+        "Improved Mixer routing hit areas to avoid changing the selected channel while making sends.",
+        "Simplified Settings > Controls and reduced repeated work when searching and editing action assignments.",
+        "Removed the in-app Feature Voting, forum and Community Samples tabs. Existing downloaded samples remain available. Help > Change Log now opens the complete searchable history offline."
+      ]
+    },
+    {
+      "date": "2026-11-09",
       "title": "Playlist scrolling, Audio Timing and FL Studio 2005 fixes \u00b7 public build 2026110904",
       "changes": [
         "The Playlist nudges right after you place a clip or drop audio near the visible right edge, including on successive placements. This uses the existing scroll range and keeps your current zoom.",

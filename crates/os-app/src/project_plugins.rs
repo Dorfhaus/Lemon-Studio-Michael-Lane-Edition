@@ -93,20 +93,26 @@ pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
 /// the file names, and that the user has not edited, leaves the file's wrapper as it is ([`untouched_stand_in`]).
 pub fn store_hosted(proj: &mut Project, plugins: &Plugins) -> Result<(), String> {
     let mut copy=proj.clone();
-    store_hosted_inner(&mut copy,plugins,false)?;
+    store_hosted_inner(&mut copy,plugins,false, |_| true)?;
     *proj=copy;
     Ok(())
 }
 /// Project saves keep working even when a plugin declines state capture.
 pub fn store_for_save(proj: &mut Project, plugins: &Plugins) -> Result<Vec<String>, String> {
     let mut copy = proj.clone();
-    let warnings = store_hosted_inner(&mut copy, plugins, true)?;
+    let warnings = store_hosted_inner(&mut copy, plugins, true, |_| true)?;
     *proj = copy;
     Ok(warnings)
 }
-fn store_hosted_inner(proj: &mut Project, plugins: &Plugins, recover: bool) -> Result<Vec<String>, String> {
+/// Capture only the hosted Mixer slots that a caller is about to replace.
+pub(crate) fn store_mixer_slots(proj: &mut Project, plugins: &Plugins, tracks: &[u16]) -> Result<(), String> {
+    store_hosted_inner(proj, plugins, false, |key| fx_of(key).is_some_and(|(track, _)| tracks.contains(&track)))?;
+    Ok(())
+}
+
+fn store_hosted_inner(proj: &mut Project, plugins: &Plugins, recover: bool, include: impl Fn(usize) -> bool) -> Result<Vec<String>, String> {
     let mut warnings = Vec::new();
-    for key in plugins.hosted.keys().copied().collect::<Vec<_>>() {
+    for key in plugins.hosted.keys().copied().filter(|&key| include(key)) {
         if plugins.hosted.get(&key).is_some_and(|h|h.ara_saved.is_some()){continue;}
         let d = plugins.descriptor(key).ok_or_else(||format!("Plugin {key} is unavailable; previous saved settings preserved"))?;
         if d.format == Format::Native {

@@ -28,9 +28,13 @@ use crate::icons::{self, Icon};
 
 mod traditional;
 mod vintage_compact;
-fn insertion_button(ui:&mut Ui,s:&State,area:Rect,client:Rect,n:u16,x:f32){
-        if client.h<=72. || x<area.x || x>area.right()-10.0 {return;}
-        let lane=Rect::new(x-4.0,client.y,8.0,client.h-52.0);
+// Includes the remove-send arrow above the send knob and the space beside both.
+const ROUTING_DECK_H: f32 = 64.;
+
+fn insertion_button(ui:&mut Ui,s:&State,area:Rect,selection_bottom:f32,n:u16,x:f32){
+        let h = selection_bottom - area.y;
+        if h<=20. || x<area.x || x>area.right()-10.0 {return;}
+        let lane=Rect::new(x-4.0,area.y,8.0,h);
         let action=Action::Mix(MHit::InsertBefore(n));
         ui.hit(lane,Action::Mix(MHit::InsertBoundary(n)),"Pause here to insert a mixer track");
         if s.mixer.insertion_ready && s.mixer.insertion_hover.is_some_and(|(t,_,_)|t==n) && lane.outset(5.).contains(ui.mouse.0,ui.mouse.1) {
@@ -169,15 +173,23 @@ impl Ly {
 
 fn channel_lock(ui: &mut Ui, s: &State, track: u16, rect: Rect) {
     if !crate::workspace_visibility::shown("visible_mixer-channel-lock") || mx::track(s, track).is_none() { return; }
-    let locked = mx::locked(s, track);
-    let hot = ui.hit(rect, Action::Mix(MHit::Lock(track)),
-        if locked { "Unlock Mixer channel" } else { "Lock Mixer channel" });
+    let channel_locked = mx::locked(s, track);
+    let group_locked = mx::group_locked(s, track);
+    let locked = channel_locked || group_locked;
+    let hint = match (group_locked, channel_locked) {
+        (true, true) => "Group and channel locked · right-click for lock options",
+        (true, false) => "Mixer group locked · right-click for lock options",
+        (false, true) => "Unlock Mixer channel · right-click for lock options",
+        (false, false) => "Lock Mixer channel · right-click for lock options",
+    };
+    let hot = ui.hit(rect, Action::Mix(MHit::Lock(track)), hint);
     let t = ui.t;
     if hot || locked {
         ui.c.fill_rrect(rect, 2., if t.style.vintage_2005 { t.sunken } else { t.button_hi });
     }
-    let ink = if locked && t.style.vintage_2005 { t.led(0xa0dd48) }
-        else if locked { t.accent } else if hot { t.text } else { t.text_dim };
+    // These are status colours, so theme accents cannot make the two locks look the same.
+    let ink = if group_locked { Color::rgb(0xff5656) }
+        else if channel_locked { Color::rgb(0xffd44d) } else if hot { t.text } else { t.text_dim };
     super::playlist::draw_padlock(ui.c, rect.cx(), rect.cy(), (rect.w / 14.).min(0.86), ink, locked);
 }
 
@@ -260,7 +272,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     // Narrow boundary targets reveal an insertion button only while hovered.
     for &(n,x) in &visible {
-        insertion_button(ui,s,area,client,n as u16,x);
+        insertion_button(ui,s,area,bottom-ROUTING_DECK_H,n as u16,x);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
     let px = area.x + end - s.mixer_scroll + 14.0;
@@ -574,8 +586,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         ui.c.fill_rect(Rect::new(left, ly.y(HEAD_Y1) + 1.0, width, bottom - ly.y(HEAD_Y1) - 1.0), body);
         ui.c.fill_rect(Rect::new(left + width - 1.0, ly.y(HEAD_Y1) + 1.0, 1.0, bottom - ly.y(HEAD_Y1) - 1.0), ui.t.s(0x1c1f21));
     }
-    // The whole strip selects (Ctrl adds, Shift renames); controls register on top of it (spec: ui/mixer.md §2).
-    ui.hit(Rect::new(left, ly.y(HEAD_Y0), width, bottom - ly.y(HEAD_Y0)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
+    // Select from the strip body. Below it, only explicit send controls and the footer take clicks.
+    let top = ly.y(HEAD_Y0);
+    ui.hit(Rect::new(left, top, width, (bottom - ROUTING_DECK_H - top).max(0.)), Action::Mix(MHit::Strip(n)), mx::name(s, n));
     let hov = ui.hovering(Rect::new(left, ly.y(HEAD_Y0), width, ly.y(PANEL_Y1) - ly.y(HEAD_Y0)));
 
     // Header number (insert strips only; the master's "M" sits in the fixed header band).

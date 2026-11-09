@@ -71,6 +71,18 @@ If nothing plays, check the output device, master level, muted tracks, song/patt
 For dropouts, raise the buffer and temporarily bypass expensive effects to isolate the cause. Freeze or bounce finished parts if needed.
 Plugin delay compensation aligns paths using delays reported by plugins. Input monitoring still has hardware and processing latency, so use a small stable buffer or direct monitoring when recording.
 
+### Set up a keyboard or mixer controller
+MIDI controller Komplete Kontrol KeyLab Arturia Behringer X-Touch nanoKONTROL Akai Novation Launchkey M-Audio Nektar Mackie MCU
+Guide: midi
+Open Settings > MIDI, select an input device, enable it and choose its Controller type. This choice is saved separately for each device in your profile.
+For musical keys and pads, choose Generic MIDI / MIDI Learn. Standard MIDI keyboards from Native Instruments, Arturia, Akai, Novation, M-Audio and Nektar use this path. Right-click a software knob, choose Link to controller, then move the hardware control to assign it.
+For a controller with Mackie Control Universal support, set its hardware mode to MCU, select its dedicated DAW input in Lemon Studio, and choose Mackie Control or the matching named MCU preset. Keep the separate musical-key input on Generic MIDI. Check your model's manual because MCU support differs between generations.
+MCU input supports play, stop, record, eight channel faders and pan encoders, master fader, mute, solo, channel selection, record arm and bank navigation. Channel locks still apply. Mixer channels begin at Insert 1.
+The Korg nanoKONTROL2 preset uses its factory CC assignments. Use CC mode with the factory mapping. Customized mappings can use Generic MIDI and Link to controller instead.
+This integration handles incoming controls. Motor fader feedback, hardware displays, HUI, proprietary NKS browsing and vendor-specific DAW handshakes are not implemented. Loading the Komplete Kontrol plugin uses the ordinary plugin workflow.
+If notes work but transport does not, check the DAW input and hardware mode. If an input shows in use, close the other application using that MIDI port. Use Refresh device list after connecting hardware.
+Hide the setup controls under Settings > General > Workspace Visibility > Input customization > MIDI controller setup. Hiding them keeps your saved device modes active.
+
 ### Use MIDI, typing keyboard and step entry
 step edit typing keyboard controllers performance
 Guide: typing
@@ -393,11 +405,11 @@ Guide: theme
 Open Settings > Theme and choose a skin or theme. Use the theme controls to adjust colors, icons, cursor packs and Mixer appearance where available.
 Use the Theme Editor to preview changes and apply or cancel them. Export the theme if you want to share or reuse it on another installation.
 
-### Browse samples, community and release history
-browser folders sample exchange community forum vote changelog
+### Browse samples and release history
+browser folders sample preview presets plugin downloads changelog
 Guide: browser
-Use the Browser tabs to find samples, presets, projects and community features. Add your own folders in Settings > File to keep libraries easy to find.
-Use the sample preview controls to audition files before placing them. Community downloads and voting need a connection. Change Log is available in the community section and can be searched offline.
+Use the Browser tabs to find samples, presets, projects and plugin downloads. Add your own folders in Settings > File to keep libraries easy to find.
+Use the sample preview controls to audition files before placing them. Open Help > Change Log to browse or search the bundled release history offline.
 
 ### Export a finished song, stems or MIDI
 export render wav mp3 stems multitrack midi

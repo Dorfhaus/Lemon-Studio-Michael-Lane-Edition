@@ -64,7 +64,7 @@ pub enum Snap {
     StackInstrument(Box<RackSide>,usize,Vec<u8>),
     Tempo(f64),
     Ara(usize, Option<String>, Option<Vec<u8>>),
-    MixerInsert { n:u16,remove:bool,previous:u16,selection:Vec<u16> },
+    MixerInsert { n:u16,count:u16,remove:bool,previous:u16,selection:Vec<u16> },
     MixerMoves { moves:Vec<(u16,u16)>,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     MixerMove { from:u16,to:u16,arrangements:Vec<os_model::Arrangement>,lanes:Vec<(u16,u16,u16,u16)> },
     ChannelRoute(usize,u16),
@@ -90,6 +90,7 @@ pub enum Snap {
     EqPosition(u16,bool),
     EqEnabled(u16, bool),
     MixerLock(u16, bool),
+    MixerGroupLock(u16, bool),
     ChannelLayout(u16,u8),
     Tune(u16,[u16;4]),
     TuneEnabled(u16,bool),
@@ -396,7 +397,7 @@ impl Snap {
             Snap::Vocals(_)=>Snap::Vocals(s.project.vocal_edits.clone()),
             Snap::AudioWarps(_)=>Snap::AudioWarps(s.project.audio_warps.clone()),
             Snap::Tempo(_) => Snap::Tempo(s.tempo),
-            Snap::MixerInsert{n,remove,..}=>Snap::MixerInsert{n:*n,remove:!*remove,previous:s.selected_mixer,selection:s.mixer.sel.clone()},
+            Snap::MixerInsert{n,count,remove,..}=>Snap::MixerInsert{n:*n,count:*count,remove:!*remove,previous:s.selected_mixer,selection:s.mixer.sel.clone()},
             Snap::MixerMoves{moves,..}=>Snap::MixerMoves{moves:moves.iter().rev().map(|(a,b)|(*b,*a)).collect(),arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::MixerMove{from,to,..}=>Snap::MixerMove{from:*to,to:*from,arrangements:s.project.arrangements.clone(),lanes:s.project.instrument_lanes.clone()},
             Snap::InstrumentLanes(_)=>Snap::InstrumentLanes(s.project.instrument_lanes.clone()),
@@ -417,6 +418,7 @@ impl Snap {
             Snap::TuneEnabled(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::TuneEnabled(*t,m.tune_enabled)),
             Snap::Tune(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::Tune(*t,m.tune)),
             Snap::MixerLock(t, _) => Snap::MixerLock(*t, crate::mixer::locked(s, *t)),
+            Snap::MixerGroupLock(t, _) => Snap::MixerGroupLock(*t, crate::mixer::group_locked(s, *t)),
             Snap::EqEnabled(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::EqEnabled(*t, m.slot_on[usize::from(crate::mini_eq::SLOT)])),
             Snap::EqPosition(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::EqPosition(*t,m.parametric_pre)),
             Snap::DriveType(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::DriveType(*t,m.strip[6])),
@@ -520,6 +522,7 @@ impl Snap {
             | Snap::EqPosition(..)
             | Snap::EqEnabled(..)
             | Snap::MixerLock(..)
+            | Snap::MixerGroupLock(..)
             | Snap::DriveType(..)
             | Snap::AllEffects(..)
             | Snap::Effects(..)
@@ -606,7 +609,7 @@ impl Snap {
             }
             Snap::RackStrips(v) => {for c in v {crate::mixer::put_channel(s,c);}},
             Snap::MixerChannel(c) => crate::mixer::put_channel(s,*c),
-            Snap::MixerInsert{n,remove,previous,selection}=>{if remove {crate::mixer::undo_insert(s,n);}else{crate::mixer::add_track(s,Some(n));}s.selected_mixer=previous;s.mixer.sel=selection;},
+            Snap::MixerInsert{n,count,remove,previous,selection}=>{if remove {crate::mixer::undo_insert(s,n,count);}else{crate::mixer::insert_tracks(s,Some(n),count);}s.selected_mixer=previous;s.mixer.sel=selection;},
             Snap::MixerMoves{moves,arrangements,lanes}=>{for(from,to)in moves{crate::mixer::reorder(s,from,to,false);}s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
             Snap::MixerMove{from,to,arrangements,lanes}=>{crate::mixer::reorder(s,from,to,false);s.project.arrangements=arrangements;s.project.instrument_lanes=lanes;},
             Snap::InstrumentLanes(v)=>s.project.instrument_lanes=v,
@@ -614,6 +617,9 @@ impl Snap {
             Snap::PeakLinks(v)=>{crate::peak_link::restore_removed(s,&v);s.project.peak_links=v;},
             Snap::TuneEnabled(t,on) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune_enabled=on;}},
             Snap::Tune(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.tune=p;m.tune_learn=0;}},
+            Snap::MixerGroupLock(t, locked) => {
+                if let Some(m) = crate::mixer::track_mut(s, t) { m.group_locked = locked; }
+            }
             Snap::MixerLock(t, locked) => {
                 if let Some(m) = crate::mixer::track_mut(s, t) { m.edit_locked = locked; }
             },
@@ -706,7 +712,7 @@ impl Snap {
                 let selection = (s.selected_mixer, s.mixer.sel.clone());
                 if insert == Some(false) { crate::mixer::add_track(s, Some(route)); }
                 sample.put(s);
-                if insert == Some(true) { crate::mixer::undo_insert(s, route); }
+                if insert == Some(true) { crate::mixer::undo_insert(s, route, 1); }
                 else if let Some(track) = crate::mixer::track_mut(s, route) { track.name = name; }
                 (s.selected_mixer,s.mixer.sel) = selection;
             }

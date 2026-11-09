@@ -3204,7 +3204,11 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
                 levels.sort_by_key(|&(d, _)| d);
                 for (k, &(dest, level)) in levels.iter().enumerate() {
                     let mut r = [0u8; MIXER_REC_LEN];
-                    (r[4], r[5]) = if old_form { (64 + dest.min(126) as u8, MX_KIND_PARAM) } else { (dest.min(255) as u8, MX_KIND_ROUTE) };
+                    (r[4], r[5]) = if old_form && dest <= 126 {
+                        (64 + dest as u8, MX_KIND_PARAM)
+                    } else {
+                        (dest.min(os_model::target::MAX_MIXER_INSERT) as u8, MX_KIND_ROUTE)
+                    };
                     r[6..8].copy_from_slice(&loc.to_le_bytes());
                     r[8..12].copy_from_slice(&((level * 16000.0).round() as i32).to_le_bytes());
                     recs.insert(at + k, r);
@@ -6567,27 +6571,34 @@ fn write_parametric_chunk(project: &Project, file: &mut FlpFile) {
 }
 
 const MIXER_LOCK_TAG: Tag = Tag(*b"LMLK");
+const MIXER_GROUP_LOCK_TAG: Tag = Tag(*b"LMGL");
 fn read_mixer_locks(file: &FlpFile, p: &mut Project) {
-    for chunk in file.chunks.iter().filter(|c| c.tag == MIXER_LOCK_TAG) {
+    for chunk in &file.chunks {
+        let group = chunk.tag == MIXER_GROUP_LOCK_TAG;
+        if !group && chunk.tag != MIXER_LOCK_TAG { continue; }
         let ChunkBody::Raw(data) = &chunk.body else { continue };
         if data.first() != Some(&1) { continue; }
         for bytes in data[1..].chunks_exact(2) {
             let index = u16::from_le_bytes([bytes[0], bytes[1]]);
             if let Some(track) = p.mixer.iter_mut().find(|m| m.index == index) {
-                track.edit_locked = true;
+                if group { track.group_locked = index > 0 && track.separator; }
+                else { track.edit_locked = true; }
             }
         }
     }
 }
 
 fn write_mixer_locks(p: &Project, file: &mut FlpFile) {
-    let mut data = vec![1];
-    for m in p.mixer.iter().filter(|m| m.edit_locked) {
-        data.extend(m.index.to_le_bytes());
-    }
-    file.chunks.retain(|c| c.tag != MIXER_LOCK_TAG);
-    if data.len() > 1 {
-        file.chunks.push(Chunk { tag: MIXER_LOCK_TAG, body: ChunkBody::Raw(data) });
+    for (tag, group) in [(MIXER_LOCK_TAG, false), (MIXER_GROUP_LOCK_TAG, true)] {
+        let mut data = vec![1];
+        for m in &p.mixer {
+            let locked = if group { m.group_locked && m.separator && m.index > 0 } else { m.edit_locked };
+            if locked { data.extend(m.index.to_le_bytes()); }
+        }
+        file.chunks.retain(|c| c.tag != tag);
+        if data.len() > 1 {
+            file.chunks.push(Chunk { tag, body: ChunkBody::Raw(data) });
+        }
     }
 }
 
