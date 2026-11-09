@@ -226,7 +226,6 @@ impl App {
             }
             self.mark_saved();
             if crate::settings_file::get("startup_show_mixer").as_deref() == Some("1") {
-                self.state.hide(crate::app::Win::ChannelRack);
                 self.state.raise(crate::app::Win::Mixer);
             }
         }
@@ -430,7 +429,7 @@ mod tests {
         assert_eq!(a.title(), "[Scoring]");
         assert!(a.state.shown(crate::app::Win::Playlist));
         assert!(a.state.shown(crate::app::Win::Mixer));
-        assert!(!a.state.shown(crate::app::Win::ChannelRack));
+        assert!(a.state.shown(crate::app::Win::ChannelRack), "showing the Mixer must not hide the Channel Rack");
         // Empty project.
         prefs::set_choice(&prefs::STARTUP_PROJECT, 0);
         let mut a = App::new(None);

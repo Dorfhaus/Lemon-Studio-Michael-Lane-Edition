@@ -165,11 +165,13 @@ mod vintage_cursors;
 mod vintage_rack_art;
 mod vintage_skin;
 mod menu_layout;
+mod input_bindings;
 mod shortcuts;
 mod warp;
 mod vocal_align;
 mod vocal;
 mod smooth;
+mod elastic_scroll;
 mod snap;
 mod song_pos;
 mod toolbar;
@@ -1111,8 +1113,10 @@ impl ApplicationHandler for Shell {
                 } else {
                     self.grab = None;
                     self.unmax = None;
-                    self.unlock_cursor(&window);
-                    self.app.mouse_up();
+                    if crate::input_bindings::accepts_release(&self.app,0) {
+                        self.unlock_cursor(&window);
+                        self.app.mouse_up();
+                    }
                     if self.app.resize_cursor && self.app.drag.is_none() {
                         self.app.resize_cursor = false;
                     }
@@ -1133,9 +1137,11 @@ impl ApplicationHandler for Shell {
                 self.app.mouse_down_middle();
                 self.pending = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Right | MouseButton::Middle, .. } => {
-                self.unlock_cursor(&window);
-                self.app.mouse_up();
+            WindowEvent::MouseInput { state: ElementState::Released, button: button @ (MouseButton::Right | MouseButton::Middle), .. } => {
+                if crate::input_bindings::accepts_release(&self.app,if button==MouseButton::Right {1}else{2}) {
+                    self.unlock_cursor(&window);
+                    self.app.mouse_up();
+                }
                 self.pending = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {

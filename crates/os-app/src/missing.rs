@@ -129,7 +129,9 @@ pub fn loaded(app: &mut App) {
     }
     let samples: Vec<String> = missing_samples(&app.state).iter().map(|(_, p)| file_name(p).to_string()).collect();
     let plugins = app.missing.plugin_names();
-    if std::mem::take(&mut app.import_report.pending){return crate::import_report::show(app,0);}
+    if std::mem::take(&mut app.import_report.pending) && !crate::import_report::lines(app).is_empty() {
+        return crate::import_report::show(app, 0);
+    }
     if samples.is_empty() && plugins.is_empty() {
         return;
     }
@@ -328,6 +330,27 @@ pub(crate) mod tests {
         assert_eq!(m.buttons, vec![Answer::Ok]);
         let many: Vec<String> = (0..12).map(|i| format!("s{i:02}.wav")).collect();
         assert!(missing_box(&many, &[]).plain().contains("s07.wav and 4 more"));
+    }
+
+    #[test]
+    fn clean_import_is_quiet_but_real_issues_are_reported() {
+        let mut app = App::new(None);
+        app.state.project.channels.clear();
+        app.missing.pending = true;
+        app.import_report.pending = true;
+        loaded(&mut app);
+        assert!(app.state.dialogs.is_empty());
+        assert!(!app.import_report.pending);
+        crate::import_report::show(&mut app, 0);
+        let crate::dialog::Body::Msg(msg) = app.state.dialogs.pop().unwrap().body else { panic!("report expected") };
+        assert_eq!(msg.buttons, vec![Answer::Cancel]);
+        assert_eq!(msg.label(0), "Close");
+        app.import_report.notes.push("Unsupported automation link".into());
+        app.import_report.pending = true;
+        app.missing.pending = true;
+        loaded(&mut app);
+        let crate::dialog::Body::Msg(msg) = &app.state.dialogs.last().unwrap().body else { panic!("report expected") };
+        assert!(msg.plain().contains("Unsupported automation link"));
     }
 
     /// Opening a project from another computer whose samples lie beside it: the samples are found by name in the

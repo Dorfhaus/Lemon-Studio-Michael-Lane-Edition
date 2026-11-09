@@ -54,7 +54,9 @@ pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
             }
         }
     }
-    let scroll=Rect::new(area.x,r.bottom()-12.,area.w,8.);
+    let footer=Rect::new(bank.x,bank.bottom()+8.,bank.w,r.bottom()-bank.bottom()-8.);
+    ui.hit(footer,Action::Swallow,"Mixer scroll area");
+    let scroll=Rect::new(area.x,footer.y,area.w,footer.h);
     super::super::scrollbar(ui,scroll,false,s.mixer_scroll,area.w,f32::from(mx::inserts(s))*width,crate::app::Scroll::MixerX);
     resize_zones(ui,s,Win::Mixer,outer);
 }

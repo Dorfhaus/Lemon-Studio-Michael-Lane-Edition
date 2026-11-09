@@ -1080,7 +1080,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
             let accepts=s.project.channels.get(target).is_some_and(|c| c.kind.is_sampler()) || s.hosted_rows.contains(&target) || target>=crate::plugins::FX_KEY;
             items.extend([if accepts {send} else {send.off()},r("Open in new channel",RowCmd::NewChannel),
                 r("Preview",RowCmd::Preview),PItem::sep(),r("Edit in audio editor (Tesla)",RowCmd::AudioEditor),
-                r("Edit in pitch corrector (ARA)...",RowCmd::PitchEditor),r("Edit in time warper...",RowCmd::WarpEditor),
+                r("Edit in pitch corrector (ARA)...",RowCmd::PitchEditor),r("Edit audio timing in Playlist...",RowCmd::WarpEditor),
                 r("Open in new sampler channel",RowCmd::NewChannel)]);
             for e in &s.plugdb.lists.gens {
                 let name=e.name.to_lowercase();
@@ -1306,7 +1306,7 @@ mod tests {
         let count = crate::playlist::clips(&app.state).len();
         assert_eq!(app.browser_row_cmd(RowCmd::WarpEditor), None);
         assert_eq!(crate::playlist::clips(&app.state).len(), count + 1);
-        assert!(matches!(app.state.dialogs.last().map(|d| &d.body), Some(crate::dialog::Body::Warp(_))));
+        assert!(app.state.playlist.warp_loading.is_some());
         app.browser_row_cmd(RowCmd::Trash);
         assert!(file.exists());
         std::fs::remove_file(file).unwrap();

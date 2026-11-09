@@ -20,6 +20,7 @@
 // audio/channel-filter.md, plugins/image-line-curves.md
 
 pub mod articulator;
+pub mod audio_float;
 pub mod channel_filter;
 pub mod debess;
 pub mod curve;

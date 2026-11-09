@@ -226,7 +226,55 @@ pub fn picker_rects(p: &Picker, n_parts: usize, win: Rect) -> PickerRects {
     }
 }
 
+pub(crate) const PLAYLIST_BRIGHTNESS: &str = "Playlist clip brightness";
+pub(crate) const PLAYLIST_BRIGHTNESS_VISIBILITY: &str = "visible_playlist-brightness";
+const PLAYLIST_BRIGHTNESS_KEY: &str = "LemonStudioStyle.playlist_clip_brightness";
+const VINTAGE_PLAYLIST_BRIGHTNESS_KEY: &str = "vintage_playlist_clip_brightness";
+
+impl State {
+    pub(crate) fn playlist_brightness(&self) -> f32 {
+        if let Some(preview) = self.playlist_brightness_preview {
+            return preview;
+        }
+        let parse = |value: &str| value.parse::<u8>().ok().filter(|&percent| percent <= 100);
+        let percent = if self.vintage_2005 {
+            crate::settings_file::read(|settings| settings.get(VINTAGE_PLAYLIST_BRIGHTNESS_KEY).and_then(parse))
+        } else {
+            self.fl_text.as_deref().and_then(|text| fl::get_key(text, PLAYLIST_BRIGHTNESS_KEY)).and_then(parse)
+        };
+        percent.map_or_else(|| {
+            if crate::prefs::check(&crate::prefs::BRIGHT_PLAYLIST_CLIPS) { 1.0 } else { 0.0 }
+        }, |percent| f32::from(percent) / 100.0)
+    }
+}
+
 impl App {
+    pub(crate) fn preview_playlist_brightness(&mut self, x: f32, w: f32) {
+        self.state.playlist_brightness_preview = Some(((self.mouse.0 - x) / w).clamp(0.0, 1.0));
+        self.invalidate();
+    }
+
+    pub(crate) fn finish_playlist_brightness(&mut self) {
+        if let Some(value) = self.state.playlist_brightness_preview.take() {
+            self.store_playlist_brightness(value);
+        }
+    }
+
+    pub(crate) fn store_playlist_brightness(&mut self, value: f32) {
+        let value = format!("{:.0}", value.clamp(0.0, 1.0) * 100.0);
+        if self.state.vintage_2005 {
+            crate::settings_file::write(VINTAGE_PLAYLIST_BRIGHTNESS_KEY, &value);
+        } else {
+            let text = fl::set_key(&self.theme_text(), PLAYLIST_BRIGHTNESS_KEY, &value);
+            if self.state.fl_text.as_deref() != Some(&text) {
+                self.theme_mark(crate::theme_library::Step::Other);
+                self.theme_edit(text);
+                self.theme_store();
+            }
+        }
+        self.invalidate();
+    }
+
     /// The applied theme's text (`applied_text`) to edit. The Lemon theme's key goes: edited, it is a theme like any
     /// other (on Lemon still Lemon's colours, `os_theme::design::default_text`); the Citrus theme keeps its key, so on
     /// Lemon it stays laid over Lemon even where it is stock Dark.

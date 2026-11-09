@@ -497,7 +497,7 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     let len = if let Some(session)=s.piano.clip_session.as_ref().filter(|_|piano::active_clip(s).is_some()){
         (0..session.parts.len()).filter_map(|i|session.clip(s,i)).map(|c|c.end()).max().unwrap_or(0) as f32
     }else{piano::pattern_length(s,s.pattern) as f32};
-    let span = s.piano.bar_span.unwrap_or((len.max(view) + view / 2.0).max(g.scroll_x + view));
+    let span = s.piano.bar_span.unwrap_or_else(||if crate::elastic_scroll::adaptive(Scroll::PianoX) {len.max(view)} else {(len.max(view) + view / 2.0).max(g.scroll_x + view)});
     // Scroll arrows at both ends (§1a); the bar runs between them (small scroll bars: no arrows).
     let arrow = if super::small_scrollbars() { 0.0 } else { 19.0 };
     if arrow > 0.0 {
@@ -515,7 +515,7 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     let channel_notes = notes.iter().filter(|n| Some(n.channel) == ch);
     let (low, high) = channel_notes.clone().fold((u16::MAX, 0), |(lo, hi), n| (lo.min(n.key), hi.max(n.key)));
     let center = (f32::from(low) + f32::from(high)) / 2.0;
-    let pitch_span = f32::from(high.saturating_sub(low)).max(12.0);
+    let pitch_span = f32::from(high.saturating_sub(low)).max(1.0);
     let clip = piano::active_clip(s);
     ui.c.push_clip(Rect::new(track.x,track.y+1.,track.w,(track.h-2.).max(0.)));
     for n in channel_notes {
@@ -523,9 +523,11 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
             f64::from(c.position) + (f64::from(n.position) - crate::playlist::window(s, &c).0) / c.pattern_rate()
         });
         let x = track.x + position as f32 / span * track.w;
-        let w = (piano::shown_len(s, n) as f32 / span * track.w).max(1.0);
-        let y = o.cy() - 1.0 - (f32::from(n.key) - center) / pitch_span * (o.h - 6.0);
-        ui.c.fill_rect(Rect::new(x, y.round(), w, 2.0), dash);
+        let length = clip.map_or(piano::shown_len(s, n) as f64, |c| piano::shown_len(s, n) as f64 / c.pattern_rate());
+        let w = (length as f32 / span * track.w).max(2.0);
+        let h = if o.h >= 18.0 { 3.0 } else { 2.0 };
+        let y = o.cy() - h / 2.0 - (f32::from(n.key) - center) / pitch_span * (o.h - h - 4.0);
+        ui.c.fill_rect(Rect::new(x, y.round(), w, h), dash);
     }
     ui.c.pop_clip();
 }

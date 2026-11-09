@@ -277,19 +277,17 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     ui.c.pop_clip();
     strip(ui, s, 0, r.x, bottom, f, &ly);
 
-    // Horizontal scroll bar under the strips.
-    let sb = if s.vintage_2005 {
-        Rect::new(area.x + 13.0, bottom - 9.0, area.w - 20.0, 7.0)
-    } else {
-        Rect::new(area.x + 13.0, bottom - 14.0, area.w - 20.0, 9.0)
-    };
-    super::scrollbar(ui, sb, false, s.mixer_scroll, area.w, end+width, crate::app::Scroll::MixerX);
-    chevron(ui, area.x + 5.0, sb.cy(), false, ui.t.s(0x5d6366));
     if crate::workspace_visibility::shown("visible_mixer-cables") {
         cables(ui, s, strips, area, bottom);
     } else {
         s.cables.borrow_mut().clear();
     }
+
+    // Catch every footer click after strip and cable hits, including below the handle.
+    let footer = Rect::new(strips.x, bottom - 26.0, strips.w, 26.0);
+    ui.hit(footer, Action::Swallow, "Mixer scroll area");
+    let sb = Rect::new(area.x, footer.y, area.w, footer.h);
+    crate::views::scrollbar(ui, sb, false, s.mixer_scroll, area.w, end+width, crate::app::Scroll::MixerX);
 
     slot_panel(ui, s, inspector);
     window_buttons(ui, Win::Mixer, full_title.right() - 58.0, full_title.y, ui.t.tx(0xd4dade), ui.t.tx(0xffffff));

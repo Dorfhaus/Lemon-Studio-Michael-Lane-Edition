@@ -58,7 +58,6 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 frame(ui, r, "Vocal Align");
                 crate::vocal_align::paint(ui, r, form);
             }
-            Body::Warp(f)=>{let r=place(s,m,(s.screen.0-24.).clamp(600.,1000.),430.);frame(ui,r,"Audio warp markers");crate::warp::paint(ui,r,f);},
             Body::Ai => ai_box(ui,s,m),
             Body::RoutePicker(f) => route_picker_box(ui,s,m,f),
             Body::Headphones(f) => headphones_box(ui,s,m,f),

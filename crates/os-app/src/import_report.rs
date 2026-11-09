@@ -147,7 +147,8 @@ pub fn lines(app: &App) -> Vec<String> {
 }
 pub fn show(app: &mut App, page: usize) {
     let mut items = lines(app);
-    if items.is_empty() {
+    let clean = items.is_empty();
+    if clean {
         items.push("No unresolved files or automation links were detected. This is not a guarantee of identical playback in every plugin.".into());
     }
     let pages = items.len().div_ceil(2);
@@ -176,7 +177,14 @@ pub fn show(app: &mut App, page: usize) {
         Then::ImportReport(page),
     )
     .labelled(&["Previous", "Next", "Close", "Resolve..."]);
-    msg.focus = 2;
+    if clean {
+        // A clean report is informational: there is nothing for Resolve to repair.
+        msg.buttons = vec![Answer::Cancel];
+        msg = msg.labelled(&["Close"]);
+        msg.focus = 0;
+    } else {
+        msg.focus = 2;
+    }
     app.show_msg(msg);
 }
 pub fn answer(app: &mut App, page: usize, answer: Answer) {

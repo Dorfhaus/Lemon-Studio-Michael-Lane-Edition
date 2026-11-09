@@ -479,11 +479,17 @@ pub const PICK_BAR_HINT: &str = "Drag to scroll - right-drag resizes the preview
 pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, total: f32, target: Scroll) {
     let len = if vertical { track.h } else { track.w };
     let total = total.max(view).max(1.0);
-    let max = (total - view).max(0.0);
+    let mut max = (total - view).max(0.0);
     let (mut thumb_at, mut thumb) = os_ui::kit::thumb(len, pos, view, total);
+    let content_span=crate::elastic_scroll::adaptive(target).then_some(total);
+    if content_span.is_some() {(thumb_at,thumb,max)=crate::elastic_scroll::horizontal(len,pos,view,total);}
     if target==Scroll::PlaylistY {
         thumb=thumb.max(72.0_f32.min(len));
         thumb_at=if max>0. {pos.clamp(0.,max)/max*(len-thumb)}else{0.};
+    }
+    if target == Scroll::MixerX {
+        thumb = 26.0_f32.min(len.max(0.0));
+        thumb_at = if max > 0.0 { pos.clamp(0.0, max) / max * (len - thumb) } else { 0.0 };
     }
     let hint = match target {
         Scroll::PianoX | Scroll::PlaylistX => "Drag to scroll - right-drag: left/right scrolls, up/down zooms",
@@ -494,20 +500,37 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let act = Action::Scrollbar(target);
     let hov = ui.hit(track, act.clone(), hint);
     let st = kit::State::new(hov, ui.down(track, &act), false);
-    if target==Scroll::PlaylistY {
+    let (draw_at, draw_len) = if content_span.is_some() {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
+    if target == Scroll::MixerX {
+        // Invisible full-height hit lane, with only a small handle painted.
+        let color = if ui.held(&act) { ui.t.tx(0xffffff) } else { ui.t.s(0x172126) };
+        ui.c.fill_rect(Rect::new(track.x + thumb_at, track.cy() - 2.0, thumb, 4.0), color);
+    } else if target==Scroll::PlaylistY {
         ui.c.fill_rect(track,ui.t.scrollbar);
-        let r=Rect::new(track.x+1.,track.y+thumb_at,(track.w-2.).max(1.),thumb);
+        let r=Rect::new(track.x+1.,track.y+draw_at,(track.w-2.).max(1.),draw_len);
         kit::scroll_thumb_face(ui.c, ui.t, r, true, st);
     } else if target == Scroll::PlaylistX {
-        // The Playlist paints its translucent thumb over the clip overview.
+        // The Playlist draws the viewport and clip miniature itself.
+        ui.c.fill_rect(track, ui.t.scrollbar.with_alpha(255));
+    } else if target == Scroll::PianoX {
         ui.c.fill_rect(track, ui.t.scrollbar);
+        // Keep the face aligned with the drag geometry, including the right endpoint.
+        let face = Rect::new(track.x + draw_at, track.y + 2.0, draw_len, track.h - 4.0);
+        kit::scroll_thumb_face(ui.c, ui.t, face, false, st);
+    } else if target == Scroll::PianoY && draw_len != thumb {
+        ui.c.fill_rect(track,ui.t.scrollbar);
+        let face=Rect::new(track.x+2.,track.y+draw_at,(track.w-4.).max(1.),draw_len);
+        if kit::lemon::on(ui.t) {
+            let face=Rect::new(face.x,face.y+1.,face.w,(face.h-2.).max(0.));
+            ui.c.fill_rrect(face,(face.w.min(face.h)/2.).max(0.),kit::scroll_thumb(ui.t,st,kit::high_visibility()));
+        } else {kit::scroll_thumb_face(ui.c,ui.t,face,true,st);}
     } else {kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);}
     if target==Scroll::PlaylistY {
-        for y in [track.y+thumb_at+2.,track.y+thumb_at+thumb-3.] {
+        for y in [track.y+draw_at+2.,track.y+draw_at+draw_len-3.] {
             ui.c.fill_rect(Rect::new(track.x+3.,y,(track.w-6.).max(1.),1.),ui.t.text_dim);
         }
     }
-    ui.bars.push(Bar { target, track, vertical, max, view, thumb });
+    ui.bars.push(Bar { target, track, vertical, max, view, thumb, content_span });
 }
 
 /// Raised surface: soft vertical gradient (lighter at the top) so panels don't look flat.

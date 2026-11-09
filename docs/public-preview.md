@@ -4,7 +4,7 @@ The dedicated `lemonstudio-development` executable uses **Lemon Studio Public Pr
 
 A fresh preview uses the actual embedded Lemon Starter template and normal application defaults. Samples default to this profile's own `Samples` directory; no machine-specific sample drive is guessed. Existing personal sample locations belong in the `browser_samples_root` preference. An empty library says **No samples yet**. Samples, favorites, settings, plugin database, downloaded stem runtime/headphone profiles and AI trust are separate from the personal installation.
 
-On Michael's local Windows installation, the preview is seeded with an empty plugin cache and `startup_scan=false` so testing on a producer's computer simulates a new user with no additional plugins. This is the only deliberate preview preference override; public users still discover their own installed plugins. No sample packs are bundled in the current release payload. Users add their folders themselves.
+On Michael's local Windows installation, the preview is seeded with an empty plugin cache so testing on a producer's computer simulates a new user with no additional plugins. Users can discover their installed plugins with Find new plugins in Settings > Plugins. No sample packs are bundled in the current release payload. Users add their folders themselves.
 
 The profile is persistent after its first launch: subsequent testing can change it. Do not reset it on each launch or delete test projects. Preserve the previous development profile when preparing a fresh first-run preview. Never ship local profiles, private plugin-import files, personal libraries or preview launcher configuration in public packages.
 

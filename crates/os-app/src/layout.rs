@@ -114,8 +114,9 @@ pub fn apply_startup_layout(s: &mut State) {
     let playlist_h=height-mix_h;
     let playlist_y=(work.bottom()-playlist_h).max(work.y);
     s.wins[Win::Playlist.slot().unwrap()]=WinState {rect:Rect::new(work.x,playlist_y,work.w,playlist_h),maxed:false,mini:false};
-    s.hide(Win::ChannelRack);s.hide(Win::PianoRoll);
+    s.hide(Win::PianoRoll);
     s.raise(Win::Playlist);s.raise(Win::Mixer);
+    if get("window_channel_rack_open").as_deref()!=Some("0") { s.raise(Win::ChannelRack); }
     s.dock_work=Some(work);
 }
 
@@ -188,7 +189,7 @@ mod tests {
             assert!((m.bottom()-p.y-overlap).abs()<0.01);
             assert!(m.h>=Win::Mixer.min_size().1 && p.h>=Win::Playlist.min_size().1);
             assert!(a.state.shown(Win::Mixer)&&a.state.shown(Win::Playlist));
-            assert!(!a.state.shown(Win::ChannelRack)&&!a.state.shown(Win::PianoRoll));
+            assert!(a.state.shown(Win::ChannelRack)&&!a.state.shown(Win::PianoRoll));
             assert!(!a.state.startup_layout_pending);
             if w==1920 {if let Ok(path)=std::env::var("LEMON_STARTUP_LAYOUT_SHOT"){c.pixmap.save_png(std::path::Path::new(&path)).unwrap();}}
         }

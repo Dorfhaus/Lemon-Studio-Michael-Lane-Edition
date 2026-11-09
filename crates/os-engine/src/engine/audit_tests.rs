@@ -3,6 +3,27 @@ use crate::{Engine, HostedEffect, Instrument, PlayMode, SampleLibrary};
 use os_model::{Channel, ChannelKind, MixerTrack, Note, Pattern, Project, SlotPlugin};
 use std::sync::{Arc, Mutex};
 
+#[test]
+#[ignore = "manual empty mixer timing"]
+fn empty_mixer_render_cost() {
+    let mut p = project();
+    p.channels.clear();
+    p.patterns.clear();
+    p.mixer = (0..128).map(MixerTrack::new).collect();
+    let mut library = SampleLibrary::default();
+    let mut engine = Engine::new(&p, &mut library, 48000, PlayMode::Pattern(1));
+    engine.clear_schedule();
+    engine.set_awake(true);
+    let mut block = vec![0.0; 512];
+    for _ in 0..100 { engine.process(&mut block); }
+    let start = std::time::Instant::now();
+    for _ in 0..1875 {
+        engine.process(std::hint::black_box(&mut block));
+        assert!(block.iter().all(|&x| x == 0.0));
+    }
+    println!("Empty 128-track mixer, 10 seconds audio: {:?}", start.elapsed());
+}
+
 fn project() -> Project {
     Project {
         ppq: 96,

@@ -9,7 +9,7 @@ const MAX_ANCHORS: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub(super) struct Onset {
-    time: f64,
+    pub(super) time: f64,
     strength: f32,
     brightness: f32,
     sustain: f32,

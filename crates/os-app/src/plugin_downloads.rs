@@ -345,8 +345,8 @@ pub fn tick(app:&mut App){
         if let Some(parent)=path.parent(){
             for folder in &mut app.state.plugdb.prefs.folders {let previous=Path::new(&folder.path);if previous==path {folder.on=true;}else if previous.parent()==Some(parent){folder.on=false;}}
         }
-        app.state.plugdb.prefs.add_folder(&path);app.prefs_changed();app.start_scan(crate::plugin_db::Mode::Changed);
-        report("Installed. Plugin scan started; it will appear in the instrument/effect menu when scanning finishes.".into());
+        app.state.plugdb.prefs.add_folder(&path);app.prefs_changed();
+        report("Installed. Click Scan Plugins to add it to the instrument or effect menu.".into());
     }
     if let Some(path)=ready {
         let message=match crate::donate::open_url(&path.to_string_lossy()){

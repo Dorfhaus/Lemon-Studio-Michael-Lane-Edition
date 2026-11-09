@@ -9,6 +9,12 @@ pub struct Vu {
 
 impl Vu {
     pub fn process(&mut self, stereo: &[f32], rate: u32) {
+        // Empty mixer strips need no detector work. Keep processing after sound
+        // stops so a meter's decay remains continuous.
+        if self.first == [0.0; 2] && self.second == [0.0; 2]
+            && stereo.iter().all(|&sample| sample == 0.0) {
+            return;
+        }
         let a = -(-1.0 / (rate.max(1) as f64 * 0.0452)).exp_m1();
         for frame in stereo.chunks_exact(2) {
             for i in 0..2 {

@@ -125,6 +125,7 @@ struct Band {
     kind: usize,
     /// b0, b1, b2, a1, a2.
     coef: [f64; 5],
+    target: [f64; 5],
     /// Per side: x1, x2, y1, y2.
     state: [[f64; 4]; 2],
     running: bool,
@@ -171,7 +172,7 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
     pub fn new(settings: [[i32; 3]; 3], rate: u32) -> Self {
         let band = |k: usize| {
             let s = settings[k];
-            Band { settings: s, kind: k, coef: design(k, s, rate), state: [[0.0; 4]; 2], running: s[0] != 0, dirty: false, count: None }
+            Band { settings: s, kind: k, coef: design(k, s, rate), target: design(k, s, rate), state: [[0.0; 4]; 2], running: s[0] != 0, dirty: false, count: None }
         };
         TrackEq { smooth: false, bands: [band(0), band(1), band(2)], rate }
     }
@@ -184,7 +185,7 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
             let s = settings[k];
             let kind = kinds[k].min(2);
             let count = (s[0] == 0).then(|| idle_count(rate));
-            Band { settings: s, kind, coef: design(kind, s, rate), state: [[0.0; 4]; 2], running: true, dirty: false, count }
+            Band { settings: s, kind, coef: design(kind, s, rate), target: design(kind, s, rate), state: [[0.0; 4]; 2], running: true, dirty: false, count }
         };
         TrackEq { smooth: false, bands: [band(0), band(1), band(2)], rate }
     }
@@ -228,20 +229,21 @@ impl TrackEq { // This code is a part of L e m o n S t u d i o.
     /// the tick a running band's memory values below 2^-24 are set to 0, and a counting band's count goes down by the
     /// tick's length.
     pub fn process(&mut self, buf: &mut [f32]) {
+        if self.is_flat() { return; }
         let n = (buf.len() / 2) as i64;
         let rate = self.rate;
-        let settling=1.0-(-1.0/(0.010*f64::from(rate))).exp();
+        let settling=if self.smooth {1.0-(-1.0/(0.010*f64::from(rate))).exp()} else {1.0};
         for band in self.bands.iter_mut() {
             if !band.running {
                 continue;
             }
-            let target=design(band.kind,band.settings,rate);
             if band.dirty {
-                if !self.smooth {band.coef = target;}
+                band.target=design(band.kind,band.settings,rate);
+                if !self.smooth {band.coef = band.target;}
                 band.dirty = false;
             }
             for f in buf.chunks_exact_mut(2) {
-                if self.smooth {for (coef,target) in band.coef.iter_mut().zip(target) {*coef+=(target-*coef)*settling;}}
+                if self.smooth {for (coef,target) in band.coef.iter_mut().zip(band.target) {*coef+=(target-*coef)*settling;}}
                 f[0] = band.run(0, f[0]);
                 f[1] = band.run(1, f[1]);
             }
@@ -330,6 +332,35 @@ fn design(k: usize, [gain, freq, width]: [i32; 3], rate: u32) -> [f64; 5] {
 #[cfg(test)]
 mod tests { // This code is a part of L e m o n S t u d i o.
     use super::*;
+
+    #[test]
+    fn cached_coefficients_preserve_automation_and_rebuilds() {
+        for smooth in [false, true] {
+            let mut cached = TrackEq::new(EQ_DEFAULT, 48000).with_smoothing(smooth);
+            let mut reference = cached.clone();
+            for block in 0..300 {
+                if block % 30 == 0 {
+                    let band = (block / 30) % 3;
+                    let gain = if block % 60 == 0 { 900 } else { 0 };
+                    for eq in [&mut cached, &mut reference] { eq.set(band, 0, gain); }
+                }
+                if block == 125 {
+                    for eq in [&mut cached, &mut reference] {
+                        let mut next = TrackEq::new(eq.bands.map(|b| b.settings), 48000).with_smoothing(smooth);
+                        next.inherit_console(eq);
+                        *eq = next;
+                    }
+                }
+                // The old path redesigned every active band on every block.
+                for band in &mut reference.bands { band.dirty = true; }
+                let mut a: Vec<f32> = (0..512).map(|i| ((i + block * 512) as f32 * 0.017).sin() * 0.2).collect();
+                let mut b = a.clone();
+                cached.process(&mut a);
+                reference.process(&mut b);
+                assert_eq!(a, b, "block={block}, smooth={smooth}");
+            }
+        }
+    }
 
     /// The default bands sit at 90 Hz, 1500 Hz and 8000 Hz (spec: ui/mixer.md §8); the knob spans 10 Hz .. 16 kHz.
     #[test]

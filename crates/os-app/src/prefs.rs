@@ -119,6 +119,14 @@ pub const COLORFUL_WAVEFORMS: Combo =
     Combo { key: "colorful_waveforms", label: "Colorful waveforms", choices: &["Off", "Color map", "Multiband"], default: 0 };
 
 pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 2 };
+pub const PLAYLIST_SCROLLBAR_STYLE: Combo = Combo {
+    key: "playlist_scrollbar_style",
+    label: "Playlist scrollbar style",
+    choices: &["Classic", "Separate thumb"],
+    default: 1,
+};
+pub const PLAYLIST_SCROLLBAR_STYLE_VISIBILITY: &str = "visible_playlist-scrollbar-style";
+
 
 /// General ▸ Language: how note names read (`crate::note_names`; FL asks for a restart, Lemon Studio renames at once).
 /// Spec: ui/settings-choices.md "Note names and Black notes".
@@ -576,7 +584,7 @@ pub const PIANO_ZOOM_KEYS: Combo = Combo {
     default: 0,
 };
 
-pub const COMBOS: &[&Combo] = &[&PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
+pub const COMBOS: &[&Combo] = &[&PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &PLAYLIST_SCROLLBAR_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
 /// The declared combos no settings page shows (a window of their own does): General ▸ Input ▸ Manage shortcuts' rows
 /// (`crate::shortcuts`). Read by the declaration tests.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1099,6 +1107,27 @@ main_gui_scaling = 200%
             let entry = hit_rect(&app, &Action::PlPopup(index));
             click(&mut app, &mut canvas, entry);
             assert_eq!(choice(&MIXER_STYLE), MIXER_STYLE.choices[index as usize]);
+        }
+    }
+
+    #[test]
+    fn playlist_scrollbar_style_switches_from_theme_settings() {
+        let mut canvas = Canvas::new(1366, 768, 1.0).unwrap();
+        let mut app = App::new(None);
+        let style = &PLAYLIST_SCROLLBAR_STYLE;
+        assert_eq!(choice(style), "Separate thumb");
+        app.open_settings(settings::THEME);
+        for (vintage, index) in [(false, 0), (true, 1)] {
+            app.state.vintage_2005 = vintage;
+            app.invalidate();
+            app.paint(&mut canvas, None);
+            let control = app.hits.iter().rev().find(|h| matches!(
+                h.action, Action::Settings(SAct::Combo(label, ..)) if label == style.label
+            )).expect("Playlist scrollbar selector in both themes").rect;
+            click(&mut app, &mut canvas, control);
+            let entry = hit_rect(&app, &Action::PlPopup(index));
+            click(&mut app, &mut canvas, entry);
+            assert_eq!(choice(style), style.choices[index as usize]);
         }
     }
 

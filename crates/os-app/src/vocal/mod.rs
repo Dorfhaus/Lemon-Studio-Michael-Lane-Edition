@@ -67,6 +67,7 @@ fn message(app:&mut App,text:String){app.state.message=Some(text.clone());app.st
 pub fn toggle(app:&mut App,row:u16){
  if app.state.playlist.vocal.row==Some(row){app.state.playlist.vocal.row=None;app.invalidate();return;}
  if let Err(e)=source(app,row){message(app,e);return;}
+ app.state.playlist.warp=None;app.state.playlist.warp_loading=None;
  app.state.playlist.vocal.row=Some(row);app.state.playlist.vocal.selected.clear();
  if app.state.playlist.vocal.ready.is_none(){app.state.playlist.vocal.ready=Some(engine::ready());}
  if app.state.playlist.vocal.ready==Some(false){ask_download(app,row);}else{ensure(app,row);}

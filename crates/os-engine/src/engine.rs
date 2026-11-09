@@ -2893,6 +2893,7 @@ impl Engine {
     /// moves; control points, then automation clips; notes that end are released, then notes that start are
     /// triggered; then the tick's samples are produced.
     fn render_tick(&mut self) {
+        let _audio_float = os_dsp::audio_float::AudioFloat::enter();
         if self.held {
             return self.render_held();
         }

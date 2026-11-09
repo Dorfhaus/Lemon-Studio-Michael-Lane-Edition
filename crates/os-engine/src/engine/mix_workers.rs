@@ -45,6 +45,7 @@ impl Default for Job {
 }
 impl Job {
     fn run(&mut self) {
+        let _audio_float = os_dsp::audio_float::AudioFloat::enter();
         let start=Instant::now();
         self.moved=false; self.missed=0;
         self.backup.clear(); self.backup.extend_from_slice(&self.buf);

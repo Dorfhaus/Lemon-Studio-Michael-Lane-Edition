@@ -119,6 +119,7 @@ pub(crate) fn visible_layout(s:&State)->crate::toolbar::Layout {
             vec![Menu, Transport, Time, Pattern, Utilities],
         ], logo: false }
     } else { s.bar.layout.clone() };
+    if s.vintage_2005 && crate::input_bindings::has_pinned() { layout.rows[1].push(Panel::CustomActions); }
     if !s.bar.editing {
         layout.logo &= shown("visible_logo");
         for row in &mut layout.rows {
@@ -443,6 +444,7 @@ fn separator(ui: &mut Ui, x: f32, row: usize, lemon: bool) {
 /// Paints panel `p`; false when one of its buttons did not fit (its row ends there).
 fn panel(ui: &mut Ui, c: &Ctx, p: Panel) -> bool {
     match p {
+        Panel::CustomActions => return crate::input_bindings::toolbar(ui,c.a.r(Rect::new(1440.,6.,144.,29.)),c.fit),
         Panel::Caption => { if c.preview || c.s.vintage_2005 { caption(ui, c); } },
         Panel::Hint => hint_panel(ui, c),
         Panel::Transport => transport(ui, c),

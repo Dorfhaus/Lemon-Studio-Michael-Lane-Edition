@@ -104,7 +104,7 @@ impl Menu {
         }
     }
 
-    fn catalog(self, s: &State) -> Vec<PItem> {
+    pub(crate) fn catalog(self, s: &State) -> Vec<PItem> {
         use crate::playlist::{clip_menu_items, PickKind};
         match self {
             Self::Playlist => crate::playlist::default_options_menu(s, 0., 0.).items,

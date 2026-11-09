@@ -373,6 +373,11 @@ fn apply(s: &mut State, batch: &Batch, renders: Vec<Rendered>) -> Result<usize, 
     Ok(count)
 }
 
+pub(crate) fn transient_times(sample: Arc<os_engine::Sample>, start: usize, end: usize) -> Vec<f64> {
+    onsets::detect(&Audio { sample, path: String::new(), start, end })
+        .into_iter().map(|onset| onset.time).collect()
+}
+
 struct Audio {
     sample: Arc<os_engine::Sample>,
     path: String,

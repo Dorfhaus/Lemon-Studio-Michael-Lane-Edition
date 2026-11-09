@@ -802,9 +802,30 @@ pub struct History {
     wheel: Option<crate::knobs::Control>,
     /// The newest step was recorded since the last button release (`settle` looks at it then).
     fresh: bool,
+    /// A synchronous custom sequence collects all its snapshots before applying the undo limit.
+    sequence: bool,
 }
 
 impl History {
+    /// Collapse successful steps from one synchronous custom action sequence.
+    pub(crate) fn begin_sequence(&mut self) -> Self {
+        let previous = std::mem::take(self);
+        self.sequence = true;
+        previous
+    }
+    pub(crate) fn end_sequence(&mut self, previous: Self) {
+        let sequence = std::mem::replace(self, previous);
+        let snaps: Vec<_> = sequence.steps.into_iter().take(sequence.done).map(|step|step.snap).collect();
+        if snaps.is_empty() { return; }
+        self.steps.truncate(self.done);
+        self.steps.push(Step { name: "Custom action sequence", snap: Snap::Several(snaps) });
+        self.done = self.steps.len();
+        self.undid = false;
+        self.wheel = None;
+        self.fresh = true;
+        self.trim();
+    }
+
     /// How many steps there are ("Last reset" not counted).
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -853,6 +874,7 @@ impl History {
 
     /// Drops the oldest steps past Maximum undo levels (undone steps last).
     fn trim(&mut self) {
+        if self.sequence { return; }
         let max = usize::from(prefs::number(&prefs::MAX_UNDO_LEVELS));
         while self.steps.len() > max && self.done > 0 {
             self.steps.remove(0);

@@ -614,8 +614,8 @@ mod tests {
         click(&mut app, &mut c, Action::Settings(SAct::Info(InfoField::Title)));
         assert!(app.state.project.info.comments.as_deref().is_some_and(|t| t.ends_with(" \nend")));
         typed(&mut app, "Clicked");
-        click(&mut app, &mut c, Action::Settings(SAct::Tab(settings::DEBUG)));
-        assert_eq!(app.state.settings.tab, settings::DEBUG);
+        click(&mut app, &mut c, Action::Settings(SAct::Tab(settings::ABOUT)));
+        assert_eq!(app.state.settings.tab, settings::ABOUT);
         assert!(!app.info_editing());
         assert_eq!(app.state.project.info.title.as_deref(), Some("Clicked"));
     }

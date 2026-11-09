@@ -30,6 +30,13 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Tempo Tapper shortcut", "visible_win-tapper"),
         ("Touch Controller shortcut", "visible_win-touch"),
     ]),
+    ("Editor feedback", &[
+        ("Elastic scrollbars", crate::elastic_scroll::VISIBILITY),
+        ("Adaptive horizontal scrollbars", crate::elastic_scroll::ADAPTIVE),
+    ]),
+    ("Input customization", &[
+        ("Custom action buttons", "visible_custom-actions"),
+    ]),
     ("Toolbar extras", &[
         ("CPU and live monitor", "visible_cpu"),
         ("Vintage CPU meter", "visible_vintage_cpu"),
@@ -50,11 +57,16 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("File information panel", "visible_browser-info"),
     ]),
     ("Playlist", &[
+        (crate::theme_adjust::PLAYLIST_BRIGHTNESS, crate::theme_adjust::PLAYLIST_BRIGHTNESS_VISIBILITY),
+        ("Vocal tuning button", "visible_playlist-vocal-tuning"),
+        ("Audio warp editor", "visible_playlist-warp"),
         ("Arrangement mini-map", "visible_playlist-map"),
+        (crate::prefs::PLAYLIST_SCROLLBAR_STYLE.label, crate::prefs::PLAYLIST_SCROLLBAR_STYLE_VISIBILITY),
         ("Bounce audio menu", crate::track_render::VISIBILITY),
         ("Audio clip waveforms", "visible_playlist-waves"),
         ("Stretch button", "visible_playlist-stretch"),
         ("Comping button", "visible_playlist-comp"),
+        ("Clip picker preview buttons", "visible_playlist-picker-preview"),
         ("Clips picker button", "visible_playlist-clips"),
         ("Add instrument button", "visible_playlist-add-instrument"),
         ("Clip color picker and custom swatches", "visible_playlist-custom-swatches"),
@@ -101,6 +113,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Debug tab", "visible_settings-debug"),
         ("About tab", "visible_settings-about"),
         ("Menus tab and customization shortcut", crate::menu_layout::VISIBILITY),
+        ("Controls tab", crate::input_bindings::VISIBILITY),
     ]),
     ("Lemon EQ", &[
         ("Band controls card", lemon_parametric_eq_2::visibility::BAND_CARD),
@@ -119,7 +132,7 @@ pub(crate) fn key(label: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn shown(key: &str) -> bool {
-    settings_file::flag(key, true)
+    settings_file::flag(key, key != "visible_settings-debug")
 }
 
 pub(crate) fn toggle(key: &str) {

@@ -12,6 +12,10 @@ static SKIN: OnceLock<Skin> = OnceLock::new();
 pub(crate) fn directories() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(p) = std::env::var_os("LEMON_VINTAGE_SKIN") { paths.push(p.into()); }
+    if let Some(path) = os_paths::user_file("Skins/FL4") {
+        paths.push(path);
+    }
+    // Keep the existing shared cache used by Windows development and regular profiles.
     if let Some(p) = std::env::var_os("LOCALAPPDATA") {
         paths.push(PathBuf::from(p).join("Lemon Studio/Skins/FL4"));
     }

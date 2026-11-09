@@ -19,6 +19,7 @@ fn control_face(ui: &mut Ui, r: Rect, on: bool, hot: bool) {
 }
 
 pub fn head(ui:&mut Ui,s:&State,row:u16,r:Rect){
+ if !crate::workspace_visibility::shown("visible_playlist-vocal-tuning"){return;}
  let open=super::expanded(s,row);let tuned=pl::clips(s).iter().any(|c|c.track==row&&matches!(c.source,ClipSource::Channel(id) if s.project.vocal_edits.iter().any(|d|d.channel==id&&d.changed())));
  let hover=ui.hit(r,Action::Vocal(Command::Toggle(row)),if open{"Close vocal editor; keep tuning active"}else{"Vocal tuning: expand this track to edit notes and pitch"});
  if ui.t.style.vintage_2005 { control_face(ui, r, open, hover); }

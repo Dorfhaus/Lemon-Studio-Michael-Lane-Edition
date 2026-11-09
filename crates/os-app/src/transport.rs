@@ -410,7 +410,7 @@ enum Cmd {
     VocalStop,
     Audition(Box<Project>),
     /// Play a project's playlist once on the preview stream (clip preview).
-    PreviewSong(Box<Project>),
+    PreviewSong(Box<Project>, bool),
     /// Like `Preview`, faded out after the given time if still sounding (browser sample preview).
     PreviewFor(Box<Project>, Option<Duration>, Arc<os_engine::Sample>),
     /// The hosted instruments changed (in `Transport::instruments`): rebuild the engines.
@@ -679,8 +679,9 @@ impl Transport {
     }
 
     /// Play the playlist of `project` once on the preview stream (spec: ui/playlist.md §10, clip Preview).
+    pub fn preview_loop(&self, project: Project) { let _ = self.tx.send(Cmd::PreviewSong(Box::new(project), true)); }
     pub fn preview_song(&self, project: Project) {
-        let _ = self.tx.send(Cmd::PreviewSong(Box::new(project)));
+        let _ = self.tx.send(Cmd::PreviewSong(Box::new(project), false));
     }
 
     /// Start a live note: mixed into playback while playing, else on the live stream (kept open, so
@@ -1127,7 +1128,7 @@ impl Feeder {
                     }
                     // The playback's meters wait for the device to play this tick.
                     if self.meters && self.ctl.report.load(Ordering::Relaxed) {
-                        if let Ok(mut t) = self.shared.tracks.lock() {
+                        if let Ok(mut t) = self.shared.tracks.try_lock() {
                             t.tick(at, &mut e);
                         }
                     }
@@ -1140,7 +1141,7 @@ impl Feeder {
                 if self.ctl.report.load(Ordering::Relaxed) && self.shared.state.compare_exchange(PLAYING, PAUSED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                     self.ctl.held.store(true, Ordering::Relaxed);
                     self.shared.marker_hold.store(t + 1, Ordering::Release);
-                    if let Ok(mut v) = self.shared.sounding.lock() {
+                    if let Ok(mut v) = self.shared.sounding.try_lock() {
                         v.clear();
                     }
                 }
@@ -1160,7 +1161,7 @@ impl Feeder {
                 self.shared.load.store((load as f32).to_bits(), Ordering::Relaxed);
                 (self.busy, self.rendered) = (Duration::ZERO, 0);
             }
-            if let Ok(mut t) = self.shared.tracks.lock() {
+            if let Ok(mut t) = self.shared.tracks.try_lock() {
                 e.take_track_peaks(&mut t.now);
                 if !self.ctl.report.load(Ordering::Relaxed) {
                     e.track_vu(&mut t.vu);
@@ -1173,7 +1174,7 @@ impl Feeder {
             self.shared.tempo.store(e.tempo().to_bits(), Ordering::Relaxed);
         }
         if frames>0 && self.live && !self.ctl.report.load(Ordering::Relaxed) {
-            if let Ok(mut v)=self.shared.live_sounding.lock(){
+            if let Ok(mut v)=self.shared.live_sounding.try_lock(){
                 v.clear();
                 if !self.ctl.paused.load(Ordering::Relaxed) && !e.paused(){
                     v.extend(e.sounding().map(|(c,k)|(c as u16,k)));
@@ -1183,7 +1184,7 @@ impl Feeder {
         }
         // Lit keys run ahead of what is heard by the queue's length (a few milliseconds).
         if frames > 0 && self.ctl.report.load(Ordering::Relaxed) {
-            if let Ok(mut v) = self.shared.sounding.lock() {
+            if let Ok(mut v) = self.shared.sounding.try_lock() {
                 v.clear();
                 if !self.ctl.paused.load(Ordering::Relaxed) && !e.paused() {
                     v.extend(e.sounding().map(|(c, k)| (c as u16, k)));
@@ -1476,7 +1477,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         match rx.recv_timeout(Duration::from_millis(10)) {
             // The output is closed by Auto close: previews and live notes find no stream and open none.
             // So is a device that failed, until it opens again.
-            Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(_) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
+            Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(..) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
             Ok(Cmd::Update) => {
                 if let Some(project) = latest.lock().ok().and_then(|mut l| l.take()) {
                     for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
@@ -1573,10 +1574,10 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     Err(e) => report(&shared, e),
                 }
             }
-            Ok(Cmd::PreviewSong(project)) => {
+            Ok(Cmd::PreviewSong(project, looping)) => {
                 preview = None;
                 preview_until = None;
-                match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut library, shared.clone(), &inst, At::default(), &mut device) {
+                match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut library, shared.clone(), &inst, At { preview_loop: looping, ..At::default() }, &mut device) {
                     Ok(s) => preview = Some(s),
                     Err(e) => report(&shared, e),
                 }
@@ -1643,7 +1644,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 reset_pending = false;
                 listen_retry = true;
                 live_project = Some((*project).clone());
-                let at = At { tick: start, paused: false, truncated: starts.truncated, count_in: starts.count_in };
+                let at = At { preview_loop: false, tick: start, paused: false, truncated: starts.truncated, count_in: starts.count_in };
                 match Session::start(&project, mode, Kind::Song, generation, &mut library, shared.clone(), &inst, at, &mut device) {
                     Ok(s) => session = Some(s),
                     Err(e) => {
@@ -1670,7 +1671,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     (l.next, l.tries) = (Instant::now(), 0);
                 }
                 if let Some(old) = session.take() {
-                    let at = At { tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: old.paused(), truncated: old.truncated, count_in: 0 };
+                    let at = At { preview_loop: false, tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: old.paused(), truncated: old.truncated, count_in: 0 };
                     let (project, mode, generation) = (old.project.clone(), old.mode, old.generation);
                     drop(old);
                     reset_instruments(&inst);
@@ -1743,7 +1744,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 // The playback (paused by the app) is held where it was heard; every stream fades out and closes, then
                 // the instruments are reset as after Stop (without the rewind: the transport is paused).
                 if let Some(s) = session.take() {
-                    let at = At { tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: true, truncated: s.truncated, count_in: 0 };
+                    let at = At { preview_loop: false, tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: true, truncated: s.truncated, count_in: 0 };
                     held = Some((s.project.clone(), s.mode, s.generation, at));
                     retire(s, &mut closing);
                     reset_pending = true;
@@ -1824,7 +1825,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         if lost.is_none() {
             if let Some((name, why)) = device.failure() {
                 if let Some(s) = session.take() {
-                    let at = At { tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: s.paused(), truncated: s.truncated, count_in: 0 };
+                    let at = At { preview_loop: false, tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: s.paused(), truncated: s.truncated, count_in: 0 };
                     held = Some((s.project.clone(), s.mode, s.generation, at));
                 }
                 live = None;
@@ -2014,6 +2015,7 @@ const LOST_PAUSES: Duration = Duration::from_secs(2);
 /// the notes under way there sound ("Play truncated notes on transport", `Starts`).
 #[derive(Clone, Copy, Default)]
 struct At {
+    preview_loop: bool,
     tick: f64,
     paused: bool,
     truncated: bool,
@@ -2096,7 +2098,7 @@ impl Session {
         let (rate, fixed, info) = (out.info.rate, out.info.fixed, out.info.clone());
         let mut e = engine(project, library, rate, mode, inst, kind != Kind::Preview);
         // Playback loops: a pattern on its bar line, the song at its end (back to the start).
-        e.set_looping(song);
+        e.set_looping(song || at.preview_loop);
         if song && mode == PlayMode::Song && project.arrangement().is_none_or(|a|a.clips.is_empty()) { e.empty_song_transport(); }
         if kind == Kind::Live {
             e.clear_schedule();
@@ -2406,6 +2408,133 @@ mod tests {
         ctl.paused.store(false, Ordering::Relaxed);
         os_engine::engine::MixerInput::render(&mut input, 48000, &mut buses);
         assert!(buses[1][0] > 0.29); m.stop();
+    }
+
+
+    #[test]
+    fn display_locks_cannot_stall_audio_feeder() {
+        let (e, _) = looping_engine();
+        let (mut r, _, shared) = renderer(e);
+        let mut feeder = r.inline.take().unwrap();
+        let meters = shared.tracks.lock().unwrap();
+        let keys = shared.sounding.lock().unwrap();
+        let live = shared.live_sounding.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || { feeder.fill(128); tx.send(()).unwrap(); });
+        let completed = rx.recv_timeout(Duration::from_millis(150)).is_ok();
+        drop((meters, keys, live));
+        worker.join().unwrap();
+        assert!(completed, "display readers blocked audio rendering");
+    }
+
+
+    #[test]
+    #[ignore = "sustained synthetic callback test, no audio device"]
+    fn sustained_low_buffer_stress() {
+        struct Signal { phase: f32 }
+        impl os_engine::engine::MixerInput for Signal {
+            fn render(&mut self, rate: u32, tracks: &mut [Vec<f32>]) {
+                for frame in tracks[1].chunks_exact_mut(2) {
+                    let value = 0.1 + 0.02 * self.phase.sin();
+                    self.phase = (self.phase + std::f32::consts::TAU * 220.0 / rate as f32) % std::f32::consts::TAU;
+                    frame.fill(value);
+                }
+            }
+        }
+        let seconds: u64 = std::env::var("LEMON_STRESS_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+        for size in [64usize, 128, 256] {
+            let mut p = Project::default();
+            p.ppq = 96; p.tempo = Some(120.0);
+            p.mixer = (0..16).map(os_model::MixerTrack::new).collect();
+            p.mixer[1].routes = vec![2]; p.mixer[2].routes = vec![0];
+            p.mixer[1].channel_layout = 1;
+            p.mixer[1].strip = [12000, 14000, 0, 0, 10000, 0, 0];
+            p.mixer[1].eq[1][0] = 600;
+            let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+            e.clear_schedule(); e.set_awake(true);
+            e.set_mixer_input(Box::new(Signal { phase: 0.0 }));
+            let (mut r, ctl, shared) = renderer(e);
+            let mut feeder = r.inline.take().unwrap();
+            let engine = feeder.engine.clone();
+            feeder.fill(size);
+            let mut feed = FeedThread::spawn(feeder);
+            r.wake = feed.thread();
+            let stop = Arc::new(AtomicBool::new(false));
+            let edit_stop = stop.clone(); let ui = shared.clone();
+            let editor = std::thread::spawn(move || {
+                let mut count = 0u64;
+                while !edit_stop.load(Ordering::Acquire) {
+                    // Simulate UI meter reads that span multiple small callbacks.
+                    { let _meters = ui.tracks.lock().unwrap(); std::thread::sleep(Duration::from_millis(10)); }
+                    { let _keys = ui.sounding.lock().unwrap(); std::thread::sleep(Duration::from_millis(5)); }
+                    if let Ok(mut e) = engine.lock() {
+                        e.set_effects(count % 2 == 0, true);
+                        e.set_multicore(count % 3 != 0);
+                        e.set_loop_range(Some((0, 384)));
+                    }
+                    count += 1;
+                    std::thread::sleep(Duration::from_millis(85));
+                }
+                count
+            });
+            raise_priority();
+            let start = Instant::now();
+            let period = Duration::from_secs_f64(size as f64 / 48000.0);
+            let mut due = Instant::now(); let mut block = vec![0.0; size * 2];
+            let mut callbacks = 0u64; let mut late = 0u64; let mut invalid = 0u64;
+            let mut gaps = 0u64; let mut worst = Duration::ZERO;
+            while start.elapsed() < Duration::from_secs(seconds) {
+                let now = Instant::now();
+                if now < due { std::thread::sleep(due - now); }
+                let at = Instant::now();
+                if at.saturating_duration_since(due) > period { late += 1; }
+                r.render(&mut block);
+                worst = worst.max(at.elapsed());
+                invalid += block.iter().filter(|x| !x.is_finite() || x.abs() > 2.0).count() as u64;
+                if !ctl.paused.load(Ordering::Relaxed) && block.iter().all(|x| *x == 0.0) { gaps += 1; }
+                callbacks += 1;
+                // A delayed synthetic callback is not followed by an artificial burst.
+                due = at + period;
+            }
+            stop.store(true, Ordering::Release); let edits = editor.join().unwrap(); feed.halt();
+            let underruns = shared.underruns.load(Ordering::Relaxed);
+            println!("STRESS size={size} seconds={seconds} callbacks={callbacks} edits={edits} underruns={underruns} gaps={gaps} invalid={invalid} scheduler_late={late} worst_callback_us={}", worst.as_micros());
+            assert_eq!(invalid, 0);
+            assert_eq!(gaps, 0);
+            assert_eq!(underruns, 0);
+        }
+    }
+
+
+    #[test]
+    #[ignore = "explicit installed VST3 probe without editor or audio device"]
+    fn installed_vst_audio_probe() {
+        let path = std::env::var_os("LEMON_STRESS_PLUGIN").expect("explicit plugin path");
+        let library = crate::plugins::load_file(std::path::Path::new(&path), os_host::Format::Vst3).unwrap();
+        let descriptor = library.plugins().first().unwrap().clone();
+        println!("PLUGIN {}", descriptor.name);
+        for size in [64usize, 128, 256] {
+            let plugin = library.clone().create(&descriptor.id).unwrap();
+            let mut plugin = plugin.lock().unwrap();
+            assert!(plugin.activate(48000));
+            let _float = os_dsp::audio_float::AudioFloat::enter();
+            for key in [48, 55, 60, 64] { plugin.note_on(0, key, 0.6); }
+            let mut left = vec![0.0; size]; let mut right = left.clone();
+            let mut total = Duration::ZERO; let mut worst = Duration::ZERO;
+            let mut late = 0u64; let mut peak = 0.0f32; let mut worst_block = 0;
+            for n in 0..(48000 * 5 / size) {
+                left.fill(0.0); right.fill(0.0);
+                if n == 48000 * 4 / size { for key in [48,55,60,64] {plugin.note_off(0,key);} }
+                let start = Instant::now();
+                plugin.process(48000, &mut left, &mut right);
+                let elapsed = start.elapsed(); total += elapsed;
+                if elapsed > worst { worst = elapsed; worst_block = n; }
+                if elapsed.as_secs_f64() > size as f64 / 48000.0 { late += 1; }
+                for x in left.iter().chain(&right) {assert!(x.is_finite());peak=peak.max(x.abs());}
+            }
+            println!("PLUGIN size={size} peak={peak} processing_ms={} worst_us={} worst_block={worst_block} blocks_over_budget={late}",total.as_millis(),worst.as_micros());
+            assert!(peak > 0.00001, "plugin did not produce audio; check license/preset");
+        }
     }
 
     /// The queue hands out exactly what the engine renders, tick after tick, whatever the device's block size; the

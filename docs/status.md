@@ -95,7 +95,7 @@ clicking it does nothing. The full, item-by-item roadmap lives on the
 - Plugin menus everywhere a plugin is added. F8 lists instruments and effects: an effect goes to the
   selected mixer track, an instrument to the bottom of the channel rack.
 - A plugin manager in Settings with your own search folders
-- A background scan at startup; each file is tried in a separate scanner process, so a broken plugin
+- Manual plugin discovery; each file is tried in a separate scanner process, so a broken plugin
   cannot take Lemon Studio down
 - Favourites and hidden plugins
 - One menu entry per plugin installed in several formats (VST3, CLAP, VST2: your preferred format wins)

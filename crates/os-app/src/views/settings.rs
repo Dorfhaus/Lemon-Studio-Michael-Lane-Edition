@@ -25,6 +25,7 @@ pub enum SAct {
     Body,
     VisibilitySearch,
     MenuLayout(crate::menu_layout::Action),
+    InputBindings(crate::input_bindings::Edit),
     ThemeEditor(crate::advanced_theme::Hit),
     Close,
     Tab(usize),
@@ -68,6 +69,7 @@ pub enum SAct {
     Number(&'static str),
     /// A slider declared in `crate::prefs` by its label, with its track's left and width: a press sets it and drags it
     /// (`App::pref_slider_press`), the wheel steps it (`App::pref_slider_wheel`).
+    PlaylistBrightness(f32, f32),
     Slider(&'static str, f32, f32),
     /// General ▸ Display's PPI ruler: a press starts a drag of its end (`App::ppi_press`), the wheel steps it
     /// (`App::ppi_wheel`).
@@ -165,6 +167,7 @@ pub struct SettingsUi {
     pub visibility_search: crate::dialog::Field,
     pub visibility_search_focused: bool,
     pub menu_editor: crate::menu_layout::Editor,
+    pub input_editor: crate::input_bindings::Editor,
     pub advanced_theme: Option<crate::advanced_theme::Session>,
     /// Groups whose open state differs from their default.
     pub folded: HashSet<&'static str>,
@@ -221,7 +224,7 @@ pub struct SettingsUi {
 
 /// Tabs: label, page title, group (0 system / 1 project / 2 info) (spec §2). Plugins takes the place of FL's Account
 /// tab (spec: ui/plugin-manager.md §2); tabs are laid out from their text widths (`tab_rects`).
-pub const TABS: [(&str, &str, u8); 12] = [
+pub const TABS: [(&str, &str, u8); 13] = [
     ("MIDI", "MIDI input / output devices", 0),
     ("Audio", "Audio devices / mixer", 0),
     ("General", "System / miscellaneous", 0),
@@ -229,11 +232,12 @@ pub const TABS: [(&str, &str, u8); 12] = [
     ("Plugins", "Plugin manager", 0),
     ("Theme", "Look and feel", 0),
     ("Project", "Current project", 1),
-    ("Info", "Project credits", 1),
+    ("Info", "Project credits", 2),
     ("Debug", "Debugging log", 2),
     ("About", "About", 2),
     ("Visibility", "Workspace Visibility", 2),
     ("Menus", "Menu customization", 2),
+    ("Controls", "Mouse and keyboard bindings", 2),
 ];
 pub const MIDI: usize = 0;
 pub const AUDIO: usize = 1;
@@ -249,13 +253,12 @@ pub const NATIVE_HOST_CHECK: &str = "Load installed FL Studio plugins (experimen
 /// never by the built-in Lemon recreations (spec plugins/fruity-abi.md "Opened projects").
 pub const NATIVE_FIRST_CHECK: &str = "Experimental: real native plugins instead of Lemon recreations";
 /// Plugin manager checks (spec: ui/plugin-manager.md §2).
-pub const STARTUP_CHECK: &str = "Find new plugins at startup";
 pub const ERRORS_CHECK: &str = "Rescan plugins with errors";
 pub const COMBINE_CHECK: &str = "Combine formats of the same plugin";
 
 /// Whether `key` is one of the plugin manager's own checks (handled by `App::plugin_check`).
 pub fn plugin_check(key: &str) -> bool {
-    [STARTUP_CHECK, ERRORS_CHECK, COMBINE_CHECK].contains(&key)
+    [ERRORS_CHECK, COMBINE_CHECK].contains(&key)
 }
 
 /// General ▸ System: whether `.flp` files open with this program. Not a stored setting: on Windows the check shows what
@@ -274,7 +277,6 @@ const ASSOCIATE_ELSEWHERE: &str = "The system's Open with settings decide which 
 pub const LIVE: &[&str] = &[
     NATIVE_HOST_CHECK,
     NATIVE_FIRST_CHECK,
-    STARTUP_CHECK,
     ERRORS_CHECK,
     COMBINE_CHECK,
     TRUNCATED_CHECK,
@@ -422,6 +424,10 @@ pub const DEBUG: usize = 8;
 pub const ABOUT: usize = 9;
 pub const VISIBILITY: usize = 10;
 pub const MENUS: usize = 11;
+pub const CONTROLS: usize = 12;
+const TAB_ORDER: [usize; TABS.len()] = [
+    GENERAL, AUDIO, FILE, MIDI, PLUGINS, THEME, DEBUG, PROJECT, VISIBILITY, MENUS, CONTROLS, INFO, ABOUT,
+];
 pub const OPEN_VISIBILITY: &str = "Workspace Visibility...";
 
 pub(crate) fn tab_shown(tab: usize) -> bool {
@@ -432,6 +438,7 @@ pub(crate) fn tab_shown(tab: usize) -> bool {
         DEBUG => "visible_settings-debug",
         ABOUT => "visible_settings-about",
         MENUS => crate::menu_layout::VISIBILITY,
+        CONTROLS => crate::input_bindings::VISIBILITY,
         _ => return tab < TABS.len(),
     };
     crate::workspace_visibility::shown(key)
@@ -481,6 +488,7 @@ pub enum Row {
     MenuControls(bool),
     MenuName,
     MenuEntry(crate::menu_layout::Entry),
+    InputBindings,
     /// Two checks side by side (second at x 340).
     Check2(&'static str, bool, &'static str, bool),
     /// Disabled check (drawn dim). No page has one at the moment.
@@ -506,6 +514,7 @@ pub enum Row {
     Tiles(TileList, Vec<String>, usize),
     /// Theme adjustment knobs and colour circles.
     ThemeKnobs,
+    PlaylistBrightness,
     ThemeEditor(crate::advanced_theme::Row),
     /// Theme: the applied theme's text is hard to read; a Fix text button (`crate::theme_library`).
     ThemeWarn,
@@ -595,6 +604,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
     use Row::*;
     let st = &s.settings;
     match tab {
+        CONTROLS => vec![g("Mouse and keyboard", vec![txt("Choose a context and event, then assign an action. Changes are saved per profile."), InputBindings])],
         MENUS => {
             let (entries, changed) = crate::menu_layout::entries(s);
             vec![
@@ -622,7 +632,11 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                         || label.to_ascii_lowercase().contains(&query)
                 }).map(|&(label, key)| Check(label, v::shown(key))).collect::<Vec<_>>();
                 if !rows.is_empty() {
-                    groups.push(g(section, rows));
+                    groups.push(if query.is_empty() {
+                        gf(section, true, rows)
+                    } else {
+                        g(section, rows)
+                    });
                 }
             }
             if groups.len() == 1 {
@@ -881,7 +895,6 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             let p = &d.prefs;
             let folders = db::search_dirs(p).into_iter().map(|f| (f.path.display().to_string(), f.tag(), f.on, f.kind == db::DirKind::Added)).collect();
             let mut scanning = vec![
-                Check(STARTUP_CHECK, p.startup_scan),
                 Check(ERRORS_CHECK, p.rescan_errors),
                 Check(COMBINE_CHECK, p.combine),
                 Prefer(p.prefer),
@@ -981,27 +994,36 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     "Switch the workspace to the steel-gray, beveled look of 2005."
                 }),
             ]);
+            let scrollbar = crate::workspace_visibility::shown(crate::prefs::PLAYLIST_SCROLLBAR_STYLE_VISIBILITY).then(|| {
+                let style = &crate::prefs::PLAYLIST_SCROLLBAR_STYLE;
+                g("Playlist", vec![combo(crate::prefs::choice(style), 154.0, style.label)])
+            });
+            let brightness = crate::workspace_visibility::shown(crate::theme_adjust::PLAYLIST_BRIGHTNESS_VISIBILITY)
+                .then_some(PlaylistBrightness);
             if vintage {
-                return vec![featured, g("Options", vec![Check(crate::prefs::BRIGHT_PLAYLIST_CLIPS.label, false)])];
+                return std::iter::once(featured)
+                    .chain(scrollbar)
+                    .chain(brightness.map(|row| g("Options", vec![row])))
+                    .collect();
             }
             // Skins (shapes and base colours) and themes (`.flstheme` colours for either skin), spec:
             // ui/theme-presets.md "Settings".
             let skins = os_theme::Design::ALL.iter().map(|d| d.name().to_string()).collect();
             let themes = st.themes.iter().map(|(n, _)| n.clone()).collect();
-            vec![
-                featured,
+            std::iter::once(featured)
+            .chain(scrollbar)
+            .chain([
                 g("Customize", vec![Buttons(vec![(crate::advanced_theme::OPEN, 160.0), (crate::mixer_skin::OPEN, 166.0), (crate::theme_identity::OPEN, 120.0), (crate::advanced_theme::EXPORT, 110.0)])]),
                 g("Mixer", vec![combo(s.fl_text.as_deref().and_then(|text| os_theme::fl::get_key(text, crate::mixer_skin::FINISH))
                     .filter(|v| crate::mixer_skin::Scope::ALL.iter().any(|style| style.label() == *v))
                     .unwrap_or_else(|| crate::prefs::choice(&crate::prefs::MIXER_STYLE)), 170.0, crate::prefs::MIXER_STYLE.label)]),
                 g("Skins", vec![Tiles(TileList::Skins, skins, st.skin)]),
                 g("Themes", vec![Tiles(TileList::Themes, themes, st.preset)]),
-            ]
-            .into_iter()
+            ])
             .chain(st.unreadable.map(|_| g("", vec![ThemeWarn])))
             .chain([
                 gf("Adjustments", false, vec![ThemeKnobs]),
-                g("Options", vec![Check(NOTE_COLORS_CHECK, s.fl_theme().override_clips), Check(crate::prefs::BRIGHT_PLAYLIST_CLIPS.label,false)]),
+                g("Options", std::iter::once(Check(NOTE_COLORS_CHECK, s.fl_theme().override_clips)).chain(brightness).collect()),
                 g(
                     "",
                     vec![Buttons(vec![("Load theme...", 110.0), ("Reset", 64.0), (SAVE_PRESET, 100.0), (THEME_UNDO, 64.0), (THEME_REDO, 64.0)])],
@@ -1135,7 +1157,8 @@ fn row_h(r: &Row) -> f32 {
         Row::Combo(..) | Row::Value(..) | Row::ValueR(..) => 27.0,
         Row::Buttons(..) | Row::VisibilitySearch | Row::MenuControls(..) | Row::MenuName => 36.0,
         Row::MenuEntry(..) => 30.0,
-        Row::Slider(..) | Row::Ppi => 28.0,
+        Row::InputBindings => 500.0,
+        Row::Slider(..) | Row::PlaylistBrightness | Row::Ppi => 28.0,
         Row::List(c, _, n) => (if c.iter().any(|c| !c.0.is_empty()) { 18.0 } else { 0.0 }) + 17.0 * *n as f32 + 10.0,
         Row::Text(_, dim) => if *dim { 16.0 } else { 20.0 },
         Row::Big(_) => 28.0,
@@ -1449,8 +1472,11 @@ fn picker(ui: &mut Ui, s: &State, p: &crate::theme_adjust::Picker, win: Rect) {
 /// Tab rects in window `r`: text width + 10 px each side, 4 px apart, 15 px more between groups.
 fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<(usize, Rect)> {
     let font = Font::new(13);
-    let visible: Vec<_> = TABS.iter().enumerate().filter(|(i, _)| tab_shown(*i))
-        .map(|(i, &(label, _, group))| (i, ui.c.text_width(font, label), group))
+    let visible: Vec<_> = TAB_ORDER.into_iter().filter(|&i| tab_shown(i))
+        .map(|i| {
+            let (label, _, group) = TABS[i];
+            (i, ui.c.text_width(font, label), group)
+        })
         .collect();
     let group_gap = 15.0;
     let gaps = group_gap * visible.windows(2).filter(|pair| pair[0].2 != pair[1].2).count() as f32;
@@ -1729,6 +1755,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::ThemeEditor(row) => {
             crate::advanced_theme::paint(ui, s, *row, Rect::new(x0, y, g.right() - x0 - 10.0, h));
         }
+        Row::InputBindings => crate::input_bindings::paint(ui, s, Rect::new(x0, y, g.w - 30., h)),
         Row::MenuControls(changed) => {
             use crate::menu_layout::{self as layout, Action as M};
             let r = Rect::new(x0, y + 4., 274., 28.);
@@ -1813,6 +1840,16 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         }
         // A slider declared in `crate::prefs` (General ▸ Display's Smoothing, Input's scrolling speeds): its handle is
         // at its value (no number shows); a click or a drag sets it (`App::pref_slider_press`), the wheel steps it.
+        Row::PlaylistBrightness => {
+            let value = s.playlist_brightness();
+            let tr = Rect::new(x0, cy - 2.0, 150.0, 4.0);
+            let target = Rect::span(tr.x - 9.0, tr.right() + 9.0, cy - 9.0, cy + 9.0);
+            let hover = ui.hit(target, Action::Settings(SAct::PlaylistBrightness(tr.x, tr.w)),
+                "Brightens Playlist clips in this theme");
+            slider_track(ui, tr, cy, value);
+            let label = format!("{}  {:.0}%", crate::theme_adjust::PLAYLIST_BRIGHTNESS, value * 100.0);
+            ui.c.text(f, tr.right() + 12.0, ty, if hover { t.glyph } else { t.text }, &label);
+        }
         Row::Slider(label, _) if crate::prefs::find_slider(label).is_some() => {
             let Some(sl) = crate::prefs::find_slider(label) else { return };
             let v = f32::from(crate::prefs::slider(sl)) / f32::from(sl.max.max(1));

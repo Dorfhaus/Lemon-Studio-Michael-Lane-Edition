@@ -484,6 +484,7 @@ pub enum Cmd {
     /// Settings > Project ▸ Data folder's menus and the forms' lists (`crate::data_folder`).
     DataFolder(crate::data_folder::DCmd),
     MenuLayout(crate::menu_layout::Action),
+    InputBinding(crate::input_bindings::Edit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -597,7 +598,7 @@ pub struct TextEdit {
 /// A waveform summary for drawing audio clips: min/max per `per` frames (left channel + right mixed).
 pub fn wave_detail()->u8 {crate::prefs::text("playlist_wave_detail").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0).min(2)}
 pub fn max_zoom()->f32 {match wave_detail(){1=>12000.,2=>192000.,_=>600.}}
-pub fn zoom_limit(s:&State)->f32{if s.playlist.vocal.row.is_some(){max_zoom().max(48000.)}else{max_zoom()}}
+pub fn zoom_limit(s:&State)->f32{if s.playlist.vocal.row.is_some() || s.playlist.warp.is_some(){max_zoom().max(48000.)}else{max_zoom()}}
 
 #[derive(Debug, Clone)]
 pub struct Wave {
@@ -628,6 +629,8 @@ pub(crate) struct RowLinks {
 pub(crate) type Snapshot = (Vec<Clip>, Vec<TimeMarker>, Vec<PlaylistTrack>, Vec<Automation>, Vec<[u32; 4]>, HashMap<u16, f64>, Vec<(u16,u16,u16,u16)>, RowLinks);
 
 pub struct PlaylistState {
+    pub warp: Option<crate::warp::Form>,
+    pub warp_loading: Option<crate::warp::Loading>,
     pub vocal:crate::vocal::View,
     pub tool_changed: Option<std::time::Instant>,
     pub controls: crate::playlist_controls::Controls,
@@ -703,6 +706,8 @@ pub struct PlaylistState {
 impl Default for PlaylistState {
     fn default() -> Self {
         PlaylistState {
+            warp: None,
+            warp_loading: None,
             vocal:Default::default(),
             tool_changed: None,
             controls: Default::default(),
@@ -859,7 +864,7 @@ impl Rows {
                 collapsed = tr.is_some_and(|x| x.collapsed);
             }
             let folded = projected[t] && !local[t];
-            y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { height+if crate::vocal::expanded(s,t as u16){crate::vocal::EXTRA}else{0.} };
+            y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { height+if crate::warp::expanded(s,t as u16){crate::warp::EXTRA}else if crate::vocal::expanded(s,t as u16){crate::vocal::EXTRA}else{0.} };
         }
         top.push(y);
         Rows { top,base,row_h }
@@ -2950,7 +2955,7 @@ pub(crate) fn clip_menu_items(
         let mut time = vec![
             PItem::new("Detect sample tempo", Cmd::FitLoop(i, Fit::Detect)),
             PItem::new("Make it fit", Cmd::FitLoop(i, Fit::Auto)),
-            PItem::new("Warp markers...", Cmd::Warp(i)),
+
             PItem::sep(),
             PItem::new("Half length (double time)", Cmd::FitLoop(i, Fit::Half)),
             PItem::new("Double length (half time)", Cmd::FitLoop(i, Fit::Double)),
@@ -2961,6 +2966,9 @@ pub(crate) fn clip_menu_items(
             PItem::new("Stretch clip edges", Cmd::FitLoop(i, Fit::Edges)).mark(Mark::Radio(stretch)),
             PItem::new("Trim clip edges", Cmd::FitLoop(i, Fit::Trim)).mark(Mark::Radio(!stretch)),
         ];
+        if crate::workspace_visibility::shown("visible_playlist-warp") {
+            time.push(PItem::new("Edit audio timing", Cmd::Warp(i)));
+        }
         // Keep quick fit at the top and use the submenu for detailed timing edits.
         let quick_fit = time.remove(1);
         let mut items = vec![
@@ -4744,6 +4752,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::BrowseMissingSample(row)=>{crate::import_report::browse(app,row as usize);return None;},
         Cmd::UseMissingSample(row,old,path)=>{crate::import_report::relink(app,row as usize,&old,&path);return None;},
 
+        Cmd::InputBinding(action) => { crate::input_bindings::edit(app, action); return None; }
         Cmd::MenuLayout(action) => {
             crate::menu_layout::act(&mut app.state, action, app.mouse);
             app.invalidate();
@@ -5070,7 +5079,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             crate::playlist_tools::select(s, PlTool::Paint);
             None
         }
-        Cmd::MenuLayout(_) | Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::TypingLayout(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
+        Cmd::InputBinding(_) | Cmd::MenuLayout(_) | Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::TypingLayout(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {
             crate::playlist_tools::select(s, t);

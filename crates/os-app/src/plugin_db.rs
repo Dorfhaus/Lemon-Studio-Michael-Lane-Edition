@@ -64,7 +64,6 @@ fn yes() -> bool {
 #[serde(default)]
 pub struct Prefs {
     pub version: u32,
-    pub startup_scan: bool,
     pub rescan_errors: bool,
     pub combine: bool,
     pub prefer: Prefer,
@@ -81,7 +80,6 @@ impl Default for Prefs {
     fn default() -> Prefs {
         Prefs {
             version: 1,
-            startup_scan: true,
             rescan_errors: false,
             combine: true,
             prefer: Prefer::Vst3,
@@ -1369,7 +1367,7 @@ mod tests {
     fn files_round_trip_and_take_defaults() {
         let p: Prefs = serde_json::from_str(r#"{"prefer":"clap","folders":[{"path":"D:\\Plugins"}]}"#).unwrap();
         assert_eq!(p.prefer, Prefer::Clap);
-        assert!(p.combine && p.startup_scan && p.folders[0].on);
+        assert!(p.combine && p.folders[0].on);
         let text = serde_json::to_string(&p).unwrap();
         assert!(text.contains("\"menu_view\":\"categories\""));
         assert_eq!(serde_json::from_str::<Prefs>(&text).unwrap(), p);

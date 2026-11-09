@@ -3,6 +3,21 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-09",
+      "title": "Workspace controls, inline audio timing and editing improvements \u00b7 public build 2026110901",
+      "changes": [
+        "Added customizable mouse and keyboard actions by context, with named actions, sequences and portable scripts in Settings > Controls.",
+        "Organized Settings tabs and added collapsible Workspace Visibility groups, with independent visibility choices for Controls, Vocal Tuning, audio timing and clip preview buttons.",
+        "Replaced the old Warp Markers dialog with an inline Playlist audio timing editor. Detect transients, edit anchors, select multiple points, quantize, zoom with Ctrl or Alt and apply with undo support.",
+        "Added looping Play and Stop previews for audio clips and supported patterns in the Playlist clips picker, with a cleaner panel border.",
+        "Improved Playlist and Piano Roll overviews and horizontal scrollbar handling. Added a choice of classic or separate Playlist scrollbar styles and theme-specific clip brightness.",
+        "Refined Mixer scrolling with a compact grab handle and protected the area beneath send controls from accidental channel selection.",
+        "Plugin discovery now runs when requested. Startup preserves the Channel Rack visibility preference and skips clean import reports.",
+        "Reduced unnecessary Mixer audio work and separated display updates from audio buffering to improve playback under load.",
+        "Improved local vintage theme artwork loading from platform profile folders."
+      ]
+    },
+    {
       "date": "2026-11-08",
       "title": "Vintage workspace, mixer controls and editing refinements \u00b7 public build 2026110801",
       "changes": [

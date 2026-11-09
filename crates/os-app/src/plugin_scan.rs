@@ -214,35 +214,27 @@ pub fn start(prefs: &db::Prefs, old: Cache, mode: Mode) -> Sweep {
 }
 
 impl App {
-    /// Startup (spec: ui/plugin-manager.md §4 "When"): the built-in plugins and the cached plugins are listed at once
-    /// (no plugin file is loaded), then a background scan starts when "Find new plugins at startup" is on (always
-    /// when there is no cache yet).
+    /// Startup lists the built-in plugins and the last scan's cache. Discovery is manual.
     pub fn start_plugins(&mut self) {
         #[cfg(all(windows,target_arch="x86_64"))]
         if std::env::var_os("OPENSTUDIO_NATIVE").is_none() && crate::prefs::text("host_installed_fl_plugins").as_deref()==Some("1") {
             os_native::set_enabled(true);
         }
-        let first = !self.load_plugins();
-        if first || self.state.plugdb.prefs.startup_scan {
-            self.start_scan(Mode::Changed);
-        }
+        self.load_plugins();
     }
 
-    /// The built-in plugins plus the last scan's, and the user's choices. False when there is no scan cache yet.
-    pub fn load_plugins(&mut self) -> bool {
+    /// The built-in plugins plus the last scan's, and the user's choices.
+    pub fn load_plugins(&mut self) {
         crate::plugin_menu::import_installed_database();
         let (owner, scale) = (self.plugins.owner, self.plugins.scale);
         self.plugins = crate::plugins::Plugins::builtins();
         (self.plugins.owner, self.plugins.scale) = (owner, scale);
         let db = &mut self.state.plugdb;
         db.prefs = db::Prefs::load();
-        let cached = db::Cache::load();
-        let found = cached.is_some();
-        db.cache = cached.unwrap_or_default();
+        db.cache = db::Cache::load().unwrap_or_default();
         self.plugins.merge(&self.state.plugdb.cache);
         self.state.plugdb.rebuild(&self.plugins);
         crate::plugin_menu::sync_user_folders(&self.state);
-        found
     }
 
     /// Starts a scan, or queues it after the running one (one at a time).

@@ -34,6 +34,7 @@ const KEY: &str = "toolbar_layout";
 /// What the toolbar can hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
+    CustomActions,
     Caption,
     Hint,
     Transport,
@@ -58,7 +59,8 @@ pub enum Panel {
 }
 
 /// Every panel, in the palette's order.
-pub const PANELS: [Panel; 19] = [
+pub const PANELS: [Panel; 20] = [
+    Panel::CustomActions,
     Panel::Menu,
     Panel::Hint,
     Panel::Caption,
@@ -84,6 +86,7 @@ impl Panel {
     /// Its name in files.
     pub fn key(self) -> &'static str {
         match self {
+            Panel::CustomActions => "custom-actions",
             Panel::Caption => "caption",
             Panel::Hint => "hint",
             Panel::Transport => "transport",
@@ -113,6 +116,7 @@ impl Panel {
     /// Its name in the editor.
     pub fn name(self) -> &'static str {
         match self {
+            Panel::CustomActions => "Custom actions",
             Panel::Caption => "Caption buttons",
             Panel::Hint => "Hint panel",
             Panel::Transport => "Transport",
@@ -144,6 +148,7 @@ impl Panel {
     /// left edge of the panel it comes with (`separator`). The spaces have no home: row 1 from x 0.
     pub fn home(self) -> (usize, f32, f32) {
         match self {
+            Panel::CustomActions => (0, 1440., 1584.),
             Panel::Caption => (0, 0.0, 68.0),
             Panel::Hint => (0, 68.0, 379.0),
             Panel::Transport => (0, 379.0, 575.0),
@@ -183,6 +188,7 @@ impl Panel {
     /// Where (home x) its first part ends: the panel, or its first button, shows when that fits (`views::toolbar::room`).
     pub fn first_end(self) -> f32 {
         match self {
+            Panel::CustomActions => 1472.,
             Panel::Caption => 63.0,
             Panel::Hint => 221.0,
             Panel::Transport => 572.0,

@@ -543,3 +543,52 @@ mod expanded_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod report10_tests {
+    #[test]
+    #[ignore = "manual Tame and EQ buffer comparison"]
+    fn two_tracks_tame_eq_buffer_comparison() {
+        use crate::mixer::{TrackEq, EQ_DEFAULT};
+        let _float = crate::audio_float::AudioFloat::enter();
+        for rate in [44100u32, 48000, 96000] {
+            let frames = rate as usize * 5;
+            let input: Vec<f32> = (0..frames).map(|i| {
+                let t = i as f32 / rate as f32;
+                let envelope = if t < 3.0 { (1.0 - (t * 4.0).fract()).powi(3) } else { 0.0 };
+                0.10 * envelope * (std::f32::consts::TAU * 220.0 * t).sin()
+                    + if t < 3.0 { 0.015 * (std::f32::consts::TAU * 2100.0 * t).sin() } else { 0.0 }
+            }).collect();
+            let mut reference = Vec::new();
+            for size in [64usize, 128, 512, 1024] {
+                let mut strips: Vec<_> = (0..2).map(|_|super::ChannelStrip::new([0,0,0,0,49151,0,0], rate)).collect();
+                let mut settings = EQ_DEFAULT;
+                settings[0][0] = 600; settings[1][0] = -600; settings[2][0] = 450;
+                let mut eqs: Vec<_> = (0..2).map(|_| TrackEq::new(settings, rate).with_smoothing(true)).collect();
+                let mut output = vec![0.0f32; frames * 2];
+                let mut block = vec![0.0; size * 2];
+                let mut worst = std::time::Duration::ZERO;
+                let mut total = std::time::Duration::ZERO;
+                let mut late = 0;
+                for at in (0..frames).step_by(size) {
+                    let n = size.min(frames-at);
+                    let start = std::time::Instant::now();
+                    for track in 0..2 {
+                        for i in 0..n { block[i*2] = input[at+i]; block[i*2+1] = input[at+i] * 0.8; }
+                        eqs[track].process(&mut block[..n*2]);
+                        strips[track].tame(&mut block[..n*2]);
+                        for i in 0..n*2 { output[at*2+i] += block[i]; }
+                    }
+                    let elapsed = start.elapsed();
+                    worst = worst.max(elapsed); total += elapsed;
+                    if elapsed.as_secs_f64() > n as f64 / rate as f64 { late += 1; }
+                }
+                assert!(output.iter().all(|v| v.is_finite() && v.abs() < 1.0));
+                let error = if reference.is_empty() { reference = output.clone(); 0.0f32 }
+                    else { output.iter().zip(&reference).map(|(a,b)|(a-b).abs()).fold(0.0f32,f32::max) };
+                println!("REPORT10 rate={rate} buffer={size} processing_ms={} worst_us={} blocks_over_budget={late} max_buffer_difference={error}",total.as_millis(),worst.as_micros());
+                assert!(error < 0.00001, "buffer-dependent discontinuity");
+            }
+        }
+    }
+}
