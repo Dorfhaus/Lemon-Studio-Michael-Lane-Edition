@@ -308,6 +308,7 @@ pub enum Cmd {
     ClipMute(usize),
     ClipDelete(usize),
     ClipUnique(usize),
+    CleanupAudio(usize),
     ClipSession(usize),
     ClipEditSource(usize),
     ClipSelectSimilar(usize),
@@ -3055,13 +3056,13 @@ pub(crate) fn clip_menu_items(
         }
         items.extend([
             PItem::sub("Time / stretching", time),
-            PItem::sub("Audio processing", vec![
+            PItem::sub("Audio processing", {let mut items=vec![
                 PItem::new("Strip silence...", Cmd::StripSilence(i)),
                 PItem::sub("Normalize audio clips", crate::clip_normalize::Mode::ALL.into_iter()
                     .map(|mode| PItem::new(mode.label(), Cmd::Normalize(i, mode))).collect()),
                 PItem::new("Edit with ARA...", Cmd::AraMenu(i)),
                 PItem::new("Stem separation...", Cmd::SeparateStems(i)),
-            ]),
+            ];if crate::workspace_visibility::shown(tesla::cleanup::VISIBILITY){items.insert(0,PItem::new("Clean up audio in Tesla...",Cmd::CleanupAudio(i)));}items}),
             PItem::sub("Select & organize", {
                 let mut organize = vec![PItem::new("Select all similar clips", Cmd::ClipSelectSimilar(i))];
                 if crate::workspace_visibility::shown("visible_playlist-custom-swatches") {
@@ -5164,6 +5165,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             return None;
         }
         Cmd::ClipUnique(_) => {if let Err(e)=crate::ara::store(app){return Some(e);}},
+        Cmd::CleanupAudio(i)=>{crate::clip_cleanup::request(app,i);return None;},
         Cmd::AraMenu(i) => return crate::ara::menu(app,i),
         Cmd::AraChoose(i,k) => return crate::ara::choose(app,i,k),
         Cmd::AraRemove(i) => return crate::ara::remove(app,i),
@@ -5816,7 +5818,7 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
         Cmd::Quant(_) => None,
         Cmd::ChopPattern(_) => None,
         Cmd::Messages(_) => None,
-        Cmd::DataFolder(_) => None,
+        Cmd::DataFolder(_) | Cmd::CleanupAudio(_) => None,
     };
     app.invalidate();
     msg

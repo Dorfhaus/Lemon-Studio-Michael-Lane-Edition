@@ -152,6 +152,7 @@ mod misc_page;
 mod typing_layout;
 mod sample_route;
 mod clip_normalize;
+mod clip_cleanup;
 mod strip_silence;
 mod note_names;
 mod save_form;

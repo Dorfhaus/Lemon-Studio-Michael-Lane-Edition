@@ -52,6 +52,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Lemon Tape in plugin menus", "visible_plugin-tape"),
         ("Lemon Hall in plugin menus", "visible_plugin-hall"),
         ("Tesla time stretch and pitch shift", "visible_tesla-stretch"),
+        ("Tesla audio cleanup / Playlist cleanup action", "visible_tesla-cleanup"),
         ("Update button", "visible_update"),
         ("Donate button", "visible_donate"),
         ("Report a Bug button", "visible_feedback"),

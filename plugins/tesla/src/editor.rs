@@ -160,6 +160,8 @@ pub enum Cmd {
     About,
     Properties,
     Stretch,
+    Cleanup,
+    ReturnTrack,
     Format(Format),
     Channels(usize),
     Undo,
@@ -371,6 +373,9 @@ pub struct Logic {
     spectrum: Vec<u32>,
     spectrum_key: Option<(u64, u64, u64, u64, usize, usize, u8, u8)>,
     loaded: u64,
+    cleanup_profile: Option<crate::cleanup::Profile>,
+    cleanup_job: Option<crate::cleanup::Job>,
+    cleanup_ready: Option<(Arc<Sample>,u64,Arc<Sample>,(usize,usize))>,
     stretch_job: Option<(std::sync::mpsc::Receiver<Result<Sample,String>>,Arc<Sample>,u64,(usize,usize))>,
 }
 
@@ -380,7 +385,7 @@ impl Logic {
         let loaded = shared.loaded.load(Ordering::Acquire);
         Logic {
             shared,
-            view: ViewState::default(),
+            view: ViewState {cleanup: params.shared.cleanup_link.lock().unwrap().as_ref().map(|_|crate::cleanup::Panel{linked:true,..Default::default()}),..Default::default()},
             hits: Vec::new(),
             hint: String::new(),
             hosted: false,
@@ -394,6 +399,7 @@ impl Logic {
             spectrum_key: None,
             loaded,
             stretch_job: None,
+            cleanup_profile:None,cleanup_job:None,cleanup_ready:None,
         }
     }
 
@@ -563,6 +569,7 @@ impl Logic {
         self.view.mouse = Some((x, y));
         let Some(t) = self.at(x, y) else { return vec![] };
         self.view.pressed = Some(t);
+        if self.view.cleanup.is_some(){if let Target::Cleanup(id)=t{if btn==Btn::Left{return self.cleanup_click(id)}}return vec![];}
         if self.view.stretch.is_some() {
             if let Target::Stretch(id)=t {if btn==Btn::Left{return self.stretch_click(id,x,y)}}
             return vec![];
@@ -584,6 +591,7 @@ impl Logic {
         }
         let mut acts = vec![Act::Repaint];
         match t {
+            Target::ReturnTrack => self.cleanup_return_current(),
             Target::Transport(Tr::Slave) => Self::toggle(&self.shared.slave),
             Target::Transport(Tr::Loop) => Self::toggle(&self.shared.looping),
             Target::Transport(Tr::Play) => self.play_pause(),
@@ -653,7 +661,7 @@ impl Logic {
                 self.drag = Some(Drag::Resize { x, y, w, h });
             }
             Target::Amp(c) => acts.extend(self.amp_down(c, y, dbl)),
-            Target::AmpPanel | Target::Stretch(_) => {}
+            Target::AmpPanel | Target::Stretch(_) | Target::Cleanup(_) => {}
         }
         acts
     }
@@ -664,6 +672,7 @@ impl Logic {
             Target::Tool(i) => acts.extend(self.tool(i, true, x, y)),
             Target::Flag(id) => acts.push(Act::Menu(MenuReq::Flag(id), x, y)),
             Target::LoopFlag => acts.push(Act::Menu(MenuReq::LoopFlag, x, y)),
+            Target::ReturnTrack => self.cleanup_return_current(),
             Target::Transport(Tr::Slave) => acts.push(Act::Menu(MenuReq::Slave, x, y)),
             Target::Bottom(Bt::Undo) => acts.push(Act::Menu(MenuReq::Undo, x, y)),
             Target::Format => acts.push(Act::Menu(MenuReq::Main(MenuId::Format), x, y)),
@@ -829,6 +838,7 @@ impl Logic {
     }
 
     pub fn wheel(&mut self, x: f32, y: f32, notches: f32, m: Mods) -> Vec<Act> {
+        if self.view.cleanup.is_some(){return vec![];}
         match self.at(x, y) {
             Some(Target::Amp(c @ (AmpCtl::Pan | AmpCtl::Sep | AmpCtl::Left | AmpCtl::Volume | AmpCtl::Right))) => {
                 let v = self.amp_value(c) + notches * 0.02;
@@ -909,6 +919,7 @@ impl Logic {
             (9, false) => Cmd::Tool(ToolCmd::Reverse),
             (9, true) => Cmd::Tool(ToolCmd::Swap),
             (12, _) if crate::stretch::visible() => Cmd::Stretch,
+            (14, _) if crate::cleanup::visible() => Cmd::Cleanup,
             (11, false) => Cmd::Tool(ToolCmd::FadeOut),
             (11, true) => Cmd::Tool(ToolCmd::DeclickOut),
             (16, false) => Cmd::Save(Depth::Own),
@@ -1144,6 +1155,7 @@ impl Logic {
 
     /// A key press; empty when the editor doesn't use it (the host gets it).
     pub fn key(&mut self, k: Key, m: Mods) -> Vec<Act> {
+        if self.view.cleanup.is_some(){if k==Key::Escape{self.cleanup_close();}return vec![Act::Repaint];}
         if self.view.stretch.is_some(){if k==Key::Escape{self.view.stretch=None;}return vec![Act::Repaint];}
         if self.view.amp.is_some() {
             return match k {
@@ -1302,6 +1314,7 @@ impl Logic {
                 m.add(item("Save sample as...").shortcut("Ctrl+S").enabled(has), Cmd::Save(Depth::Own));
                 m.add(item("Save sample as 24Bit .wav file...").enabled(has), Cmd::Save(Depth::Int24));
                 m.sep(Cmd::None);
+                if self.shared.cleanup_link.lock().unwrap().as_ref().is_some_and(|s|s.active.load(Ordering::Acquire)){m.add(item("Apply to track").enabled(has),Cmd::ReturnTrack);}
                 m.add(item("About Tesla"), Cmd::About);
             }
             MenuId::Format => {
@@ -1340,6 +1353,7 @@ impl Logic {
                     m.add(item(l).shortcut(k).enabled(on), Cmd::Tool(c));
                 };
                 m.head("Amp", Cmd::None);
+                if crate::cleanup::visible(){m.add(item("Clean up audio (denoise)...").enabled(has),Cmd::Cleanup);}
                 if crate::stretch::visible(){m.add(item("Time stretch / pitch shift...").enabled(has),Cmd::Stretch);}
                 t(&mut m, "Amp...", "Alt+A", ToolCmd::Amp, has);
                 t(&mut m, "Reverse polarity", "", ToolCmd::ReversePolarity, has);
@@ -1445,12 +1459,15 @@ impl Logic {
         let w = self.layout().lane().w;
         let mut acts = vec![Act::Repaint];
         match cmd {
+            Cmd::ReturnTrack=>self.cleanup_return_current(),
+            Cmd::Cleanup => {if crate::cleanup::visible(){self.cleanup_open();}},
             Cmd::Stretch => {
                 if self.stretch_job.is_none() && crate::stretch::visible() && self.doc(|d|d.frames()>0) && !self.shared.armed.load(Ordering::Acquire){self.view.stretch=Some(Default::default());}
                 else{self.hint="Load audio, stop recording and wait for pending processing.".into();}
             }
             Cmd::None => {}
             Cmd::New => {
+                self.cleanup_close();self.cleanup_profile=None;*self.shared.cleanup_link.lock().unwrap()=None;
                 self.doc(|d| d.new_sample());
             }
             Cmd::Open => acts.push(Act::Open),
@@ -1655,6 +1672,7 @@ impl Logic {
     pub fn open(&mut self, path: &str) {
         match load_file(path) {
             Ok(s) => {
+                self.cleanup_close();self.cleanup_profile=None;*self.shared.cleanup_link.lock().unwrap()=None;
                 self.doc(|d| d.load(s, path));
                 self.hint = format!("Loaded {}", Path::new(path).file_name().map_or(path.into(), |f| f.to_string_lossy()));
             }
@@ -1719,11 +1737,13 @@ impl Logic {
         let loaded = self.shared.loaded.load(Ordering::Acquire);
         if loaded != self.loaded {
             self.loaded = loaded;
-            self.stretch_job=None;
+            self.stretch_job=None;self.cleanup_close();self.cleanup_profile=None;
             self.view = ViewState::default();
+            if self.shared.cleanup_link.lock().unwrap().is_some(){self.cleanup_open();}
             self.drag = None;
         }
         self.poll_stretch();
+        self.poll_cleanup();
         let playing = self.shared.playing.load(Ordering::Relaxed);
         if playing && self.drag.is_none() {
             let pos = self.shared.position();
@@ -1742,6 +1762,7 @@ impl Logic {
     }
 
     pub fn paint(&mut self, c: &mut Canvas) {
+        self.view.return_to_track=self.shared.cleanup_link.lock().unwrap().as_ref().is_some_and(|s|s.active.load(Ordering::Acquire));
         let (w, h) = self.size();
         let lay = Layout::new(w, h);
         let lane = lay.lane();
@@ -2927,3 +2948,4 @@ mod tests {
 }
 
 include!("stretch_editor.rs");
+include!("cleanup_editor.rs");

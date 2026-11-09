@@ -141,6 +141,10 @@ impl Doc {
         Arc::make_mut(&mut self.sample)
     }
 
+    pub fn apply_cleanup(&mut self,sample:Sample) {
+        let old=self.view.undo_large;self.view.undo_large=true;
+        *self.edit("Clean up audio")=sample;self.view.undo_large=old;
+    }
     pub fn apply_stretch(&mut self, sample:Sample, selection:(usize,usize)) {
         // Explicit rendering remains undoable even for samples beyond the ordinary tool threshold.
         let old=self.view.undo_large;self.view.undo_large=true;

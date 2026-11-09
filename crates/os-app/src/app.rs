@@ -1523,6 +1523,7 @@ pub struct App {
     pub(crate) fx_failed: Vec<usize>,
     /// The running plugin scan, and the scan asked for while it runs (spec: ui/plugin-manager.md §4).
     pub(crate) sweep: Option<crate::plugin_scan::Sweep>,
+    pub(crate) clip_cleanups: Vec<crate::clip_cleanup::Session>,
     pub(crate) clip_normalization: Option<crate::clip_normalize::Job>,
     pub(crate) vocal_align: Option<crate::vocal_align::Job>,
     pub(crate) scan_queued: Option<crate::plugin_db::Mode>,
@@ -1792,6 +1793,7 @@ impl App {
             fx_failed: Vec::new(),
             sweep: None,
             clip_normalization: None,
+            clip_cleanups:Vec::new(),
             vocal_align: None,
             scan_queued: None,
             wrap_failed: Vec::new(),
@@ -2605,6 +2607,7 @@ impl App {
         self.sampler_failed.clear();
         self.fx_failed.clear();
         self.clip_normalization = None;
+        self.clip_cleanups.clear();
         self.wrap_failed.clear();
         self.native_failed.clear();
         self.transport.set_instruments(Vec::new());
@@ -2821,6 +2824,7 @@ impl App {
         }
         self.scan_tick();
         crate::clip_normalize::tick(self);
+        crate::clip_cleanup::tick(self);
         crate::vocal_align::poll(self);
         crate::vocal::tick(self);
         self.loading_tick();

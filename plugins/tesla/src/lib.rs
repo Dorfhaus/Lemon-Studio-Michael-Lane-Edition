@@ -11,6 +11,8 @@
 #![allow(semicolon_in_expressions_from_non_local_macros)]
 
 pub mod stretch;
+pub mod cleanup;
+pub mod cleanup_link;
 pub mod doc;
 pub mod editor;
 pub mod peaks;
@@ -61,6 +63,10 @@ pub struct Take {
 /// What the audio thread, the editor and the drain thread share.
 pub struct Shared {
     pub doc: Mutex<Doc>,
+    pub cleanup_link: Mutex<Option<Arc<cleanup_link::Session>>>,
+    preview: Mutex<Option<Arc<Sample>>>,
+    preview_ver: AtomicU64,
+    cleanup_audition: AtomicBool,
     pub host_rate: AtomicU32,
     /// The sample the audio thread plays, and the document version it is.
     published: Mutex<Arc<Sample>>,
@@ -106,6 +112,10 @@ impl Default for Shared {
             published: Mutex::new(d.sample.clone()),
             published_ver: AtomicU64::new(d.version),
             doc: Mutex::new(d),
+            cleanup_link: Mutex::new(None),
+            preview: Mutex::new(None),
+            preview_ver: AtomicU64::new(0),
+            cleanup_audition:AtomicBool::new(false),
             host_rate: AtomicU32::new(44100),
             retired: Mutex::new(Vec::with_capacity(64)),
             cmds: Mutex::new(Vec::with_capacity(64)),
@@ -135,6 +145,9 @@ impl Default for Shared {
 }
 
 impl Shared {
+    pub fn preview(&self,sample:Option<Arc<Sample>>) {
+        self.cleanup_audition.store(sample.is_some(),Ordering::Release);*self.preview.lock().unwrap()=sample;self.preview_ver.fetch_add(1,Ordering::Release);
+    }
     /// Runs `f` on the document, then hands a changed sample to the audio thread.
     pub fn with_doc<R>(&self, f: impl FnOnce(&mut Doc) -> R) -> R {
         let mut d = self.doc.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,6 +223,7 @@ impl Shared {
 
     /// A saved state (the host's, a preset, a converted Edison slot) becomes the document.
     pub fn restore(&self, s: Saved) {
+        self.preview(None);*self.cleanup_link.lock().unwrap()=None;
         self.restore_settings(&s.rec, &s.view);
         if let Ok(mut t) = self.take.lock() {
             *t = Take::default();
@@ -306,6 +320,9 @@ unsafe impl Params for TeslaParams {
     fn deserialize_fields(&self, serialized: &BTreeMap<String, String>) {
         if let Some(s) = serialized.get(state::STATE_FIELD).and_then(|t| state::from_json(t)) {
             self.shared.restore(s);
+            let link=serialized.get(cleanup_link::FIELD).and_then(|id|id.parse().ok()).and_then(cleanup_link::lookup);
+            if let Some(link)=&link {if let Some((sample,path))=link.source.lock().unwrap().take(){self.shared.restore(Saved{sample,path,..Default::default()});}}
+            *self.shared.cleanup_link.lock().unwrap()=link;
         }
     }
 }
@@ -315,6 +332,7 @@ unsafe impl Params for TeslaParams {
 struct Player {
     sample: Option<Arc<Sample>>,
     ver: u64,
+    preview_ver: u64,
     playing: bool,
     pos: f64,
     from: usize,
@@ -331,11 +349,14 @@ impl Player {
     /// Takes the newest published sample (the one it lets go of is freed off the audio thread).
     fn sync(&mut self, s: &Shared) {
         let v = s.published_ver.load(Ordering::Acquire);
-        if v == self.ver {
+        let pv=s.preview_ver.load(Ordering::Acquire);
+        if v == self.ver && pv==self.preview_ver {
             return;
         }
         if let Ok(p) = s.published.try_lock() {
-            let old = self.sample.replace(p.clone());
+            let Ok(preview)=s.preview.try_lock() else{return};
+            let old = self.sample.replace(preview.as_ref().unwrap_or(&p).clone());
+            self.preview_ver=pv;
             self.ver = v;
             if let (Some(old), Ok(mut r)) = (old, s.retired.try_lock()) {
                 if r.len() < r.capacity() {
@@ -541,7 +562,7 @@ impl Plugin for Tesla {
             s.capturing.store(false, Ordering::Relaxed);
         }
 
-        if s.mute.load(Ordering::Relaxed) {
+        if s.mute.load(Ordering::Relaxed) || (s.cleanup_audition.load(Ordering::Acquire) && p.playing) {
             l.fill(0.0);
             r.fill(0.0);
         }

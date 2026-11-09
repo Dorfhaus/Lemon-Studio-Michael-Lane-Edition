@@ -187,6 +187,8 @@ pub enum Target {
     /// The panel behind the Amp controls (eats clicks).
     AmpPanel,
     Stretch(u8),
+    Cleanup(u8),
+    ReturnTrack,
 }
 
 #[derive(Clone, Debug)]
@@ -220,7 +222,7 @@ pub const TOOLS: [ToolDef; 18] = [
     ToolDef { glyph: Glyph::FadeOut, hint: "Fade out / declick out", left: true, right: true },
     ToolDef { glyph: Glyph::Stretch, hint: "Time stretch / pitch shift...", left: true, right: true },
     ToolDef { glyph: Glyph::Blur, hint: "Blur... (later version)", left: false, right: false },
-    ToolDef { glyph: Glyph::Clean, hint: "Clean up (denoise)... (later version)", left: false, right: false },
+    ToolDef { glyph: Glyph::Clean, hint: "Clean up audio (denoise)...", left: true, right: true },
     ToolDef { glyph: Glyph::Slice, hint: "Auto-slicing (later version)", left: false, right: false },
     ToolDef { glyph: Glyph::Save, hint: "Save as... / save as 24Bit .wav...", left: true, right: true },
     ToolDef { glyph: Glyph::Send, hint: "Send to playlist as audio clip / to selected channel", left: true, right: true },
@@ -273,6 +275,8 @@ pub struct ViewState {
     pub pressed: Option<Target>,
     pub amp: Option<AmpUi>,
     pub stretch: Option<crate::stretch::Panel>,
+    pub cleanup: Option<crate::cleanup::Panel>,
+    pub return_to_track: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -446,6 +450,7 @@ pub fn paint(c: &mut Canvas, l: &Look, w: u32, h: u32) -> Vec<Hit> {
     if let Some(a) = &l.st.amp {
         amp_panel(&mut ui, a, &lay);
     }
+    if let Some(panel)=&l.st.cleanup {cleanup_panel(&mut ui,panel,&lay);}
     if let Some(panel)=&l.st.stretch {stretch_panel(&mut ui,panel,&lay);}
     ui.hits
 }
@@ -547,6 +552,7 @@ fn toolbar(ui: &mut Ui, l: &Look, lay: &Layout) {
     // The tool grid.
     for (i, t) in TOOLS.iter().enumerate() {
         if i==12 && !crate::stretch::visible(){continue;}
+        if i==14 && !crate::cleanup::visible(){continue;}
         let r = Rect::new((lay.grid_x + (i % 9) as f32 * 39.25).round(), 27.0 + (i / 9) as f32 * 31.0, 38.0, 30.0);
         let col = ui.button(r, Target::Tool(i), false, t.left || t.right);
         glyph(ui.c, t.glyph, Rect::new(r.cx() - 9.0, r.cy() - 9.0, 18.0, 18.0), col);
@@ -857,6 +863,7 @@ fn bottom(ui: &mut Ui, l: &Look, lay: &Layout) {
         // Envelope modes come in a later version.
         btn(ui, 59.0 + i as f32 * 23.5, 22.0, Target::Bottom(Bt::Mode(i as u8)), g, i == 0, i == 0);
     }
+    if l.st.return_to_track && crate::cleanup::visible(){let r=Rect::new(190.,y,132.,lay.bottom.h-2.);let enabled=!l.armed;let col=ui.button(r,Target::ReturnTrack,false,enabled);if enabled{ui.c.fill_rrect(r,3.,brand::MAIN);ui.c.text_center(VALUE,r,Color::rgb(0),"Apply to track");}else{ui.c.text_center(VALUE,r,col,"Apply to track");}}
     let v = &l.doc.view;
     let right = [
         (Bt::Follow, Glyph::Arrow, v.follow, true),
@@ -1185,6 +1192,8 @@ pub fn hint(t: &Target, l: &HintCtx) -> String {
         Target::Amp(AmpCtl::Accept) => "Accept".into(),
         Target::Amp(AmpCtl::Close) => "Close (cancel)".into(),
         Target::AmpPanel => String::new(),
+        Target::ReturnTrack => "Apply edited audio to the original Playlist clip".into(),
+        Target::Cleanup(_) => "Clean up audio".into(),
         Target::Stretch(_) => "Time stretch / pitch shift".into(),
     }
 }
@@ -1213,4 +1222,22 @@ fn stretch_panel(ui:&mut Ui,a:&crate::stretch::Panel,lay:&Layout){
         let col=ui.button(r,Target::Stretch(id),false,id==8||!a.busy);
         if id==7&&!a.busy {ui.c.fill_rrect(r,4.,brand::MAIN);ui.c.text_center(LABEL,r,Color::rgb(0x000000),label);}else{ui.c.text_center(LABEL,r,col,label);}
     }
+}
+
+fn cleanup_panel(ui:&mut Ui,a:&crate::cleanup::Panel,lay:&Layout){
+ ui.c.fill_rect(Rect::new(0.,0.,lay.w,lay.h),plug::BG.with_alpha(210));
+ let p=Rect::new((lay.w-620.)/2.,(lay.h-310.)/2.,620.,310.);ui.hit(p,Target::Cleanup(255));lemon::plug_panel(ui.c,p);
+ ui.c.text(Font::new(18).bold(),p.x+18.,p.y+14.,brand::MAIN,"Clean up audio");
+ ui.c.text(SMALL,p.x+18.,p.y+42.,plug::DIM,if a.linked{"Apply to track replaces this clip only. Rendered tuning/timing stays baked."}else{"Reduce steady hiss, hum and background noise. Preview before applying."});
+ let enabled=!a.busy&&!a.awaiting;
+ for (x,w,id,text) in [(18.,200.,4,"Learn selected noise"),(226.,166.,11,"Automatic estimate")]{let r=Rect::new(p.x+x,p.y+65.,w,28.);let col=ui.button(r,Target::Cleanup(id),false,enabled);ui.c.text_center(VALUE,r,col,text);}
+ for (y,label,value,minus,plus) in [(106.,"REDUCTION",format!("{:.0} dB",a.reduction),0,1),(148.,"SENSITIVITY",format!("{:.2}x",a.sensitivity),2,3)]{
+  ui.c.text(VALUE,p.x+18.,p.y+y+8.,plug::DIM,label);
+  for (x,id,text) in [(164.,minus,"−"),(350.,plus,"+")]{let r=Rect::new(p.x+x,p.y+y,32.,28.);let col=ui.button(r,Target::Cleanup(id),false,enabled);ui.c.text_center(VALUE,r,col,text);}
+  ui.c.text_center(VALUE,Rect::new(p.x+202.,p.y+y,140.,28.),brand::TEXT,&value);
+ }
+ ui.c.text_clip(SMALL,p.x+18.,p.y+192.,p.w-36.,brand::TEXT,&a.message);
+ if a.busy{ui.c.fill_rrect(Rect::new(p.x+18.,p.y+214.,p.w-36.,4.),2.,plug::DIM);ui.c.fill_rrect(Rect::new(p.x+18.,p.y+214.,(p.w-36.)*a.progress as f32/100.,4.),2.,brand::MAIN);}
+ for (x,w,id,text) in [(18.,100.,6,"Original"),(126.,140.,7,if a.busy{"Processing…"}else{"Preview cleaned"}),(274.,64.,10,"Stop")]{let r=Rect::new(p.x+x,p.y+230.,w,28.);let col=ui.button(r,Target::Cleanup(id),false,enabled);ui.c.text_center(VALUE,r,col,text);}
+ for (x,w,id,text) in [(18.,130.,8,"Apply cleanup"),(156.,154.,12,"Apply to track"),(498.,104.,9,"Close")]{if id==12&&!a.linked{continue;}let r=Rect::new(p.x+x,p.y+270.,w,28.);let on=if id==9{!a.awaiting}else{enabled&&a.ready};let col=ui.button(r,Target::Cleanup(id),false,on);if id!=9&&on{ui.c.fill_rrect(r,4.,brand::MAIN);ui.c.text_center(VALUE,r,Color::rgb(0),text);}else{ui.c.text_center(VALUE,r,col,text);}}
 }

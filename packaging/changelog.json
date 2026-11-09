@@ -4,6 +4,16 @@
   "sections": [
     {
       "date": "2026-11-09",
+      "title": "Tesla noise cleanup and direct Playlist return \u00b7 public build 2026110907",
+      "changes": [
+        "Add Tesla steady-noise cleanup with manual noise learning, automatic estimation, Reduction and Sensitivity controls, background progress and cancellation.",
+        "Compare Original and Cleaned audio before applying, with undo support. Temporary audition audio is not saved into projects.",
+        "Open Playlist audio clips with Audio processing > Clean up audio in Tesla, then Apply to track to create a separate cleaned file and update the originating clip with one undo step.",
+        "Preserve original audio files, other clips and clip placement; reject stale or incompatible return targets. Add a Workspace Visibility control for the cleanup tools."
+      ]
+    },
+    {
+      "date": "2026-11-09",
       "title": "Smoother live mixing, new effects and editing tools \u00b7 public build 2026110906",
       "changes": [
         "Reduce playback interruptions when adjusting Mixer pan, faders, stereo separation, sends, EQ, channel-strip controls, effect wet/dry and bypass settings. Preserve running processors and automation during supported live edits.",

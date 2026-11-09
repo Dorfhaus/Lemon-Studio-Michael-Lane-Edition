@@ -27,6 +27,10 @@
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
 <p id="change-empty" hidden>No changes match your search.</p>
 <details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-09</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Add Tesla steady-noise cleanup with manual noise learning, automatic estimation, Reduction and Sensitivity controls, background progress and cancellation.</li>
+<li style="margin:10px 0">Compare Original and Cleaned audio before applying, with undo support. Temporary audition audio is not saved into projects.</li>
+<li style="margin:10px 0">Open Playlist audio clips with Audio processing &gt; Clean up audio in Tesla, then Apply to track to create a separate cleaned file and update the originating clip with one undo step.</li>
+<li style="margin:10px 0">Preserve original audio files, other clips and clip placement; reject stale or incompatible return targets. Add a Workspace Visibility control for the cleanup tools.</li>
 <li style="margin:10px 0">Reduce playback interruptions when adjusting Mixer pan, faders, stereo separation, sends, EQ, channel-strip controls, effect wet/dry and bypass settings. Preserve running processors and automation during supported live edits.</li>
 <li style="margin:10px 0">Avoid playback rebuilds for duplicate control updates, and correct wet/dry knob targeting across all 64 effect slots.</li>
 <li style="margin:10px 0">Keep VST2 and standard VST3 editor opening and closing off the audio instance lock.</li>

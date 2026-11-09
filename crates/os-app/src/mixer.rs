@@ -2326,7 +2326,7 @@ impl App {
 
     /// A new Tesla in track `t`'s first free slot, starting from `state` when given; false (with a message) when
     /// Tesla is missing or the track is full.
-    fn add_tesla(&mut self, t: u16, state: Option<Vec<u8>>) -> bool {
+    pub(crate) fn add_tesla(&mut self, t: u16, state: Option<Vec<u8>>) -> bool {
         use crate::plugins::TESLA;
         let s = &mut self.state;
         let Some(index) = self.plugins.effect_index(TESLA) else {
