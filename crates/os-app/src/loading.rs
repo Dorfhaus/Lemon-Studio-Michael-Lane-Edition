@@ -218,3 +218,17 @@ mod tests {
         assert_eq!((l.decoded, l.files), (6, 6));
     }
 }
+
+/// Indeterminate work. A filled dot moves around the ring while the worker runs.
+pub fn activity_icon(canvas: &mut os_ui::Canvas, x: f32, y: f32, color: os_ui::Color) {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let phase = (START.get_or_init(Instant::now).elapsed().as_millis() / 90 % 8) as usize;
+    for i in 0..8 {
+        let angle = i as f32 * std::f32::consts::TAU / 8.;
+        let age = (phase + 8 - i) % 8;
+        canvas.fill_circle(x + 4.5 * angle.cos(), y + 4.5 * angle.sin(), 1.2,
+            color.with_alpha(255 - age as u8 * 27));
+    }
+}

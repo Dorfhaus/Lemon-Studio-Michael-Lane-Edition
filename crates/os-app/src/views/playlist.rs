@@ -274,28 +274,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let bar_w = s.playlist_bar_w;
     let bar_t = (g.ppq * 4) as f32;
 
-    // The overview and thumb use the same timeline span.
-    let target = crate::app::Scroll::PlaylistX;
-    let adaptive = crate::elastic_scroll::adaptive(target);
-    let last = pl::clips(s).iter().map(|clip| clip.end())
-        .chain(pl::markers(s).iter().map(|marker| marker.position))
-        .max().unwrap_or(0) as f32 / bar_t;
-    let total = if adaptive {
-        last * bar_w + grid_w
-    } else {
-        (last.ceil() + 16.).max(100.).max((sx + grid_w) / bar_w) * bar_w
-    };
-    let over = overview_rect(s, grid);
+    // Overview (horizontal scroll bar with a miniature of the clips) + ruler. The song extends 16 bars past
+    // its last clip, at least 100 bars; 500 tracks.
+    let last = pl::clips(s).iter().map(|c| c.end() as f32 / bar_t).fold(0.0, f32::max);
+    // A finite content-derived end: navigating to it must not move the goalpost.
+    let bars = if crate::elastic_scroll::adaptive(crate::app::Scroll::PlaylistX) {last.ceil().max(grid_w/bar_w)} else {(last.ceil() + 16.0).max(100.0).max((sx + grid_w) / bar_w)};
     let (_, vbar) = bar_sizes();
-    super::scrollbar(ui, over, false, sx, grid_w, total, target);
-    let (offset, width) = if adaptive {
-        let (offset, width, _) = crate::elastic_scroll::playlist_horizontal(over.w, sx, grid_w, total);
-        (offset, width)
-    } else {
-        let (offset, width) = os_ui::kit::thumb(over.w, sx, grid_w, total);
-        crate::elastic_scroll::thumb(&ui.elastic, target, offset, width)
-    };
-    let total_ticks = total / bar_w * bar_t;
+    let over = overview_rect(s, grid);
+    super::scrollbar(ui, over, false, sx, grid_w, bars * bar_w, crate::app::Scroll::PlaylistX);
     if t.style.vintage_2005 {
         crate::vintage::recess(ui.c, over, Color::rgb(0x252e33));
     }
@@ -310,6 +296,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     let show_map = crate::workspace_visibility::shown("visible_playlist-map");
     if crate::prefs::index(&crate::prefs::PLAYLIST_SCROLLBAR_STYLE) == 0 {
+        let (offset,width)=if crate::elastic_scroll::adaptive(crate::app::Scroll::PlaylistX) {
+            let (at,w,_)=crate::elastic_scroll::horizontal(over.w,sx,grid_w,bars*bar_w);(at,w)
+        } else {let (at,w)=os_ui::kit::thumb(over.w,sx,grid_w,bars*bar_w);crate::elastic_scroll::thumb(&ui.elastic,crate::app::Scroll::PlaylistX,at,w)};
         let window = Rect::new(over.x + offset, over.y + 1.0, width, over.h - 2.0);
         if t.style.vintage_2005 {
             crate::vintage::metal(ui.c, window, Color::rgb(0x65767e));
@@ -319,7 +308,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         }
         if show_map {
             let map = Rect::new(over.x + 1.0, over.y + 2.0, over.w - 2.0, over.h - 4.0);
-            overview(ui, s, map, total_ticks, true);
+            overview(ui, s, map, bars * bar_t, true);
         }
         let edge = if t.style.vintage_2005 {
             Color::rgb(0xb0c2ca)
@@ -334,6 +323,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let rail_h = if show_map { (over.h * 0.42).floor() } else { over.h - 2.0 };
         let rail = Rect::new(over.x, over.y + 1.0, over.w, rail_h);
         ui.c.fill_rect(rail, Color::rgb(0x22282d));
+        let (offset,width)=if crate::elastic_scroll::adaptive(crate::app::Scroll::PlaylistX) {
+            let (at,w,_)=crate::elastic_scroll::horizontal(rail.w,sx,grid_w,bars*bar_w);(at,w)
+        } else {let (at,w)=os_ui::kit::thumb(rail.w,sx,grid_w,bars*bar_w);crate::elastic_scroll::thumb(&ui.elastic,crate::app::Scroll::PlaylistX,at,w)};
         let thumb = Rect::new(rail.x + offset, rail.y, width, rail.h);
         let face = if t.style.vintage_2005 { Color::rgb(0xb8c8cf) } else { Color::rgb(0xf2ca61) };
         if t.style.vintage_2005 {
@@ -344,7 +336,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         if show_map {
             let y = rail.bottom() + 1.0;
             let map = Rect::new(over.x + 1.0, y, over.w - 2.0, over.bottom() - y - 1.0);
-            overview(ui, s, map, total_ticks, false);
+            overview(ui, s, map, bars * bar_t, false);
         }
     }
     let ruler = ruler_rect(s, grid);

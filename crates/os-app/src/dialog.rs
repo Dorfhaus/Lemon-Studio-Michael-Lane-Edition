@@ -56,6 +56,7 @@ fn accel(label: &str) -> char {
 pub enum Then {
     InputBindings(bool),
     VocalDownload(u16),
+    WarpApply,
     VocalReanalyse(u16),
     TrashBrowserSample(PathBuf),
     CommunitySample,

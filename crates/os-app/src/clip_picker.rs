@@ -195,13 +195,24 @@ pub(crate) fn selected(s: &State, fallback: ClipSource) -> Vec<ClipSource> {
 }
 
 pub fn drop(app: &mut App, source: ClipSource, destination: Option<Destination>) {
+    let placement_edge = if matches!(destination, Some(Destination::Playlist { .. })) {
+        app.playlist_placement_edge(app.mouse.0)
+    } else {
+        None
+    };
     let s = &mut app.state;
     if !crate::playlist_tools::sources(s, s.playlist.picker).contains(&source) {
         return;
     }
     let items = selected(s, source);
     match destination {
-        Some(Destination::Playlist { track, tick }) => pl::place_picker_sources(s, &items, track, tick),
+        Some(Destination::Playlist { track, tick }) => {
+            let before = pl::clips(s).len();
+            pl::place_picker_sources(s, &items, track, tick);
+            if pl::clips(s).len() > before {
+                s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
+            }
+        }
         Some(Destination::Row(target, after, _)) => reorder(s, &items, Some((target, after))),
         Some(Destination::End) => reorder(s, &items, None),
         None => {}

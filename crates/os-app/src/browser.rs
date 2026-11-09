@@ -489,6 +489,7 @@ impl App {
         let (x, y) = self.mouse;
         let win = self.top_hit(x, y).and_then(|h| h.win);
         let grid = self.pl_grid().filter(|g| g.contains(x, y) && win == Some(Win::Playlist));
+        let placement_edge = grid.and_then(|_| self.playlist_placement_edge(x));
         let alt = self.alt;
         let s = &mut self.state;
         // Snapped playlist position under the mouse.
@@ -503,6 +504,7 @@ impl App {
                     s.playlist.source = Some(ClipSource::Pattern(n));
                     s.playlist.picker = PickKind::Pattern;
                     let i = pl::place(s, track, tick);
+                    s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
                     s.playlist.sel = vec![i];
                 } else if matches!(win, Some(Win::PianoRoll | Win::ChannelRack)) {
                     s.pattern = n;
@@ -517,6 +519,7 @@ impl App {
                         s.playlist.source = Some(ClipSource::Channel(index));
                         s.playlist.picker = if kind == ChannelKind::AudioClip { PickKind::Audio } else { PickKind::Automation };
                         let i = pl::place(s, track, tick);
+                        s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
                         s.playlist.sel = vec![i];
                     } else {
                         s.message = Some("Only audio and automation channels go on the playlist; drop a pattern instead".into());
@@ -539,7 +542,10 @@ impl App {
                     }
                     let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
                     s.message = Some(match pl::import_audio_clip(s, &path, track, tick) {
-                        Ok(_) => format!("Added audio clip {name}"),
+                        Ok(_) => {
+                            s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
+                            format!("Added audio clip {name}")
+                        }
                         Err(reason) => format!("{reason}: {name}"),
                     });
                 } else if win == Some(Win::ChannelRack) {

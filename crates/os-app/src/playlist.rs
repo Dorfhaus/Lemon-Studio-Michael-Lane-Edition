@@ -629,7 +629,18 @@ pub(crate) struct RowLinks {
 }
 pub(crate) type Snapshot = (Vec<Clip>, Vec<TimeMarker>, Vec<PlaylistTrack>, Vec<Automation>, Vec<[u32; 4]>, HashMap<u16, f64>, Vec<(u16,u16,u16,u16)>, RowLinks);
 
+pub(crate) const FOLLOW_PLACEMENT_VISIBILITY: &str = "visible_playlist-follow-end-placement";
+
+#[derive(Clone, Copy)]
+pub(crate) struct PlacementEdge {
+    pub arrangement: usize,
+    pub position: f32,
+    pub zoom: f32,
+    pub view: f32,
+}
+
 pub struct PlaylistState {
+    pub(crate) placement_edge: Option<PlacementEdge>,
     pub warp: Option<crate::warp::Form>,
     pub warp_loading: Option<crate::warp::Loading>,
     pub vocal:crate::vocal::View,
@@ -708,6 +719,7 @@ pub struct PlaylistState {
 impl Default for PlaylistState {
     fn default() -> Self {
         PlaylistState {
+            placement_edge: None,
             warp: None,
             warp_loading: None,
             vocal:Default::default(),
@@ -3529,6 +3541,7 @@ fn edge(r: Rect, x: f32) -> i32 {
 /// Mouse press on the grid. `right` = the right button.
 pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     let (x, y) = app.mouse;
+    let placement_edge = if right { None } else { app.playlist_placement_edge(x) };
     let s = &mut app.state;
     s.playlist.popup = None;
     let g = PGeom::new(s, grid);
@@ -3833,6 +3846,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
                 s.playlist.sel.clear();
                 let start = snap_place(s, &g, tick, alt);
                 let i = place_clip(s, track, start);
+                s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
                 let c = clips(s)[i];
                 if tool == PlTool::Paint {
                     s.playlist.sel.push(i);
@@ -3960,6 +3974,11 @@ fn mute_at(app: &mut App, grid: Rect, on: bool) {
 
 /// Mouse moved during a playlist drag.
 pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
+    let placement_edge = if matches!(d, PlDrag::Paint { .. }) {
+        app.playlist_placement_edge(app.mouse.0)
+    } else {
+        None
+    };
     // Drags that only move, resize or select things inside the playlist repaint just the playlist.
     let inside = matches!(
         d,
@@ -4108,6 +4127,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 if !taken {
                     let index = clips(s).len();
                     arr_mut(s).clips.push(Clip::new(pos, len, track, src));
+                    s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
                     s.playlist.sel.push(index);
                     s.piano.dirty = true;
                 }

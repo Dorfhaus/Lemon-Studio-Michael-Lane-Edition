@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.09.3",
-  "title": "Lemon Studio Michael Lane Edition 2026.11.09.3",
-  "notes": "- Drag multiple audio clips and patterns from the Playlist Clip Picker onto a track. Reorder sources inside the picker and save their order with the project.\n- Use All, Used and Unused filters for the current arrangement. Picker color strips follow Playlist clip colors.\n- Play or stop up to eight audio clip and supported pattern previews independently. Fixed silent previews for clips and notes on later rack channels. Patterns that use hosted third-party instruments can be rendered to audio for preview.\n- Improved the Playlist overview scrollbar. Its handle stays proportional as the arrangement grows and keeps a usable minimum width in both scrollbar styles.\n- Added basic interface translations for French, Spanish, German, Brazilian Portuguese and Italian. Choose a language in Settings > General > Language. English is the fallback for text outside the initial translation coverage.\n- Added a searchable offline User Guide under Help. Show me where highlights relevant controls in supported articles, and Back to guide returns to the article.\n\nhttps://michaellanemusic.de/lemon-studio/",
+  "tag": "v2026.11.09.4",
+  "title": "Lemon Studio Michael Lane Edition 2026.11.09.4",
+  "notes": "- The Playlist nudges right after you place a clip or drop audio near the visible right edge, including on successive placements. This uses the existing scroll range and keeps your current zoom.\n- Restored the previous horizontal scrollbar behavior in the Playlist and Piano Roll.\n- Fixed cases where applying Audio Timing failed to attach the rendered audio. Audio Timing and Vocal Tuning now show activity while processing.\n- Audio Timing asks before baking vocal tuning into the warped audio. Choose Don't show again to save your preference, or restore the warning in Settings > General > Hints and warnings > Manage messages.\n- Fixed the Channel Rack Swing control and gave the add-channel button its own space in the FL Studio 2005 theme.\n\nhttps://michaellanemusic.de/lemon-studio/",
   "assets": [
     {
-      "name": "Lemon-Studio-Windows-Setup-2026.11.09.3.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110903/Lemon-Studio-Windows-Setup-2026.11.09.3.exe",
-      "sha256": "f9b27158b89e15928b0ad04c3f684df1e7b043e9faa20b7114e97a92f6dfb309"
+      "name": "Lemon-Studio-Windows-Setup-2026.11.09.4.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026110904/Lemon-Studio-Windows-Setup-2026.11.09.4.exe",
+      "sha256": "bcbb19b3805ae366494aca36e796897e70722c3953b3f6ad57ede1f1ca7c1d0a"
     },
     {
-      "name": "Lemon-Studio-Source-2026110903.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110903/Lemon%20Studio%20Source.zip",
-      "sha256": "a84085100b3d2a456e2e8568cbd3b85011302bd4bd53ec8d68f2e5c5f0b8eca3"
+      "name": "Lemon-Studio-Source-2026110904.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026110904/Lemon%20Studio%20Source.zip",
+      "sha256": "b83951687bd6bc4112eab1e32e6ce2c54b99549fc98949474fa6cf931e8a4baa"
     },
     {
-      "name": "Lemon-Studio-Linux-x86_64-2026110903.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110903/Lemon-Studio-Linux-x86_64-2026110903.tar.gz",
-      "sha256": "5b138f41ded9701755bd20e4242c84a8d42a2d4b5406c44960c4ad5fa2f3efbe"
+      "name": "Lemon-Studio-Linux-x86_64-2026110904.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026110904/Lemon-Studio-Linux-x86_64-2026110904.tar.gz",
+      "sha256": "973efde1d27dd4cbafe695ffb63850e9e0622afc7a9a9991bba138531baefd04"
     },
     {
-      "name": "Lemon-Studio-Mac-arm64-2026110903.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110903/Lemon-Studio-Mac-arm64-2026110903.dmg",
-      "sha256": "7cd53359a9c63761b181d0099657f9912ab8eac85a37cd0544c22e6aed0363eb"
+      "name": "Lemon-Studio-Mac-arm64-2026110904.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110904/Lemon-Studio-Mac-arm64-2026110904.dmg",
+      "sha256": "cf097c40714c5795380293e531a74e38919e65398ea0fc6bff8f68d41d90dea7"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-arm64-2026110903.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110903/Lemon-Studio-Source-Mac-arm64-2026110903.zip",
-      "sha256": "bef74b05842c0cea9c5b7bd2934b4d6ccf05801b59ae0fa5e7ceb02b75d3899d"
+      "name": "Lemon-Studio-Source-Mac-arm64-2026110904.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110904/Lemon-Studio-Source-Mac-arm64-2026110904.zip",
+      "sha256": "19b8bd5755d4c47350518043796a090e3322c39538af9f0945366f3266ef4007"
     },
     {
-      "name": "Lemon-Studio-Mac-x86_64-2026110903.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110903/Lemon-Studio-Mac-x86_64-2026110903.dmg",
-      "sha256": "a01557e02c0f0c68c953ec1f1b1900d530b5f14b9376986e597e588ed631d0f8"
+      "name": "Lemon-Studio-Mac-x86_64-2026110904.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110904/Lemon-Studio-Mac-x86_64-2026110904.dmg",
+      "sha256": "e5545e7a4be36a72f98bd25cc0826667f04fcaea23326de3f268b79aeca62db5"
     },
     {
-      "name": "Lemon-Studio-Source-Mac-x86_64-2026110903.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110903/Lemon-Studio-Source-Mac-x86_64-2026110903.zip",
-      "sha256": "8f6fea2f41fc018d780b52d3b32fbc0f6f6adac659e59c105b789bbefbdefe65"
+      "name": "Lemon-Studio-Source-Mac-x86_64-2026110904.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026110904/Lemon-Studio-Source-Mac-x86_64-2026110904.zip",
+      "sha256": "f6f8b410c2010cb937d9e1ebd2539d44c73a90fc9fd27c155508f99a7cf10860"
     }
   ]
 }

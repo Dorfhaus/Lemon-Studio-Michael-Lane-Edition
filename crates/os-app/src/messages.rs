@@ -50,8 +50,18 @@ pub const PROJECT_DATA_SIZE: Message = Message {
     kind: Kind::Notice,
 };
 
+pub const WARP_BAKES_VOCAL_TUNING: Message = Message {
+    check: Check {
+        key: "msg_warp_bakes_vocal_tuning",
+        label: "Audio timing bakes vocal tuning",
+        default: true,
+    },
+    group: "Audio",
+    kind: Kind::Question,
+};
+
 /// Every message that can be skipped.
-pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE];
+pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE, &WARP_BAKES_VOCAL_TUNING];
 
 /// Whether message `m` shows (its entry is on).
 pub fn on(m: &Message) -> bool {
@@ -210,7 +220,7 @@ mod tests {
         assert_eq!(LIMIT_MB.len(), prefs::PROJECT_DATA_SIZE_WARNING.choices.len());
     }
 
-    /// The menu: Show all, Show none, the File/Data header (not clickable), then its entries in alphabetical order;
+    /// The menu: Show all, Show none, then each section and its entries in alphabetical order;
     /// an entry that is off has a dim tick and dim text.
     #[test]
     fn the_menu_lists_the_entries_with_their_marks() {
@@ -222,13 +232,16 @@ mod tests {
             vec![
                 ("Show all", false, Mark::None, false),
                 ("Show none", false, Mark::None, false),
+                ("Audio", true, Mark::None, false),
+                ("Audio timing bakes vocal tuning", false, Mark::Check(true), false),
+                ("", false, Mark::None, false),
                 ("File/Data", true, Mark::None, false),
                 ("Delete channel", false, Mark::Check(true), false),
                 ("Delete pattern", false, Mark::Check(false), true),
                 ("Project data size warning", false, Mark::Check(true), false),
             ]
         );
-        assert_eq!(items[4].cmd, Cmd::Messages(Pick::Toggle(1)));
+        assert_eq!(items[7].cmd, Cmd::Messages(Pick::Toggle(1)));
     }
 
     /// Show all turns every entry on; Show none turns the notices off and leaves the questions on.

@@ -541,6 +541,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
     }
 
     // Footer (§4, §16).
+    let mut scroll_left = x + c.slot_x + 8.;
     if s.vintage_2005 {
         crate::vintage_skin::native(ui.c,"FooterLeft",0,x,win.bottom()-24.);
         crate::vintage_skin::draw(ui.c,"FooterMiddle",0,Rect::new(x+133.,win.bottom()-24.,w-135.,22.));
@@ -556,7 +557,10 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         };
         ui.c.text_clip(Font::vintage(11),filter.x+4.,filter.y+3.,filter.w-18.,t.text,label);
         icons::draw(ui.c,Icon::ArrowDown,Rect::new(filter.right()-12.,filter.y+6.,7.,7.),if hot {t.glyph}else{t.text_dim});
-        add_button(ui,x+c.slot_x-6.,18.,y+h);
+        let button_left = filter.right() + 3.;
+        let button_width = 18.;
+        add_button(ui, button_left, button_width, y + h);
+        scroll_left = scroll_left.max(button_left + button_width + 4.);
     } else { add_button(ui, x + c.name_x, c.name_w, y + h); }
     if let Some(k) = cur_step {
         let k = k % len.max(1);
@@ -569,7 +573,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             }
         }
     }
-    let track = Rect::span(x + c.slot_x + 8.0, x + w - 2.0, y + h - 13.0, y + h - 6.0);
+    let track = Rect::span(scroll_left, x + w - 2.0, y + h - 13.0, y + h - 6.0);
     let view = steps_shown as f32 * step_width(s);
     super::scrollbar(ui, track, false, sx, view, total_steps as f32 * step_width(s), Scroll::RackX);
     // Redraw the bar in the rack's own look: flat track, thin dark thumb, end chevrons (Classic only).
@@ -1142,6 +1146,10 @@ pub fn paint_fill(ui: &mut Ui, s: &State) {
     ui.c.text_center(font, ar, t.text, "Accept");
 }
 
+pub(crate) fn vintage_swing_travel() -> f32 {
+    if crate::vintage_skin::available() { 17. } else { 46. * 0.75 }
+}
+
 /// Native 409 x 22 header: fixed ends and an extensible plain center.
 fn native_title(ui:&mut Ui,s:&State,win:Rect,f:&FrameInfo) {
     use crate::vintage_skin as skin;
@@ -1152,7 +1160,7 @@ fn native_title(ui:&mut Ui,s:&State,win:Rect,f:&FrameInfo) {
     skin::native(ui.c,"RackEnd",0,r-27.,y);
     let swing=Rect::new(r-125.,y+2.,44.,16.);
     ui.hit(swing,Action::Knob(KnobId::Swing),s.knob_text(KnobId::Swing));
-    let thumb=Rect::new(swing.x+s.knob(KnobId::Swing)*17.,y+1.,21.,13.);
+    let thumb=Rect::new(swing.x+s.knob(KnobId::Swing)*vintage_swing_travel(),y+1.,21.,13.);
     if !skin::alpha_native(ui.c,"HSlider",0,thumb.x,thumb.y) {crate::vintage::metal(ui.c,thumb,Color::rgb(0x899297));}
     let graph=Rect::new(r-78.,y,25.,22.);
     let roll=Rect::new(r-53.,y,25.,22.);

@@ -65,6 +65,11 @@ fn source(app:&App,row:u16)->Result<(u16,String),String>{
 }
 fn message(app:&mut App,text:String){app.state.message=Some(text.clone());app.state.playlist.vocal.message=text;app.invalidate();}
 pub fn toggle(app:&mut App,row:u16){
+ if crate::warp::applying(&app.state) {
+  app.state.message = Some("Wait for audio timing to finish applying".into());
+  app.invalidate();
+  return;
+ }
  if app.state.playlist.vocal.row==Some(row){app.state.playlist.vocal.row=None;app.invalidate();return;}
  if let Err(e)=source(app,row){message(app,e);return;}
  app.state.playlist.warp=None;app.state.playlist.warp_loading=None;
@@ -158,7 +163,8 @@ pub fn tick(app:&mut App){
  if app.state.playlist.vocal.ready==Some(false){return;}
  let output=crate::pattern_render::folder(&app.state).join("Vocal tuning");let k=key(&d);
  let(tx,rx)=mpsc::channel();let cancel=Arc::new(AtomicBool::new(false));let stop=cancel.clone();
- app.vocal_job=Some(Job{rx,cancel,expected:Some(d.clone()),source:d.channel,path:d.source.clone(),row:app.state.playlist.vocal.row.unwrap_or(0),key:k.clone()});app.state.playlist.vocal.busy=false;
+ app.vocal_job=Some(Job{rx,cancel,expected:Some(d.clone()),source:d.channel,path:d.source.clone(),row:app.state.playlist.vocal.row.unwrap_or(0),key:k.clone()});app.state.playlist.vocal.busy=true;
+ message(app,"Applying vocal tuning...".into());
  std::thread::spawn(move||{let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
   let sample=os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(&d.source))).map_err(|e|e.to_string())?;
   if file_hash(&d.source)?!=d.source_hash{return Err("The original recording changed on disk; reanalyse before applying its tuning".into());}

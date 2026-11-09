@@ -432,7 +432,7 @@ impl Bar {
     /// Where the thumb starts along the track at scroll `pos`.
     fn thumb_at(&self, pos: f32) -> f32 {
         if let Some(total)=self.content_span {return pos.clamp(0.,self.max)/total*self.len();}
-        if self.max > 0.0 { pos.clamp(0., self.max) / self.max * (self.len() - self.thumb) } else { 0.0 }
+        if self.max > 0.0 { pos / self.max * (self.len() - self.thumb) } else { 0.0 }
     }
 
     /// The thumb end under `along` (pixels along the track) on a bar whose thumb ends zoom (spec: ui/scroll-bars.md
@@ -932,6 +932,7 @@ pub enum Drag {
     RackResize { edges: u8, m0: (f32, f32), s0: (f32, f32), joined: crate::win_clamp::Layout },
     /// Change a channel's mixer track (spec: ui/channel-rack.md §5).
     RackMixer { ch: usize, m0: (f32,f32), started: bool },
+    RackSwing { x0: f32, value: f32 },
     Fader { track: u16, y0: f32, v0: f64, group: Vec<(u16,f64)> },
     /// A press on a track's equaliser graph `g`: band `band` follows the cursor.
     EqGraph { track: u16, band: u8, g: Rect },
@@ -2454,6 +2455,11 @@ impl App {
             }
             // Cancel and the caption's × change nothing.
             Then::VocalReanalyse(row)=>{if reply==Reply::Button(Answer::Yes){crate::vocal::reanalyse(self,row);}},
+            Then::WarpApply => {
+                if reply == Reply::Button(Answer::Yes) {
+                    crate::warp::confirm_apply(self);
+                }
+            }
             Then::VocalDownload(row)=>{if reply==Reply::Button(Answer::Yes){crate::vocal::download(self,row);}},
             Then::StretchClips(rows, method) => {
                 if reply == Reply::Button(Answer::Ok) {
@@ -4314,6 +4320,8 @@ impl App {
             || views::browser::search_busy(&self.state)
             || self.state.browser_marquee.borrow().is_some()
             || self.state.browser_preview.busy()
+            || crate::warp::busy(&self.state)
+            || self.state.playlist.vocal.busy
     }
 
     /// Linux: a plugin window is open (its X11 events and the editor's run loop are served on the tick).
@@ -4571,6 +4579,10 @@ impl App {
             self.state.project.current_pattern=Some(self.state.pattern);
             if !self.state.song_mode{self.state.piano.dirty=true;}
         }
+        crate::warp::poll(self);
+        if (crate::warp::busy(&self.state) || self.state.playlist.vocal.busy) && self.state.shown(Win::Playlist) {
+            self.damage_win(Win::Playlist);
+        }
         // Edits (notes, steps, mixer, channel volume / pan / mute, tempo) reach playback right away,
         // also during a drag (at most once per tick).
         if self.state.piano.dirty && crate::clip_effects::normalize(self).is_ok() {
@@ -4580,7 +4592,6 @@ impl App {
                 self.transport.update(&crate::rack::play_project(&self.state));
             }
         }
-        crate::warp::poll(self);
         crate::strip_silence::poll(self);
         self.sample_dialog_preview();
         self.playback_damage();
@@ -4730,6 +4741,7 @@ impl App {
         self.piano_panel = find(Action::PianoVelocity);
         self.pl_grid = find(Action::PlaylistArea);
         self.pl_covers = self.playlist_covers();
+        self.follow_playlist_placement();
         self.piano_win = match (self.piano_grid, self.piano_panel) {
             // The window below its title bar: overview, ruler, keyboard, grid, velocity panel.
             (Some(g), Some(p)) => Some(Rect::new(g.x - 73.0, g.y - 41.0, g.w + 96.0, p.bottom() - g.y + 41.0)),
@@ -4835,12 +4847,16 @@ impl App {
     }
 
     pub(crate) fn import_stems(&mut self,files:Vec<PathBuf>,track:u16,tick:u32){
+        let placement_edge = self.playlist_placement_edge(self.mouse.0);
         let mut failures=Vec::new();let mut from=track;let mut selected=Vec::new();
         for path in &files {
             match crate::playlist::import_audio_clip(&mut self.state,&path.to_string_lossy(),from,tick){
                 Ok(i)=>{from=crate::playlist::clips(&self.state)[i].track.saturating_add(1);selected.push(i);},
                 Err(reason)=>failures.push(format!("{}: {reason}",path.display())),
             }
+        }
+        if !selected.is_empty() {
+            self.state.playlist.placement_edge = self.state.playlist.placement_edge.or(placement_edge);
         }
         self.state.playlist.sel=selected;
         self.state.message=Some(format!("Imported {} of {} stems{}",
@@ -4912,13 +4928,17 @@ impl App {
             self.state.message = Some("Drop audio files on the playlist to add audio clips".into());
             return self.invalidate();
         };
+        let placement_edge = self.playlist_placement_edge(x);
         let s = &mut self.state;
         let g = crate::playlist::PGeom::new(s, grid);
         let track = g.track_at(y);
         let tick = crate::playlist::snap_place(s, &g, g.tick_at(x), self.alt);
         let name = path.to_string_lossy().into_owned();
         s.message = Some(match crate::playlist::import_audio_clip(s, &name, track, tick) {
-            Ok(_) => format!("Added audio clip {}", path.display()),
+            Ok(_) => {
+                s.playlist.placement_edge = s.playlist.placement_edge.or(placement_edge);
+                format!("Added audio clip {}", path.display())
+            }
             Err(reason) => format!("{reason}: {}", path.display()),
         });
         self.invalidate();
@@ -5967,7 +5987,6 @@ impl App {
                         let along = if b.vertical { y - b.track.y } else { x - b.track.x };
                         let at = ((along - grab) / b.len() * units).clamp(0.0, if b.content_span.is_some() { f32::MAX } else { units });
                         let span = if right { at - fixed } else { fixed - at };
-                        let previous_zoom = self.zoom_get(t).unwrap_or(1.);
                         self.zoom_set(t, b.view / span.max(f32::MIN_POSITIVE));
                         let z = self.zoom_get(t).unwrap_or(1.0);
                         // The scroll range at the new zoom: the bar itself is only repainted with it next frame.
@@ -5976,11 +5995,7 @@ impl App {
                                 let fraction=bar.max/bar.content_span.unwrap().max(1.);
                                 let total=(units*z).max(bar.view);bar.content_span=Some(total);
                                 bar.max=total*fraction;
-                            } else if t == Scroll::PlaylistX && crate::elastic_scroll::adaptive(t) {
-                                bar.max *= z / previous_zoom;
-                            } else {
-                                bar.max = (units * z - bar.view).max(0.);
-                            }
+                            } else {bar.max = (units * z - bar.view).max(0.0);}
                         }
                         self.scroll_set(t, if right { fixed * z } else { fixed * z - b.view });
                         self.damage_scroll(t);
@@ -6311,6 +6326,16 @@ impl App {
                         Some(r) => self.damage_rect(r.outset(10.0)),
                         None => self.invalidate(),
                     }
+                    self.damage_band(HINT_RECT);
+                }
+                Drag::RackSwing { x0, value } => {
+                    let id = crate::knobs::KnobId::Swing;
+                    let travel = views::rack::vintage_swing_travel();
+                    self.state.set_knob(id, (value + (x - x0) / travel).clamp(0., 1.));
+                    self.record_knob(id);
+                    self.multilink_knob(crate::typein::Target::Knob(id));
+                    self.hint = Cow::Owned(self.state.knob_text(id));
+                    self.damage_win(Win::ChannelRack);
                     self.damage_band(HINT_RECT);
                 }
                 Drag::Knob { id, y0, v0, group } => {
@@ -6890,6 +6915,46 @@ impl App {
 
     pub(crate) fn bar(&self, t: Scroll) -> Option<Bar> {
         self.bars.iter().find(|b| b.target == t).copied()
+    }
+
+    pub(crate) fn playlist_placement_edge(&self, x: f32) -> Option<crate::playlist::PlacementEdge> {
+        let grid = self.pl_grid?;
+        let edge_width = (grid.w * 0.1).min(128.);
+        let s = &self.state;
+        if x < grid.right() - edge_width || x > grid.right()
+            || !crate::workspace_visibility::shown(crate::playlist::FOLLOW_PLACEMENT_VISIBILITY)
+        {
+            return None;
+        }
+        Some(crate::playlist::PlacementEdge {
+            arrangement: s.project.arrangement_index(),
+            position: s.playlist_scroll.0,
+            zoom: s.playlist_bar_w,
+            view: grid.w,
+        })
+    }
+
+    fn follow_playlist_placement(&mut self) {
+        if self.drag.is_some() {
+            return;
+        }
+        let Some(bar) = self.bar(Scroll::PlaylistX) else { return; };
+        let s = &mut self.state;
+        let Some(edge) = s.playlist.placement_edge.take() else { return; };
+        if edge.arrangement != s.project.arrangement_index()
+            || edge.position != s.playlist_scroll.0
+            || edge.zoom != s.playlist_bar_w
+            || edge.view != bar.view
+            || edge.position >= bar.max
+            || !crate::workspace_visibility::shown(crate::playlist::FOLLOW_PLACEMENT_VISIBILITY)
+        {
+            return;
+        }
+        // Use the existing range after placement. Do not move the viewport
+        // until the placement gesture finishes.
+        let nudge = (bar.view * 0.1).min(64.);
+        self.scroll_set(Scroll::PlaylistX, edge.position + nudge);
+        self.invalidate();
     }
 
     /// Scroll value of an axis in content pixels.
@@ -9589,7 +9654,11 @@ impl App {
                     return;
                 }
                 crate::rack_controls::snapshot(s, id, false);
-                self.drag = Some(Drag::Knob { id, y0: self.mouse.1, v0: s.knob(id),group:crate::rack_controls::group(s,id) });
+                self.drag = Some(if s.vintage_2005 && id == crate::knobs::KnobId::Swing {
+                    Drag::RackSwing { x0: self.mouse.0, value: s.knob(id) }
+                } else {
+                    Drag::Knob { id, y0: self.mouse.1, v0: s.knob(id), group: crate::rack_controls::group(s,id) }
+                });
                 self.hint = Cow::Owned(s.knob_text(id));
             }
             Action::PianoLaneMenu => s.lane_menu = true,
@@ -13406,6 +13475,35 @@ mod tests {
     }
 
     #[test]
+    fn vintage_rack_swing_drags_horizontally_and_add_has_clearance() {
+        use crate::knobs::KnobId;
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.vintage_2005 = true;
+        app.state.z = vec![Win::ChannelRack];
+        let mut canvas = Canvas::new(1280, 800, 1.).unwrap();
+        frame(&mut app, &mut canvas, None);
+        let swing = hit_rect(&app, &Action::Knob(KnobId::Swing));
+        let add = hit_rect(&app, &Action::RackAdd);
+        let scroll = hit_rect(&app, &Action::Scrollbar(Scroll::RackX));
+        let filter = hit_rect(&app, &Action::RackFilter);
+        assert!(filter.right() < add.x && add.right() < scroll.x);
+        app.mouse_move(swing.cx(), swing.cy());
+        app.mouse_down();
+        assert!(matches!(app.drag, Some(Drag::RackSwing { .. })));
+        assert!(!app.cursor_locked());
+        app.mouse_move(swing.cx() + views::rack::vintage_swing_travel() * 0.5, swing.cy());
+        app.mouse_up();
+        assert!((app.state.knob(KnobId::Swing) - 0.5).abs() < 0.01);
+        crate::history::undo(&mut app.state);
+        assert_eq!(app.state.knob(KnobId::Swing), 0.);
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            frame(&mut app, &mut canvas, None);
+            canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("vintage-rack-footer.png")).unwrap();
+        }
+    }
+
+    #[test]
     fn knobs_drag_and_wheel() {
         use crate::knobs::KnobId;
         let Ok(mut a) = Canvas::new(1920, 1080, 1.0) else { return };
@@ -14458,48 +14556,81 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_playlist_overview_thumb_shrinks_when_placing_patterns() {
+    fn playlist_follows_clip_placement_at_right_edge_without_zooming() {
         use crate::playlist as pl;
-        crate::settings_file::set_flag(crate::elastic_scroll::ADAPTIVE, true);
-        let mut app = App::new(None);
-        app.state.project = test_project();
-        app.state.z = vec![Win::Playlist];
-        app.state.playlist.source = Some(os_model::ClipSource::Pattern(1));
-        let mut canvas = Canvas::new(1280, 800, 1.).unwrap();
-        let target = Scroll::PlaylistX;
-        for style in [0, 1] {
-            crate::settings_file::write(crate::prefs::PLAYLIST_SCROLLBAR_STYLE.key,
-                crate::prefs::PLAYLIST_SCROLLBAR_STYLE.choices[style]);
-            pl::arr_mut(&mut app.state).clips.clear();
-            app.state.playlist_scroll.0 = 0.;
+        use crate::views::browser::Item;
+        let path = std::env::temp_dir().join(format!("lemon-edge-placement-{}.wav", std::process::id()));
+        os_engine::wav::write_f32_stereo(
+            &mut std::fs::File::create(&path).unwrap(), 48000, &[0.1; 9600],
+        ).unwrap();
+
+        for adaptive in [false, true] {
+            crate::settings_file::set_flag(crate::elastic_scroll::ADAPTIVE, adaptive);
+            crate::settings_file::set_flag(pl::FOLLOW_PLACEMENT_VISIBILITY, true);
+            let mut app = App::new(None);
+            app.state.project = test_project();
+            app.state.z = vec![Win::Playlist];
+            app.state.playlist.tool = pl::PlTool::Draw;
+            app.state.playlist.source = Some(os_model::ClipSource::Pattern(1));
+            let mut canvas = Canvas::new(1280, 800, 1.).unwrap();
+            let target = Scroll::PlaylistX;
             frame(&mut app, &mut canvas, None);
-            let empty = app.bar(target).unwrap();
-            assert_eq!(empty.thumb, empty.track.w);
             let grid = app.pl_grid().unwrap();
             let zoom = app.state.playlist_bar_w;
-            let mut previous = empty.track.w;
-            let mut count = 0;
-            for fraction in [0.12, 0.42, 0.80] {
-                app.mouse_move(grid.x + fraction * grid.w, grid.y + 12.);
+            let click = |app: &mut App, x, row: u16| {
+                let y = pl::PGeom::new(&app.state, grid).y_of(row) + 12.;
+                app.mouse_move(x, y);
                 app.mouse_down();
                 app.mouse_up();
-                frame(&mut app, &mut canvas, None);
-                count += 1;
-                assert_eq!(pl::clips(&app.state).len(), count);
-                let bar = app.bar(target).unwrap();
-                assert!(bar.thumb < previous, "adding a later pattern must shrink the handle");
-                assert_eq!(app.state.playlist_bar_w, zoom);
-                assert_eq!(app.scroll_get(target), 0.);
-                assert!((bar.thumb - bar.track.w * bar.view / (bar.view + bar.max)).abs() < 0.01);
-                previous = bar.thumb;
-            }
-            let end = app.bar(target).unwrap().max;
-            app.scroll_input(target, end, false);
+            };
+            click(&mut app, grid.cx(), 0);
             frame(&mut app, &mut canvas, None);
-            let bar = app.bar(target).unwrap();
-            assert_eq!(bar.thumb, previous, "panning does not change the visible share");
-            assert!((bar.thumb_at(end) + bar.thumb - bar.track.w).abs() < 0.01);
+            assert_eq!(app.scroll_get(target), 0., "a placement in the middle stays put");
+
+            let right = app.bar(target).unwrap().max;
+            app.scroll_set(target, right);
+            frame(&mut app, &mut canvas, None);
+            let x = grid.right() - 8.;
+            app.mouse_move(x, grid.y + 12.);
+            app.mouse_down();
+            frame(&mut app, &mut canvas, None);
+            assert_eq!(app.scroll_get(target), right, "the viewport stays put during placement");
+            app.mouse_up();
+            frame(&mut app, &mut canvas, None);
+            let first = app.scroll_get(target);
+            assert!(first > right && first <= right + 64.);
+            assert!(first < app.bar(target).unwrap().max, "there is still room to scroll");
+            let max = app.bar(target).unwrap().max;
+            frame(&mut app, &mut canvas, None);
+            assert_eq!(app.scroll_get(target), first, "one nudge per placement");
+            assert_eq!(app.bar(target).unwrap().max, max, "the nudge does not extend the range");
+
+            click(&mut app, x, 1);
+            frame(&mut app, &mut canvas, None);
+            let second = app.scroll_get(target);
+            assert!(second > first && second <= first + 64., "a second edge placement also follows");
+
+            app.mouse_move(x, pl::PGeom::new(&app.state, grid).y_of(2) + 12.);
+            app.browser_drop(Item::Sample(path.to_string_lossy().into_owned()), true);
+            frame(&mut app, &mut canvas, None);
+            let third = app.scroll_get(target);
+            assert!(third > second && third <= second + 64., "Browser audio drop follows");
+
+            app.mouse_move(x, pl::PGeom::new(&app.state, grid).y_of(3) + 12.);
+            app.drop_file_at_plugin(path.clone(), None);
+            frame(&mut app, &mut canvas, None);
+            let fourth = app.scroll_get(target);
+            assert!(fourth > third && fourth <= third + 64., "external audio drop follows");
+            assert_eq!(app.state.playlist_bar_w, zoom);
+
+            crate::settings_file::set_flag(pl::FOLLOW_PLACEMENT_VISIBILITY, false);
+            app.state.playlist.source = Some(os_model::ClipSource::Pattern(1));
+            click(&mut app, x, 4);
+            frame(&mut app, &mut canvas, None);
+            assert_eq!(app.scroll_get(target), fourth);
         }
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

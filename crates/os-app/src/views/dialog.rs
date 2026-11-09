@@ -133,7 +133,12 @@ fn msg_box(ui: &mut Ui, s: &State, m: &Modal, msg: &Msg) {
     let buttons_w = widths.iter().sum::<f32>() + 6.0 * widths.len().saturating_sub(1) as f32;
     // Remember my choice sits left of the buttons (spec: ui/settings-choices.md "Hints and warnings: Manage messages
     // and Project data size warning (2026-10-16)").
-    let remember_w = if msg.remember.is_some() { super::remember_width(ui) + 24.0 } else { 0.0 };
+    let remember_label = if msg.then == crate::dialog::Then::WarpApply {
+        "Don't show again"
+    } else {
+        super::REMEMBER
+    };
+    let remember_w = if msg.remember.is_some() { super::remember_width(ui, remember_label) + 24.0 } else { 0.0 };
     let w = (text_w + TEXT_X + TEXT_R).max(buttons_w + 24.0 + remember_w).max(MIN_W).ceil();
     let choices = if let crate::dialog::Then::StemChoose(_,mask)=msg.then {Some(mask)} else {None};
     let body_h = (27.0 + lines.len() as f32 * LINE).max(91.0) + if choices.is_some() {150.0} else {0.0};
@@ -167,7 +172,7 @@ fn msg_box(ui: &mut Ui, s: &State, m: &Modal, msg: &Msg) {
     }
     let by = body.bottom() + 20.0;
     if let Some((_, ticked)) = msg.remember {
-        super::remember_check(ui, r.x + 14.0, by + BTN_H / 2.0, ticked, Action::Dlg(DHit::Remember));
+        super::remember_check(ui, r.x + 14.0, by + BTN_H / 2.0, ticked, remember_label, Action::Dlg(DHit::Remember));
     }
     let mut bx = r.right() - 12.0 - buttons_w;
     for (i, bw) in widths.into_iter().enumerate() {

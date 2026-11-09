@@ -13,19 +13,6 @@ pub fn horizontal(len:f32,pos:f32,view:f32,total:f32)->(f32,f32,f32) {
     let width=(view/total*len).max(minimum).min(len-at);
     (at,width,max)
 }
-/// A populated Playlist shows the visible share of its content plus one viewport
-/// of space to keep arranging. An empty Playlist keeps its initial drag runway.
-pub fn playlist_horizontal(len: f32, pos: f32, view: f32, total: f32) -> (f32, f32, f32) {
-    let max = (total - view).max(0.);
-    if max == 0. {
-        return horizontal(len, pos, view, total);
-    }
-    let len = len.max(1.);
-    let width = (view / total * len).max(48_f32.min(len));
-    let offset = pos.clamp(0., max) / max * (len - width);
-    (offset, width, max)
-}
-
 pub const VISIBILITY: &str = "visible_elastic-scrollbars";
 pub fn axis(t: Scroll) -> Option<usize> { match t { Scroll::PlaylistX=>Some(0), Scroll::PlaylistY=>Some(1), Scroll::PianoX=>Some(2), Scroll::PianoY=>Some(3), _=>None } }
 #[derive(Clone, Copy, Default)]

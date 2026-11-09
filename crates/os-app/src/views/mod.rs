@@ -482,17 +482,8 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let total = total.max(view).max(1.0);
     let mut max = (total - view).max(0.0);
     let (mut thumb_at, mut thumb) = os_ui::kit::thumb(len, pos, view, total);
-    let adaptive = crate::elastic_scroll::adaptive(target);
-    // The populated Playlist uses a fixed proportional thumb; only the empty
-    // Playlist and Piano Roll use the clipped viewport drag geometry.
-    let content_span = (adaptive && (target != Scroll::PlaylistX || total <= view)).then_some(total);
-    if adaptive {
-        (thumb_at, thumb, max) = if target == Scroll::PlaylistX {
-            crate::elastic_scroll::playlist_horizontal(len, pos, view, total)
-        } else {
-            crate::elastic_scroll::horizontal(len, pos, view, total)
-        };
-    }
+    let content_span=crate::elastic_scroll::adaptive(target).then_some(total);
+    if content_span.is_some() {(thumb_at,thumb,max)=crate::elastic_scroll::horizontal(len,pos,view,total);}
     if target==Scroll::PlaylistY {
         thumb=thumb.max(72.0_f32.min(len));
         thumb_at=if max>0. {pos.clamp(0.,max)/max*(len-thumb)}else{0.};
@@ -510,7 +501,7 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let act = Action::Scrollbar(target);
     let hov = ui.hit(track, act.clone(), hint);
     let st = kit::State::new(hov, ui.down(track, &act), false);
-    let (draw_at, draw_len) = if adaptive {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
+    let (draw_at, draw_len) = if content_span.is_some() {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
     if target == Scroll::MixerX {
         // Invisible full-height hit lane, with only a small handle painted.
         let color = if ui.held(&act) { ui.t.tx(0xffffff) } else { ui.t.s(0x172126) };
@@ -644,20 +635,20 @@ pub fn led(ui: &mut Ui, cx: f32, cy: f32, on: bool) {
 }
 
 /// The label of a question's check that turns its Manage messages entry off when Ok is pressed.
-const REMEMBER: &str = "Remember my choice";
+pub(crate) const REMEMBER: &str = "Remember my choice";
 
 /// How wide `remember_check` draws.
-pub fn remember_width(ui: &mut Ui) -> f32 {
-    20.0 + ui.c.text_width(os_ui::Font::new(13), REMEMBER)
+pub fn remember_width(ui: &mut Ui, label: &str) -> f32 {
+    20.0 + ui.c.text_width(os_ui::Font::new(13), label)
 }
 
 /// A question's "Remember my choice" check at the bottom left of its box, left edge `x`, centred on `cy`: a small box,
 /// ticked when `on`, and its label; a click on either is `action`. Spec: ui/settings-choices.md "Hints and warnings:
 /// Manage messages and Project data size warning (2026-10-16)".
-pub fn remember_check(ui: &mut Ui, x: f32, cy: f32, on: bool, action: Action) {
+pub fn remember_check(ui: &mut Ui, x: f32, cy: f32, on: bool, label: &str, action: Action) {
     let t = ui.t;
     let f = os_ui::Font::new(13);
-    let w = remember_width(ui);
+    let w = remember_width(ui, label);
     let hov = ui.hit(Rect::new(x, cy - 10.0, w, 20.0), action, "Ok with this ticked turns this message off (Manage messages)");
     let b = Rect::new(x, (cy - 6.5).round(), 13.0, 13.0);
     ui.c.fill_rrect(b, 2.0, t.s(0x141516));
@@ -666,7 +657,7 @@ pub fn remember_check(ui: &mut Ui, x: f32, cy: f32, on: bool, action: Action) {
         kit::tick(ui.c, b, t.glyph);
     }
     let lh = ui.c.line_height(f);
-    ui.c.text(f, x + 20.0, (cy - lh / 2.0).round(), if hov { t.glyph } else { t.text }, REMEMBER);
+    ui.c.text(f, x + 20.0, (cy - lh / 2.0).round(), if hov { t.glyph } else { t.text }, label);
 }
 
 /// Channel / clip colors from the model.

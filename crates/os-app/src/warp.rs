@@ -9,14 +9,14 @@ use os_ui::{Color, Font, Rect};
 use std::{
     cell::Cell,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
 };
 pub struct Loading {
     pub original: os_model::Clip,
     arrangement: usize,
     job: Arc<Mutex<Option<Result<Form, String>>>>,
 }
-type Job = Arc<Mutex<Option<Result<PathBuf, String>>>>;
+type Job = mpsc::Receiver<Result<PathBuf, String>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Source,
@@ -50,6 +50,7 @@ pub struct Form {
     pub original: os_model::Clip,
     pub channel: os_model::Channel,
     pub edit: AudioWarp,
+    initial_points: Vec<(f64, f64)>,
     pub sample: Arc<os_engine::Sample>,
     pub selected: Option<usize>,
     pub select_mode: bool,
@@ -88,6 +89,38 @@ fn interpolate(points: &[(f64, f64)], x: f64, inverse: bool) -> f64 {
     let (c, d) = axis(points[i]);
     b + (x - a) / (c - a) * (d - b)
 }
+// Use the renderer's integer frame limits so neighboring anchors can't round
+// to the same destination or request an unsupported stretch ratio.
+fn move_bounds(points: &[(f64, f64)], i: usize, rate: u32, tempo: f64) -> Option<(f64, f64)> {
+    let per_beat = rate as f64 * 60. / tempo;
+    let frame = |seconds: f64| (seconds * rate as f64).round() as i64;
+    let left_src = frame(points[i].0) - frame(points[i - 1].0);
+    let right_src = frame(points[i + 1].0) - frame(points[i].0);
+    if left_src <= 0 || right_src <= 0 {
+        return None;
+    }
+    let left_dst = (points[i - 1].1 * per_beat).round() as i64;
+    let right_dst = (points[i + 1].1 * per_beat).round() as i64;
+    let lo = (left_dst + (left_src + 15) / 16).max(right_dst - right_src * 16);
+    let hi = (right_dst - (right_src + 15) / 16).min(left_dst + left_src * 16);
+    (lo <= hi).then_some((lo as f64 / per_beat, hi as f64 / per_beat))
+}
+
+pub fn busy(s: &State) -> bool {
+    s.playlist.warp_loading.is_some()
+        || s.playlist
+            .warp
+            .as_ref()
+            .is_some_and(|form| form.analysis.is_some() || form.pending.is_some())
+}
+
+pub(crate) fn applying(s: &State) -> bool {
+    s.playlist
+        .warp
+        .as_ref()
+        .is_some_and(|form| form.pending.is_some())
+}
+
 impl Form {
     fn select_to(&mut self, x: f32) {
         let r = self.wave.get();
@@ -142,14 +175,15 @@ impl Form {
             let step = GRIDS[self.grid];
             beat = ((beat + self.offset) / step).round() * step - self.offset;
         }
-        let gap = ((self.edit.points[i + 1].1 - self.edit.points[i - 1].1) * 0.25).min(0.001);
-        self.edit.points[i].1 = beat.clamp(
-            self.edit.points[i - 1].1 + gap,
-            self.edit.points[i + 1].1 - gap,
-        );
+        if let Some((lo, hi)) = move_bounds(&self.edit.points, i, self.sample.rate, self.tempo) {
+            self.edit.points[i].1 = beat.clamp(lo, hi);
+        }
     }
 }
 pub fn open(app: &mut App, i: usize) -> Result<(), String> {
+    if applying(&app.state) {
+        return Err("Wait for audio timing to finish applying".into());
+    }
     app.drag = None;
     let clip = pl::clips(&app.state)
         .get(i)
@@ -271,6 +305,7 @@ fn prepare(
         clip: i,
         original: clip,
         channel: ch,
+        initial_points: edit.points.clone(),
         edit,
         sample,
         selected: None,
@@ -287,6 +322,23 @@ fn prepare(
     })
 }
 pub fn command(app: &mut App, c: Command) {
+    run(app, c, false);
+}
+
+pub(crate) fn confirm_apply(app: &mut App) {
+    if app.state.playlist.warp.as_ref().is_some_and(|form| {
+        form.arrangement == app.state.project.arrangement_index()
+            && pl::clips(&app.state).get(form.clip) == Some(&form.original)
+            && app.state.project.channel(form.channel.index) == Some(&form.channel)
+    }) {
+        run(app, Command::Apply, true);
+    }
+}
+
+fn run(app: &mut App, c: Command, confirmed: bool) {
+    if applying(&app.state) {
+        return;
+    }
     if c == Command::Fit {
         let Some(f) = app.state.playlist.warp.as_ref() else {
             return;
@@ -414,20 +466,28 @@ pub fn command(app: &mut App, c: Command) {
                 return;
             }
             let (a, b) = f.range();
-            let mut sources: Vec<_> = f.edit.points.iter().map(|p| p.0).collect();
-            sources.extend(
-                f.transients
-                    .iter()
-                    .copied()
-                    .filter(|src| !f.select_mode || f.selection.contains(src)),
-            );
-            sources.sort_by(f64::total_cmp);
-            sources.dedup_by(|a, b| (*a - *b).abs() < 0.000001);
-            let mut points: Vec<_> = sources
-                .into_iter()
-                .filter(|src| *src >= a && *src <= b)
-                .map(|src| (src, interpolate(&f.edit.points, src, false)))
-                .collect();
+            let mut points = f.edit.points.clone();
+            let source_frame = |src: f64| (src * f.sample.rate as f64).round() as usize;
+            let per_beat = f.sample.rate as f64 * 60. / f.tempo;
+            let destination_frame = |beat: f64| (beat * per_beat).round() as usize;
+            for &src in &f.transients {
+                if points.len() >= 1024 {
+                    break;
+                }
+                if src <= a || src >= b || (f.select_mode && !f.selection.contains(&src)) {
+                    continue;
+                }
+                let i = points.partition_point(|point| point.0 < src);
+                let beat = interpolate(&f.edit.points, src, false);
+                if source_frame(src) <= source_frame(points[i - 1].0)
+                    || source_frame(src) >= source_frame(points[i].0)
+                    || destination_frame(beat) <= destination_frame(points[i - 1].1)
+                    || destination_frame(beat) >= destination_frame(points[i].1)
+                {
+                    continue;
+                }
+                points.insert(i, (src, beat));
+            }
             let step = GRIDS[f.grid];
             let offset = f.offset;
             let mut count = 0;
@@ -438,10 +498,8 @@ pub fn command(app: &mut App, c: Command) {
                 let beat = points[i].1;
                 let snapped = ((beat + offset) / step).round() * step - offset;
                 let dst = beat + (snapped - beat) * f.strength as f64 / 4.;
-                // Keep every other anchor intact and prevent crossings.
-                let lo = points[i - 1].1 + 0.000001;
-                let hi = points[i + 1].1 - 0.000001;
-                if lo < hi {
+                // Leave unselected anchors intact and keep both segments renderable.
+                if let Some((lo, hi)) = move_bounds(&points, i, f.sample.rate, f.tempo) {
                     points[i].1 = dst.clamp(lo, hi);
                     count += 1;
                 }
@@ -493,7 +551,10 @@ pub fn command(app: &mut App, c: Command) {
             let dst = l.1 + (src - l.0) / (r.0 - l.0) * (r.1 - l.1);
             f.edit.points.insert(i, (src, dst));
             f.selected = Some(i);
-            app.drag = Some(crate::app::Drag::WarpMarker { index: i, grab_offset: 0. });
+            app.drag = Some(crate::app::Drag::WarpMarker {
+                index: i,
+                grab_offset: 0.,
+            });
         }
         Command::Marker(i) => {
             if f.select_mode {
@@ -543,6 +604,40 @@ pub fn command(app: &mut App, c: Command) {
         }
         Command::Snap => f.snap = !f.snap,
         Command::Apply => {
+            let tolerance = f.tempo / (120. * f.sample.rate as f64);
+            let matches = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+                a.iter()
+                    .all(|&(src, beat)| (interpolate(b, src, false) - beat).abs() < tolerance)
+            };
+            if matches(&f.edit.points, &f.initial_points)
+                && matches(&f.initial_points, &f.edit.points)
+            {
+                f.message =
+                    "No timing changes to apply. Drag a marker or use Quantize first.".into();
+                app.invalidate();
+                return;
+            }
+            let warning = &crate::messages::WARP_BAKES_VOCAL_TUNING;
+            let bakes_vocal_tuning = app.state.project.vocal_edits.iter().any(|edit| {
+                edit.channel == f.channel.index
+                    && !edit.rendered.is_empty()
+                    && edit.rendered != edit.source
+                    && crate::plugins::resolve_sample(&edit.rendered) == f.edit.source
+            });
+            if !confirmed && crate::messages::on(warning) && bakes_vocal_tuning {
+                use crate::dialog::{Answer, Kind, Msg, Then, spans};
+                let mut message = Msg::new(
+                    Kind::Warning,
+                    "Apply audio timing?",
+                    spans(&["Applying audio timing will bake the clip's vocal tuning into the new audio. You can still undo the warp to return to the editable tuned clip.\n\nCheck Don't show again to skip this warning next time."]),
+                    &[Answer::Yes, Answer::Cancel],
+                    Then::WarpApply,
+                ).labelled(&["Apply", "Cancel"]);
+                message.focus = 1;
+                message.remember = Some((warning, false));
+                app.show_msg(message);
+                return;
+            }
             let points: Vec<_> = f
                 .edit
                 .points
@@ -555,9 +650,9 @@ pub fn command(app: &mut App, c: Command) {
                 })
                 .collect();
             let sample = f.sample.clone();
-            let done = Arc::new(Mutex::new(None));
-            f.pending = Some(done.clone());
-            f.message = "Rendering warp... Original audio is preserved.".into();
+            let (send, receive) = mpsc::channel();
+            f.pending = Some(receive);
+            f.message = "Applying audio timing...".into();
             let dir = crate::pattern_render::folder(&app.state).join("Warped");
             std::thread::spawn(move || {
                 let result = (|| {
@@ -579,9 +674,7 @@ pub fn command(app: &mut App, c: Command) {
                         .map_err(|e| e.to_string())?;
                     Ok(path)
                 })();
-                if let Ok(mut out) = done.lock() {
-                    *out = Some(result);
-                }
+                let _ = send.send(result);
             });
         }
     }
@@ -653,6 +746,12 @@ pub fn poll(app: &mut App) {
             || pl::clips(&app.state).get(f.clip) != Some(&f.original)
             || app.state.project.channel(f.channel.index) != Some(&f.channel)
     }) {
+        if applying(&app.state) {
+            app.state.message = Some(
+                "The clip or its source changed during rendering. Audio timing was not applied."
+                    .into(),
+            );
+        }
         app.state.playlist.warp = None;
         app.state.playlist.warp_loading = None;
         app.invalidate();
@@ -665,22 +764,31 @@ pub fn poll(app: &mut App) {
     if let Some(times) = detected {
         f.transients = times;
         f.analysis = None;
-        f.message = format!(
-            "{} transients detected. Drag markers or Quantize, then Apply to hear.",
-            f.transients.len()
-        );
+        if f.pending.is_none() {
+            f.message = format!(
+                "{} transients detected. Drag markers or Quantize, then Apply to hear.",
+                f.transients.len()
+            );
+        }
         app.invalidate();
     }
     let Some(f) = app.state.playlist.warp.as_mut() else {
         return;
     };
-    let result = f.pending.as_ref().and_then(|p| p.lock().ok()?.take());
+    let result = f.pending.as_ref().and_then(|job| match job.try_recv() {
+        Ok(result) => Some(result),
+        Err(mpsc::TryRecvError::Empty) => None,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            Some(Err("The render worker stopped. Try Apply again.".into()))
+        }
+    });
     let Some(result) = result else { return };
     f.pending = None;
     let path = match result {
         Ok(p) => p,
         Err(e) => {
-            f.message = e;
+            f.message = format!("Could not apply audio timing: {e}");
+            app.state.message = Some(f.message.clone());
             app.invalidate();
             return;
         }
@@ -709,7 +817,24 @@ pub fn poll(app: &mut App) {
     };
     let row = app.state.project.channels.len();
     let before = crate::history::Snap::Several(vec![
-        crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(&app.state, row))),
+        if usize::from(index) == row
+            && app
+                .state
+                .project
+                .channels
+                .iter()
+                .enumerate()
+                .all(|(row, channel)| usize::from(channel.index) == row)
+        {
+            crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(&app.state, row)))
+        } else {
+            crate::history::Snap::Rows(Box::new(crate::history::Rows::now(
+                &app.state,
+                false,
+                vec![row],
+                vec![],
+            )))
+        },
         crate::history::Snap::AudioWarps(app.state.project.audio_warps.clone()),
     ]);
     pl::snapshot_with(&mut app.state, "Warp audio", before);
@@ -726,7 +851,9 @@ pub fn poll(app: &mut App) {
         "{} (warped)",
         f.channel.name.as_deref().unwrap_or("Audio")
     ));
-    crate::rack::push_channel(&mut app.state, f.channel);
+    // Imported projects may carry sparse IDs. Keep the ID written into the clip.
+    app.state.project.channels.push(f.channel);
+    crate::rack::autosize(&mut app.state);
     f.edit.rendered = path.to_string_lossy().into_owned();
     app.state.project.audio_warps.push(f.edit.clone());
     let ppq = app.state.project.ppq.max(1);
@@ -812,9 +939,10 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         let y = g.y_of(load.original.track) + g.rows.base_height(load.original.track);
         let r = Rect::new(g.grid.x, y, g.grid.w, EXTRA).intersect(&g.grid);
         ui.c.fill_rect(r, ui.t.window_title);
+        crate::loading::activity_icon(ui.c, r.x + 15., r.y + 20., ui.t.accent);
         ui.c.text_clip(
             Font::new(13),
-            r.x + 12.,
+            r.x + 27.,
             r.y + 12.,
             r.w - 24.,
             ui.t.text,
@@ -865,18 +993,26 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         ("Reset".into(), Command::Reset),
         ("Undo".into(), Command::Undo),
         ("Redo".into(), Command::Redo),
-        ("Apply".into(), Command::Apply),
+        (
+            if f.pending.is_some() {
+                "Applying...".into()
+            } else {
+                "Apply".into()
+            },
+            Command::Apply,
+        ),
         ("Close".into(), Command::Close),
     ];
     for (label, cmd) in buttons {
-        let width = ui.c.text_width(Font::new(11), &label) + 18.;
+        let applying = cmd == Command::Apply && f.pending.is_some();
+        let width = ui.c.text_width(Font::new(11), &label) + if applying { 34. } else { 18. };
         if x + width > r.right() - 8. {
             x = r.x + 8.;
             top += 28.;
         }
         let b = Rect::new(x, top, width, 23.);
         x += width + 4.;
-        let hot = if f.pending.is_none() || cmd == Command::Close {
+        let hot = if f.pending.is_none() {
             ui.hit(b, Action::Warp(cmd), label.clone())
         } else {
             false
@@ -893,8 +1029,18 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         } else {
             ui.c.fill_rrect(b, 3., face);
         }
-        let ink = if cmd == Command::Apply { Color::rgb(0x000000) } else { ui.t.text };
-        ui.c.text_center(Font::new(11), b, ink, &label);
+        let ink = if cmd == Command::Apply {
+            Color::rgb(0x000000)
+        } else {
+            ui.t.text
+        };
+        let label_rect = if applying {
+            crate::loading::activity_icon(ui.c, b.x + 11., b.cy(), ink);
+            Rect::new(b.x + 15., b.y, b.w - 15., b.h)
+        } else {
+            b
+        };
+        ui.c.text_center(Font::new(11), label_rect, ink, &label);
     }
     let wave = Rect::new(
         g.x_of(f.original.position as f32),
@@ -983,17 +1129,26 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
                 ui.hit(
                     target,
                     Action::Warp(Command::Marker(i)),
-                    if f.select_mode { "Select timing marker" } else { "Drag timing marker" },
+                    if f.select_mode {
+                        "Select timing marker"
+                    } else {
+                        "Drag timing marker"
+                    },
                 );
             }
         }
     }
     ui.c.pop_clip();
+    let working = f.pending.is_some() || f.analysis.is_some();
+    if working {
+        crate::loading::activity_icon(ui.c, r.x + 15., r.bottom() - 16., ui.t.accent);
+    }
+    let inset = if working { 27. } else { 8. };
     ui.c.text_clip(
         Font::new(11),
-        r.x + 8.,
+        r.x + inset,
         r.bottom() - 22.,
-        r.w - 16.,
+        r.w - inset - 8.,
         ui.t.text,
         &f.message,
     );
@@ -1129,14 +1284,16 @@ mod tests {
             app.state.z = vec![crate::app::Win::Playlist];
             let mut canvas = os_ui::Canvas::new(1280, 800, 1.).unwrap();
             app.paint(&mut canvas, None);
-            assert!(app
-                .hits
-                .iter()
-                .any(|h| h.action == Action::Warp(Command::Toggle(0))));
-            assert!(app
-                .hits
-                .iter()
-                .any(|h| h.action == Action::Warp(Command::Quantize)));
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|h| h.action == Action::Warp(Command::Toggle(0)))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|h| h.action == Action::Warp(Command::Quantize))
+            );
             let f = app.state.playlist.warp.as_ref().unwrap();
             let wave = f.wave.get();
             let index = 3;
@@ -1145,17 +1302,35 @@ mod tests {
             let press_y = wave.cy();
             let hand = crate::app::Cursor::Playlist(pl::PlTool::Draw, crate::playlist_tools::GAIN);
             app.mouse_move(press_x, press_y);
-            assert_eq!(app.top_hit(press_x, press_y).map(|hit| &hit.action), Some(&Action::Warp(Command::Marker(index))), "vintage={vintage} wave={wave:?}");
-            assert_eq!(app.cursor(), hand, "vintage={vintage} hover={:?}", app.hover);
+            assert_eq!(
+                app.top_hit(press_x, press_y).map(|hit| &hit.action),
+                Some(&Action::Warp(Command::Marker(index))),
+                "vintage={vintage} wave={wave:?}"
+            );
+            assert_eq!(
+                app.cursor(),
+                hand,
+                "vintage={vintage} hover={:?}",
+                app.hover
+            );
             app.mouse_down();
             app.mouse_up();
-            assert_eq!(app.state.playlist.warp.as_ref().unwrap().edit.points, points);
+            assert_eq!(
+                app.state.playlist.warp.as_ref().unwrap().edit.points,
+                points
+            );
             app.mouse_down();
             app.mouse_move(press_x + 32., press_y);
             app.mouse_up();
-            assert_ne!(app.state.playlist.warp.as_ref().unwrap().edit.points[index], points[index]);
+            assert_ne!(
+                app.state.playlist.warp.as_ref().unwrap().edit.points[index],
+                points[index]
+            );
             command(&mut app, Command::Undo);
-            assert_eq!(app.state.playlist.warp.as_ref().unwrap().edit.points, points);
+            assert_eq!(
+                app.state.playlist.warp.as_ref().unwrap().edit.points,
+                points
+            );
             let wave_hit = app
                 .hits
                 .iter()
@@ -1221,6 +1396,7 @@ mod tests {
         });
         let ch = &mut app.state.project.channels[0];
         ch.sample_path = Some(source.to_string_lossy().into_owned());
+        ch.index = 42;
         let id = ch.index;
         let ppq = app.state.project.ppq;
         pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(
@@ -1229,9 +1405,38 @@ mod tests {
             0,
             ClipSource::Channel(id),
         ));
+        let original_vocal = dir.join("original-vocal.wav");
+        std::fs::copy(&source, &original_vocal).unwrap();
+        app.state.project.vocal_edits.push(os_model::vocal::Edit {
+            channel: id,
+            source: original_vocal.to_string_lossy().into_owned(),
+            source_hash: String::new(),
+            rendered: source.to_string_lossy().into_owned(),
+            render_key: String::new(),
+            rate: 16000,
+            frames: 32000,
+            f0: vec![440.; 401],
+            notes: vec![],
+            curve: vec![(1, 0.5)],
+            timing: vec![(0., 0.), (2., 2.)],
+            enabled: true,
+            strength: 1.,
+            formant: 0.,
+        });
         let before = app.state.project.clone();
         open(&mut app, 0).unwrap();
         wait_loaded(&mut app);
+        command(&mut app, Command::Apply);
+        assert!(
+            app.state
+                .playlist
+                .warp
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("No timing changes")
+        );
+        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
         let Some(f) = app.state.playlist.warp.as_mut() else {
             panic!()
         };
@@ -1247,7 +1452,35 @@ mod tests {
                 .save_png(std::path::PathBuf::from(dir).join("warp-editor.png"))
                 .unwrap();
         }
+        // Several attacks snap to the same grid line. The result must still render.
+        let f = app.state.playlist.warp.as_mut().unwrap();
+        f.analysis = None;
+        f.transients = vec![0.49, 0.5, 0.51, 0.510001];
+        command(&mut app, Command::Quantize);
+        use crate::dialog::DHit;
+        let warning = &crate::messages::WARP_BAKES_VOCAL_TUNING;
         command(&mut app, Command::Apply);
+        assert!(
+            app.top_message()
+                .unwrap()
+                .1
+                .contains("bake the clip's vocal tuning")
+        );
+        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
+        app.dialog_click(DHit::Remember);
+        app.dialog_click(DHit::Button(1));
+        assert!(crate::messages::on(warning));
+        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
+
+        command(&mut app, Command::Apply);
+        assert!(app.modal_open());
+        app.dialog_click(DHit::Remember);
+        app.dialog_click(DHit::Button(0));
+        assert!(!crate::messages::on(warning));
+        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_some());
+        assert!(app.animating());
+        command(&mut app, Command::Close);
+        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_some());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.state.playlist.warp.is_some() && std::time::Instant::now() < deadline {
             poll(&mut app);
@@ -1257,6 +1490,14 @@ mod tests {
         assert_eq!(std::fs::read(&source).unwrap(), original_bytes);
         let after = app.state.project.clone();
         let warped = &after.audio_warps[0];
+        let ClipSource::Channel(rendered_id) = pl::clips(&app.state)[0].source else {
+            panic!()
+        };
+        assert_eq!(rendered_id, 43);
+        assert_eq!(
+            after.channel(rendered_id).unwrap().sample_path.as_deref(),
+            Some(warped.rendered.as_str())
+        );
         let rendered =
             os_engine::sample::load_shared(std::path::Path::new(&warped.rendered)).unwrap();
         assert_eq!(rendered.frames(), 16000);

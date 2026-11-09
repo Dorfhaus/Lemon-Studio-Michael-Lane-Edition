@@ -4,6 +4,17 @@
   "sections": [
     {
       "date": "2026-11-09",
+      "title": "Playlist scrolling, Audio Timing and FL Studio 2005 fixes \u00b7 public build 2026110904",
+      "changes": [
+        "The Playlist nudges right after you place a clip or drop audio near the visible right edge, including on successive placements. This uses the existing scroll range and keeps your current zoom.",
+        "Restored the previous horizontal scrollbar behavior in the Playlist and Piano Roll.",
+        "Fixed cases where applying Audio Timing failed to attach the rendered audio. Audio Timing and Vocal Tuning now show activity while processing.",
+        "Audio Timing asks before baking vocal tuning into the warped audio. Choose Don't show again to save your preference, or restore the warning in Settings > General > Hints and warnings > Manage messages.",
+        "Fixed the Channel Rack Swing control and gave the add-channel button its own space in the FL Studio 2005 theme."
+      ]
+    },
+    {
+      "date": "2026-11-09",
       "title": "Clip Picker workflow, interface languages and in-app help \u00b7 public build 2026110903",
       "changes": [
         "Drag multiple audio clips and patterns from the Playlist Clip Picker onto a track. Reorder sources inside the picker and save their order with the project.",

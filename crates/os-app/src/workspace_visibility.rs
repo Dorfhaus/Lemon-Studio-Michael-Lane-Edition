@@ -64,6 +64,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Vocal tuning button", "visible_playlist-vocal-tuning"),
         ("Audio warp editor", "visible_playlist-warp"),
         ("Arrangement mini-map", "visible_playlist-map"),
+        ("Follow new clips at the timeline end", crate::playlist::FOLLOW_PLACEMENT_VISIBILITY),
         (crate::prefs::PLAYLIST_SCROLLBAR_STYLE.label, crate::prefs::PLAYLIST_SCROLLBAR_STYLE_VISIBILITY),
         ("Bounce audio menu", crate::track_render::VISIBILITY),
         ("Audio clip waveforms", "visible_playlist-waves"),
