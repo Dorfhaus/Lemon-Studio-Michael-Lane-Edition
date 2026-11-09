@@ -74,6 +74,7 @@ pub enum Snap {
     Pattern { number: u16, notes: Vec<Note>, controls: Vec<ControlPoint>, length: Option<u32> },
     /// The playlist (`playlist::capture`).
     Playlist(Box<crate::playlist::Snapshot>),
+    ClipPickerOrder(Vec<os_model::ClipSource>),
     /// A knob's value: the model's own for the channel knobs, else the knob's 0..1.
     Knob(KnobId, f64),
     /// Mixer track `.0`'s volume fader (0..1, the fader law; `None`: the track's default).
@@ -215,6 +216,7 @@ pub struct Rows {
     pub vocal_edits:Vec<os_model::vocal::Edit>,
     pub mpe_channels:Vec<(u16,os_model::mpe::Config)>,
     pub clip_fx_channels:Vec<u16>,
+    pub clip_picker_order: Vec<os_model::ClipSource>,
     pub original_values: std::collections::HashMap<u16, f64>,
     pub full: bool,
     pub gone: Vec<usize>,
@@ -239,6 +241,7 @@ impl Rows {
             vocal_edits:p.vocal_edits.clone(),
             mpe_channels:p.mpe.channels.clone(),
             clip_fx_channels:p.clip_fx_channels.clone(),
+            clip_picker_order: p.clip_picker_order.clone(),
             original_values: s.playlist.original_values.clone(),
             full,
             gone,
@@ -277,6 +280,9 @@ impl Rows {
         p.vocal_edits=self.vocal_edits;
         p.mpe.channels=self.mpe_channels;
         p.clip_fx_channels=self.clip_fx_channels;
+        p.clip_picker_order = self.clip_picker_order;
+        s.playlist.picker_ui.selected.clear();
+        s.playlist.picker_ui.stop_previews();
         (p.channels, p.patterns, p.automations) = (self.channels, self.patterns, self.automations);
         (p.arrangements, p.init_controls) = (self.arrangements, self.init_controls);
         s.playlist.original_values = self.original_values;
@@ -397,6 +403,7 @@ impl Snap {
             Snap::Ara(row,..) => Self::ara(s,*row).unwrap_or_else(||self.clone()),
             Snap::SourceColor(source, ..) => Snap::source_color(s, *source),
             Snap::Pattern { number, .. } => Snap::pattern(s, *number),
+            Snap::ClipPickerOrder(_) => Snap::ClipPickerOrder(s.project.clip_picker_order.clone()),
             Snap::Playlist(_) => Snap::Playlist(Box::new(crate::playlist::capture(s))),
             Snap::Knob(id, _) => Snap::Knob(*id, knob_value(s, *id)),
             // A track or an instance gone since is left as the step has it (`put` does nothing then).
@@ -485,6 +492,7 @@ impl Snap {
             | Snap::ClipFxTargets(..)
             | Snap::MpeConfig(..)
             | Snap::ClipFxOwners(..)
+            | Snap::ClipPickerOrder(..)
             | Snap::StackLinks(..)
             | Snap::StackInstrument(..)
             | Snap::Vocals(..)
@@ -570,6 +578,7 @@ impl Snap {
             }
             Snap::Ara(row,plugin,state) => {if let Some(ch)=s.project.channels.get_mut(row){ch.plugin=plugin;ch.plugin_state=state;}},
             Snap::Playlist(p) => crate::playlist::restore(s, *p),
+            Snap::ClipPickerOrder(order) => s.project.clip_picker_order = order,
             Snap::Knob(id, v) => set_knob_value(s, id, v),
             Snap::CutGroups(id,cut,by) => if let Some(c)=s.project.channels.iter_mut().find(|c|c.index==id) {c.misc.cut=cut;c.misc.cut_by=by;},
             Snap::TrackColor(t,col) => {if let Some(m)=crate::mixer::track_mut(s,t){m.color=col;}},

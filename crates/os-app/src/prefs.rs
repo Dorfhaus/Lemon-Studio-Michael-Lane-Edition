@@ -128,6 +128,16 @@ pub const PLAYLIST_SCROLLBAR_STYLE: Combo = Combo {
 pub const PLAYLIST_SCROLLBAR_STYLE_VISIBILITY: &str = "visible_playlist-scrollbar-style";
 
 
+#[path = "language.rs"]
+pub mod language;
+
+pub const INTERFACE_LANGUAGE: Combo = Combo {
+    key: "interface_language",
+    label: "Interface language",
+    choices: &["English", "Français", "Español", "Deutsch", "Português (Brasil)", "Italiano"],
+    default: 0,
+};
+
 /// General ▸ Language: how note names read (`crate::note_names`; FL asks for a restart, Lemon Studio renames at once).
 /// Spec: ui/settings-choices.md "Note names and Black notes".
 pub const NOTE_NAMES: Combo = Combo { key: "note_names", label: "Note names", choices: &["English", "Germanic", "Solfege (do, re, mi, ...)"], default: 0 };
@@ -584,7 +594,7 @@ pub const PIANO_ZOOM_KEYS: Combo = Combo {
     default: 0,
 };
 
-pub const COMBOS: &[&Combo] = &[&PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &PLAYLIST_SCROLLBAR_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
+pub const COMBOS: &[&Combo] = &[&INTERFACE_LANGUAGE, &PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &PLAYLIST_SCROLLBAR_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
 /// The declared combos no settings page shows (a window of their own does): General ▸ Input ▸ Manage shortcuts' rows
 /// (`crate::shortcuts`). Read by the declaration tests.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -767,7 +777,8 @@ impl App {
         let mut items = Vec::new();
         for (i, &ch) in c.choices.iter().enumerate() {
             items.extend(headings(c).iter().filter(|h| h.0 == i).map(|h| PItem::head(h.1)));
-            items.push(PItem::new(ch, Cmd::Pref(c, i)).mark(Mark::Radio(i == now)));
+            let label = if c.key == INTERFACE_LANGUAGE.key { ch } else { language::Language::current().text(ch) };
+            items.push(PItem::new(label, Cmd::Pref(c, i)).mark(Mark::Radio(i == now)));
         }
         self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
@@ -792,7 +803,7 @@ impl App {
             crate::app::lift_windows(&mut self.state, dy);
         }
         self.invalidate();
-        Some(format!("{}: {}", c.label, choice(c)))
+        Some(format!("{}: {}", language::Language::current().text(c.label), choice(c)))
     }
 }
 
@@ -938,6 +949,48 @@ main_gui_scaling = 200%
         app.paint(c, None);
     }
 
+    #[test]
+    fn interface_language_changes_from_general_and_can_return_to_english() {
+        let mut canvas = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        let selector = |app: &App| {
+            app.hits.iter().rev().find_map(|hit| {
+                matches!(hit.action, Action::Settings(SAct::Combo("Interface language", ..))).then_some(hit.rect)
+            }).expect("language selector is available in General")
+        };
+        app.open_settings(settings::GENERAL);
+        app.paint(&mut canvas, None);
+        let target = selector(&app);
+        click(&mut app, &mut canvas, target);
+        let popup = app.state.playlist.popup.as_ref().unwrap();
+        assert_eq!(popup.items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>(), INTERFACE_LANGUAGE.choices);
+        let french = hit_rect(&app, &Action::PlPopup(1));
+        click(&mut app, &mut canvas, french);
+        assert_eq!(choice(&INTERFACE_LANGUAGE), "Français");
+        assert_eq!(read(|s| index_in(s, &INTERFACE_LANGUAGE)), 1);
+        assert_eq!(language::Language::current().text("Open..."), "Ouvrir...");
+        assert_eq!(language::Language::current().text("Untranslated"), "Untranslated");
+        if let Ok(dir) = std::env::var("LEMON_LANGUAGE_PREVIEW") {
+            canvas.pixmap.save_png(std::path::Path::new(&dir).join("French-General.png")).unwrap();
+        }
+        let target = selector(&app);
+        click(&mut app, &mut canvas, target);
+        let english = hit_rect(&app, &Action::PlPopup(0));
+        click(&mut app, &mut canvas, english);
+        assert!(language::Language::current().english());
+
+        for index in 1..INTERFACE_LANGUAGE.choices.len() {
+            set_choice(&INTERFACE_LANGUAGE, index);
+            for vintage in [false, true] {
+                let layout = crate::views::menus::bar_layout(&mut canvas, vintage);
+                assert!(layout.windows(2).all(|pair| pair[0].1 < pair[1].0));
+                assert!(layout.last().unwrap().1 <= 296.0, "{} menu bar must fit", choice(&INTERFACE_LANGUAGE));
+            }
+        }
+        write(INTERFACE_LANGUAGE.key, "unknown language");
+        assert!(language::Language::current().english());
+    }
+
     /// The page draws declared controls live: a check toggles and is kept, a combo lists its choices and shows the
     /// chosen one; undeclared controls stay greyed out.
     #[test]
@@ -946,11 +999,11 @@ main_gui_scaling = 200%
         let mut app = App::new(None);
         app.open_settings(settings::GENERAL);
         app.paint(&mut c, None);
-        // Main GUI scaling opens its list under its box, System marked; Language is not available yet.
+        // Main GUI scaling opens its list under its box, System marked; the interface language selector is live.
         let combo = |app: &App| {
             app.hits.iter().rev().find(|h| matches!(&h.action, Action::Settings(SAct::Combo(l, ..)) if *l == MAIN_GUI_SCALING.label)).map(|h| h.rect).expect("the combo works")
         };
-        assert!(app.hits.iter().any(|h| h.action == Action::Placeholder("Language")));
+        assert!(app.hits.iter().any(|h| matches!(h.action, Action::Settings(SAct::Combo("Interface language", ..)))));
         let r = combo(&app);
         click(&mut app, &mut c, r);
         let p = app.state.playlist.popup.as_ref().expect("its menu");

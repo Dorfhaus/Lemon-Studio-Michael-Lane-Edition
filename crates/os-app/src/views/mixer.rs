@@ -985,7 +985,7 @@ fn fader_handle(ui: &mut Ui, cx: f32, cy: f32, selected: bool, hov: bool) {
 fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
     if s.vintage_2005 {
-        let title = format!("Mixer - {}", mx::name(s, s.selected_mixer));
+        let title = format!("{} - {}", crate::prefs::language::Language::current().text("Mixer"), mx::name(s, s.selected_mixer));
         let caption = Rect::new(r.x, r.y, r.w, 23.0);
         crate::vintage::window_caption(ui.c, caption);
         ui.c.text_clip(Font::vintage(12), r.x + 4.0, r.y + 4.0, r.w - 8.0, t.text, &title);

@@ -298,6 +298,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
         remote_box::paint(ui, s, b);
     }
     if !crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
+    crate::help::paint_spotlight(ui, s);
     // Message boxes and file dialogs go over everything (spec: ui/dialogs.md).
     dialog::paint(ui, s);
     if over_dialog {
@@ -481,8 +482,17 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let total = total.max(view).max(1.0);
     let mut max = (total - view).max(0.0);
     let (mut thumb_at, mut thumb) = os_ui::kit::thumb(len, pos, view, total);
-    let content_span=crate::elastic_scroll::adaptive(target).then_some(total);
-    if content_span.is_some() {(thumb_at,thumb,max)=crate::elastic_scroll::horizontal(len,pos,view,total);}
+    let adaptive = crate::elastic_scroll::adaptive(target);
+    // The populated Playlist uses a fixed proportional thumb; only the empty
+    // Playlist and Piano Roll use the clipped viewport drag geometry.
+    let content_span = (adaptive && (target != Scroll::PlaylistX || total <= view)).then_some(total);
+    if adaptive {
+        (thumb_at, thumb, max) = if target == Scroll::PlaylistX {
+            crate::elastic_scroll::playlist_horizontal(len, pos, view, total)
+        } else {
+            crate::elastic_scroll::horizontal(len, pos, view, total)
+        };
+    }
     if target==Scroll::PlaylistY {
         thumb=thumb.max(72.0_f32.min(len));
         thumb_at=if max>0. {pos.clamp(0.,max)/max*(len-thumb)}else{0.};
@@ -500,7 +510,7 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
     let act = Action::Scrollbar(target);
     let hov = ui.hit(track, act.clone(), hint);
     let st = kit::State::new(hov, ui.down(track, &act), false);
-    let (draw_at, draw_len) = if content_span.is_some() {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
+    let (draw_at, draw_len) = if adaptive {(thumb_at,thumb)} else {crate::elastic_scroll::thumb(&ui.elastic, target, thumb_at, thumb)};
     if target == Scroll::MixerX {
         // Invisible full-height hit lane, with only a small handle painted.
         let color = if ui.held(&act) { ui.t.tx(0xffffff) } else { ui.t.s(0x172126) };

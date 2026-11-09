@@ -346,6 +346,7 @@ pub enum Action {
     PlStretch,
     PlControl(crate::playlist_controls::Control),
     PlPickTab(crate::playlist::PickKind),
+    PlPickUsage(crate::clip_picker::Usage),
     PlPick(os_model::ClipSource),
     PlPickPreview(os_model::ClipSource),
     /// Picker list background / footer "+".
@@ -431,7 +432,7 @@ impl Bar {
     /// Where the thumb starts along the track at scroll `pos`.
     fn thumb_at(&self, pos: f32) -> f32 {
         if let Some(total)=self.content_span {return pos.clamp(0.,self.max)/total*self.len();}
-        if self.max > 0.0 { pos / self.max * (self.len() - self.thumb) } else { 0.0 }
+        if self.max > 0.0 { pos.clamp(0., self.max) / self.max * (self.len() - self.thumb) } else { 0.0 }
     }
 
     /// The thumb end under `along` (pixels along the track) on a bar whose thumb ends zoom (spec: ui/scroll-bars.md
@@ -809,6 +810,8 @@ impl Ui<'_> {
     }
 
     /// Hits registered so far this frame.
+    pub(crate) fn hits(&self) -> &[Hit] { self.hits }
+
     pub fn hit_count(&self) -> usize {
         self.hits.len()
     }
@@ -903,6 +906,7 @@ const PLUGIN_POPUPS: &str = "Menus of detached plugin windows on Linux (dock the
 
 #[derive(Debug, Clone)]
 pub enum Drag {
+    ClipPicker { source: os_model::ClipSource, origin: (f32, f32), started: bool, collapse: bool },
     Vocal(crate::vocal::Gesture),
     VocalNav(crate::vocal::navigation::Navigation),
     PlRowResize{row:u16,y0:f32,h0:f32},
@@ -1166,7 +1170,6 @@ pub struct State {
     pub startup_layout_pending: bool,
     pub browser_index: std::cell::RefCell<views::browser::SearchIndex>,
     pub browser_preview: crate::browser_preview::Preview,
-    pub picker_preview: Option<os_model::ClipSource>,
     pub browser_marquee: std::cell::RefCell<Option<views::browser::Marquee>>,
     /// Plugin parameter lists and the last tweaked parameters (spec: plugins/plugin-parameters.md).
     pub params: crate::params::ParamUi,
@@ -1660,7 +1663,6 @@ impl App {
                 browser_index: Default::default(),
                 browser_marquee: Default::default(),
                 browser_preview: Default::default(),
-                picker_preview: None,
                 tempo: 130.0,
                 tempo_digits: std::cell::Cell::new([f32::INFINITY; 3]),
                 message: None,
@@ -3334,6 +3336,10 @@ impl App {
         // An input's paint can come before the next tick (Windows paints before `about_to_wait`): what follows the
         // settings is brought up to date first, so the frame shows it.
         self.follow_settings();
+        if crate::help::active(&self.state) && (!matches!(self.damage, Damage::None) || self.scrolled.is_some()) {
+            // A moved guide outline must not leave pixels behind on an incremental repaint.
+            self.invalidate();
+        }
         self.resolve_scroll();
         match std::mem::replace(&mut self.damage, Damage::None) {
             Damage::None => None,
@@ -4424,9 +4430,13 @@ impl App {
         }
         crate::stem_separation::tick(self);
         crate::headphones::tick(self);
-        if self.state.picker_preview.is_some() && (!crate::workspace_visibility::shown("visible_playlist-picker-preview") || !self.state.playlist.picker_visible) {
-            self.transport.stop_preview();
-            self.state.picker_preview=None;
+        let picker_visible = self.state.playlist.picker_visible && self.state.shown(Win::Playlist)
+            && crate::workspace_visibility::shown("visible_playlist-picker-preview");
+        if self.state.playlist.picker_ui.has_previews() && !picker_visible {
+            self.state.playlist.picker_ui.stop_previews();
+            self.damage_win(Win::Playlist);
+        } else if self.state.playlist.picker_ui.prune_previews() {
+            self.damage_win(Win::Playlist);
         }
         crate::browser_preview::tick(self);
         crate::ai_control::tick(self);
@@ -5205,6 +5215,12 @@ impl App {
         st.menu_editor.name_focused = false;
         st.picker = None;
         st.tab = tab;
+        if tab == crate::help::PAGE {
+            st.scroll = 0.;
+            crate::help::reset(&mut st.help);
+            self.invalidate();
+            return;
+        }
         self.audio_page();
         if tab == views::settings::MIDI {
             self.midi_page_opened();
@@ -5551,6 +5567,10 @@ impl App {
     }
 
     fn settings_act(&mut self, a: views::settings::SAct) {
+        if let views::settings::SAct::Help(hit) = a {
+            crate::help::act(self, hit);
+            return;
+        }
         use views::settings::SAct;
         if matches!(a, SAct::Tab(tab) if !views::settings::tab_shown(tab)) {
             return;
@@ -5573,6 +5593,7 @@ impl App {
         match a {
             SAct::InputBindings(action) => { crate::input_bindings::edit(self, action); return; }
             SAct::VisibilitySearch => st.visibility_search.select_all(),
+            SAct::Help(_) => unreachable!(),
             SAct::MenuLayout(action) => {
                 let at = self.mouse;
                 crate::menu_layout::act(&mut self.state, action, at);
@@ -5904,6 +5925,14 @@ impl App {
         self.hold_moved(x, y);
         if let Some(d) = self.drag.clone() {
             match d {
+                Drag::ClipPicker { source, origin, started, collapse } => {
+                    let started = started || (x - origin.0).hypot(y - origin.1) >= 5.0;
+                    if started {
+                        self.state.playlist.picker_ui.destination = crate::clip_picker::destination(self, self.pl_grid);
+                        self.drag = Some(Drag::ClipPicker { source, origin, started, collapse });
+                        self.damage_win(Win::Playlist);
+                    }
+                }
                 Drag::RackPreset{row,m0,started}=>{
                     if started || (x-m0.0).abs()+(y-m0.1).abs()>6. {
                         self.armed=None;self.drag=Some(Drag::RackPreset{row,m0,started:true});
@@ -5938,6 +5967,7 @@ impl App {
                         let along = if b.vertical { y - b.track.y } else { x - b.track.x };
                         let at = ((along - grab) / b.len() * units).clamp(0.0, if b.content_span.is_some() { f32::MAX } else { units });
                         let span = if right { at - fixed } else { fixed - at };
+                        let previous_zoom = self.zoom_get(t).unwrap_or(1.);
                         self.zoom_set(t, b.view / span.max(f32::MIN_POSITIVE));
                         let z = self.zoom_get(t).unwrap_or(1.0);
                         // The scroll range at the new zoom: the bar itself is only repainted with it next frame.
@@ -5946,7 +5976,11 @@ impl App {
                                 let fraction=bar.max/bar.content_span.unwrap().max(1.);
                                 let total=(units*z).max(bar.view);bar.content_span=Some(total);
                                 bar.max=total*fraction;
-                            } else {bar.max = (units * z - bar.view).max(0.0);}
+                            } else if t == Scroll::PlaylistX && crate::elastic_scroll::adaptive(t) {
+                                bar.max *= z / previous_zoom;
+                            } else {
+                                bar.max = (units * z - bar.view).max(0.);
+                            }
                         }
                         self.scroll_set(t, if right { fixed * z } else { fixed * z - b.view });
                         self.damage_scroll(t);
@@ -6498,6 +6532,7 @@ impl App {
             Action::Settings(sa) => matches!(
                 sa,
                 SAct::Close
+                    | SAct::Help(_)
                     | SAct::Tab(_)
                     | SAct::Check(_)
                     | SAct::Group(_)
@@ -6756,6 +6791,16 @@ impl App {
                 self.smart_record_host(a);
                 return;
             }
+        }
+        if let Some(Action::PlPick(source)) = action
+            && self.state.playlist.picker != crate::playlist::PickKind::Automation
+        {
+            let collapse = !self.shift && !self.ctrl;
+            crate::clip_picker::press(self, source);
+            if self.state.playlist.picker_ui.selected.contains(&source) {
+                self.drag = Some(Drag::ClipPicker { source, origin: self.mouse, started: false, collapse });
+            }
+            return;
         }
         if let Some(a) = action {
             if let Action::ChannelSelect(row)=a {if !self.shift&&!self.ctrl&&!self.alt {self.drag=Some(Drag::RackPreset{row,m0:self.mouse,started:false});}}
@@ -7337,6 +7382,12 @@ impl App {
         crate::vocal::audition::stop(self);
         self.hold_key(None,false);
         if matches!(self.drag,Some(Drag::PianoKeys{..})){self.drag=None;}
+        if matches!(self.drag, Some(Drag::ClipPicker { .. })) {
+            self.drag = None;
+            self.pressed = None;
+            self.state.playlist.picker_ui.destination = None;
+            self.damage_win(Win::Playlist);
+        }
     }
 
     pub fn mouse_up(&mut self) {
@@ -7354,6 +7405,21 @@ impl App {
     }
 
     fn release(&mut self) {
+        if let Some(Drag::ClipPicker { source, started, collapse, .. }) = self.drag.clone() {
+            self.drag = None;
+            self.pressed = None;
+            self.armed = None;
+            self.state.playlist.picker_ui.destination = None;
+            if started {
+                let destination = crate::clip_picker::destination(self, self.pl_grid);
+                crate::clip_picker::drop(self, source, destination);
+            } else if collapse {
+                self.state.playlist.picker_ui.selected = vec![source];
+            }
+            self.invalidate();
+            return;
+        }
+
         if let Some(Drag::EraseSelectedPending(x,y))=self.drag {
             self.state.playlist.popup=Some(crate::piano_tools::selected_menu(&self.state,x,y));
             self.invalidate();
@@ -8020,7 +8086,7 @@ impl App {
             self.state.message = Some(crate::snap::wheel(&mut self.state, notches));
             return None;
         }
-        if matches!(area, Some(Action::PlPick(_) | Action::PlPickList)) {
+        if matches!(area, Some(Action::PlPick(_) | Action::PlPickPreview(_) | Action::PlPickList)) {
             self.scroll_set(Scroll::PlPick, self.scroll_get(Scroll::PlPick) - (dy + dx) * self.state.playlist.pick_row());
             return Some(Win::Playlist);
         }
@@ -8232,13 +8298,22 @@ impl App {
         self.mpe_release_all();
         self.typing_release_all();
         self.transport.stop_preview();
-        self.state.picker_preview=None;
+        self.state.playlist.picker_ui.stop_previews();
         self.transport.stop();
         self.state.message=Some("Sound stopped".into());
     }
 
     pub fn key(&mut self, key: &winit::keyboard::Key, ctrl: bool, alt: bool) {
         self.invalidate();
+        if matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))
+            && matches!(self.drag, Some(Drag::ClipPicker { .. }))
+        {
+            self.drag = None;
+            self.pressed = None;
+            self.state.playlist.picker_ui.destination = None;
+            return;
+        }
+
         if matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) && crate::input_bindings::cancel(self) { return; }
         if matches!(key,winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) && self.state.sample_drop.active(){
             self.state.sample_drop.clear();self.state.browser_drag=None;self.drag=None;return;
@@ -8249,6 +8324,7 @@ impl App {
         }
         if crate::input_bindings::capture(self, key, ctrl, alt) { return; }
         if crate::plugin_picker::key(self,key,ctrl,alt){return;}
+        if crate::help::key(self, key, ctrl, alt) { return; }
         if crate::feature_votes::key(self,key,ctrl,alt){return;}
         if crate::community_samples::key(self,key,ctrl,alt){return;}
         // So does a box of the settings window's Info page while it is edited, and a cell of File ▸ Browser extra
@@ -8616,7 +8692,7 @@ impl App {
         // Browser audition must not double the first hit of transport playback.
         crate::browser_preview::dismiss(self);
         self.transport.stop_preview();
-        self.state.picker_preview=None;
+        self.state.playlist.picker_ui.stop_previews();
         self.retarget_audio_take(start.max(0.).round() as u32);
         let play_start=crate::record_lead::begin(&mut self.state,start);
         self.transport.play_counted(&p, self.play_mode(), play_start, bars);
@@ -8655,7 +8731,7 @@ impl App {
     /// the octave keys while the switch is on, or the release of a held note); the caller then
     /// skips the normal shortcut handling. Spec: ui/typing-keyboard.md.
     pub fn typing_key(&mut self, code: KeyCode, pressed: bool, ctrl: bool, alt: bool) -> bool {
-        if pressed && self.state.settings.open && self.state.settings.tab == views::settings::CONTROLS { return false; }
+        if pressed && (crate::help::is_open(&self.state) || (self.state.settings.open && self.state.settings.tab == views::settings::CONTROLS)) { return false; }
         if pressed && (self.state.plugin_picker.open || self.state.playlist.popup.is_some()) { return false; }
         // A playlist text box (track / marker name, point value) takes the letters.
         if pressed && (self.modal_open() || self.state.playlist.edit.is_some() || self.state.plugdb.finding || self.state.pat_ui.name_box.is_some() || self.state.pat_ui.confirm || self.browser_takes_typing() || self.state.perf.finding) {
@@ -9080,20 +9156,18 @@ impl App {
                 self.state.playlist.arr_anchor = (r.x - 4.0, r.y);
                 self.state.playlist.popup = Some(pl::arrangement_menu(&self.state, r.x, r.bottom() + 2.0));
             }
-            Action::PlPickTab(k) => self.state.playlist.picker = k,
-            Action::PlPickPreview(src) => {
-                let stop=self.state.picker_preview==Some(src);
-                crate::browser_preview::dismiss(self);
-                self.transport.stop_preview();
-        self.state.picker_preview=None;
-                self.state.picker_preview=None;
-                if !stop {
-                    let mut p=crate::rack::play_project(&self.state);
-                    let clip=os_model::Clip::new(0,pl::source_len(&self.state,src).max(1),0,src);
-                    p.arrangements=vec![os_model::Arrangement{clips:vec![clip],..Default::default()}];
-                    self.transport.preview_loop(p);
-                    self.state.picker_preview=Some(src);
-                }
+            Action::PlPickTab(kind) => {
+                self.state.playlist.picker = kind;
+                self.state.playlist.pick_scroll = 0.0;
+            }
+            Action::PlPickUsage(usage) => {
+                let playlist = &mut self.state.playlist;
+                playlist.picker_ui.usage[playlist.picker as usize] = usage;
+                playlist.picker_ui.selected.clear();
+                playlist.pick_scroll = 0.0;
+            }
+            Action::PlPickPreview(source) => {
+                crate::clip_picker::toggle_preview(self, source);
                 self.invalidate();
             }
             Action::PlPick(src) => {
@@ -9669,6 +9743,7 @@ impl App {
             | Action::PlStretch
             | Action::PlControl(_)
             | Action::PlPickTab(_)
+            | Action::PlPickUsage(_)
             | Action::PlPickPreview(_)
             | Action::PlPick(_)
             | Action::PlPopup(_)
@@ -10065,6 +10140,7 @@ impl App {
                 let v = item_at(ADD_MENU, i).and_then(|it| menu_view(ADD_MENU, it.label)).expect("checked");
                 self.state.message = crate::plugin_menu::run(self, crate::plugin_menu::PlugCmd::View(v));
             }
+            (HELP_MENU, HELP_GUIDE) => crate::help::open(self),
             (HELP_MENU, 7) => {if let Err(e)=crate::donate::open_url("https://discord.gg/CDYs4rQEk"){self.state.message=Some(e);}}
             (HELP_MENU, HELP_ABOUT) => {
                 // The Windows build includes the ASIO SDK, which is under version 3 only (THIRD-PARTY-NOTICES.txt §9).
@@ -14378,6 +14454,51 @@ mod tests {
             assert!(matches!(app.drag,Some(Drag::BarEdge{..})));
             app.mouse_move(b.track.right()-51.,b.track.cy());app.mouse_up();frame(&mut app,&mut c,None);
             assert!(app.zoom_get(t).unwrap()>zoom);assert_eq!(app.scroll_get(t),0.);
+        }
+    }
+
+    #[test]
+    fn horizontal_playlist_overview_thumb_shrinks_when_placing_patterns() {
+        use crate::playlist as pl;
+        crate::settings_file::set_flag(crate::elastic_scroll::ADAPTIVE, true);
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.z = vec![Win::Playlist];
+        app.state.playlist.source = Some(os_model::ClipSource::Pattern(1));
+        let mut canvas = Canvas::new(1280, 800, 1.).unwrap();
+        let target = Scroll::PlaylistX;
+        for style in [0, 1] {
+            crate::settings_file::write(crate::prefs::PLAYLIST_SCROLLBAR_STYLE.key,
+                crate::prefs::PLAYLIST_SCROLLBAR_STYLE.choices[style]);
+            pl::arr_mut(&mut app.state).clips.clear();
+            app.state.playlist_scroll.0 = 0.;
+            frame(&mut app, &mut canvas, None);
+            let empty = app.bar(target).unwrap();
+            assert_eq!(empty.thumb, empty.track.w);
+            let grid = app.pl_grid().unwrap();
+            let zoom = app.state.playlist_bar_w;
+            let mut previous = empty.track.w;
+            let mut count = 0;
+            for fraction in [0.12, 0.42, 0.80] {
+                app.mouse_move(grid.x + fraction * grid.w, grid.y + 12.);
+                app.mouse_down();
+                app.mouse_up();
+                frame(&mut app, &mut canvas, None);
+                count += 1;
+                assert_eq!(pl::clips(&app.state).len(), count);
+                let bar = app.bar(target).unwrap();
+                assert!(bar.thumb < previous, "adding a later pattern must shrink the handle");
+                assert_eq!(app.state.playlist_bar_w, zoom);
+                assert_eq!(app.scroll_get(target), 0.);
+                assert!((bar.thumb - bar.track.w * bar.view / (bar.view + bar.max)).abs() < 0.01);
+                previous = bar.thumb;
+            }
+            let end = app.bar(target).unwrap().max;
+            app.scroll_input(target, end, false);
+            frame(&mut app, &mut canvas, None);
+            let bar = app.bar(target).unwrap();
+            assert_eq!(bar.thumb, previous, "panning does not change the visible share");
+            assert!((bar.thumb_at(end) + bar.thumb - bar.track.w).abs() < 0.01);
         }
     }
 
@@ -26467,6 +26588,102 @@ mod workflow_tests {
 mod picker_preview_checks {
     use super::*;
     #[test]
+    fn clip_picker_workflow_drag_filter_color_undo_and_reopen() {
+        use crate::clip_picker::{self, Usage};
+        use crate::playlist::{self as pl, PickKind};
+        use os_model::{Clip, ClipSource, Rgb};
+
+        let first = ClipSource::Pattern(1);
+        let second = ClipSource::Pattern(2);
+        let audio = ClipSource::Channel(22);
+        let color = Rgb::new(48, 148, 170);
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.pattern = 1;
+        app.state.project.patterns[0].color = Some(color);
+        let mut pattern = app.state.project.patterns[0].clone();
+        pattern.number = 2;
+        pattern.name = Some("Second pattern".into());
+        app.state.project.patterns.push(pattern);
+        let mut channel = app.state.project.channels[0].clone();
+        channel.index = 22;
+        channel.kind = os_model::ChannelKind::AudioClip;
+        app.state.project.channels.push(channel);
+        pl::arr_mut(&mut app.state).clips = vec![Clip::new(0, 384, 0, first)];
+        app.state.z = vec![Win::Playlist];
+        app.state.playlist.picker_visible = true;
+        let mut canvas = os_ui::Canvas::new(1280, 800, 1.0).unwrap();
+
+        fn rect(app: &App, action: Action) -> Rect {
+            app.hits.iter().rev().find(|hit| hit.action == action).unwrap().rect
+        }
+        fn click(app: &mut App, canvas: &mut os_ui::Canvas, action: Action) {
+            let r = rect(app, action);
+            app.mouse_move(r.cx() - 12.0, r.cy());
+            app.mouse_down();
+            app.mouse_up();
+            app.paint(canvas, None);
+        }
+        app.paint(&mut canvas, None);
+        click(&mut app, &mut canvas, Action::PlPickUsage(Usage::Used));
+        assert_eq!(clip_picker::rows(&app.state).items, [first]);
+        assert_eq!(clip_picker::rows(&app.state).color(&app.state, first), Some(color));
+        click(&mut app, &mut canvas, Action::PlPickUsage(Usage::Unused));
+        assert_eq!(clip_picker::rows(&app.state).items, [second]);
+        click(&mut app, &mut canvas, Action::PlPickUsage(Usage::All));
+
+        let from = rect(&app, Action::PlPick(second));
+        let to = rect(&app, Action::PlPick(first));
+        app.mouse_move(from.x + 15.0, from.cy());
+        app.mouse_down();
+        app.mouse_move(to.x + 15.0, to.y + 2.0);
+        app.mouse_up();
+        app.paint(&mut canvas, None);
+        assert_eq!(clip_picker::rows(&app.state).items, [second, first]);
+        let file = os_flp::project::create(&app.state.project).unwrap();
+        let bytes = file.to_bytes().unwrap();
+        let reopened = os_flp::project::load(&os_flp::FlpFile::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(reopened.clip_picker_order, [second, first]);
+        assert_eq!(crate::history::undo(&mut app.state), Some("Reorder clip picker"));
+        assert!(app.state.project.clip_picker_order.is_empty());
+        crate::history::redo(&mut app.state);
+        app.paint(&mut canvas, None);
+
+        click(&mut app, &mut canvas, Action::PlPick(second));
+        app.shift = true;
+        click(&mut app, &mut canvas, Action::PlPick(first));
+        app.shift = false;
+        click(&mut app, &mut canvas, Action::PlPickTab(PickKind::Audio));
+        app.ctrl = true;
+        click(&mut app, &mut canvas, Action::PlPick(audio));
+        app.ctrl = false;
+        let row = rect(&app, Action::PlPick(audio));
+        let grid = app.pl_grid.unwrap();
+        app.mouse_move(row.x + 15.0, row.cy());
+        app.mouse_down();
+        app.mouse_move(grid.x + 155.0, grid.y + 5.0);
+        assert!(matches!(app.state.playlist.picker_ui.destination, Some(clip_picker::Destination::Playlist { .. })));
+        app.mouse_up();
+        app.paint(&mut canvas, None);
+        let clips = pl::clips(&app.state);
+        assert_eq!(clips[1..].iter().map(|c| c.source).collect::<Vec<_>>(), [audio, second, first]);
+        assert!(clips[1..].windows(2).all(|pair| pair[0].end() == pair[1].position));
+        assert_eq!(crate::history::undo(&mut app.state), Some("Drop clips from picker"));
+        assert_eq!(pl::clips(&app.state).len(), 1);
+
+        clip_picker::mark_preview(&mut app.state, audio);
+        clip_picker::mark_preview(&mut app.state, first);
+        clip_picker::toggle_preview(&mut app, audio);
+        assert!(!app.state.playlist.picker_ui.playing(audio));
+        assert!(app.state.playlist.picker_ui.playing(first));
+        if let Ok(path) = std::env::var("LEMON_CLIP_PICKER_PREVIEW") {
+            app.state.playlist.picker = PickKind::Pattern;
+            app.paint(&mut canvas, None);
+            canvas.pixmap.save_png(path).unwrap();
+        }
+    }
+
+    #[test]
     fn picker_preview_visibility_and_stop_icon() {
         let mut app=App::new(None);
         app.state.project=test_project();
@@ -26479,7 +26696,7 @@ mod picker_preview_checks {
             app.state.vintage_2005=vintage;
             app.paint(&mut c,None);
             assert!(app.hits.iter().any(|h|matches!(h.action,Action::PlPickPreview(_))));
-            app.state.picker_preview=Some(src);
+            crate::clip_picker::mark_preview(&mut app.state, src);
             app.paint(&mut c,None);
             if let Some(dir)=std::env::var_os("OS_SHOT_DIR") {
                 c.pixmap.save_png(std::path::PathBuf::from(dir).join(format!("picker-frame-{vintage}.png"))).unwrap();

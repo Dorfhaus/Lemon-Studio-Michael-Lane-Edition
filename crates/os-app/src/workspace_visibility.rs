@@ -34,6 +34,9 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Elastic scrollbars", crate::elastic_scroll::VISIBILITY),
         ("Adaptive horizontal scrollbars", crate::elastic_scroll::ADAPTIVE),
     ]),
+    ("Language", &[
+        (crate::prefs::INTERFACE_LANGUAGE.label, crate::prefs::language::VISIBILITY),
+    ]),
     ("Input customization", &[
         ("Custom action buttons", "visible_custom-actions"),
     ]),
@@ -67,6 +70,8 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Stretch button", "visible_playlist-stretch"),
         ("Comping button", "visible_playlist-comp"),
         ("Clip picker preview buttons", "visible_playlist-picker-preview"),
+        ("Clip picker usage filters", crate::clip_picker::FILTER_VISIBILITY),
+        ("Clip picker color strips", crate::clip_picker::COLOR_VISIBILITY),
         ("Clips picker button", "visible_playlist-clips"),
         ("Add instrument button", "visible_playlist-add-instrument"),
         ("Clip color picker and custom swatches", "visible_playlist-custom-swatches"),
@@ -102,6 +107,8 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Mini EQ bypass button", crate::mini_eq::BYPASS_VISIBILITY),
     ]),
     ("Workspace", &[
+        ("Search User Guide menu item", crate::help::VISIBILITY),
+        ("User Guide: Show me where", crate::help::SPOTLIGHT_VISIBILITY),
         ("Background logo and version", "visible_watermark"),
         ("Vintage 0 dB markers", crate::vintage::GAIN_MARKS),
         ("Vintage startup sound", crate::startup_sound::VINTAGE_SOUND),

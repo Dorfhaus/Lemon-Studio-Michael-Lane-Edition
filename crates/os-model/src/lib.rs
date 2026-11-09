@@ -36,6 +36,8 @@ pub struct Project {
     pub mpe:mpe::Data,
     /// Audio sources privately owned by individual clip effects chains.
     pub clip_fx_channels: Vec<u16>,
+    /// Preferred order of the source rows in the Playlist clip picker.
+    pub clip_picker_order: Vec<ClipSource>,
     pub audio_warps:Vec<AudioWarp>,
     pub vocal_edits:Vec<vocal::Edit>,
     pub peak_links: Vec<PeakLink>,
@@ -523,6 +525,10 @@ impl Project {
         });
         self.automations.extend(clones);
         self.automations.sort_by_key(|a| a.channel);
+        self.clip_picker_order.retain_mut(|source| match source {
+            ClipSource::Channel(id) => m(*id).map(|new| *id = new).is_some(),
+            ClipSource::Pattern(_) => true,
+        });
         for arr in &mut self.arrangements {
             for clips in std::iter::once(&mut arr.clips).chain(arr.tracks.iter_mut().filter_map(|t| t.frozen.as_mut())) {
             clips.retain_mut(|c| match c.source {
@@ -1574,7 +1580,7 @@ pub struct Arrangement {
     pub markers: Vec<TimeMarker>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipSource {
     /// 1-based pattern number.
     Pattern(u16),

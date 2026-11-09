@@ -855,6 +855,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
     read_marker_colors(file,&mut p);
+    read_clip_picker_order(file, &mut p);
     read_clip_fx_owners(file,&mut p);
     read_note_drive(file,&mut p);read_mpe(file,&mut p);
     for c in &file.chunks {if c.tag==Tag(*b"LSHK") {if let ChunkBody::Raw(d)=&c.body {if d.len()==4&&d[0]==1&&d[1]<12&&(67..=88).contains(&d[2]) {p.harmony=Some((d[1],d[2],d[3]&31));}}}}
@@ -3289,6 +3290,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
     write_marker_colors(project,file);
+    write_clip_picker_order(project, file);
     write_clip_fx_owners(project,file);
     write_note_drive(project,file);write_mpe(project,file);
     Ok(())
@@ -3829,6 +3831,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
     write_marker_colors(project,&mut file);
+    write_clip_picker_order(project, &mut file);
     write_clip_fx_owners(project,&mut file);
     write_note_drive(project,&mut file);write_mpe(project,&mut file);
     Ok(file)
@@ -6744,6 +6747,45 @@ fn read_pattern_speeds(file:&FlpFile,p:&mut Project){
             let Some(a)=p.arrangements.iter_mut().find(|a|a.number==arr)else{continue;};
             let clips=if track==u32::MAX{Some(&mut a.clips)}else{a.tracks.iter_mut().find(|t|t.number==track).and_then(|t|t.frozen.as_mut())};
             if let Some(clip)=clips.and_then(|c|c.get_mut(index)).filter(|c|matches!(c.source,ClipSource::Pattern(_))){clip.pattern_speed=rate;}
+        }
+    }
+}
+
+// Optional Lemon metadata. No chunk is written for projects with default picker order.
+const CLIP_PICKER_ORDER: Tag = Tag(*b"LSPO");
+
+fn write_clip_picker_order(project: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|chunk| chunk.tag != CLIP_PICKER_ORDER);
+    if project.clip_picker_order.is_empty() {
+        return;
+    }
+    let mut data = vec![1];
+    for source in &project.clip_picker_order {
+        let (kind, id) = match source {
+            ClipSource::Pattern(id) => (0, id),
+            ClipSource::Channel(id) => (1, id),
+        };
+        data.push(kind);
+        data.extend(id.to_le_bytes());
+    }
+    file.chunks.push(Chunk { tag: CLIP_PICKER_ORDER, body: ChunkBody::Raw(data) });
+}
+
+fn read_clip_picker_order(file: &FlpFile, project: &mut Project) {
+    let mut seen = std::collections::HashSet::new();
+    for chunk in file.chunks.iter().filter(|chunk| chunk.tag == CLIP_PICKER_ORDER) {
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        let Some((1, records)) = data.split_first() else { continue };
+        for record in records.chunks_exact(3).take(2 * (usize::from(u16::MAX) + 1)) {
+            let id = u16::from_le_bytes([record[1], record[2]]);
+            let source = match record[0] {
+                0 if id > 0 => ClipSource::Pattern(id),
+                1 => ClipSource::Channel(id),
+                _ => continue,
+            };
+            if seen.insert(source) {
+                project.clip_picker_order.push(source);
+            }
         }
     }
 }

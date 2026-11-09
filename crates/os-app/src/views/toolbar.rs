@@ -1010,9 +1010,18 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
         ui.c.fill_rect_gradient(mb, t.menu_panel.shade(-0.04), t.menu_panel.shade(0.02), 2.5);
         ui.c.stroke_rrect(mb, 2.5, 1.0, t.toolbar_line.shade(-0.1));
     }
+    let language = crate::prefs::language::Language::current();
     let layout = menus::bar_layout(ui.c,s.vintage_2005);
     for (i, (m, (x0, x1, width))) in menus::MENUS.iter().zip(layout).enumerate() {
-        let title = if s.vintage_2005 {menus::VINTAGE_TITLES[i]}else if i==menus::HELP_MENU && ui.c.size().0 < 1300. {"…"} else {m.title};
+        let title = if !language.english() {
+            language.text(menus::VINTAGE_TITLES[i])
+        } else if s.vintage_2005 {
+            menus::VINTAGE_TITLES[i]
+        } else if i == menus::HELP_MENU && ui.c.size().0 < 1300. {
+            "…"
+        } else {
+            m.title
+        };
         let r = a.r(Rect::new(x0 - 3.0, 47.0, x1 - x0 + 6.0, 29.0));
         let hov = ui.hit(r, Action::Menu(i), title);
         let open = s.menu_open == Some(i) && !c.preview;
@@ -1021,10 +1030,15 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
         } else if hov || open {
             ui.c.fill_rrect(if lemon { r.inset(1.0) } else { r }, if lemon { 4.0 } else { 2.0 }, t.menu_drop_hi);
         }
-        if s.vintage_2005 && crate::vintage_skin::available() {
+        if language.english() && s.vintage_2005 && crate::vintage_skin::available() {
             crate::vintage_skin::lettering(ui.c,title,a.x(x0).round(),a.y(49.));
         } else {
-        ui.c.text(if s.vintage_2005 {Font::vintage(width as u16)}else{Font::condensed(menus::BAR_FONT.size, width as u16)}, if s.vintage_2005 {a.x(x0).round()}else{a.x(x0)}, a.y(if s.vintage_2005 {53.0}else{51.0}), if lemon && open { t.pill_text } else { t.menu_text }, title);
+        let font = if s.vintage_2005 && language.english() {
+                Font::vintage(width as u16)
+            } else {
+                Font::condensed(if s.vintage_2005 { 13 } else { menus::BAR_FONT.size }, width as u16)
+            };
+            ui.c.text(font, if s.vintage_2005 {a.x(x0).round()}else{a.x(x0)}, a.y(if s.vintage_2005 {53.0}else{51.0}), if lemon && open { t.pill_text } else { t.menu_text }, title);
         }
     }
 }

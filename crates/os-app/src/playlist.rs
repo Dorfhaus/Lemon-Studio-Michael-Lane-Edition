@@ -625,6 +625,7 @@ pub(crate) struct RowLinks {
     views: HashMap<u16,u16>,
     owners: HashMap<u16,u16>,
     solo: Option<(u16,Vec<bool>)>,
+    picker_order: Vec<ClipSource>,
 }
 pub(crate) type Snapshot = (Vec<Clip>, Vec<TimeMarker>, Vec<PlaylistTrack>, Vec<Automation>, Vec<[u32; 4]>, HashMap<u16, f64>, Vec<(u16,u16,u16,u16)>, RowLinks);
 
@@ -641,6 +642,7 @@ pub struct PlaylistState {
     /// The current clip source (what Draw / Paint place); `None` = the current pattern.
     pub source: Option<ClipSource>,
     pub picker_visible: bool,
+    pub picker_ui: crate::clip_picker::Picker,
     pub picker: PickKind,
     /// Picker list scroll, pixels.
     pub pick_scroll: f32,
@@ -716,6 +718,7 @@ impl Default for PlaylistState {
             snap: EditorSnap::Main,
             source: None,
             picker_visible: crate::settings_file::flag("playlist_picker",false),
+            picker_ui: Default::default(),
             picker: PickKind::Pattern,
             pick_scroll: 0.0,
             pick_rows: [PICK_ROW; 3],
@@ -1434,7 +1437,7 @@ pub fn snapshot_with(s: &mut State, name: &'static str, extra: crate::history::S
 pub(crate) fn capture(s: &State) -> Snapshot {
     let (clips, markers, tracks) = s.project.arrangement().map(|a| (a.clips.clone(), a.markers.clone(), a.tracks.clone())).unwrap_or_default();
     let stretch = s.project.channels.iter().map(|c| c.sound.stretch).collect();
-    (clips, markers, tracks, s.project.automations.clone(), stretch, s.playlist.original_values.clone(),s.project.instrument_lanes.clone(), RowLinks {selected:s.playlist.track,last:s.playlist.automation_last.clone(),samplers:s.playlist.sampler_rows.clone(),views:s.playlist.automation_views.clone(),owners:s.playlist.automation_owners.clone(),solo:s.playlist.solo.clone()})
+    (clips, markers, tracks, s.project.automations.clone(), stretch, s.playlist.original_values.clone(),s.project.instrument_lanes.clone(), RowLinks {selected:s.playlist.track,last:s.playlist.automation_last.clone(),samplers:s.playlist.sampler_rows.clone(),views:s.playlist.automation_views.clone(),owners:s.playlist.automation_owners.clone(),solo:s.playlist.solo.clone(),picker_order:s.project.clip_picker_order.clone()})
 }
 
 /// Puts an undo state back (undo and redo, `crate::history`).
@@ -1455,6 +1458,7 @@ pub(crate) fn restore(s: &mut State, (c, m, t, a, st, references, lanes, links):
     s.playlist.automation_views=links.views;
     s.playlist.automation_owners=links.owners;
     s.playlist.solo=links.solo;
+    s.project.clip_picker_order = links.picker_order;
     for (ch, v) in s.project.channels.iter_mut().zip(st) {
         ch.sound.stretch = v;
     }
@@ -1588,12 +1592,39 @@ pub fn place(s: &mut State, track: u16, tick: u32) -> usize {
     i
 }
 
+/// Place a picker selection consecutively, using the usual clip length and linked automation.
+pub fn place_picker_sources(s: &mut State, items: &[ClipSource], track: u16, mut tick: u32) {
+    if items.is_empty() {
+        return;
+    }
+    let mut end = tick;
+    for &source in items {
+        let length = picker_source_len(s, source);
+        let Some(next) = end.checked_add(length) else { return };
+        end = next;
+    }
+    snapshot_as(s, "Drop clips from picker");
+    let previous = s.playlist.source;
+    let mut placed = Vec::with_capacity(items.len());
+    for &source in items {
+        s.playlist.source = Some(source);
+        let index = place_clip(s, track, tick);
+        tick = clips(s)[index].end();
+        placed.push(index);
+    }
+    s.playlist.source = previous;
+    extend_linked_automation(s, placed.iter().copied());
+    s.playlist.sel = placed;
+}
+
+pub(crate) fn picker_source_len(s: &State, source: ClipSource) -> u32 {
+    s.playlist.lock_len.filter(|(item, _)| *item == source)
+        .map_or_else(|| source_len(s, source), |(_, length)| length)
+}
+
 fn place_clip(s: &mut State, track: u16, tick: u32) -> usize {
     let src = source(s);
-    let len = match s.playlist.lock_len {
-        Some((l, n)) if l == src => n,
-        _ => source_len(s, src),
-    };
+    let len = picker_source_len(s, src);
     let audio = source_kind(s, src) == PickKind::Audio && matches!(src, ClipSource::Channel(_));
     let a = arr_mut(s);
     let mut c = Clip::new(tick, len, track, src);

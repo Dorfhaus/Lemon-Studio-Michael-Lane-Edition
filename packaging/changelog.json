@@ -4,6 +4,18 @@
   "sections": [
     {
       "date": "2026-11-09",
+      "title": "Clip Picker workflow, interface languages and in-app help \u00b7 public build 2026110903",
+      "changes": [
+        "Drag multiple audio clips and patterns from the Playlist Clip Picker onto a track. Reorder sources inside the picker and save their order with the project.",
+        "Use All, Used and Unused filters for the current arrangement. Picker color strips follow Playlist clip colors.",
+        "Play or stop up to eight audio clip and supported pattern previews independently. Fixed silent previews for clips and notes on later rack channels. Patterns that use hosted third-party instruments can be rendered to audio for preview.",
+        "Improved the Playlist overview scrollbar. Its handle stays proportional as the arrangement grows and keeps a usable minimum width in both scrollbar styles.",
+        "Added basic interface translations for French, Spanish, German, Brazilian Portuguese and Italian. Choose a language in Settings > General > Language. English is the fallback for text outside the initial translation coverage.",
+        "Added a searchable offline User Guide under Help. Show me where highlights relevant controls in supported articles, and Back to guide returns to the article."
+      ]
+    },
+    {
+      "date": "2026-11-09",
       "title": "Workspace controls, inline audio timing and editing improvements \u00b7 public build 2026110901",
       "changes": [
         "Added customizable mouse and keyboard actions by context, with named actions, sequences and portable scripts in Settings > Controls.",

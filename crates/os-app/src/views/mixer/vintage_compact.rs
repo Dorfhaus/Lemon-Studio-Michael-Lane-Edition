@@ -15,7 +15,7 @@ pub(super) fn travel(r: Rect) -> (f32, f32) {
 pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
     window_body(ui,outer);
     let r=super::super::float_frame(ui,s,Win::Mixer,outer).unwrap_or(outer);
-    let title=format!("Mixer - {}",mx::name(s,s.selected_mixer));
+    let title=format!("{} - {}", crate::prefs::language::Language::current().text("Mixer"), mx::name(s, s.selected_mixer));
     super::super::window_frame_ex(ui,Win::Mixer,r,"",0.,false,true);
     title_tools(ui,s,r);
     ui.c.text_clip(Font::vintage(12),r.x+108.,r.y+4.,(r.w-178.).max(0.),ui.t.text,&title);

@@ -37,7 +37,7 @@ pub fn dismiss(app:&mut App) {
     }
 }
 pub fn select(app:&mut App,path:&str) {
-    app.state.picker_preview=None;
+    app.state.playlist.picker_ui.stop_previews();
     app.transport.stop_preview();
     let result=Arc::new(Mutex::new(None));
     app.state.browser_preview=Preview{resume:true,path:Some(path.into()),pending:Some(result.clone()),..Default::default()};

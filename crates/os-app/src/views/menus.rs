@@ -13,6 +13,7 @@
 use os_ui::{Font, Rect};
 
 use crate::app::{Action, State, Ui, Win};
+use crate::prefs::language::Language;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -126,6 +127,7 @@ pub const OPT_INFO: usize = 9;
 /// HELP > About (the toolbar logo).
 pub const HELP_MENU: usize = 7;
 pub const HELP_ABOUT: usize = 6;
+pub const HELP_GUIDE: usize = 0;
 /// Index of the ADD and TOOLS menus.
 pub const ADD_MENU: usize = 2;
 pub const TOOLS_MENU: usize = 6;
@@ -338,7 +340,7 @@ const TOOLS_B: &[Item] = &[
 ];
 
 const HELP: &[Item] = &[
-    it("Help index", ""),
+    it(crate::help::LABEL, "").on(),
     it("Tutorials", "").sub(),
     head("Support"),
     it("Diagnostics", ""),
@@ -372,6 +374,24 @@ pub const VINTAGE_TITLES:[&str;8]=["File","Edit","Add","Patterns","View","Option
 /// starts. The words are as wide as the font makes them; where a text engine sets them wider than the slots
 /// were measured for, all eight are condensed one step further so that no word runs into the next.
 pub fn bar_layout(c: &mut os_ui::Canvas, vintage: bool) -> [(f32, f32, f32); 8] {
+    let language = Language::current();
+    if !language.english() {
+        let titles = VINTAGE_TITLES.map(|title| language.text(title));
+        let size = if vintage { 13 } else { BAR_FONT.size };
+        for width in [6, 5, 4, 3] {
+            let font = Font::condensed(size, width);
+            let widths = titles.map(|title| c.text_width(font, title).ceil());
+            if widths.iter().sum::<f32>() + 42.0 <= 284.0 || width == 3 {
+                let mut x = 8.0;
+                return widths.map(|w| {
+                    let start = x;
+                    x += w + 6.0;
+                    (start, start + w, f32::from(width))
+                });
+            }
+        }
+    }
+
     if vintage && crate::vintage_skin::available() {
         let mut x=12.;
         return VINTAGE_TITLES.map(|title| {let start=x;let w=crate::vintage_skin::lettering_width(title);x+=w+8.;(start,start+w,11.)});
@@ -452,6 +472,13 @@ pub fn shortcut_now(item: &Item) -> &'static str {
 /// `label_of` for the project as it is now: EDIT's entries name the step they act on, "Undo step seq edit" (spec:
 /// ui/settings-choices.md "Undo history: the four checks (2026-10-16)").
 pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'static, str> {
+    let language = Language::current();
+    if !language.english() {
+        return match (menu, item.label) {
+            (0, "New") => format!("{} ({})", language.text("New"), crate::templates::name()).into(),
+            _ => language.text(item.label).into(),
+        };
+    }
     match (menu, item.label) {
         (EDIT_MENU, "Undo") => crate::history::edit_label(s, false).into(),
         (EDIT_MENU, "Redo") => crate::history::edit_label(s, true).into(),
@@ -462,6 +489,9 @@ pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'stati
 /// Whether an entry is in its menu now: EDIT's Redo only with Alternate undo mode on and a history to act on (spec:
 /// ui/menus.md "EDIT": only Undo while the history is empty).
 pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
+    if menu == HELP_MENU && item.label == crate::help::LABEL {
+        return crate::workspace_visibility::shown(crate::help::VISIBILITY);
+    }
     !(menu == EDIT_MENU && item.label == "Redo") || crate::history::redo_shown(s)
 }
 
@@ -722,7 +752,7 @@ pub(crate) fn default_organized_items(s:&State,menu:usize,catalog:bool)->Vec<cra
  // Retain any implemented command not covered by a group as menus grow.
  for i in 0..all.len(){if !included.contains(&i)&&!(menu==0&&i==FILE_EXIT){if let Some(p)=entry(i){out.push(p);}}}
  if menu==PATTERNS {out.insert(0,PItem::sub("Select pattern",crate::patterns::listed(s).into_iter().map(|n|PItem::new(crate::patterns::name_of(s,n),Cmd::MainMenu(menu,PATTERN_PICK+n as usize)).mark(PM::Radio(n==s.pattern))).collect()));}
- if menu==0 {let recent=recent_rows().into_iter().filter_map(|r|match r{Recent::Head=>None,Recent::More=>Some(PItem::sub("Older projects",crate::recent::more_items(s))),_=>{let(label,key,_)=recent_text(&r);Some(PItem::new(label,Cmd::MainMenu(0,match r{Recent::Project(n,_)=>RECENT_PICK+n,_=>RECENT_MORE})).key(key))}}).collect::<Vec<_>>();if catalog||!recent.is_empty(){out.push(PItem::sub("Recent projects",recent));}out.push(PItem::sep());if let Some(p)=entry(FILE_EXIT){out.push(p);}}
+ if menu==0 {let recent=recent_rows().into_iter().filter_map(|r|match r{Recent::Head=>None,Recent::More=>Some(PItem::sub(Language::current().text("Older projects"),crate::recent::more_items(s))),_=>{let(label,key,_)=recent_text(&r);Some(PItem::new(label,Cmd::MainMenu(0,match r{Recent::Project(n,_)=>RECENT_PICK+n,_=>RECENT_MORE})).key(key))}}).collect::<Vec<_>>();if catalog||!recent.is_empty(){out.push(PItem::sub(Language::current().text("Recent projects"),recent));}out.push(PItem::sep());if let Some(p)=entry(FILE_EXIT){out.push(p);}}
  out
 }
 
@@ -861,7 +891,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
             let rr = Rect::new(col.x, y, col.w, h);
             match item.kind {
                 Kind::Sep => ui.c.fill_rect(Rect::new(col.x, y + mt.sep_line, col.w, mt.line), t.menu_pop_head),
-                Kind::Head => head_row(ui, rr, item.label),
+                Kind::Head => head_row(ui, rr, Language::current().text(item.label)),
                 Kind::Item => {
                     let ok = active(s, menu, item);
                     // Greyed-out entries never light up; they only say they are not available yet (EDIT's without a

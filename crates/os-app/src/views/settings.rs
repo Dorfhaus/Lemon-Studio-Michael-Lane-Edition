@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use crate::prefs::language::Language;
 use os_ui::kit::lemon as lk;
 use os_ui::kit::{self, Dir};
 use os_ui::{Color, Font, Rect};
@@ -24,6 +25,7 @@ pub enum SAct {
     /// The window body (swallows clicks, wheel scrolls the page).
     Body,
     VisibilitySearch,
+    Help(crate::help::Hit),
     MenuLayout(crate::menu_layout::Action),
     InputBindings(crate::input_bindings::Edit),
     ThemeEditor(crate::advanced_theme::Hit),
@@ -164,6 +166,7 @@ pub struct SettingsUi {
     pub tab: usize,
     /// Page scroll in pixels.
     pub scroll: f32,
+    pub help: crate::help::View,
     pub visibility_search: crate::dialog::Field,
     pub visibility_search_focused: bool,
     pub menu_editor: crate::menu_layout::Editor,
@@ -439,6 +442,7 @@ pub(crate) fn tab_shown(tab: usize) -> bool {
         ABOUT => "visible_settings-about",
         MENUS => crate::menu_layout::VISIBILITY,
         CONTROLS => crate::input_bindings::VISIBILITY,
+        crate::help::PAGE => crate::help::VISIBILITY,
         _ => return tab < TABS.len(),
     };
     crate::workspace_visibility::shown(key)
@@ -619,7 +623,8 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
         }
         VISIBILITY => {
             use crate::workspace_visibility as v;
-            let query = st.visibility_search.text.trim().to_ascii_lowercase();
+            let query = st.visibility_search.text.trim().to_lowercase();
+            let language = Language::current();
             let mut groups = vec![g("Workspace Visibility", vec![
                 txt("Choose what to show. Visibility is saved for this profile."),
                 txt("Existing toolbar layouts and view options still apply."),
@@ -630,6 +635,8 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 let rows = options.iter().filter(|&&(label, _)| {
                     query.is_empty() || section.to_ascii_lowercase().contains(&query)
                         || label.to_ascii_lowercase().contains(&query)
+                        || language.text(section).to_lowercase().contains(&query)
+                        || language.text(label).to_lowercase().contains(&query)
                 }).map(|&(label, key)| Check(label, v::shown(key))).collect::<Vec<_>>();
                 if !rows.is_empty() {
                     groups.push(if query.is_empty() {
@@ -774,7 +781,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 combo("System", 64.0, "Main GUI scaling"),
                 // spec: ui/settings-choices.md "Display: PPI ruler, Force refreshes, Thick lines, High visibility
                 // (2026-10-16)".
-                txt("Define 1 inch / 2.54 cm or set display's PPI"),
+                txt(Language::current().text("Define 1 inch / 2.54 cm or set display's PPI")),
                 Text(crate::ppi::label(crate::ppi::ppi(s.display_scale), s.display_scale), true),
                 Ppi,
                 combo("Main", 64.0, "Pop-ups scaling"),
@@ -788,12 +795,16 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 Check("High visibility", false),
                 combo("Off", 146.0, "Colorful waveforms"),
             ]),
-            gf("Language", false, vec![
-                combo("English (US) (en)", 176.0, "Language"),
-                combo("English", 176.0, "Note names"),
-                combo("Sharps - #", 96.0, "Black notes"),
-                Buttons(vec![("Update languages", 138.0)]),
-            ]),
+            gf("Language", false, {
+                let mut rows = Vec::new();
+                let preference = &crate::prefs::INTERFACE_LANGUAGE;
+                if crate::workspace_visibility::shown(crate::prefs::language::VISIBILITY) {
+                    rows.push(combo(crate::prefs::choice(preference), 176.0, preference.label));
+                }
+                rows.push(combo("English", 176.0, "Note names"));
+                rows.push(combo("Sharps - #", 96.0, "Black notes"));
+                rows
+            }),
             gf("Input", false, {
                 let mut rows = vec![
                     combo("Multi-button mouse", 136., "Optimize for"),
@@ -1196,15 +1207,18 @@ fn group_open(st: &SettingsUi, gr: &Group) -> bool {
 
 /// Total content height of the current page (for scrolling).
 pub fn content_h(s: &State) -> f32 {
+    if crate::help::is_open(s) { return s.settings.help.content_height.get(); }
     page(s.settings.tab, s).iter().map(|gr| group_h(gr, group_open(&s.settings, gr)) + 6.0).sum::<f32>() + 16.0
 }
 
 /// Visible page height.
 pub fn page_h(s: &State) -> f32 {
+    if crate::help::is_open(s) { return crate::help::body(s).h; }
     rect(s).h - TABS_B - 4.0
 }
 
 pub fn paint(ui: &mut Ui, s: &State) {
+    if crate::help::is_open(s) { return crate::help::paint(ui, s); }
     if s.settings.advanced_theme.is_some() {
         // Keep Apply, Cancel, and color entry readable even in an extreme preview.
         static CHROME: std::sync::OnceLock<os_theme::Palette> = std::sync::OnceLock::new();
@@ -1243,16 +1257,18 @@ fn paint_window(ui: &mut Ui, s: &State) {
         ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, TABS_B - 1.0), t.s(0x25272a));
     }
     crate::icons::draw(ui.c, crate::icons::Icon::Gear, Rect::new(r.x + 7.0, r.y + 7.0, 16.0, 16.0), t.text_dim);
+    let language = Language::current();
     let (_, title, _) = TABS[st.tab.min(TABS.len() - 1)];
-    ui.c.text(Font::new(13), r.x + 28.0, r.y + 7.0, t.text, &format!("Settings - {title}"));
+    ui.c.text(Font::new(13), r.x + 28.0, r.y + 7.0, t.text, &format!("{} - {}", language.text("Settings"), language.text(title)));
     let x = Rect::new(r.right() - 26.0, r.y + 5.0, 20.0, 20.0);
     let hov = ui.hit(x, Action::Settings(SAct::Close), "Close");
     crate::icons::draw(ui.c, crate::icons::Icon::Close, x.inset(3.0), if hov { t.glyph } else { t.text });
     // Tabs (spec §2): active text coloured by group.
     let font = Font::new(13);
     for (i, tr) in tab_rects(ui, r) {
-        let (label, _, grp) = TABS[i];
-        let hov = ui.hit(tr, Action::Settings(SAct::Tab(i)), TABS[i].1);
+        let (label, title, grp) = TABS[i];
+        let label = language.text(label);
+        let hov = ui.hit(tr, Action::Settings(SAct::Tab(i)), language.text(title));
         let on = i == st.tab;
         let body = if on { t.s(0x1d1e1f) } else { t.s(0x222425) };
         if lemon {
@@ -1285,8 +1301,9 @@ fn paint_window(ui: &mut Ui, s: &State) {
         };
         let lh = ui.c.line_height(font);
         let ty = if lemon { tr.cy() - 2.0 } else { tr.cy() };
-        let text_x = tr.x + (tr.w - ui.c.text_width(font, label)) / 2.0;
-        ui.c.text(font, text_x, (ty - lh / 2.0).round(), col, label);
+        let font = ui.c.fit_font(font, label, (tr.w - 4.0).max(1.0));
+        let text_x = tr.x + ((tr.w - ui.c.text_width(font, label)) / 2.0).max(2.0);
+        ui.c.text_clip(font, text_x, (ty - lh / 2.0).round(), tr.right() - text_x - 2.0, col, label);
     }
     ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), t.s(0x1c1e21));
     // Page.
@@ -1472,10 +1489,11 @@ fn picker(ui: &mut Ui, s: &State, p: &crate::theme_adjust::Picker, win: Rect) {
 /// Tab rects in window `r`: text width + 10 px each side, 4 px apart, 15 px more between groups.
 fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<(usize, Rect)> {
     let font = Font::new(13);
+    let language = Language::current();
     let visible: Vec<_> = TAB_ORDER.into_iter().filter(|&i| tab_shown(i))
         .map(|i| {
             let (label, _, group) = TABS[i];
-            (i, ui.c.text_width(font, label), group)
+            (i, ui.c.text_width(font, language.text(label)), group)
         })
         .collect();
     let group_gap = 15.0;
@@ -1484,6 +1502,7 @@ fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<(usize, Rect)> {
     let room = r.w - label_width - gaps - 14.0;
     let count = visible.len() as f32;
     let padding = (room / count).clamp(10.0, 20.0);
+    let label_scale = ((r.w - gaps - padding * count - 14.0) / label_width.max(1.0)).clamp(0.0, 1.0);
     let spacing = ((room - padding * count) / (count - 1.0)).clamp(0.0, 11.0);
     let mut x = r.x + 3.0;
     let mut previous_group = None;
@@ -1492,7 +1511,7 @@ fn tab_rects(ui: &mut Ui, r: Rect) -> Vec<(usize, Rect)> {
             x += group_gap;
         }
         previous_group = Some(group);
-        let width = label_width + padding;
+        let width = label_width * label_scale + padding;
         let rect = Rect::new(x.round(), r.y + 34.0, width.round(), TABS_B - 34.0);
         x += width + spacing;
         (i, rect)
@@ -1511,7 +1530,8 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
     let mut y = r.y + 8.0;
     if !gr.title.is_empty() {
         let f = Font::new(13).bold();
-        let tw = ui.c.text_width(f, gr.title);
+        let title = Language::current().text(gr.title);
+        let tw = ui.c.text_width(f, title);
         let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + 14.0, 24.0);
         if !lemon {
             ui.c.fill_rect(hdr, t.s(0x222427));
@@ -1520,7 +1540,7 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
                 ui.c.fill_rect(Rect::new(hdr.right() + k, hdr.y, 1.0, hdr.h - k * 4.0), t.s(0x222427));
             }
         }
-        ui.c.text(f, r.x + if lemon { 8.0 } else { 4.0 }, r.y + 4.0, if lemon { t.accent } else { t.text }, gr.title);
+        ui.c.text(f, r.x + if lemon { 8.0 } else { 4.0 }, r.y + 4.0, if lemon { t.accent } else { t.text }, title);
         if !gr.note.is_empty() {
             ui.c.text(Font::new(13), r.x + if lemon { 8.0 } else { 4.0 } + tw, r.y + 4.0, t.text_dim, gr.note);
         }
@@ -1554,7 +1574,8 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
     // A check declared in `crate::prefs` shows its state (the row's is its default).
     let on = crate::prefs::find_check(key).map_or(on, crate::prefs::check);
     let t = ui.t;
-    let tw = ui.c.text_width(Font::new(13), key);
+    let label = Language::current().text(key);
+    let tw = ui.c.text_width(Font::new(13), label);
     if key == crate::vintage::LABEL {
         let track = Rect::new(x - 6.0, cy - 7.0, 29.0, 14.0);
         let hit = Rect::new(x - 8.0, cy - 10.0, tw + 46.0, 20.0);
@@ -1565,7 +1586,7 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
             if on { t.accent } else { t.text_dim });
         let lh = ui.c.line_height(Font::new(13));
         ui.c.text(Font::new(13).bold(), track.right() + 8.0, (cy - lh / 2.0).round(),
-            if hover { t.glyph } else { t.text }, key);
+            if hover { t.glyph } else { t.text }, label);
         return;
     }
     let hr = Rect::new(x - 8.0, cy - 9.0, tw + 26.0, 18.0);
@@ -1576,7 +1597,7 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
     led(ui, x, cy, on, hov);
     let col = if hov { t.glyph } else { t.text };
     let lh = ui.c.line_height(Font::new(13));
-    ui.c.text(Font::new(13), x + 11.0, (cy - lh / 2.0).round(), col, key);
+    ui.c.text(Font::new(13), x + 11.0, (cy - lh / 2.0).round(), col, label);
     if !enabled {
         grey(ui, hr);
     }
@@ -1587,12 +1608,13 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
 fn check_greyed(ui: &mut Ui, key: &'static str, x: f32, cy: f32, hint: &'static str) {
     let on = crate::prefs::find_check(key).is_some_and(crate::prefs::check);
     let t = ui.t;
-    let tw = ui.c.text_width(Font::new(13), key);
+    let label = Language::current().text(key);
+    let tw = ui.c.text_width(Font::new(13), label);
     let hr = Rect::new(x - 8.0, cy - 9.0, tw + 26.0, 18.0);
     ui.hit(hr, Action::Settings(SAct::Body), hint);
     led(ui, x, cy, on, false);
     let lh = ui.c.line_height(Font::new(13));
-    ui.c.text(Font::new(13), x + 11.0, (cy - lh / 2.0).round(), t.text, key);
+    ui.c.text(Font::new(13), x + 11.0, (cy - lh / 2.0).round(), t.text, label);
     grey(ui, hr);
 }
 
@@ -1670,6 +1692,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
     let cy = y + h / 2.0;
     let lh = ui.c.line_height(f);
     let ty = (cy - lh / 2.0).round();
+    let language = Language::current();
     match row {
         // Project ▸ Data folder's rows.
         _ if super::data_folder::shows(group) => super::data_folder::paint_row(ui, s, row, g, x0, y, h),
@@ -1694,21 +1717,23 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let b = Rect::new(x0, y + 3.0, *w, 21.0);
             ui.hit(b, Action::Settings(SAct::Body), MODE_ASIO);
             kit::combo(ui.c, t, b, v, f, kit::State::NORMAL);
-            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, label);
+            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, language.text(label));
             grey(ui, Rect::new(b.x, b.y, b.w + 8.0 + lw, b.h));
         }
         Row::Combo(v, w, label) if live_combo(label) || crate::prefs::find_combo(label).is_some() => {
             // A combo declared in `crate::prefs` shows its choice.
             let v = match crate::prefs::find_combo(label) {
+                Some(c) if c.key != crate::prefs::INTERFACE_LANGUAGE.key => language.text(crate::prefs::choice(c)),
                 Some(c) => crate::prefs::choice(c),
                 None => v,
             };
             let b = Rect::new(x0, y + 3.0, *w, 21.0);
             let hov = ui.hit(b, Action::Settings(SAct::Combo(label, b.x, b.bottom())), "");
-            kit::combo(ui.c, t, b, v, f, kit::State::hover(hov));
+            let value_font = if language.english() { f } else { ui.c.fit_font(f, v, b.w - 22.0) };
+            kit::combo(ui.c, t, b, v, value_font, kit::State::hover(hov));
             // Project's "Set as" combo has no label beside it.
             if *label != SET_AS {
-                ui.c.text(f, b.right() + 8.0, ty, if hov { t.glyph } else { t.text }, label);
+                ui.c.text(f, b.right() + 8.0, ty, if hov { t.glyph } else { t.text }, language.text(label));
             }
         }
         // Other combos and value boxes do not work yet. A combo keeps showing its value, greyed out.
@@ -1716,7 +1741,7 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let b = Rect::new(x0, y + 3.0, *w, 21.0);
             ui.off(b, name_of(label, group));
             kit::combo(ui.c, t, b, v, f, kit::State::NORMAL);
-            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, label);
+            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, language.text(label));
             grey(ui, Rect::new(b.x, b.y, b.w + 8.0 + lw, b.h));
         }
         // Project ▸ Time settings as a time division, General ▸ Undo history ▸ Maximum undo levels: the wheel changes
@@ -1725,20 +1750,20 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let b = Rect::new(x0, y + 3.0, 38.0, 21.0);
             let hov = ui.hit(b, Action::Settings(SAct::Number(label)), "");
             value_red(ui, b, v);
-            ui.c.text(f, b.right() + 8.0, ty, if hov { t.glyph } else { t.text }, label);
+            ui.c.text(f, b.right() + 8.0, ty, if hov { t.glyph } else { t.text }, language.text(label));
         }
         Row::Value(v, label) => {
             let b = Rect::new(x0, y + 3.0, 38.0, 21.0);
             ui.off(b, name_of(label, group));
             value_red(ui, b, v);
-            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, label);
+            let lw = ui.c.text(f, b.right() + 8.0, ty, t.text, language.text(label));
             grey(ui, Rect::new(b.x, b.y, b.w + 8.0 + lw, b.h));
         }
         Row::ValueR(label, v) if number_range(label).is_some() => {
             let b = Rect::new(g.right() - 52.0, y + 3.0, 42.0, 21.0);
             let hov = ui.hit(b, Action::Settings(SAct::Number(label)), "");
             value_red(ui, b, v);
-            ui.c.text_right(f, b.x - 8.0, ty, if hov { t.glyph } else { t.text }, label);
+            ui.c.text_right(f, b.x - 8.0, ty, if hov { t.glyph } else { t.text }, language.text(label));
         }
         Row::ValueR(label, v) => {
             let b = Rect::new(g.right() - 52.0, y + 3.0, 42.0, 21.0);
@@ -1748,8 +1773,8 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 ui.off(b, name_of(label, group));
             }
             value_red(ui, b, v);
-            ui.c.text_right(f, b.x - 8.0, ty, t.text, label);
-            let lw = ui.c.text_width(f, label);
+            ui.c.text_right(f, b.x - 8.0, ty, t.text, language.text(label));
+            let lw = ui.c.text_width(f, language.text(label));
             grey(ui, Rect::span(b.x - 8.0 - lw, b.right(), b.y, b.bottom()));
         }
         Row::ThemeEditor(row) => {
@@ -1824,14 +1849,16 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
                 } else if label == UPDATE_SCRIPTS {
                     ui.hit(b, Action::Settings(SAct::Body), NO_SCRIPTS);
                 } else if !on {
-                    ui.off(b, label);
+                    ui.off(b, language.text(label));
                 }
                 if super::lemon(ui) {
                     lk::outlined(ui.c, b, lk::r_btn(t), t.s(0x161819), lk::face(t.s(0x2a2d2f), kit::State::hover(hov)));
                 } else {
                     kit::bordered(ui.c, b, 2.0, t.s(0x161819), kit::face(t.s(0x212425), kit::State::hover(hov)));
                 }
-                ui.c.text_center(Font::new(13), b, if hov { t.glyph } else { t.text }, label);
+                let text = language.text(label);
+                let font = ui.c.fit_font(Font::new(13), text, b.w - 10.0);
+                ui.c.text_center(font, b, if hov { t.glyph } else { t.text }, text);
                 if !on {
                     grey(ui, b);
                 }
@@ -1856,12 +1883,12 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
             let tr = Rect::new(x0, cy - 2.0, 150.0, 4.0);
             let hov = ui.hit(Rect::span(tr.x - 9.0, tr.right() + 9.0, cy - 9.0, cy + 9.0), Action::Settings(SAct::Slider(label, tr.x, tr.w)), "");
             slider_track(ui, tr, cy, v);
-            ui.c.text(f, tr.right() + 12.0, ty, if hov { t.glyph } else { t.text }, label);
+            ui.c.text(f, tr.right() + 12.0, ty, if hov { t.glyph } else { t.text }, language.text(label));
         }
         Row::Slider(label, v) => {
             let tr = Rect::new(x0, cy - 2.0, 150.0, 4.0);
             slider_track(ui, tr, cy, *v);
-            let lw = ui.c.text(f, tr.right() + 12.0, ty, t.text, label);
+            let lw = ui.c.text(f, tr.right() + 12.0, ty, t.text, language.text(label));
             let r = Rect::span(tr.x - 9.0, tr.right() + 14.0 + lw, cy - 9.0, cy + 9.0);
             ui.off(r, name_of(label, group));
             grey(ui, r);

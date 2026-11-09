@@ -853,7 +853,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         let left = (bw - width - 4.0).max(51.0);
         let button = Rect::new(left, 85.0 + dy, (bw - left - 3.0).max(1.0), 18.0);
         if left > 105.0 {
-            ui.c.text(os_ui::Font::new(14), 52.0, 85.0 + dy, t.text_dim, "Browser");
+            ui.c.text(os_ui::Font::new(14), 52.0, 85.0 + dy, t.text_dim, crate::prefs::language::Language::current().text("Browser"));
         }
         let hover = ui.hit(button, Action::BrowserTab(EXCHANGE_BUTTON), "Open Community Samples");
         ui.c.fill_rrect(button, 3.0, if hover { t.menu_drop_hi } else { t.browser_tabs });

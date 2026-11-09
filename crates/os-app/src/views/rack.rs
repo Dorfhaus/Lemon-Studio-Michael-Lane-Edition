@@ -690,7 +690,7 @@ fn title_bar(ui: &mut Ui, s: &State, win: Rect, c: Cols, f: &FrameInfo) {
     let sc = if pat_playing { ui.t.h(0xffa53a) } else if shov { ui.t.tx(0xffffff) } else { t.glyph };
     icons::draw(ui.c, Icon::Speaker, Rect::new(x + 215.0 + c.dx, y + 7.0, 15.0, 15.0), sc);
     ui.c.push_clip(Rect::span(x + 236.0 + c.dx, r - 165.0, y, y + 29.0));
-    ui.c.text(Font::new(17), x + 236.0 + c.dx, y + 5.0, t.text, "Channel rack");
+    ui.c.text(Font::new(17), x + 236.0 + c.dx, y + 5.0, t.text, crate::prefs::language::Language::current().text("Channel rack"));
     ui.c.pop_clip();
     // Swing knob with its halo (§7); a non-zero swing draws an orange arc.
     let kx = r - 149.5;

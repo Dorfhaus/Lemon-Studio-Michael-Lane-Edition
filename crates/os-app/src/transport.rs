@@ -395,6 +395,16 @@ impl Watch {
     }
 }
 
+// The UI can cancel a queued or sounding picker preview. Dropping its worker
+// token also clears the button on device failures, shutdown and rejected starts.
+struct PickerTicket(Arc<AtomicBool>);
+
+impl Drop for PickerTicket {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 enum Cmd {
     /// Project, mode, start tick (the piano roll's play-start marker in pattern mode), request generation, and the
     /// transport settings as they were asked for.
@@ -411,6 +421,7 @@ enum Cmd {
     Audition(Box<Project>),
     /// Play a project's playlist once on the preview stream (clip preview).
     PreviewSong(Box<Project>, bool),
+    PickerPreview(Box<Project>, PickerTicket),
     /// Like `Preview`, faded out after the given time if still sounding (browser sample preview).
     PreviewFor(Box<Project>, Option<Duration>, Arc<os_engine::Sample>),
     /// The hosted instruments changed (in `Transport::instruments`): rebuild the engines.
@@ -679,7 +690,9 @@ impl Transport {
     }
 
     /// Play the playlist of `project` once on the preview stream (spec: ui/playlist.md §10, clip Preview).
-    pub fn preview_loop(&self, project: Project) { let _ = self.tx.send(Cmd::PreviewSong(Box::new(project), true)); }
+    pub fn preview_picker(&self, project: Project, active: Arc<AtomicBool>) {
+        let _ = self.tx.send(Cmd::PickerPreview(Box::new(project), PickerTicket(active)));
+    }
     pub fn preview_song(&self, project: Project) {
         let _ = self.tx.send(Cmd::PreviewSong(Box::new(project), false));
     }
@@ -1401,6 +1414,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
     let mut session: Option<Session> = None;
     // One-shot note previews play on their own stream, so they also sound while playing or paused.
     let mut preview: Option<Session> = None;
+    let mut picker_previews: Vec<(Session, PickerTicket)> = Vec::new();
     // When a time-limited preview (browser samples) is faded out.
     let mut preview_until: Option<Instant> = None;
     // Live notes while stopped or paused: an engine with no schedule on a stream that stays open.
@@ -1477,7 +1491,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         match rx.recv_timeout(Duration::from_millis(10)) {
             // The output is closed by Auto close: previews and live notes find no stream and open none.
             // So is a device that failed, until it opens again.
-            Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(..) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
+            Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(..) | Cmd::PickerPreview(..) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
             Ok(Cmd::Update) => {
                 if let Some(project) = latest.lock().ok().and_then(|mut l| l.take()) {
                     for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
@@ -1555,7 +1569,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             },
             Ok(Cmd::VocalTune(cents,gain))=>{for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.vocal_tune(cents,gain);}s.feed.wake();}},
             Ok(Cmd::VocalStop)=>{for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.vocal_stop();}s.feed.wake();}},
-            Ok(Cmd::StopPreview) => {preview = None;preview_until=None;for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.stop_audition();}s.feed.wake();}},
+            Ok(Cmd::StopPreview) => {for (s, _) in picker_previews.drain(..) { retire(s, &mut closing); } preview = None;preview_until=None;for s in [session.as_ref(),live.as_ref()].into_iter().flatten(){if let Ok(mut e)=s.engine.lock(){e.stop_audition();}s.feed.wake();}},
             Ok(Cmd::Audition(project)) => {
                 let running=session.as_ref().is_some_and(|s|!s.paused());
                 if !running&&live.is_none(){let p=live_project.as_ref().unwrap_or(&project);match open_live(p,listen,&mut library,&mut device){Ok(s)=>live=Some(s),Err(e)=>report(&shared,e)}}
@@ -1572,6 +1586,15 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut preview_library, shared.clone(), &inst, At::default(), &mut device) {
                     Ok(s) => preview = Some(s),
                     Err(e) => report(&shared, e),
+                }
+            }
+            Ok(Cmd::PickerPreview(project, ticket)) => {
+                if ticket.0.load(Ordering::Acquire) && picker_previews.len() < crate::clip_picker::PREVIEW_LIMIT {
+                    let at = At { preview_loop: true, ..At::default() };
+                    match Session::start(&project, PlayMode::Song, Kind::Preview, 0, &mut library, shared.clone(), &inst, at, &mut device) {
+                        Ok(session) => picker_previews.push((session, ticket)),
+                        Err(error) => report(&shared, error),
+                    }
                 }
             }
             Ok(Cmd::PreviewSong(project, looping)) => {
@@ -1655,6 +1678,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 }
             }
             Ok(Cmd::Reopen) => {
+                picker_previews.clear();
                 live = None;
                 listen_retry = true;
                 open_asio = Some((Instant::now(), 0));
@@ -1717,6 +1741,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 }
             }
             Ok(Cmd::Stop) => {
+                for (session, _) in picker_previews.drain(..) { retire(session, &mut closing); }
                 // Everything fades out and goes; then the instruments and the effects are reset, so no tail rings on
                 // into the next Play (pause is where tails ring out, `Engine::pause`).
                 for s in [session.take(), live.take(), preview.take()].into_iter().flatten() {
@@ -1740,6 +1765,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 }
             }
             Ok(Cmd::Close) => {
+                for (session, _) in picker_previews.drain(..) { retire(session, &mut closing); }
                 closed = true;
                 // The playback (paused by the app) is held where it was heard; every stream fades out and closes, then
                 // the instruments are reset as after Stop (without the rewind: the transport is paused).
@@ -1782,6 +1808,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             #[cfg(test)]
             Ok(Cmd::FailDevice) => device.fail("test"),
             Ok(Cmd::Export(project, mode, rate, job)) => {
+                picker_previews.clear();
                 // Every stream that could process the plugins goes at once (no fade), and they start from silence.
                 session = None;
                 live = None;
@@ -1804,6 +1831,16 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
+        let mut index = 0;
+        while index < picker_previews.len() {
+            let (session, ticket) = &picker_previews[index];
+            if !ticket.0.load(Ordering::Acquire) || session.done.load(Ordering::Relaxed) {
+                let (session, _) = picker_previews.swap_remove(index);
+                retire(session, &mut closing);
+            } else {
+                index += 1;
+            }
+        }
         if preview.as_ref().is_some_and(|p| p.done.load(Ordering::Relaxed)) {
             preview = None;
         }
@@ -1824,6 +1861,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         // the other streams go; it goes on when the device opens again (spec: audio/devices.md).
         if lost.is_none() {
             if let Some((name, why)) = device.failure() {
+                picker_previews.clear();
                 if let Some(s) = session.take() {
                     let at = At { preview_loop: false, tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: s.paused(), truncated: s.truncated, count_in: 0 };
                     held = Some((s.project.clone(), s.mode, s.generation, at));
@@ -1903,7 +1941,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         // The device frees the streams it let go of; with none left it lets go of the device (Auto close: also one
         // that would stay open).
         device.collect();
-        if session.is_none() && live.is_none() && preview.is_none() && closing.is_empty() {
+        if session.is_none() && live.is_none() && preview.is_none() && picker_previews.is_empty() && closing.is_empty() {
             if closed {
                 device.close();
             } else {
