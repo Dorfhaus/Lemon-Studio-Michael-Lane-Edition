@@ -14066,3 +14066,9 @@ https://github.com/mmorise/World
 /* ----------------------------------------------------------------- */
 
 Lemon native bridge: GPL-3.0-or-later, matching source distributed alongside the optional binary.
+
+Vintage FL Studio artwork and cursor resources
+--------------------------------------------
+Original artwork: Image-Line / respective rights holders. Included with
+redistribution permission confirmed by the Lemon Studio publisher. See
+crates/os-app/assets/vintage-2005/README.txt and manifest.json in the source.

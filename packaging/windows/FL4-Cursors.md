@@ -1,7 +1,7 @@
 # FL Studio 2005 cursors in Lemon Studio
 
-The FL Studio 2005 theme selects the FL Studio 2005 cursor pack automatically. You can also select it in the Theme Designer's cursor packs or choose it for individual cursor roles in another theme.
+The FL Studio 2005 theme selects the FL Studio 2005 cursor pack automatically. You can also select it in the Theme Designer or choose it for individual cursor roles in another theme.
 
-Lemon includes matching monochrome cursors for roles without original artwork. To use original cursor artwork from a compatible local FL Studio 4 installation on Windows, open FL Studio 4 and run `Import-FL4-Cursors.ps1` from this directory in 64-bit PowerShell. The importer checks the engine version by checksum and reads only the cursor resources from the running copy. Restart Lemon Studio after importing.
+The approved original artwork and cursors are now included inside the app on Windows, macOS and Linux. Both a fresh installation and an ordinary automatic update receive them; no separate import or profile-folder copy is required. Matching monochrome cursors cover roles without original artwork.
 
-The original artwork stays in your local Lemon Studio skin folder. On another machine, copy your local skin into `Skins/FL4` inside the Lemon Studio profile directory. On macOS, the regular profile is `~/Library/Application Support/Lemon Studio`. You can also set `LEMON_VINTAGE_SKIN` to point to a different local skin directory. Include the imported `Cursors` subfolder if you want the original cursors.
+Optional local overrides remain supported in `Skins/FL4` inside the active Lemon Studio profile, or via `LEMON_VINTAGE_SKIN`. The legacy Windows importer is retained for users who deliberately want their own compatible FL Studio 4 resources. Local overrides take precedence over the bundled originals.

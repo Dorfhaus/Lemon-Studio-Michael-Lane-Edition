@@ -1975,7 +1975,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("--apply-update") {
         std::process::exit(updates::helper(&args[1..]));
     }
-    if args.first().is_some_and(|s|matches!(s.as_str(), "--update-version" | "--check-update-feed" | "--verify-update")) {
+    if args.first().is_some_and(|s|matches!(s.as_str(), "--update-version" | "--check-update-feed" | "--verify-update" | "--cleanup-updates")) {
         std::process::exit(updates::diagnostic(&args));
     }
     if args.first().map(String::as_str)==Some("--capture-plugin-preview"){plugin_previews::child_main(&args[1..]);}

@@ -3,6 +3,16 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-10",
+      "title": "Portable vintage theme and automatic update cleanup \u00b7 public build 2026111001",
+      "changes": [
+        "Windows, macOS (Apple silicon and Intel), and Linux: include the approved original FL Studio 2005 artwork inside Lemon Studio, restoring the classic toolbar, Channel Rack, knobs, faders and displays without requiring a separate skin folder.",
+        "The same artwork is delivered through normal automatic updates and fresh installations; existing projects, settings and the selected theme are preserved.",
+        "Include the original vintage cursor pack on every platform, automatically selected by the FL Studio 2005 theme and also available for other themes. Existing local skin overrides remain supported.",
+        "Automatically retain only the two newest rollback backups and remove older updater-owned backups after successful updates or startup. Clear completed authenticated update downloads while protecting active and pending downloads, projects and preferences. The Windows installer performs the same cleanup."
+      ]
+    },
+    {
       "date": "2026-11-09",
       "title": "Tesla noise cleanup and direct Playlist return \u00b7 public build 2026110907",
       "changes": [

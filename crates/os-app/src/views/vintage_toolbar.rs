@@ -33,10 +33,16 @@ pub fn paint(ui:&mut Ui,s:&State,f:&FrameInfo) {
             skin::native(ui.c, "MinClose", frame, x, 4.0);
         }
     }
-    for (i,(x0,x1,_)) in menus::bar_layout(ui.c,true).into_iter().enumerate() {
+    let language = crate::prefs::language::Language::current();
+    for (i,(x0,x1,width)) in menus::bar_layout(ui.c,true).into_iter().enumerate() {
         let r=Rect::new(x0-3.,28.,x1-x0+6.,21.);
-        let hot=ui.hit(r,Action::Menu(i),menus::VINTAGE_TITLES[i]);
-        skin::lettering(ui.c,menus::VINTAGE_TITLES[i],x0,29.);
+        let title = language.text(menus::VINTAGE_TITLES[i]);
+        let hot=ui.hit(r,Action::Menu(i),title);
+        if language.english() {
+            skin::lettering(ui.c,title,x0,29.);
+        } else {
+            ui.c.text(Font::condensed(13, width as u16), x0, 32., ui.t.menu_text, title);
+        }
         if hot || s.menu_open==Some(i) {ui.c.fill_rect(Rect::new(r.x+2.,47.,r.w-4.,1.),Color::rgb(0xd7e4df));}
     }
     if shown("visible_hint") {

@@ -65,13 +65,15 @@ Section "Lemon Studio"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "${SHORTCUT}" "$INSTDIR\lemonstudio.exe"
   WriteRegStr HKCU "${REGKEY}" "DisplayName" "Lemon Studio - Michael Lane Edition"
-  WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2026.11.09.7"
+  WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "2026.11.10.1"
   WriteRegStr HKCU "${REGKEY}" "Publisher" "Lemon Studio contributors / Michael Lane custom edition"
   WriteRegStr HKCU "${REGKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${REGKEY}" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
   WriteRegStr HKCU "${REGKEY}" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
   WriteRegDWORD HKCU "${REGKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${REGKEY}" "NoRepair" 1
+  ; Use the installed app's validated cleanup, including during silent installation.
+  nsExec::ExecToLog '"$INSTDIR\lemonstudio.exe" --cleanup-updates'
 SectionEnd
 Section "Uninstall"
   ReadRegStr $0 HKCU "Software\Classes\LemonStudio.LmnProject\shell\open\command" ""

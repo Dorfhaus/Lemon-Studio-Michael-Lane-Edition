@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Optional local FL4 cursor resources, never bundled with Lemon.
+//! Vintage cursor resources with optional local overrides and an embedded default.
 use crate::{app::Cursor, playlist::PlTool, playlist_tools as tools};
 use os_ui::{Canvas, Color, Rect};
 use std::{collections::HashMap, sync::OnceLock};
@@ -70,7 +70,7 @@ fn bitmap(cursor: Cursor) -> Option<&'static Bitmap> {
                 let path = dir.join("Cursors").join(format!("{name}.bin"));
                 if std::fs::metadata(&path).ok()?.len() != 308 { return None; }
                 decode(&std::fs::read(path).ok()?)
-            })?;
+            }).or_else(|| decode(crate::vintage_skin::bundled_asset(&format!("Cursors/{name}.bin"))?))?;
             Some((name, bitmap))
         }).collect()
     }).get(name)
@@ -80,6 +80,13 @@ fn bitmap(cursor: Cursor) -> Option<&'static Bitmap> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn vintage_embedded_cursors_decode_without_local_installation() {
+        for name in ["SIZEH", "MOVEV", "MOVE", "32763", "32761", "EEPEN", "EEBRUSH", "EECUT", "EEDEL", "EESEL", "32767", "EEZOOM", "MOVEH"] {
+            let bytes = crate::vintage_skin::bundled_asset(&format!("Cursors/{name}.bin")).unwrap();
+            assert!(decode(bytes).is_some(), "{name}");
+        }
+    }
     #[test]
     fn vintage_cursor_pack_is_default_and_portable() {
         let appearance = os_theme::design::vintage_2005().appearance;

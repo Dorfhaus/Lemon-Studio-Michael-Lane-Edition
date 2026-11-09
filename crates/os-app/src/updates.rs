@@ -4,7 +4,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u64 = 2026110907;
+#[path = "update_retention.rs"]
+mod retention;
+
+pub const VERSION: u64 = 2026111001;
 #[cfg(windows)]
 pub const FEED: &str = "https://michaellanemusic.de/lemon-studio/updates/stable.json";
 #[cfg(windows)]
@@ -128,7 +131,11 @@ fn check() -> Result<Option<PathBuf>> {
     fs::write(dir.join("signed.json"),bytes)?;
     Ok(Some(dir))
 }
-pub fn start() { status().lock().unwrap().started=true; request(); }
+pub fn start() {
+    // Maintenance never touches the audio/UI thread or pending newer update payloads.
+    std::thread::spawn(|| { if let Ok(exe)=std::env::current_exe() { let _=retention::run(&exe,VERSION,None); } });
+    status().lock().unwrap().started=true; request();
+}
 pub fn request() {
     let mut s=status().lock().unwrap();
     if s.busy || s.ready.is_some() { return; }
@@ -282,6 +289,7 @@ pub fn helper(args: &[String]) -> i32 {
         wait_parent(args[0].parse()?, &stage)?;
         parent_closed=true;
         install(&stage,&target,&manifest)?;
+        let _=retention::run(&target,manifest.version,Some(&stage));
         fs::write(stage.join("result.txt"),format!("Installed {}",manifest.label))?;
         report_result(&format!("Lemon Studio updated to {}.",manifest.label));
         if args[3]=="restart" {let mut cmd=std::process::Command::new(&target);if let Some(p)=args.get(4){cmd.arg(p);}cmd.current_dir(target.parent().ok_or("No parent")?).spawn()?;}
@@ -299,6 +307,7 @@ pub fn diagnostic(args: &[String]) -> i32 {
     let result: Result<String>=(|| {
         match args.first().map(String::as_str) {
             Some("--update-version") => Ok(VERSION.to_string()),
+            Some("--cleanup-updates") => Ok(format!("Removed {} obsolete update folders; newest two rollback backups retained", retention::run(&std::env::current_exe()?,VERSION,None)?)),
             Some("--check-update-feed") => Ok(format!("{}",if check()?.is_some(){"Update downloaded and verified"}else{"Signed feed verified; up to date"})),
             Some("--verify-update") => {
                 let path=Path::new(args.get(1).ok_or("Manifest path required")?);
@@ -327,9 +336,10 @@ mod tests {
             let hit=app.hits.iter().find(|h|h.action==Action::Updates).expect("update button");
             assert!(hit.rect.x>=0. && hit.rect.right()<=width as f32);
             assert_eq!(app.top_hit(hit.rect.cx(),hit.rect.cy()).map(|h|&h.action),Some(&Action::Updates));
-            let cpu=app.hits.iter().find(|h|h.action==Action::CpuPanel).expect("compact CPU visible");
+            let cpu=app.hits.iter().find(|h|h.action==Action::CpuPanel).expect("CPU visible");
             let ai=app.hits.iter().find(|h|h.action==Action::Ai).unwrap();
-            assert!(cpu.rect.w<=54. && cpu.rect.right()<ai.rect.x && cpu.rect.h<=24.);
+            // The combined audio monitor is taller/wider than the former compact CPU badge.
+            assert!(cpu.rect.x>=0. && cpu.rect.w>0. && cpu.rect.right()<ai.rect.x && cpu.rect.h>0. && cpu.rect.h<=40.);
             let donate=app.hits.iter().find(|h|h.action==Action::Donate).expect("donate button");
             assert!(hit.rect.w<70.0 && donate.rect.w<70.0 && donate.rect.x>hit.rect.right() && donate.rect.right()<=width as f32);
             let minimize=app.hits.iter().find(|h|h.action==Action::Minimize).unwrap();

@@ -14,7 +14,7 @@ with (cache/'worktree.lock').open('a+b') as lock:
     commit=git('rev-parse','HEAD')
     if not dest.exists():subprocess.run(['git','worktree','add','--detach',str(dest),commit],cwd=root,check=True,stdout=sys.stderr)
     else:
-        if not (dest/'.git').is_file() or Path(git('rev-parse','--path-format=absolute','--git-common-dir',cwd=dest)).resolve()!=(root/'.git').resolve():raise SystemExit('Build cache belongs to another checkout; preserving it')
+        if not (dest/'.git').is_file() or Path(git('rev-parse','--path-format=absolute','--git-common-dir',cwd=dest)).resolve()!=Path(git('rev-parse','--path-format=absolute','--git-common-dir')).resolve():raise SystemExit('Build cache belongs to another checkout; preserving it')
         if git('status','--porcelain',cwd=dest):raise SystemExit('Build worktree contains changes; preserving them')
         subprocess.run(['git','checkout','--detach',commit],cwd=dest,check=True,stdout=sys.stderr)
 print(dest)

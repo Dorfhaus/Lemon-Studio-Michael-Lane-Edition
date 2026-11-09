@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Optional, user-installed FL4 artwork. No third-party artwork is distributed with Lemon.
+//! Approved vintage artwork, embedded for clean installs and automatic updates.
 //! Decode once on the UI thread; drawing never reads files or rebuilds sprite frames.
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::OnceLock};
 use os_ui::{Canvas, Rect};
+
+#[path = "vintage_skin_builtin.rs"]
+mod builtin;
+#[path = "vintage_skin_assets.rs"]
+mod assets;
+pub(crate) use assets::asset as bundled_asset;
 
 struct Sprite { w: usize, h: usize, pixels: Vec<u32> }
 struct Alpha {w:usize,h:usize,pixels:Vec<u8>}
@@ -87,6 +93,14 @@ fn bmp(b: &[u8]) -> Option<Sprite> {
 
 impl Skin {
     fn load(dir: &Path) -> Self {
+        Self::load_with(|name| {
+            let path = dir.join(name);
+            std::fs::metadata(&path).ok().filter(|m| m.len() <= 16_000_000)?;
+            std::fs::read(path).ok()
+        })
+    }
+
+    fn load_with(read: impl Fn(&str) -> Option<Vec<u8>>) -> Self {
         let mut skin = Self { sprites: HashMap::new(), alpha:HashMap::new() };
         for (name,fw,fh) in [
             ("SSBtns",16,28),("SetBtn",64,28),("SelectBtn",17,28),
@@ -99,9 +113,7 @@ impl Skin {
             ("PatternToolBar",113,40),("PatPad",48,30),("Digits_9",6,9),("TimeToolBar",183,40),("ShortcutToolBar",204,40),
             ("EETools",18,18),("MenuItems",284,20),("FXPeakMeter",10,19),("TimeArrow",15,9),("SBItem",16,13),
         ] {
-            let path=dir.join(format!("{name}.bmp"));
-            let Some(art)=std::fs::metadata(&path).ok().filter(|m|m.len()<=16_000_000)
-                .and_then(|_|std::fs::read(&path).ok()).and_then(|b|bmp(&b)) else {continue};
+            let Some(art)=read(&format!("{name}.bmp")).and_then(|b|bmp(&b)) else {continue};
             if art.w%fw!=0 || art.h!=fh {continue;}
             let frames=(0..art.w/fw).filter_map(|i|art.crop(i*fw,0,fw,fh)).collect();
             if name == "PatPad" {
@@ -253,7 +265,7 @@ impl Skin {
             }
         }
         for (name,fw) in [("VSlider",18usize),("HSlider",21),("HSlider_Grey",20)] {
-            let Some(b)=std::fs::read(dir.join(format!("{name}.tga"))).ok().filter(|b|b.len()<100_000) else {continue};
+            let Some(b)=read(&format!("{name}.tga")).filter(|b|b.len()<100_000) else {continue};
             if b.len()<18 || b[1]!=0 || b[2]!=2 || b[16]!=32 {continue;}
             let w=u16::from_le_bytes([b[12],b[13]]) as usize;
             let h=u16::from_le_bytes([b[14],b[15]]) as usize;
@@ -276,9 +288,12 @@ impl Skin {
 fn skin() -> &'static Skin {
     SKIN.get_or_init(|| directories().iter().map(|p|Skin::load(p))
         .find(|s|s.sprites.contains_key("SSBtns") && s.sprites.contains_key("SetBtn"))
-        .unwrap_or(Skin {sprites:HashMap::new(),alpha:HashMap::new()}))
+        .unwrap_or_else(|| {
+            let embedded = Skin::load_with(|name| bundled_asset(name).map(<[u8]>::to_vec));
+            if embedded.sprites.contains_key("SSBtns") && embedded.sprites.contains_key("SetBtn") { embedded } else { builtin::build() }
+        }))
 }
-pub fn available() -> bool {skin().sprites.contains_key("SSBtns")}
+pub fn available() -> bool {skin().sprites.contains_key("RackMiddle")}
 pub fn has_frame(name: &str, frame: usize) -> bool {
     skin().sprites.get(name).is_some_and(|frames| frame < frames.len())
 }
@@ -298,14 +313,27 @@ pub fn native(c: &mut Canvas, name: &str, frame: usize, x:f32, y:f32) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn vintage_embedded_artwork_is_complete_without_profile_files() {
+        let loaded = Skin::load_with(|name| bundled_asset(name).map(<[u8]>::to_vec));
+        for name in ["SSBtns", "SetBtn", "RackMiddle", "ShortcutBank", "RecordSwitches", "FXMeterIdle", "Menu0", "TempoDigits_9"] {
+            assert!(!loaded.sprites[name].is_empty(), "{name}");
+        }
+        assert_eq!(loaded.alpha["VSlider"].len(), 2);
+        for (name, frames) in &loaded.sprites {
+            assert!(frames.iter().all(|f| f.pixels.len() == f.w * f.h), "{name}");
+        }
+    }
+    #[test]
     fn vintage_native_artwork_matches_installed_pixels() {
         let source=directories().into_iter().find(|p|p.join("SSBtns.bmp").is_file());
         let Some(source)=source else {return};
         let loaded=Skin::load(&source);
+        let embedded=Skin::load_with(|name| bundled_asset(name).map(<[u8]>::to_vec));
         for (name,fw,fh) in [("SSBtns",16,28),("SetBtn",64,28),("SelectBtn",17,28),("Wheel_18",18,18),("SCBtns",29,25)] {
             let art=bmp(&std::fs::read(source.join(format!("{name}.bmp"))).unwrap()).unwrap();
             let frames=loaded.sprites.get(name).unwrap();
             for (i,sprite) in frames.iter().enumerate() {
+                assert_eq!(sprite.pixels, embedded.sprites[name][i].pixels, "embedded original {name} frame {i}");
                 let original=art.crop(i*fw,0,fw,fh).unwrap();
                 let mut canvas=Canvas::new(fw as u32,fh as u32,1.).unwrap();
                 canvas.image(Rect::new(0.,0.,fw as f32,fh as f32),sprite.w,sprite.h,&sprite.pixels);
