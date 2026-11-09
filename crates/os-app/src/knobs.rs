@@ -168,7 +168,7 @@ impl State {
                 let sep = self.project.mixer.iter().find(|m| m.index == t).and_then(|m| m.stereo_separation).unwrap_or(0.0);
                 (0.5 + sep as f32 / 2.0).clamp(0.0, 1.0)
             }
-            KnobId::SlotMix(t, k) => self.project.mixer.iter().find(|m| m.index == t).map_or(1.0, |m| m.slot_mix[usize::from(k).min(9)] as f32),
+            KnobId::SlotMix(t, k) => self.project.mixer.iter().find(|m| m.index == t).map_or(1.0, |m| m.slot_mix[usize::from(k).min(63)] as f32),
             KnobId::Send(a, b) => crate::mixer::send(self, a, b).unwrap_or(0.8) as f32,
             KnobId::ChanVol(i) => self.project.channels.get(i).map_or(0.8, |c| c.volume as f32).clamp(0.0, 1.0),
             KnobId::ChanPan(i) => self.project.channels.get(i).map_or(0.5, |c| 0.5 + c.pan as f32 / 2.0).clamp(0.0, 1.0),
@@ -219,12 +219,14 @@ impl State {
             }
             KnobId::SlotMix(t, k) => {
                 if let Some(m) = self.project.mixer.iter_mut().find(|m| m.index == t) {
-                    m.slot_mix[usize::from(k).min(9)] = f64::from(v);
+                    m.slot_mix[usize::from(k).min(63)] = f64::from(v);
                     self.piano.dirty = true;
                 }
             }
             KnobId::Send(a, b) => {
                 if let Some(m) = self.project.mixer.iter_mut().find(|m| m.index == a) {
+                    let previous = m.send_levels.iter().find(|&&(d, _)| d == b).map_or(0.8, |&(_, level)| level);
+                    if previous as f32 == v { return; }
                     m.send_levels.retain(|&(d, _)| d != b);
                     m.send_levels.push((b, f64::from(v)));
                     m.send_levels.sort_by_key(|&(d, _)| d);
@@ -257,15 +259,20 @@ impl State {
             }
             KnobId::Strip(t,k) => {
                 if let Some(m)=self.project.mixer.iter_mut().find(|m|m.index==t) {
-                    if k==8 {m.tune[0]=(v*65535.0).round() as u16;}else if k==7 {m.deess=Some((v*65535.0).round() as u16);}else{m.strip[usize::from(k.min(4))]=(v*65535.0).round() as u16;}
-                    self.piano.dirty=true;
+                    let value = (v * 65535.0).round() as u16;
+                    let changed = match k {
+                        7 => std::mem::replace(&mut m.deess, Some(value)) != Some(value),
+                        8 => std::mem::replace(&mut m.tune[0], value) != value,
+                        _ => std::mem::replace(&mut m.strip[usize::from(k.min(4))], value) != value,
+                    };
+                    self.piano.dirty |= changed;
                 }
             }
             KnobId::Eq(t, b, f) => {
                 if let Some(m) = self.project.mixer.iter_mut().find(|m| m.index == t) {
                     let stored = if f == 0 { ((v * 2.0 - 1.0) * 1800.0).round() as i32 } else { (v * 65536.0).round() as i32 };
-                    m.eq[usize::from(b.min(2))][usize::from(f.min(2))] = stored;
-                    self.piano.dirty = true;
+                    let field = &mut m.eq[usize::from(b.min(2))][usize::from(f.min(2))];
+                    self.piano.dirty |= std::mem::replace(field, stored) != stored;
                 }
             }
             // The notes follow at once (the dialog previews, §1).
@@ -387,6 +394,21 @@ impl crate::app::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_effect_slot_mix_knobs_address_their_own_slot() {
+        let mut app = crate::app::App::new(None);
+        app.state.project = crate::app::test_project();
+        app.state.project.mixer[1].slot_mix = [1.0;64];
+        for slot in 0..64 {
+            let id = KnobId::SlotMix(1,slot as u8);
+            app.state.set_knob(id,0.25);
+            assert_eq!(app.state.knob(id),0.25);
+            assert_eq!(app.state.project.mixer[1].slot_mix[slot],0.25);
+            for other in 0..64 {if other != slot {assert_eq!(app.state.project.mixer[1].slot_mix[other],1.0);}}
+            app.state.set_knob(id,1.0);
+        }
+    }
 
     #[test]
     fn texts_and_roundtrip() {

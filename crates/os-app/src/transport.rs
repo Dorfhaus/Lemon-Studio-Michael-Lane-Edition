@@ -1413,6 +1413,65 @@ fn audition_events(project:&Project,rate:u32)->Vec<(usize,u16,u8,u64,u64)>{
  }).collect()
 }
 
+/// Recognize edits that can change targets on the running strip without replacing the engine.
+fn mixer_live_edits(previous: &mut Project, next: &mut Project) -> Option<Vec<usize>> {
+    if previous.mixer.len() != next.mixer.len() {
+        return None;
+    }
+    let mut changed = Vec::new();
+    for (index, (old, new)) in previous.mixer.iter_mut().zip(&next.mixer).enumerate() {
+        // Runtime identity cannot move through the live-control path.
+        if old.runtime_id != new.runtime_id {
+            return None;
+        }
+        if old == new && old.tune_learn == new.tune_learn {
+            continue;
+        }
+        // Only normalize fields explicitly implemented by the engine's live setters.
+        macro_rules! controls_match {
+            ($($field:ident),+ $(,)?) => {{
+                let saved = ($(std::mem::replace(&mut old.$field, new.$field.clone()),)+);
+                let same = old == new;
+                ($(old.$field,)+) = saved;
+                same
+            }};
+        }
+        if old.clip_fx && old.enabled != new.enabled { return None; }
+        if !controls_match!(eq, strip, routes, send_levels, volume, pan, stereo_separation,
+            polarity, swap, enabled, slots_enabled, slot_on, slot_mix, parametric_pre,
+            strip_bypassed, deess, tune, tune_enabled, latency_out, latency_in,
+            name, color, icon, separator, edit_locked, group_locked) { return None; }
+        changed.push(index);
+    }
+    if previous.channels.len() != next.channels.len() { return None; }
+    for (old, new) in previous.channels.iter_mut().zip(&next.channels) {
+        if old == new { continue; }
+        // Stretched audio pitch can require regenerated sample data.
+        if old.pitch_cents != new.pitch_cents && (old.sound.stretch != [0; 4] || old.kind == os_model::ChannelKind::AudioClip) { return None; }
+        let saved = (old.volume, old.pan, old.pitch_cents);
+        (old.volume, old.pan, old.pitch_cents) = (new.volume, new.pan, new.pitch_cents);
+        let same = old == new;
+        (old.volume, old.pan, old.pitch_cents) = saved;
+        if !same { return None; }
+    }
+    // An identical snapshot is a successful no-op, not a reason to rebuild playback.
+    // Pointer motion can repeat a quantized/clamped knob value while dragging.
+    // Compare all other project fields without copying notes, clips, or hosted plugin state.
+    let old_mixer = std::mem::take(&mut previous.mixer);
+    let new_mixer = std::mem::take(&mut next.mixer);
+    let old_channels = std::mem::take(&mut previous.channels);
+    let new_channels = std::mem::take(&mut next.channels);
+    let globals = (previous.main_volume, previous.main_pitch, previous.varispeed_cents);
+    (previous.main_volume, previous.main_pitch, previous.varispeed_cents) = (next.main_volume, next.main_pitch, next.varispeed_cents);
+    let same_project = previous == next;
+    (previous.main_volume, previous.main_pitch, previous.varispeed_cents) = globals;
+    previous.channels = old_channels;
+    next.channels = new_channels;
+    previous.mixer = old_mixer;
+    next.mixer = new_mixer;
+    same_project.then_some(changed)
+}
+
 fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option<PlaybackUpdate>>>, inst: Instruments, mut library: SampleLibrary) {
     // Every stream below plays through it.
     let mut device = OutputDevice::default();
@@ -1499,11 +1558,24 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
             // So is a device that failed, until it opens again.
             Ok(Cmd::Audition(_) | Cmd::Preview(_) | Cmd::PreviewFor(..) | Cmd::PreviewSong(..) | Cmd::PickerPreview(..) | Cmd::NoteOn(..) | Cmd::Midi(..) | Cmd::TapClick(..)) if closed || lost.is_some() => {}
             Ok(Cmd::Update) => {
-                if let Some((project, warp)) = latest.lock().ok().and_then(|mut l| l.take()) {
-                    library.replace_buffer(crate::warp::PREVIEW_PATH, warp);
+                if let Some((mut project, warp)) = latest.lock().ok().and_then(|mut l| l.take()) {
+                    let warp_changed = library.replace_buffer(crate::warp::PREVIEW_PATH, warp);
                     for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
                         let next=if s.kind==Kind::Song{follow_pattern(s.mode,&project)}else{s.mode};
                         let switched=next!=s.mode;s.mode=next;
+                        if !switched && !warp_changed
+                            && let Some(changed) = mixer_live_edits(&mut s.project, &mut project)
+                            && let Ok(mut engine) = s.engine.lock()
+                        {
+                            for index in changed {
+                                engine.set_mixer_controls(index, &project.mixer[index]);
+                            }
+                            engine.set_live_project_controls(&project);
+                            drop(engine);
+                            s.project = project.clone();
+                            s.feed.wake();
+                            continue;
+                        }
                         s.project = project.clone();
                         swap(s, &mut library,switched);
                     }
@@ -2475,6 +2547,74 @@ mod tests {
 
 
     #[test]
+    fn repeated_send_snapshots_are_noops_not_engine_rebuilds() {
+        let mut previous = Project::default();
+        previous.mixer = (0..3).map(os_model::MixerTrack::new).collect();
+        previous.mixer[1].routes = vec![0, 2];
+        let mut next = previous.clone();
+        for level in [0.8, 0.8, 0.5, 0.5, 0.0, 0.0, 1.0, 1.0] {
+            next.mixer[1].send_levels = vec![(2, level)];
+            let before = previous.clone();
+            let incoming = next.clone();
+            let changes = mixer_live_edits(&mut previous, &mut next).expect("send fast path");
+            assert_eq!(changes.is_empty(), before == incoming);
+            assert_eq!(previous, before, "comparison leaves the previous project intact");
+            assert_eq!(next, incoming);
+            previous = next.clone();
+            assert_eq!(mixer_live_edits(&mut previous, &mut next), Some(vec![]));
+        }
+        next.mixer[1].channel_layout = 2;
+        assert!(mixer_live_edits(&mut previous, &mut next).is_none(), "unhandled edits still rebuild");
+    }
+
+    #[test]
+    fn live_control_audit_covers_knobs_switches_and_structural_fallbacks() {
+        let base = crate::app::test_project();
+        let cases: &[(&str, fn(&mut Project))] = &[
+            ("pan", |p|p.mixer[1].pan=Some(0.4)),
+            ("volume", |p|p.mixer[1].volume=Some(0.5)),
+            ("separation", |p|p.mixer[1].stereo_separation=Some(0.7)),
+            ("mute", |p|p.mixer[1].enabled=false),
+            ("polarity", |p|p.mixer[1].polarity=true),
+            ("swap", |p|p.mixer[1].swap=true),
+            ("slot mix", |p|p.mixer[1].slot_mix[0]=0.2),
+            ("slot enabled", |p|p.mixer[1].slot_on[0]=false),
+            ("all FX", |p|p.mixer[1].slots_enabled=false),
+            ("EQ order", |p|p.mixer[1].parametric_pre=true),
+            ("strip bypass", |p|p.mixer[1].strip_bypassed=true),
+            ("drive mode", |p|p.mixer[1].strip[6]=3),
+            ("comp mode", |p|p.mixer[1].strip[5]=4),
+            ("deess", |p|p.mixer[1].deess=Some(20000)),
+            ("tuning", |p|p.mixer[1].tune=[20000,2,1,1]),
+            ("tuning enabled", |p|p.mixer[1].tune_enabled=false),
+            ("learning", |p|p.mixer[1].tune_learn+=1),
+            ("latency", |p|p.mixer[1].latency_out=3.0),
+            ("name", |p|p.mixer[1].name=Some("Renamed".into())),
+            ("master volume", |p|p.main_volume=Some(9000)),
+            ("master pitch", |p|p.main_pitch=Some(100)),
+            ("varispeed", |p|p.varispeed_cents=100),
+            ("channel volume", |p|p.channels[0].volume=0.5),
+            ("channel pan", |p|p.channels[0].pan=0.2),
+        ];
+        for (name, edit) in cases {
+            let mut old = base.clone(); let mut new = base.clone(); edit(&mut new);
+            let incoming = new.clone();
+            assert!(mixer_live_edits(&mut old,&mut new).is_some(), "{name}");
+            assert_eq!(old,base); assert_eq!(new,incoming);
+            assert_eq!(old.mixer[1].tune_learn,base.mixer[1].tune_learn);
+        }
+        for edit in [
+            (|p:&mut Project| p.mixer.push(os_model::MixerTrack::new(200))) as fn(&mut Project),
+            |p|p.mixer[1].channel_layout=2,
+            |p|p.tempo=Some(173.0),
+            |p|p.swing=Some(70),
+        ] {
+            let mut old=base.clone();let mut new=base.clone();edit(&mut new);
+            assert!(mixer_live_edits(&mut old,&mut new).is_none());
+        }
+    }
+
+    #[test]
     #[ignore = "sustained synthetic callback test, no audio device"]
     fn sustained_low_buffer_stress() {
         struct Signal { phase: f32 }
@@ -2508,18 +2648,46 @@ mod tests {
             let stop = Arc::new(AtomicBool::new(false));
             let edit_stop = stop.clone(); let ui = shared.clone();
             let editor = std::thread::spawn(move || {
+                let mut previous = p.clone();
+                let mut next = p;
+                next.mixer[1].channel_layout = 2;
+                assert!(mixer_live_edits(&mut previous, &mut next).is_none());
+                next.mixer[1].channel_layout = previous.mixer[1].channel_layout;
                 let mut count = 0u64;
                 while !edit_stop.load(Ordering::Acquire) {
-                    // Simulate UI meter reads that span multiple small callbacks.
-                    { let _meters = ui.tracks.lock().unwrap(); std::thread::sleep(Duration::from_millis(10)); }
-                    { let _keys = ui.sounding.lock().unwrap(); std::thread::sleep(Duration::from_millis(5)); }
+                    if count % 20 == 0 {
+                        // Simulate UI meter reads that span multiple small callbacks.
+                        { let _meters = ui.tracks.lock().unwrap(); std::thread::sleep(Duration::from_millis(10)); }
+                        { let _keys = ui.sounding.lock().unwrap(); std::thread::sleep(Duration::from_millis(5)); }
+                    }
+                    let sweep = ((count as f32 * 0.05).sin() * 0.5 + 0.5).max(0.001);
+                    let track = &mut next.mixer[1];
+                    track.strip[..5].copy_from_slice(&[
+                        (sweep * 24000.) as u16, (sweep * 36000.) as u16, (sweep * 48000.) as u16, 0, (sweep * 34000.) as u16,
+                    ]);
+                    track.routes = if count % 17 == 0 { vec![2, 3, 4] } else { vec![2] };
+                    track.send_levels = vec![(2, f64::from(sweep) * 0.8), (3, 0.2), (4, 0.1)];
+                    track.pan = Some(f64::from(sweep) - 0.5);
+                    track.volume = Some(0.6 + f64::from(sweep) * 0.2);
+                    track.stereo_separation = Some(f64::from(sweep) * 0.8);
+                    track.slot_mix[0] = f64::from(sweep);
+                    track.strip[5] = (count % 6) as u16;
+                    track.strip[6] = (count % 4) as u16;
+                    track.eq[1][0] = (sweep * 1800.) as i32 - 900;
+                    track.eq[1][1] = (sweep * 48000.) as i32;
+                    let changes = mixer_live_edits(&mut previous, &mut next);
                     if let Ok(mut e) = engine.lock() {
-                        e.set_effects(count % 2 == 0, true);
-                        e.set_multicore(count % 3 != 0);
-                        e.set_loop_range(Some((0, 384)));
+                        if let Some(changed) = changes {
+                            assert_eq!(changed, [1]);
+                            e.set_mixer_controls(1, &next.mixer[1]);
+                            e.set_live_project_controls(&next);
+                            previous.mixer[1] = next.mixer[1].clone();
+                        } else {
+                            assert_eq!(previous, next);
+                        }
                     }
                     count += 1;
-                    std::thread::sleep(Duration::from_millis(85));
+                    std::thread::sleep(Duration::from_millis(5));
                 }
                 count
             });

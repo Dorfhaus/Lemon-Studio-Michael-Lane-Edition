@@ -111,7 +111,8 @@ struct Instance {
     shared: Arc<Shared>,
 }
 
-// SAFETY: an instance is used by one thread at a time (the instance's mutex, or the module's `spare` lock).
+// SAFETY: processing is serialized by the instance mutex; editor-only dispatch stays on the UI thread.
+// Editor jobs retain the instance but never access audio buffers or processing state.
 unsafe impl Send for Instance {}
 
 impl Instance {
@@ -399,10 +400,100 @@ impl Note {
 const ALL_SOUND_OFF: u8 = 120;
 const ALL_NOTES_OFF: u8 = 123;
 
+// UI-thread editor state, isolated from all audio buffers. The effect and library stay alive.
+struct EditorState {
+    inst: Arc<Instance>,
+    editor: bool,
+    /// Device pixels per unit of the open editor's sizes: 1, except on macOS, where editors measure in points.
+    editor_scale: f32,
+    #[cfg(target_os = "linux")]
+    editor_display: Option<(x11_dl::xlib::Xlib, *mut x11_dl::xlib::Display)>,
+    _module: Arc<Module>,
+}
+impl EditorState {
+    /// The editor's rectangle as the plugin reports it (width, height).
+    fn rect(&self) -> Option<(i32, i32)> {
+        let mut r: *mut Rect = std::ptr::null_mut();
+        self.inst.dispatch(op::EDITOR_GET_RECT, 0, 0, (&mut r as *mut *mut Rect).cast(), 0.0);
+        // SAFETY: a non-null answer points at the plugin's rectangle.
+        let r = unsafe { r.as_ref() }?;
+        let (w, h) = (i32::from(r.right) - i32::from(r.left), i32::from(r.bottom) - i32::from(r.top));
+        (w > 0 && h > 0).then_some((w, h))
+    }
+
+    /// An editor size as the plugin gives it (points on macOS) in pixels.
+    fn to_px(&self, w: i32, h: i32) -> (u32, u32) {
+        let px = |v: i32| (v.max(0) as f32 * self.editor_scale).round() as u32;
+        (px(w), px(h))
+    }
+
+    pub fn has_editor(&self) -> bool {
+        self.inst.flags() & flags::EDITOR != 0
+    }
+
+    /// Embeds the editor in `parent` (an HWND on Windows, an NSView on macOS, an X11 window id on Linux); returns its
+    /// size in pixels. `scale` is the parent's DPI factor: outside macOS it is offered to the plugin through the
+    /// content-scale extension many plugins take (vendor op-code `'PreS'` / `'AeCs'`), 1 included: plugins keep the
+    /// last scale they were told, and some guess one from the monitor when told none. On macOS editors measure in
+    /// points and follow their window's backing scale themselves, so their sizes are turned into pixels at `scale`.
+    pub fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
+        if !self.has_editor() {
+            return Err("Plugin has no editor".into());
+        }
+        self.close_editor();
+        let mac = cfg!(target_os = "macos");
+        self.editor_scale = if mac && scale > 0.0 { scale } else { 1.0 };
+        if !mac && scale > 0.0 {
+            self.inst.dispatch(op::CUSTOM, abi::fourcc(*b"PreS"), abi::fourcc(*b"AeCs") as isize, std::ptr::null_mut(), scale);
+        }
+        if let Ok(mut s) = self.inst.shared.size.lock() {
+            *s = None;
+        }
+        // The answer says little: many plugins return 0 for an editor they did open.
+        // Some Linux VST2 editors use both the host Display and the X11 window ID.
+        #[cfg(target_os = "linux")]
+        let display = {
+            let xlib = x11_dl::xlib::Xlib::open().map_err(|e| e.to_string())?;
+            let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
+            if display.is_null() {
+                return Err("Could not open the X11 display for the VST2 editor".into());
+            }
+            self.editor_display = Some((xlib, display));
+            display as isize
+        };
+        #[cfg(not(target_os = "linux"))]
+        let display = 0;
+        self.inst.dispatch(op::EDITOR_OPEN, 0, display, parent, 0.0);
+        self.editor = true;
+        let (w, h) = self.rect().unwrap_or((400, 300));
+        Ok(self.to_px(w, h))
+    }
+
+    /// The editor's size in pixels (when open): what it asked for last, else what it reports.
+    pub fn editor_size(&self) -> Option<(u32, u32)> {
+        if !self.editor {
+            return None;
+        }
+        let asked = self.inst.shared.size.lock().ok().and_then(|s| *s);
+        asked.or_else(|| self.rect()).map(|(w, h)| self.to_px(w, h))
+    }
+
+    pub fn close_editor(&mut self) {
+        if std::mem::take(&mut self.editor) {
+            self.inst.dispatch(op::EDITOR_CLOSE, 0, 0, std::ptr::null_mut(), 0.0);
+            #[cfg(target_os = "linux")]
+            if let Some((xlib, display)) = self.editor_display.take() {
+                unsafe { (xlib.XCloseDisplay)(display) };
+            }
+        }
+    }
+
+}
+
 /// A running VST 2 instance.
 pub struct Plugin {
     // The effect first: it is closed before the module goes.
-    inst: Instance,
+    inst: Arc<Instance>,
     desc: Descriptor,
     /// Channel counts the buffers are set up for.
     ins: usize,
@@ -411,11 +502,7 @@ pub struct Plugin {
     rate: u32,
     wanted_rate: AtomicU32,
     processing: bool,
-    editor: bool,
-    /// Device pixels per unit of the open editor's sizes: 1, except on macOS, where editors measure in points.
-    editor_scale: f32,
-    #[cfg(target_os = "linux")]
-    editor_display: Option<(x11_dl::xlib::Xlib, *mut x11_dl::xlib::Display)>,
+    editor_state: Arc<Mutex<EditorState>>,
     queue: Vec<Note>,
     /// Automation values (frame offset, parameter index, value) for the next process call.
     auto: Vec<(u32, u32, f32)>,
@@ -468,19 +555,22 @@ impl Plugin {
         if shell_id != 0 && inst.unique_id() != shell_id {
             return Err(format!("{}: its shell did not create it", desc.name));
         }
+        let inst = Arc::new(inst);
         let defaults = (0..inst.num_params()).map(|p| inst.get(p)).collect();
         let mut p = Plugin {
-            inst,
+            inst: inst.clone(),
             desc,
             ins: 0,
             outs: 0,
             rate: 0,
             wanted_rate: AtomicU32::new(0),
             processing: false,
-            editor: false,
-            editor_scale: 1.0,
-            #[cfg(target_os = "linux")]
-            editor_display: None,
+            editor_state: Arc::new(Mutex::new(EditorState {
+                inst, editor: false, editor_scale: 1.0,
+                #[cfg(target_os = "linux")]
+                editor_display: None,
+                _module: module.clone(),
+            })),
             queue: Vec::with_capacity(MAX_NOTES),
             auto: Vec::with_capacity(MAX_AUTO),
             mpe_channels:0,
@@ -590,7 +680,7 @@ impl Plugin {
         } else if wanted != 0 && wanted != self.rate {
             self.activate(wanted);
         }
-        if self.editor {
+        if os_host::Plugin::editor_open(self) {
             self.inst.dispatch(op::EDITOR_IDLE, 0, 0, std::ptr::null_mut(), 0.0);
         }
     }
@@ -813,82 +903,12 @@ impl Plugin {
         self.debug_level(rate, left, right);
     }
 
-    /// The editor's rectangle as the plugin reports it (width, height).
-    fn rect(&self) -> Option<(i32, i32)> {
-        let mut r: *mut Rect = std::ptr::null_mut();
-        self.inst.dispatch(op::EDITOR_GET_RECT, 0, 0, (&mut r as *mut *mut Rect).cast(), 0.0);
-        // SAFETY: a non-null answer points at the plugin's rectangle.
-        let r = unsafe { r.as_ref() }?;
-        let (w, h) = (i32::from(r.right) - i32::from(r.left), i32::from(r.bottom) - i32::from(r.top));
-        (w > 0 && h > 0).then_some((w, h))
-    }
-
-    /// An editor size as the plugin gives it (points on macOS) in pixels.
-    fn to_px(&self, w: i32, h: i32) -> (u32, u32) {
-        let px = |v: i32| (v.max(0) as f32 * self.editor_scale).round() as u32;
-        (px(w), px(h))
-    }
-
-    pub fn has_editor(&self) -> bool {
-        self.inst.flags() & flags::EDITOR != 0
-    }
-
-    /// Embeds the editor in `parent` (an HWND on Windows, an NSView on macOS, an X11 window id on Linux); returns its
-    /// size in pixels. `scale` is the parent's DPI factor: outside macOS it is offered to the plugin through the
-    /// content-scale extension many plugins take (vendor op-code `'PreS'` / `'AeCs'`), 1 included: plugins keep the
-    /// last scale they were told, and some guess one from the monitor when told none. On macOS editors measure in
-    /// points and follow their window's backing scale themselves, so their sizes are turned into pixels at `scale`.
+    pub fn has_editor(&self) -> bool { self.inst.flags() & flags::EDITOR != 0 }
     pub fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
-        if !self.has_editor() {
-            return Err(format!("{} has no editor", self.desc.name));
-        }
-        self.close_editor();
-        let mac = cfg!(target_os = "macos");
-        self.editor_scale = if mac && scale > 0.0 { scale } else { 1.0 };
-        if !mac && scale > 0.0 {
-            self.inst.dispatch(op::CUSTOM, abi::fourcc(*b"PreS"), abi::fourcc(*b"AeCs") as isize, std::ptr::null_mut(), scale);
-        }
-        if let Ok(mut s) = self.inst.shared.size.lock() {
-            *s = None;
-        }
-        // The answer says little: many plugins return 0 for an editor they did open.
-        // Some Linux VST2 editors use both the host Display and the X11 window ID.
-        #[cfg(target_os = "linux")]
-        let display = {
-            let xlib = x11_dl::xlib::Xlib::open().map_err(|e| e.to_string())?;
-            let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
-            if display.is_null() {
-                return Err("Could not open the X11 display for the VST2 editor".into());
-            }
-            self.editor_display = Some((xlib, display));
-            display as isize
-        };
-        #[cfg(not(target_os = "linux"))]
-        let display = 0;
-        self.inst.dispatch(op::EDITOR_OPEN, 0, display, parent, 0.0);
-        self.editor = true;
-        let (w, h) = self.rect().unwrap_or((400, 300));
-        Ok(self.to_px(w, h))
+        self.editor_state.lock().map_err(|_| "editor stopped")?.open_editor(parent, scale)
     }
-
-    /// The editor's size in pixels (when open): what it asked for last, else what it reports.
-    pub fn editor_size(&self) -> Option<(u32, u32)> {
-        if !self.editor {
-            return None;
-        }
-        let asked = self.inst.shared.size.lock().ok().and_then(|s| *s);
-        asked.or_else(|| self.rect()).map(|(w, h)| self.to_px(w, h))
-    }
-
-    pub fn close_editor(&mut self) {
-        if std::mem::take(&mut self.editor) {
-            self.inst.dispatch(op::EDITOR_CLOSE, 0, 0, std::ptr::null_mut(), 0.0);
-            #[cfg(target_os = "linux")]
-            if let Some((xlib, display)) = self.editor_display.take() {
-                unsafe { (xlib.XCloseDisplay)(display) };
-            }
-        }
-    }
+    pub fn editor_size(&self) -> Option<(u32, u32)> { self.editor_state.lock().ok()?.editor_size() }
+    pub fn close_editor(&mut self) { if let Ok(mut editor) = self.editor_state.lock() { editor.close_editor(); } }
 
     /// The instance's state ([`state`]): the plugin's chunk, or its parameter values (the program is not kept: FL
     /// Studio's layout for it is not known).
@@ -973,8 +993,19 @@ impl os_host::Plugin for Plugin {
         Plugin::has_editor(self)
     }
 
+    fn editor_job(&mut self, action: os_host::EditorAction) -> Option<os_host::EditorJob> {
+        if !self.has_editor() { return None; }
+        let editor = self.editor_state.clone();
+        Some(Box::new(move || {
+            let mut editor = editor.lock().map_err(|_| "editor stopped".to_string())?;
+            match action {
+                os_host::EditorAction::Open { parent, scale } => editor.open_editor(parent, scale),
+                os_host::EditorAction::Close => { editor.close_editor(); Ok((0, 0)) }
+            }
+        }))
+    }
     fn editor_open(&self) -> bool {
-        self.editor
+        self.editor_state.lock().is_ok_and(|editor| editor.editor)
     }
 
     fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
@@ -1079,6 +1110,7 @@ impl os_host::Plugin for Plugin {
 }
 
 impl os_engine::Instrument for Plugin {
+    fn parallel_processing(&self) -> bool { true }
     fn active(&self) -> bool {
         self.sounding
     }

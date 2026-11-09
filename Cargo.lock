@@ -2070,6 +2070,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemon-hall"
+version = "0.0.1"
+dependencies = [
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+]
+
+[[package]]
 name = "lemon-limiter"
 version = "0.0.1"
 dependencies = [
@@ -2137,6 +2146,7 @@ dependencies = [
 name = "lemon-small-fx"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "nih_plug",
  "os-engine",
  "os-hostlink",
@@ -2168,6 +2178,15 @@ dependencies = [
 
 [[package]]
 name = "lemon-stereo-shaper"
+version = "0.0.1"
+dependencies = [
+ "lemon-small-fx",
+ "nih_plug",
+ "os-plugkit",
+]
+
+[[package]]
+name = "lemon-tape"
 version = "0.0.1"
 dependencies = [
  "lemon-small-fx",
@@ -3010,6 +3029,7 @@ dependencies = [
  "lemon-chorus",
  "lemon-delay",
  "lemon-fast-distortion",
+ "lemon-hall",
  "lemon-limiter",
  "lemon-parametric-eq-2",
  "lemon-reverb",
@@ -3018,6 +3038,7 @@ dependencies = [
  "lemon-soft-clipper",
  "lemon-stereo-enhancer",
  "lemon-stereo-shaper",
+ "lemon-tape",
  "lemon-transient-processor",
  "lemon-wave",
  "libc",
@@ -4298,8 +4319,10 @@ name = "tesla"
 version = "0.0.1"
 dependencies = [
  "nih_plug",
+ "os-dsp",
  "os-engine",
  "os-hostlink",
+ "os-paths",
  "os-plugkit",
  "os-theme",
  "os-ui",

@@ -796,6 +796,36 @@ mod tests {
     /// slot hosting one is saved wrapped with its state, and the reopened project hosts the built-in copy again with
     /// that state (Tesla's is its sample: its parameters are only its transport).
     #[test]
+    fn linked_effects_hall_visibility_keeps_host_available(){
+        let mut a=App::new(None);a.plugins.effects=crate::plugins::builtin_effects();
+        let index=a.plugins.effect_index("Lemon Hall").expect("stock effect registered");
+        crate::settings_file::set_flag("visible_plugin-hall",true);a.state.plugdb.rebuild(&a.plugins);
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
+        crate::settings_file::set_flag("visible_plugin-hall",false);a.state.plugdb.rebuild(&a.plugins);
+        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
+        assert_eq!(a.plugins.effect_index("Lemon Hall"),Some(index));
+        a.plugins.create_effect(1,0,index,None).unwrap();
+        assert!(a.plugins.state(fx_key(1,0)).is_some());
+        crate::settings_file::set_flag("visible_plugin-hall",true);a.state.plugdb.rebuild(&a.plugins);
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
+    }
+
+    #[test]
+    fn linked_effects_tape_visibility_keeps_host_available(){
+        let mut a=App::new(None);a.plugins.effects=crate::plugins::builtin_effects();
+        let index=a.plugins.effect_index("Lemon Tape").expect("stock effect registered");
+        crate::settings_file::set_flag("visible_plugin-tape",true);a.state.plugdb.rebuild(&a.plugins);
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
+        crate::settings_file::set_flag("visible_plugin-tape",false);a.state.plugdb.rebuild(&a.plugins);
+        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
+        assert_eq!(a.plugins.effect_index("Lemon Tape"),Some(index));
+        a.plugins.create_effect(1,0,index,None).unwrap();
+        assert!(a.plugins.state(fx_key(1,0)).is_some());
+        crate::settings_file::set_flag("visible_plugin-tape",true);a.state.plugdb.rebuild(&a.plugins);
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
+    }
+
+    #[test]
     fn linked_effects_save_wrapped_and_reopen() {
         use crate::plugins::LINKED_EFFECTS;
         let path = std::env::temp_dir().join(format!("openstudio-linked-fx-{}.flp", std::process::id()));

@@ -492,3 +492,63 @@ fn mpe_member_channels_and_reset_are_preserved() {
     let messages=probe(|p|p.midi.clone());assert!(messages.contains(&(0,0xb1,74,110)));assert!(messages.contains(&(0,0xe2,0,96)));assert!(messages.contains(&(0,0xd1,80,0)));
     clear();p.reset();p.process(48000,&mut l,&mut r);let messages=probe(|p|p.midi.clone());for ch in [1,2]{assert!(messages.contains(&(0,0xb0|ch,120,0)));}
 }
+
+    /// Opt-in lifecycle test with independent synthetic processing; never uses an audio device.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens hidden editors for the installed effect named in the environment"]
+    fn installed_editor_jobs_keep_audio_processing() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[link(name = "ole32")]
+        unsafe extern "system" { fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32; }
+        unsafe { CoInitializeEx(std::ptr::null_mut(), 2); }
+        let path = std::env::var_os("OS_VST2_PLUGIN").expect("plugin path");
+        let name = std::env::var("OS_VST2_NAME").expect("plugin name");
+        let module = Module::load(Path::new(&path)).expect("load");
+        let desc = module.plugins().iter().find(|d| d.name == name && d.is_effect()).expect("effect");
+        let shared = module.clone().create(&desc.id).expect("create");
+        assert!(shared.lock().unwrap().activate(48000));
+        let stop = Arc::new(AtomicBool::new(false));
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let audio = shared.clone(); let done = stop.clone(); let count = blocks.clone();
+        let worker = std::thread::spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                if let Ok(mut p) = audio.try_lock() {
+                    let mut l = [0.01; 64]; let mut r = l;
+                    p.process_fx(48000, &mut l, &mut r);
+                    assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+                    count.fetch_add(1, Ordering::Release);
+                }
+                std::thread::sleep(std::time::Duration::from_micros(1333));
+            }
+        });
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn CreateWindowExW(ex: u32, class: *const u16, title: *const u16, style: u32, x: i32, y: i32, w: i32, h: i32, parent: *mut c_void, menu: *mut c_void, instance: *mut c_void, param: *const c_void) -> *mut c_void;
+            fn DestroyWindow(window: *mut c_void) -> i32;
+        }
+        let class: Vec<u16> = "STATIC".encode_utf16().chain(Some(0)).collect();
+        let hwnd = unsafe { CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0x80000000, 0, 0, 1200, 900, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) };
+        assert!(!hwnd.is_null());
+        let mut results = Vec::new();
+        for _ in 0..3 {
+            for action in [os_host::EditorAction::Open { parent: hwnd.cast(), scale: 1.25 }, os_host::EditorAction::Close] {
+                let job = shared.lock().unwrap().editor_job(action);
+                let Some(job) = job else {
+                    results.push((std::time::Duration::ZERO, 0, Err("No independent editor job (editor unavailable or plugin stopped)".to_string())));
+                    continue;
+                };
+                let before = blocks.load(Ordering::Acquire);
+                let started = std::time::Instant::now();
+                let result = job();
+                results.push((started.elapsed(), blocks.load(Ordering::Acquire) - before, result));
+            }
+        }
+        stop.store(true, Ordering::Release); worker.join().unwrap();
+        unsafe { DestroyWindow(hwnd); }
+        eprintln!("{name}: editor duration / concurrent 64-frame blocks / result: {results:?}");
+        assert!(results.iter().all(|(_, _, r)| r.is_ok()));
+        assert!(results.iter().filter(|(t,_,_)| t.as_millis() > 30).all(|(_,n,_)| *n > 0), "slow editor operations blocked audio");
+        assert!(blocks.load(Ordering::Acquire) > 0);
+        assert_eq!(shared.lock().unwrap().stopped(), None);
+    }

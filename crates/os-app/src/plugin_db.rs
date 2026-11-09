@@ -770,7 +770,7 @@ pub fn lists(available: &[Available], effects: &[Available], prefs: &Prefs, miss
 
 fn entries(list: &[Available], prefs: &Prefs, missing: &HashSet<String>) -> Vec<Entry> {
     let into = combined_into(list, prefs, missing);
-    let shown: Vec<usize> = (0..list.len()).filter(|&i| into[i].is_none()).filter(|&i| { let u = list[i].desc.uid(); !prefs.is_hidden(&u) && !missing.contains(&u) }).collect();
+    let shown: Vec<usize> = (0..list.len()).filter(|&i| into[i].is_none()).filter(|&i| { let u = list[i].desc.uid(); !prefs.is_hidden(&u) && !missing.contains(&u) && (list[i].desc.name!="Lemon Tape" || crate::workspace_visibility::shown("visible_plugin-tape")) && (list[i].desc.name!="Lemon Hall" || crate::workspace_visibility::shown("visible_plugin-hall")) }).collect();
     let mut v: Vec<Entry> = shown
         .iter()
         .map(|&i| {

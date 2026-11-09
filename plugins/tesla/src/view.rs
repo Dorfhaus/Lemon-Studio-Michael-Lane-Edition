@@ -186,6 +186,7 @@ pub enum Target {
     Amp(AmpCtl),
     /// The panel behind the Amp controls (eats clicks).
     AmpPanel,
+    Stretch(u8),
 }
 
 #[derive(Clone, Debug)]
@@ -217,7 +218,7 @@ pub const TOOLS: [ToolDef; 18] = [
     ToolDef { glyph: Glyph::Reverse, hint: "Reverse / swap channels", left: true, right: true },
     ToolDef { glyph: Glyph::Gate, hint: "Trim side noise / gate noise (later version)", left: false, right: false },
     ToolDef { glyph: Glyph::FadeOut, hint: "Fade out / declick out", left: true, right: true },
-    ToolDef { glyph: Glyph::Stretch, hint: "Time stretch / pitch shift... (later version)", left: false, right: false },
+    ToolDef { glyph: Glyph::Stretch, hint: "Time stretch / pitch shift...", left: true, right: true },
     ToolDef { glyph: Glyph::Blur, hint: "Blur... (later version)", left: false, right: false },
     ToolDef { glyph: Glyph::Clean, hint: "Clean up (denoise)... (later version)", left: false, right: false },
     ToolDef { glyph: Glyph::Slice, hint: "Auto-slicing (later version)", left: false, right: false },
@@ -271,6 +272,7 @@ pub struct ViewState {
     pub mouse: Option<(f32, f32)>,
     pub pressed: Option<Target>,
     pub amp: Option<AmpUi>,
+    pub stretch: Option<crate::stretch::Panel>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -444,6 +446,7 @@ pub fn paint(c: &mut Canvas, l: &Look, w: u32, h: u32) -> Vec<Hit> {
     if let Some(a) = &l.st.amp {
         amp_panel(&mut ui, a, &lay);
     }
+    if let Some(panel)=&l.st.stretch {stretch_panel(&mut ui,panel,&lay);}
     ui.hits
 }
 
@@ -543,6 +546,7 @@ fn toolbar(ui: &mut Ui, l: &Look, lay: &Layout) {
 
     // The tool grid.
     for (i, t) in TOOLS.iter().enumerate() {
+        if i==12 && !crate::stretch::visible(){continue;}
         let r = Rect::new((lay.grid_x + (i % 9) as f32 * 39.25).round(), 27.0 + (i / 9) as f32 * 31.0, 38.0, 30.0);
         let col = ui.button(r, Target::Tool(i), false, t.left || t.right);
         glyph(ui.c, t.glyph, Rect::new(r.cx() - 9.0, r.cy() - 9.0, 18.0, 18.0), col);
@@ -1181,6 +1185,7 @@ pub fn hint(t: &Target, l: &HintCtx) -> String {
         Target::Amp(AmpCtl::Accept) => "Accept".into(),
         Target::Amp(AmpCtl::Close) => "Close (cancel)".into(),
         Target::AmpPanel => String::new(),
+        Target::Stretch(_) => "Time stretch / pitch shift".into(),
     }
 }
 
@@ -1188,4 +1193,24 @@ pub fn hint(t: &Target, l: &HintCtx) -> String {
 pub struct HintCtx {
     pub when: u8,
     pub max: u8,
+}
+
+fn stretch_panel(ui:&mut Ui,a:&crate::stretch::Panel,lay:&Layout){
+    ui.c.fill_rect(Rect::new(0.,0.,lay.w,lay.h),plug::BG.with_alpha(180));
+    let p=Rect::new((lay.w-400.)/2.,(lay.h-226.)/2.,400.,226.);
+    ui.hit(p,Target::Stretch(255));lemon::plug_panel(ui.c,p);
+    ui.c.text(TITLE,p.x+16.,p.y+12.,brand::TEXT,"Time stretch / pitch shift");
+    ui.c.text(CAPTION,p.x+16.,p.y+38.,plug::DIM,"SIGNALSMITH • INDEPENDENT DURATION AND PITCH");
+    for (y,label,value,minus,edit,plus) in [(p.y+62.,"DURATION",format!("{:.1}%",a.percent),0,1,2),(p.y+106.,"PITCH",format!("{:+.2} semitones",a.semitones),3,4,5)]{
+        ui.c.text(CAPTION,p.x+16.,y+9.,plug::DIM,label);
+        for (x,w,id,text) in [(p.x+114.,30.,minus,"−"),(p.x+150.,174.,edit,value.as_str()),(p.x+330.,30.,plus,"+")]{
+            let r=Rect::new(x,y,w,30.);let col=ui.button(r,Target::Stretch(id),false,!a.busy);ui.c.text_center(LABEL,r,col,text);
+        }
+    }
+    ui.c.text_clip(CAPTION,p.x+16.,p.y+150.,p.w-32.,plug::DIM,&a.message);
+    for (x,w,id,label) in [(16.,72.,6,"Reset"),(196.,88.,7,if a.busy{"Processing…"}else{"Apply"}),(292.,92.,8,"Cancel")]{
+        let r=Rect::new(p.x+x,p.bottom()-42.,w,30.);
+        let col=ui.button(r,Target::Stretch(id),false,id==8||!a.busy);
+        if id==7&&!a.busy {ui.c.fill_rrect(r,4.,brand::MAIN);ui.c.text_center(LABEL,r,Color::rgb(0x000000),label);}else{ui.c.text_center(LABEL,r,col,label);}
+    }
 }

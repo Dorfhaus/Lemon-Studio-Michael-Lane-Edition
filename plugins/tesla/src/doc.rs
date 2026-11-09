@@ -141,6 +141,13 @@ impl Doc {
         Arc::make_mut(&mut self.sample)
     }
 
+    pub fn apply_stretch(&mut self, sample:Sample, selection:(usize,usize)) {
+        // Explicit rendering remains undoable even for samples beyond the ordinary tool threshold.
+        let old=self.view.undo_large;self.view.undo_large=true;
+        *self.edit("Time stretch / pitch shift")=sample;
+        self.view.undo_large=old;self.sel=Some(selection);self.cursor=selection.0;
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

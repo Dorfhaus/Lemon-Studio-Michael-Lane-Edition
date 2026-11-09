@@ -10,6 +10,7 @@
 // spec: plugins/tesla/README.md, plugins/tesla/roadmap.md, plugins/edison/, plugins/plugin-formats.md
 #![allow(semicolon_in_expressions_from_non_local_macros)]
 
+pub mod stretch;
 pub mod doc;
 pub mod editor;
 pub mod peaks;

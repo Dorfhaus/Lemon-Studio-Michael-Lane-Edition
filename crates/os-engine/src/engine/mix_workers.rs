@@ -63,7 +63,18 @@ impl Job {
         self.elapsed=start.elapsed();
     }
 }
-struct Work { job: Job, reply: mpsc::Sender<Job> }
+enum Work {
+    Mixer { job: Job, reply: mpsc::Sender<Job> },
+    Instrument { job: super::instrument_workers::Job, reply: mpsc::Sender<super::instrument_workers::Job> },
+}
+impl Work {
+    fn run(self) {
+        match self {
+            Self::Mixer { mut job, reply } => { job.run(); let _ = reply.send(job); }
+            Self::Instrument { mut job, reply } => { job.run(); let _ = reply.send(job); }
+        }
+    }
+}
 struct Pool { tx: mpsc::Sender<Work>, workers: usize }
 fn pool() -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
@@ -76,9 +87,8 @@ fn pool() -> &'static Pool {
             let rx=rx.clone();
             if std::thread::Builder::new().name(format!("Lemon mixer {}",i+1)).spawn(move || loop {
                 let work=rx.lock().unwrap_or_else(|e|e.into_inner()).recv();
-                let Ok(mut work)=work else { break };
-                work.job.run();
-                let _=work.reply.send(work.job);
+                let Ok(work)=work else { break };
+                work.run();
             }).is_ok() { workers+=1; }
         }
         Pool {tx,workers}
@@ -86,7 +96,11 @@ fn pool() -> &'static Pool {
 }
 pub(super) fn available() -> bool { pool().workers>=2 }
 pub(super) fn submit(job: Job, reply: mpsc::Sender<Job>) {
-    if let Err(e)=pool().tx.send(Work {job,reply}) {
-        let mut work=e.0; work.job.run(); let _=work.reply.send(work.job);
+    if let Err(e)=pool().tx.send(Work::Mixer {job,reply}) {
+        e.0.run();
     }
+}
+
+pub(super) fn submit_instrument(job: super::instrument_workers::Job, reply: mpsc::Sender<super::instrument_workers::Job>) {
+    if let Err(error) = pool().tx.send(Work::Instrument { job, reply }) { error.0.run(); }
 }

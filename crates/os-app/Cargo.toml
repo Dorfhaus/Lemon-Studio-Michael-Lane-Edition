@@ -16,6 +16,8 @@ master-assistant = []
 private-master-assistant = ["master-assistant"]
 
 [dependencies]
+lemon-hall = { path = "../../plugins/lemon-hall", features = ["linked"] }
+lemon-tape = { path = "../../plugins/lemon-tape", features = ["linked"] }
 libloading = "0.8"
 os-model.workspace = true
 os-dsp.workspace = true

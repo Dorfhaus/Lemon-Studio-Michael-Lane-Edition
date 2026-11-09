@@ -159,6 +159,7 @@ pub enum Cmd {
     Save(Depth),
     About,
     Properties,
+    Stretch,
     Format(Format),
     Channels(usize),
     Undo,
@@ -227,6 +228,8 @@ pub enum MenuReq {
 /// A name or value the user types.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Prompt {
+    StretchDuration,
+    StretchPitch,
     Marker,
     Region,
     Rename(u32),
@@ -368,6 +371,7 @@ pub struct Logic {
     spectrum: Vec<u32>,
     spectrum_key: Option<(u64, u64, u64, u64, usize, usize, u8, u8)>,
     loaded: u64,
+    stretch_job: Option<(std::sync::mpsc::Receiver<Result<Sample,String>>,Arc<Sample>,u64,(usize,usize))>,
 }
 
 impl Logic {
@@ -389,6 +393,7 @@ impl Logic {
             spectrum: Vec::new(),
             spectrum_key: None,
             loaded,
+            stretch_job: None,
         }
     }
 
@@ -558,6 +563,10 @@ impl Logic {
         self.view.mouse = Some((x, y));
         let Some(t) = self.at(x, y) else { return vec![] };
         self.view.pressed = Some(t);
+        if self.view.stretch.is_some() {
+            if let Target::Stretch(id)=t {if btn==Btn::Left{return self.stretch_click(id,x,y)}}
+            return vec![];
+        }
         if self.view.amp.is_some() && !matches!(t, Target::Amp(_) | Target::AmpPanel) {
             // The Amp panel is modal over the editor.
             return vec![Act::Repaint];
@@ -644,7 +653,7 @@ impl Logic {
                 self.drag = Some(Drag::Resize { x, y, w, h });
             }
             Target::Amp(c) => acts.extend(self.amp_down(c, y, dbl)),
-            Target::AmpPanel => {}
+            Target::AmpPanel | Target::Stretch(_) => {}
         }
         acts
     }
@@ -899,6 +908,7 @@ impl Logic {
             (8, true) => Cmd::Copy,
             (9, false) => Cmd::Tool(ToolCmd::Reverse),
             (9, true) => Cmd::Tool(ToolCmd::Swap),
+            (12, _) if crate::stretch::visible() => Cmd::Stretch,
             (11, false) => Cmd::Tool(ToolCmd::FadeOut),
             (11, true) => Cmd::Tool(ToolCmd::DeclickOut),
             (16, false) => Cmd::Save(Depth::Own),
@@ -1134,6 +1144,7 @@ impl Logic {
 
     /// A key press; empty when the editor doesn't use it (the host gets it).
     pub fn key(&mut self, k: Key, m: Mods) -> Vec<Act> {
+        if self.view.stretch.is_some(){if k==Key::Escape{self.view.stretch=None;}return vec![Act::Repaint];}
         if self.view.amp.is_some() {
             return match k {
                 Key::Escape => {
@@ -1329,6 +1340,7 @@ impl Logic {
                     m.add(item(l).shortcut(k).enabled(on), Cmd::Tool(c));
                 };
                 m.head("Amp", Cmd::None);
+                if crate::stretch::visible(){m.add(item("Time stretch / pitch shift...").enabled(has),Cmd::Stretch);}
                 t(&mut m, "Amp...", "Alt+A", ToolCmd::Amp, has);
                 t(&mut m, "Reverse polarity", "", ToolCmd::ReversePolarity, has);
                 t(&mut m, "Normalize", "Ctrl+N", ToolCmd::Normalize, has);
@@ -1433,6 +1445,10 @@ impl Logic {
         let w = self.layout().lane().w;
         let mut acts = vec![Act::Repaint];
         match cmd {
+            Cmd::Stretch => {
+                if self.stretch_job.is_none() && crate::stretch::visible() && self.doc(|d|d.frames()>0) && !self.shared.armed.load(Ordering::Acquire){self.view.stretch=Some(Default::default());}
+                else{self.hint="Load audio, stop recording and wait for pending processing.".into();}
+            }
             Cmd::None => {}
             Cmd::New => {
                 self.doc(|d| d.new_sample());
@@ -1589,7 +1605,9 @@ impl Logic {
     // ------------------------------------------------------------------------------------------- prompts and files
 
     pub fn prompt_text(&self, p: &Prompt) -> String {
+        if matches!(p,Prompt::StretchDuration|Prompt::StretchPitch){return self.view.stretch.as_ref().map(|s|if *p==Prompt::StretchDuration{s.percent}else{s.semitones}.to_string()).unwrap_or_default();}
         self.doc(|d| match p {
+            Prompt::StretchDuration|Prompt::StretchPitch=>String::new(),
             Prompt::Marker => format!("Marker {}", d.sample.cues.iter().filter(|c| !c.is_region()).count() + 1),
             Prompt::Region => format!("Region {}", d.sample.cues.iter().filter(|c| c.is_region()).count() + 1),
             Prompt::Rename(id) => d.sample.cues.iter().find(|c| c.id == *id).map_or(String::new(), |c| c.name.clone()),
@@ -1600,6 +1618,11 @@ impl Logic {
     pub fn typed(&mut self, p: &Prompt, text: &str) {
         let t = text.trim();
         match p {
+            Prompt::StretchDuration|Prompt::StretchPitch=>if let Some(a)=self.view.stretch.as_mut(){if !a.busy {
+                let value=t.replace(',',".").parse::<f64>().ok();
+                let range=if *p==Prompt::StretchDuration{25.0..=400.0}else{-24.0..=24.0};
+                if let Some(v)=value.filter(|v|v.is_finite()&&range.contains(v)){if *p==Prompt::StretchDuration{a.percent=v}else{a.semitones=v};a.message="Ready to apply. Original file stays unchanged.".into();}else{a.message="Duration: 25–400%. Pitch: -24 to +24 semitones.".into();}
+            }},
             Prompt::Marker => {
                 self.doc(|d| d.add_cue(t, false));
             }
@@ -1696,9 +1719,11 @@ impl Logic {
         let loaded = self.shared.loaded.load(Ordering::Acquire);
         if loaded != self.loaded {
             self.loaded = loaded;
+            self.stretch_job=None;
             self.view = ViewState::default();
             self.drag = None;
         }
+        self.poll_stretch();
         let playing = self.shared.playing.load(Ordering::Relaxed);
         if playing && self.drag.is_none() {
             let pos = self.shared.position();
@@ -2900,3 +2925,5 @@ mod tests {
         save(&mut l, "tesla_big_armed", 1.0);
     }
 }
+
+include!("stretch_editor.rs");

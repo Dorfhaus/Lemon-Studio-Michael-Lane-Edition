@@ -2989,6 +2989,13 @@ pub fn snap_menu(s: &State, x: f32, y: f32) -> Popup {
     Popup { x, y, items: snap_items(s), sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
+pub(crate) const CLIP_ROUTE_DRAG_VISIBILITY: &str = "visible_playlist-clip-route-drag";
+
+pub(crate) fn clip_route_row(s: &State, clip: usize) -> Option<usize> {
+    let ClipSource::Channel(channel) = clips(s).get(clip)?.source else { return None };
+    s.project.channels.iter().position(|c| c.index == channel)
+}
+
 pub fn clip_menu(s: &State, i: usize, x: f32, y: f32) -> Popup {
     use crate::menu_layout::Menu;
     let c = clips(s)[i];
@@ -3036,7 +3043,9 @@ pub(crate) fn clip_menu_items(
             PItem::new("Muted", Cmd::ClipMute(i)).mark(Mark::Check(muted)),
             PItem::new("Rename...", Cmd::ClipRename(i)),
             PItem::new("Make Unique", Cmd::ClipUnique(i)),
-            PItem::new("Send to mixer track...", Cmd::ClipRoute(i)),
+            PItem::new("Send to mixer track...", Cmd::ClipRoute(i)).key(
+                if crate::workspace_visibility::shown(CLIP_ROUTE_DRAG_VISIBILITY) { "Drag to Mixer" } else { "" }
+            ),
             PItem::sep(),
             PItem::new("Clip effects...", Cmd::ClipEffects(i)),
             quick_fit,
@@ -5149,9 +5158,9 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             return None;
         }
         Cmd::ClipRoute(i) => {
-            if let Some(c)=clips(&app.state).get(i) {if let ClipSource::Channel(ch)=c.source {
-                if let Some(row)=app.state.project.channels.iter().position(|c|c.index==ch){crate::route_picker::open(app,row);}
-            }}
+            if let Some(row) = clip_route_row(&app.state, i) {
+                crate::route_picker::open(app, row);
+            }
             return None;
         }
         Cmd::ClipUnique(_) => {if let Err(e)=crate::ara::store(app){return Some(e);}},

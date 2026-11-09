@@ -929,7 +929,7 @@ pub enum Drag {
     /// Resize the channel rack from its right / bottom edges.
     RackResize { edges: u8, m0: (f32, f32), s0: (f32, f32), joined: crate::win_clamp::Layout },
     /// Change a channel's mixer track (spec: ui/channel-rack.md §5).
-    RackMixer { ch: usize, m0: (f32,f32), started: bool },
+    ChannelRoute { row: usize, origin: (f32, f32), started: bool, popup_item: Option<usize> },
     RackSwing { x0: f32, value: f32 },
     Fader { track: u16, y0: f32, v0: f64, group: Vec<(u16,f64)> },
     /// A press on a track's equaliser graph `g`: band `band` follows the cursor.
@@ -4408,7 +4408,7 @@ impl App {
         let edge_due=self.edge_tick.elapsed()>=std::time::Duration::from_millis(30);
         if edge_due {
             self.edge_tick=std::time::Instant::now();
-            let pos=if matches!(self.drag,Some(Drag::RackMixer{started:true,..})){Some(self.mouse)}else{self.route_hover};
+            let pos=if matches!(self.drag,Some(Drag::ChannelRoute{started:true,..})){Some(self.mouse)}else{self.route_hover};
             if let Some((x,y))=pos{self.route_edge(x,y);}
         }
         if let (true,Some(Drag::Pl(d @ (crate::playlist::PlDrag::Marquee{..} | crate::playlist::PlDrag::HeaderRange{..}))), Some(grid)) = (edge_due,&self.drag,self.pl_grid) {
@@ -5645,9 +5645,11 @@ impl App {
             }
             SAct::Check(label) if crate::workspace_visibility::key(label).is_some() => {
                 crate::workspace_visibility::toggle(crate::workspace_visibility::key(label).unwrap());
+                if matches!(crate::workspace_visibility::key(label),Some("visible_plugin-tape" | "visible_plugin-hall")){self.state.plugdb.rebuild(&self.plugins);}
             }
             SAct::Button(crate::workspace_visibility::RESET) => {
                 crate::workspace_visibility::reset();
+                self.state.plugdb.rebuild(&self.plugins);
                 st.visibility_search.set("");
                 st.scroll = 0.0;
             }
@@ -6233,11 +6235,16 @@ impl App {
                     let new = views::rack::bounds(&self.state);
                     self.damage_rect(old.union(&new));
                 }
-                Drag::RackMixer { ch, m0, started } => {
-                    if started || (x-m0.0).hypot(y-m0.1)>4.0 {
-                        self.drag=Some(Drag::RackMixer{ch,m0,started:true});
-                        let label=self.state.project.channels.get(ch).and_then(|c|c.name.clone()).unwrap_or_else(||"Instrument".into());
-                        self.state.browser_drag=Some((format!("Route {label}"),x,y));
+                Drag::ChannelRoute { row, origin, started, popup_item } => {
+                    if started || (x - origin.0).hypot(y - origin.1) > 4.0 {
+                        if !started && popup_item.is_some() {
+                            self.state.playlist.popup = None;
+                            self.state.raise(Win::Mixer);
+                        }
+                        self.drag = Some(Drag::ChannelRoute { row, origin, started: true, popup_item });
+                        let fallback = if popup_item.is_some() { "Audio clip" } else { "Instrument" };
+                        let label = self.state.project.channels.get(row).and_then(|c| c.name.as_deref()).unwrap_or(fallback);
+                        self.state.browser_drag = Some((format!("Route {label}"), x, y));
                         self.invalidate();
                     }
                 }
@@ -6810,6 +6817,16 @@ impl App {
             if !(matches!(action, Some(Action::ToggleWin(_))) && self.overlays.iter().any(|r| r.contains(x, y))) {
                 return;
             }
+        }
+        if let Some(Action::PlPopup(index)) = action
+            && crate::workspace_visibility::shown(crate::playlist::CLIP_ROUTE_DRAG_VISIBILITY)
+            && let Some(item) = self.state.playlist.popup.as_ref().and_then(|p| p.items.get(index))
+            && item.enabled
+            && let crate::playlist::Cmd::ClipRoute(clip) = item.cmd
+            && let Some(row) = crate::playlist::clip_route_row(&self.state, clip)
+        {
+            self.drag = Some(Drag::ChannelRoute { row, origin: self.mouse, started: false, popup_item: Some(index) });
+            return;
         }
         self.raise_under_mouse();
         // FL's quick reset: Alt+left-click shares the middle-click/default menu path.
@@ -7455,6 +7472,7 @@ impl App {
         crate::input_bindings::cancel(self);
         crate::vocal::audition::stop(self);
         self.hold_key(None,false);
+        self.cancel_channel_route();
         if matches!(self.drag,Some(Drag::PianoKeys{..})){self.drag=None;}
         if matches!(self.drag, Some(Drag::ClipPicker { .. })) {
             self.drag = None;
@@ -7462,6 +7480,18 @@ impl App {
             self.state.playlist.picker_ui.destination = None;
             self.damage_win(Win::Playlist);
         }
+    }
+
+    fn cancel_channel_route(&mut self) -> bool {
+        let Some(Drag::ChannelRoute { popup_item, .. }) = self.drag else { return false };
+        self.drag = None;
+        self.pressed = None;
+        self.state.browser_drag = None;
+        if popup_item.is_some() {
+            self.state.playlist.popup = None;
+        }
+        self.invalidate();
+        true
     }
 
     pub fn mouse_up(&mut self) {
@@ -7561,10 +7591,22 @@ impl App {
             if started {crate::mixer::reorder_selected(&mut self.state,from,to);}else{crate::mixer::select(&mut self.state,from,false);}
             self.invalidate();return;
         }
-        if let Some(Drag::RackMixer{ch,started,m0})=self.drag.clone().filter(|d|matches!(d,Drag::RackMixer{..})) {
-            self.drag=None;self.state.browser_drag=None;
-            if started || (self.mouse.0-m0.0).hypot(self.mouse.1-m0.1)>4. {self.drop_sampler_track(ch,self.mouse.0,self.mouse.1);} else {crate::route_picker::open(self,ch);}
-            self.invalidate();return;
+        if let Some(Drag::ChannelRoute { row, origin, started, popup_item }) = self.drag {
+            self.drag = None;
+            self.state.browser_drag = None;
+            let (x, y) = self.mouse;
+            if started || (x - origin.0).hypot(y - origin.1) > 4.0 {
+                self.drop_sampler_track(row, x, y);
+            } else if let Some(index) = popup_item {
+                let action = Action::PlPopup(index);
+                if self.top_hit(x, y).is_some_and(|h| h.action == action) {
+                    self.act(action);
+                }
+            } else {
+                crate::route_picker::open(self, row);
+            }
+            self.invalidate();
+            return;
         }
         if let Some(Drag::Browser { item, started, .. }) = self.drag.clone() {
             self.drag = None;
@@ -8388,7 +8430,8 @@ impl App {
             return;
         }
 
-        if matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) && crate::input_bindings::cancel(self) { return; }
+        if matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))
+            && (self.cancel_channel_route() || crate::input_bindings::cancel(self)) { return; }
         if matches!(key,winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) && self.state.sample_drop.active(){
             self.state.sample_drop.clear();self.state.browser_drag=None;self.drag=None;return;
         }
@@ -10072,7 +10115,7 @@ impl App {
                         s.raise(Win::Mixer);
                     }
                 } else {
-                    self.drag = Some(Drag::RackMixer { ch:i,m0:mouse,started:false });
+                    self.drag = Some(Drag::ChannelRoute { row: i, origin: mouse, started: false, popup_item: None });
                 }
             }
             Action::RackOptions => {
@@ -24571,6 +24614,72 @@ LemonStudioStyle.button-radius=8
         assert_eq!(placement(&loaded),placement(&app.state.project));
         assert_eq!(loaded.arrangement().unwrap().tracks[0].comp,Some(1));
         assert_eq!(loaded.instrument_lanes,app.state.project.instrument_lanes);
+    }
+
+    #[test]
+    fn playlist_clip_route_menu_click_drag_and_cancel() {
+        use crate::{mixer::MHit, playlist as pl};
+        use os_model::{ChannelKind, Clip, ClipSource};
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.project.channels[0].kind = ChannelKind::AudioClip;
+        pl::arr_mut(&mut app.state).clips.push(Clip::new(0, 96, 3, ClipSource::Channel(0)));
+        app.state.show_browser = false;
+        let before = app.state.project.clone();
+        let mut canvas = Canvas::new(1280, 900, 1.).unwrap();
+        let press = |app: &mut App, canvas: &mut Canvas| {
+            let popup = pl::clip_menu(&app.state, 0, 100., 130.);
+            let item = popup.items.iter().position(|item| item.cmd == pl::Cmd::ClipRoute(0)).unwrap();
+            app.state.playlist.popup = Some(popup);
+            frame(app, canvas, None);
+            let r = hit_rect(app, &Action::PlPopup(item));
+            app.mouse_move(r.cx(), r.cy());
+            app.mouse_down();
+            assert!(!app.modal_open());
+            r
+        };
+
+        app.state.z = vec![Win::Playlist];
+        let item = press(&mut app, &mut canvas);
+        app.mouse_move(item.cx() + 1., item.cy());
+        app.mouse_up();
+        assert!(matches!(app.state.dialogs.last().map(|dialog| &dialog.body), Some(crate::dialog::Body::RoutePicker(_))));
+        app.key(&Key::Named(NamedKey::Escape), false, false);
+
+        let item = press(&mut app, &mut canvas);
+        app.mouse_move(item.cx(), item.cy() + 16.);
+        assert!(app.state.playlist.popup.is_none());
+        assert!(app.state.in_front(Win::Mixer));
+        assert!(app.state.browser_drag.is_some());
+        frame(&mut app, &mut canvas, None);
+        let strip = hit_rect(&app, &Action::Mix(MHit::Strip(2)));
+        let target = (strip.cx(), strip.y + 10.);
+        app.mouse_move(target.0, target.1);
+        assert_eq!(app.state.project, before);
+        app.mouse_up();
+        assert!(!app.modal_open());
+        assert!(app.state.browser_drag.is_none());
+        assert_eq!(app.state.project.channels[0].mixer_track, 2);
+        crate::history::undo(&mut app.state);
+        assert_eq!(app.state.project, before);
+
+        for escape in [false, true] {
+            let item = press(&mut app, &mut canvas);
+            app.mouse_move(item.cx(), item.cy() + 16.);
+            frame(&mut app, &mut canvas, None);
+            if escape {
+                app.mouse_move(target.0, target.1);
+                app.key(&Key::Named(NamedKey::Escape), false, false);
+            } else {
+                app.mouse_move(-20., -20.);
+            }
+            app.mouse_up();
+            assert_eq!(app.state.project, before);
+            assert!(!app.modal_open());
+            assert!(app.state.browser_drag.is_none());
+        }
     }
 
     #[test]

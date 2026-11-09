@@ -32,6 +32,14 @@ impl App {
 
     /// Browser actions; returns whether `a` was one.
     pub(crate) fn browser_act(&mut self, a: &Action) -> bool {
+        if self.state.browser_tab==crate::plugin_downloads::TAB {
+            if let Action::BrowserRow(i)=*a {
+                if let Some(row)=crate::plugin_downloads::rows(&self.state).get(i) {
+                    if crate::plugin_downloads::discovery_row(self,&row.key){return true;}
+                }
+            }
+        }
+
         if let Action::BrowserPreview(cmd)=*a {crate::browser_preview::act(self,cmd);return true;}
         if *a == Action::BrowserScroll {
             if let Some((_, thumb)) = view::scrollbar(&self.state) {
@@ -169,6 +177,7 @@ impl App {
 
     /// A browser options-menu command (spec §4); returns a message.
     pub(crate) fn browser_cmd(&mut self, c: BCmd) -> Option<String> {
+        if let BCmd::CatalogFilter(i)=c {crate::plugin_downloads::act(self,i,7);return None;}
         self.invalidate();
         let s = &mut self.state;
         match c {
@@ -196,6 +205,7 @@ impl App {
                 if [(view::OPT_PROJECT,1),(view::OPT_PLUGINS,2),(view::OPT_PRESETS,4),(view::OPT_PARAMETERS,view::PARAMETERS_TAB)].iter().any(|(key,id)|*key==k && *id==s.browser_tab && !view::opt(s,k)) {s.browser_tab=0;}
                 s.browser_scroll = s.browser_scroll.min(view::max_scroll(s));
             }
+            BCmd::CatalogFilter(_) => unreachable!(),
             BCmd::History(dir) => {
                 let pos = s.browser_hist_pos as isize + dir;
                 let Some(key) = usize::try_from(pos).ok().and_then(|p| s.browser_hist.get(p)).cloned() else {
@@ -960,6 +970,7 @@ impl Jump {
 /// Options-menu commands (spec §4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BCmd {
+    CatalogFilter(usize),
     /// Find previous (-1) / next (1).
     AddFolder,
     StarterPack,

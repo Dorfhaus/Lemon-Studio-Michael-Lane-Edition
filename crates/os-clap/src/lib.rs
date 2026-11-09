@@ -1850,6 +1850,7 @@ impl os_host::Plugin for Plugin {
 }
 
 impl os_engine::Instrument for Plugin {
+    fn parallel_processing(&self) -> bool { true }
     fn active(&self) -> bool {
         self.sounding
     }

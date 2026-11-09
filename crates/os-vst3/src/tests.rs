@@ -452,7 +452,7 @@ fn editor_creation_from_env_without_window() {
             let v = owned::<dyn IPlugView>(c.create_view(c"editor".as_ptr())).expect("create editor view");
             let mut r = ViewRect::default();
             eprintln!("view {i}: platform {}, size result {}, {}x{}", v.is_platform_type_supported(PLATFORM_TYPE.as_ptr()), v.get_size(&mut r), r.right-r.left, r.bottom-r.top);
-            eprintln!("set frame: {:?}", os_host::guard::catch(|| v.set_frame(p.frame.raw())));
+            eprintln!("set frame: {:?}", os_host::guard::catch(|| v.set_frame(p.editor_state.lock().unwrap().frame.raw())));
             if let Some(scale) = v.cast::<dyn IPlugViewContentScaleSupport>() {
                 let result = os_host::guard::catch(|| scale.set_scale_factor(1.25));
                 eprintln!("scale before attach: {result:?}");
@@ -1025,7 +1025,7 @@ mod separate {
         fn the_popup_point_is_in_editor_pixels() {
             let probe = Arc::new(Probe::default());
             let (_m, mut p) = instance(&probe);
-            p.editor_scale = 2.0;
+            p.editor_state.lock().unwrap().editor_scale = 2.0;
             let m = pop(&mut p, probe.controller().context_menu(Some(GAIN)), 10, 21);
             assert_eq!(m.at, (20, 42));
             p.close_editor();
@@ -1199,6 +1199,58 @@ mod window {
         assert_eq!(p.stopped(), None);
         p.close_editor();
         unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// Opt-in lifecycle test with independent synthetic processing; never uses an audio device.
+    #[test]
+    #[ignore = "opens hidden editors for the installed effect named in the environment"]
+    fn installed_editor_jobs_keep_audio_processing() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[link(name = "ole32")]
+        extern "system" { fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32; }
+        unsafe { CoInitializeEx(std::ptr::null_mut(), 2); }
+        let path = std::env::var_os("OS_VST3_PLUGIN").expect("plugin path");
+        let name = std::env::var("OS_VST3_NAME").expect("plugin name");
+        let module = Module::load(Path::new(&path)).expect("load");
+        let desc = module.plugins().iter().find(|d| d.name == name && d.is_effect()).expect("effect");
+        let shared = module.clone().create(&desc.id).expect("create");
+        assert!(shared.lock().unwrap().activate(48000));
+        let stop = Arc::new(AtomicBool::new(false));
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let audio = shared.clone(); let done = stop.clone(); let count = blocks.clone();
+        let worker = std::thread::spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                if let Ok(mut p) = audio.try_lock() {
+                    let mut l = [0.01; 64]; let mut r = l;
+                    p.process_fx(48000, &mut l, &mut r);
+                    assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+                    count.fetch_add(1, Ordering::Release);
+                }
+                std::thread::sleep(std::time::Duration::from_micros(1333));
+            }
+        });
+        let hwnd = host_window(false);
+        let mut results = Vec::new();
+        for _ in 0..3 {
+            for action in [os_host::EditorAction::Open { parent: hwnd.cast(), scale: 1.25 }, os_host::EditorAction::Close] {
+                let job = shared.lock().unwrap().editor_job(action);
+                let Some(job) = job else {
+                    results.push((std::time::Duration::ZERO, 0, Err("No independent editor job (editor unavailable or plugin stopped)".to_string())));
+                    continue;
+                };
+                let before = blocks.load(Ordering::Acquire);
+                let started = std::time::Instant::now();
+                let result = job();
+                results.push((started.elapsed(), blocks.load(Ordering::Acquire) - before, result));
+            }
+        }
+        stop.store(true, Ordering::Release); worker.join().unwrap();
+        unsafe { DestroyWindow(hwnd); }
+        eprintln!("{name}: editor duration / concurrent 64-frame blocks / result: {results:?}");
+        assert!(results.iter().all(|(_, _, r)| r.is_ok()));
+        assert!(results.iter().filter(|(t,_,_)| t.as_millis() > 30).all(|(_,n,_)| *n > 0), "slow editor operations blocked audio");
+        assert!(blocks.load(Ordering::Acquire) > 0);
+        assert_eq!(shared.lock().unwrap().stopped(), None);
     }
 
     /// The editor attaches to a host window (never shown), reports its size, and detaches.

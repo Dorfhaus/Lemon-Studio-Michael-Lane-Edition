@@ -69,6 +69,7 @@ impl<P: Plugin> Drop for Guarded<P> {
 }
 
 impl<P: Plugin> Instrument for Guarded<P> {
+    fn parallel_processing(&self) -> bool { self.look(false, |p| p.parallel_processing()) }
     fn note_on(&mut self, offset: u32, key: u8, velocity: f32) {
         self.run((), |p| p.note_on(offset, key, velocity))
     }
@@ -208,6 +209,19 @@ impl<P: Plugin> Plugin for Guarded<P> {
     }
     fn editor_open(&self) -> bool {
         self.look(false, |p| p.editor_open())
+    }
+    fn editor_job(&mut self, action: crate::EditorAction) -> Option<crate::EditorJob> {
+        let job = self.run(None, |p| p.editor_job(action))?;
+        let module = self.module.clone();
+        let attention = self.attention.clone();
+        Some(Box::new(move || {
+            let result = guard::call(&module, job).unwrap_or_else(|_| {
+                if let Some(attention) = attention { attention.raise(); }
+                Err("Plugin editor stopped".into())
+            });
+            guard::watch_windows(true);
+            result
+        }))
     }
     fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
         let stopped = Err(format!("{} has stopped", self.inner.desc().name));

@@ -482,10 +482,84 @@ const NOTE_OFF_EVENT: u16 = 1;
 const NOTE_EXPRESSION_VALUE_EVENT: u16 = 4;
 const TUNING_TYPE_ID: u32 = 2;
 
+// Editor lifecycle is UI-thread-only and owns no audio-processing buffers.
+struct EditorState {
+    view: Option<VstPtr<dyn IPlugView>>,
+    controller: Option<VstPtr<dyn IEditController>>,
+    frame: Com<Frame>,
+    shared: Arc<Shared>,
+    editor: bool,
+    /// Device pixels per editor unit (points on macOS, pixels elsewhere).
+    editor_scale: f32,
+    _module: Arc<Module>,
+}
+impl EditorState {
+    pub fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
+        self.close_editor();
+        self.editor_scale = if cfg!(target_os = "macos") && scale > 0.0 { scale } else { 1.0 };
+        let c = self.controller.as_ref().ok_or("no edit controller")?;
+        unsafe {
+            let view = owned::<dyn IPlugView>(c.create_view(c"editor".as_ptr())).ok_or("the plug-in could not create its editor")?;
+            if view.is_platform_type_supported(PLATFORM_TYPE.as_ptr()) != kResultTrue {
+                return Err("the editor cannot be shown in a window".into());
+            }
+            view.set_frame(self.frame.raw());
+            // Content scale before attaching, so the editor opens at its final size (optional interface).
+            if scale > 0.0 && !cfg!(target_os = "macos") {
+                if let Some(s) = view.cast::<dyn IPlugViewContentScaleSupport>() {
+                    s.set_scale_factor(scale);
+                }
+            }
+            if view.attached(parent, PLATFORM_TYPE.as_ptr()) != kResultOk {
+                view.set_frame(std::ptr::null_mut());
+                return Err("the plug-in refused the editor window".into());
+            }
+            let mut r = ViewRect::default();
+            view.get_size(&mut r);
+            self.view = Some(view);
+            self.editor = true;
+            if let Ok(mut s) = self.shared.size.lock() {
+                *s = None;
+            }
+            Ok(self.to_px(r.right - r.left, r.bottom - r.top))
+        }
+    }
+
+    /// The editor's size in pixels (when open): what it asked for last, else what it reports.
+    pub fn editor_size(&self) -> Option<(u32, u32)> {
+        let v = self.view.as_ref()?;
+        if let Some((w, h)) = self.shared.size.lock().ok().and_then(|s| *s) {
+            return Some(self.to_px(w, h));
+        }
+        let mut r = ViewRect::default();
+        (unsafe { v.get_size(&mut r) } == kResultOk).then(|| self.to_px(r.right - r.left, r.bottom - r.top))
+    }
+
+    /// An editor size as the plug-in gives it (points on macOS) in pixels.
+    fn to_px(&self, w: i32, h: i32) -> (u32, u32) {
+        let px = |v: i32| (v.max(0) as f32 * self.editor_scale).round() as u32;
+        (px(w), px(h))
+    }
+
+    pub fn close_editor(&mut self) {
+        // A menu the editor asked the host to pop up goes first: its targets are the editor's (spec §9).
+        context_menu::drop_popup(&self.shared);
+        if let Some(v) = self.view.take() {
+            unsafe {
+                v.removed();
+                v.set_frame(std::ptr::null_mut());
+            }
+        }
+        self.frame.get().clear_run_loop();
+        self.editor = false;
+    }
+
+}
+
 /// A running VST 3 instance.
 pub struct Plugin {
     // Interface pointers first: they are released (in this order) before the module.
-    view: Option<VstPtr<dyn IPlugView>>,
+    editor_state: Arc<std::sync::Mutex<EditorState>>,
     /// (component's, controller's) connection points of a separate controller, connected to each other.
     points: Option<(VstPtr<dyn IConnectionPoint>, VstPtr<dyn IConnectionPoint>)>,
     controller: Option<VstPtr<dyn IEditController>>,
@@ -497,16 +571,11 @@ pub struct Plugin {
     /// The controller is its own object (initialised and terminated by the host).
     separate: bool,
     handler: Com<Handler>,
-    frame: Com<Frame>,
     events: Com<EventList>,
     params_in: Com<ParamChanges>,
     params_out: Com<ParamChanges>,
     shared: Arc<Shared>,
     desc: Descriptor,
-    editor: bool,
-    /// Device pixels per unit of the open editor's sizes: 1, except on macOS, where editors measure in points
-    /// (`open_editor`).
-    editor_scale: f32,
     /// The plug-in can show an editor in a host window.
     can_edit: bool,
     /// Active at this rate (0 = inactive).
@@ -603,7 +672,10 @@ impl Plugin {
             };
             let shared = Arc::new(Shared::default());
             let mut p = Plugin {
-                view: None,
+                editor_state: Arc::new(std::sync::Mutex::new(EditorState {
+                    view: None, controller: controller.clone(), frame: Frame::create(shared.clone()),
+                    shared: shared.clone(), editor: false, editor_scale: 1.0, _module: module.clone(),
+                })),
                 points: None,
                 controller,
                 processor,
@@ -613,14 +685,11 @@ impl Plugin {
                 ara,
                 separate,
                 handler: Handler::create(shared.clone()),
-                frame: Frame::create(shared.clone()),
                 events: EventList::create(),
                 params_in: ParamChanges::create(),
                 params_out: ParamChanges::create(),
                 shared,
                 desc,
-                editor: false,
-                editor_scale: 1.0,
                 can_edit: false,
                 rate: 0,
                 wanted_rate: AtomicU32::new(0),
@@ -1052,66 +1121,14 @@ impl Plugin {
     /// ui/ui-scaling.md §3). On macOS editors measure in points and follow their window's backing scale themselves (no
     /// content scaling there), so their sizes are turned into pixels at `scale` here.
     pub fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
-        if !self.can_edit {
-            return Err(format!("{} has no editor", self.desc.name));
-        }
-        self.close_editor();
-        self.editor_scale = if cfg!(target_os = "macos") && scale > 0.0 { scale } else { 1.0 };
-        let c = self.controller.as_ref().ok_or("no edit controller")?;
-        unsafe {
-            let view = owned::<dyn IPlugView>(c.create_view(c"editor".as_ptr())).ok_or("the plug-in could not create its editor")?;
-            if view.is_platform_type_supported(PLATFORM_TYPE.as_ptr()) != kResultTrue {
-                return Err("the editor cannot be shown in a window".into());
-            }
-            view.set_frame(self.frame.raw());
-            // Content scale before attaching, so the editor opens at its final size (optional interface).
-            if scale > 0.0 && !cfg!(target_os = "macos") {
-                if let Some(s) = view.cast::<dyn IPlugViewContentScaleSupport>() {
-                    s.set_scale_factor(scale);
-                }
-            }
-            if view.attached(parent, PLATFORM_TYPE.as_ptr()) != kResultOk {
-                view.set_frame(std::ptr::null_mut());
-                return Err("the plug-in refused the editor window".into());
-            }
-            let mut r = ViewRect::default();
-            view.get_size(&mut r);
-            self.view = Some(view);
-            self.editor = true;
-            if let Ok(mut s) = self.shared.size.lock() {
-                *s = None;
-            }
-            Ok(self.to_px(r.right - r.left, r.bottom - r.top))
-        }
+        if !self.can_edit { return Err(format!("{} has no editor", self.desc.name)); }
+        self.editor_state.lock().map_err(|_| "editor stopped")?.open_editor(parent, scale)
     }
-
-    /// The editor's size in pixels (when open): what it asked for last, else what it reports.
     pub fn editor_size(&self) -> Option<(u32, u32)> {
-        let v = self.view.as_ref()?;
-        if let Some((w, h)) = self.shared.size.lock().ok().and_then(|s| *s) {
-            return Some(self.to_px(w, h));
-        }
-        let mut r = ViewRect::default();
-        (unsafe { v.get_size(&mut r) } == kResultOk).then(|| self.to_px(r.right - r.left, r.bottom - r.top))
+        self.editor_state.lock().ok()?.editor_size()
     }
-
-    /// An editor size as the plug-in gives it (points on macOS) in pixels.
-    fn to_px(&self, w: i32, h: i32) -> (u32, u32) {
-        let px = |v: i32| (v.max(0) as f32 * self.editor_scale).round() as u32;
-        (px(w), px(h))
-    }
-
     pub fn close_editor(&mut self) {
-        // A menu the editor asked the host to pop up goes first: its targets are the editor's (spec §9).
-        context_menu::drop_popup(&self.shared);
-        if let Some(v) = self.view.take() {
-            unsafe {
-                v.removed();
-                v.set_frame(std::ptr::null_mut());
-            }
-        }
-        self.frame.get().clear_run_loop();
-        self.editor = false;
+        if let Ok(mut editor) = self.editor_state.lock() { editor.close_editor(); }
     }
 
     /// The instance's state in the layout FL Studio's plugin wrapper keeps ([`fl_state`], spec §8).
@@ -1420,8 +1437,19 @@ impl os_host::Plugin for Plugin {
         self.can_edit
     }
 
+    fn editor_job(&mut self, action: os_host::EditorAction) -> Option<os_host::EditorJob> {
+        if self.ara.is_some() || !self.can_edit { return None; }
+        let editor = self.editor_state.clone();
+        Some(Box::new(move || {
+            let mut editor = editor.lock().map_err(|_| "editor stopped".to_string())?;
+            match action {
+                os_host::EditorAction::Open { parent, scale } => editor.open_editor(parent, scale),
+                os_host::EditorAction::Close => { editor.close_editor(); Ok((0, 0)) }
+            }
+        }))
+    }
     fn editor_open(&self) -> bool {
-        self.editor
+        self.editor_state.lock().is_ok_and(|editor| editor.editor)
     }
 
     fn open_editor(&mut self, parent: *mut c_void, scale: f32) -> Result<(u32, u32), String> {
@@ -1433,17 +1461,18 @@ impl os_host::Plugin for Plugin {
     }
 
     fn editor_resizable(&self) -> bool {
-        self.view.as_ref().is_some_and(|v| unsafe { v.can_resize() } == kResultTrue)
+        self.editor_state.lock().is_ok_and(|editor| editor.view.as_ref().is_some_and(|v| unsafe { v.can_resize() } == kResultTrue))
     }
 
     fn resize_editor(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
-        let view = self.view.as_ref()?;
-        let size = editor::resize(view, width, height, self.editor_scale)?;
+        let editor = self.editor_state.lock().ok()?;
+        let view = editor.view.as_ref()?;
+        let size = editor::resize(view, width, height, editor.editor_scale)?;
         if let Ok(mut pending) = self.shared.size.lock() {
             *pending = Some(size);
         }
         self.shared.attention.raise();
-        Some(self.to_px(size.0, size.1))
+        Some(editor.to_px(size.0, size.1))
     }
 
     fn close_editor(&mut self) {
@@ -1530,7 +1559,7 @@ impl os_host::Plugin for Plugin {
 
     /// The menu the plug-in asked the host to pop up (spec §9), at its view point in pixels.
     fn take_menu(&mut self) -> Option<os_host::Menu> {
-        context_menu::take(&self.shared, self.editor_scale)
+        context_menu::take(&self.shared, self.editor_state.lock().ok()?.editor_scale)
     }
 
     fn menu_done(&mut self, id: u64, pick: Option<usize>) {
@@ -1543,6 +1572,7 @@ impl os_host::Plugin for Plugin {
 }
 
 impl os_engine::Instrument for Plugin {
+    fn parallel_processing(&self) -> bool { true }
     fn active(&self) -> bool {
         if let Some(p)=&self.ara_playback{return p.count()>0;}
         self.sounding
@@ -1674,7 +1704,7 @@ impl os_engine::Instrument for Plugin {
             return;
         }
         if let Some(mut playback)=self.ara_playback.take() {
-            if playback.idle() && self.editor && self.song.is_none() {
+            if playback.idle() && os_host::Plugin::editor_open(self) && self.song.is_none() {
                 self.start_processing();
                 for (l,r) in left.chunks_mut(self.max_frames as usize).zip(right.chunks_mut(self.max_frames as usize)) {
                     self.set_context(None);self.process_chunk(l,r,None,None);

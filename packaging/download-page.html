@@ -27,6 +27,14 @@
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording" style="display:block;width:100%;margin:12px 0 20px;padding:12px;border:1px solid #66734c;border-radius:8px;background:#151914;color:#edf0e6;font:inherit">
 <p id="change-empty" hidden>No changes match your search.</p>
 <details class="change-entry" open style="border-top:1px solid #394133;padding:18px 0"><summary style="cursor:pointer;color:#e0edab;font-weight:650;line-height:1.6">2026-11-09</summary><ul style="padding-left:22px;color:#b9c1b5;line-height:1.7">
+<li style="margin:10px 0">Reduce playback interruptions when adjusting Mixer pan, faders, stereo separation, sends, EQ, channel-strip controls, effect wet/dry and bypass settings. Preserve running processors and automation during supported live edits.</li>
+<li style="margin:10px 0">Avoid playback rebuilds for duplicate control updates, and correct wet/dry knob targeting across all 64 effect slots.</li>
+<li style="margin:10px 0">Keep VST2 and standard VST3 editor opening and closing off the audio instance lock.</li>
+<li style="margin:10px 0">Process independent hosted instrument chains with persistent audio workers while retaining routing order and the existing sequential fallback.</li>
+<li style="margin:10px 0">Add Lemon Tape and Lemon Hall stock effects with presets and Workspace Visibility controls.</li>
+<li style="margin:10px 0">Add Tesla time stretch and pitch editing with background processing, cancellation and undo.</li>
+<li style="margin:10px 0">Add favorites, filters and sorting to plugin Downloads discovery, plus additional official plugin recommendations.</li>
+<li style="margin:10px 0">Drag the Playlist audio clip menu Send to mixer track entry directly onto a Mixer channel; a regular click still opens the destination picker.</li>
 <li style="margin:10px 0">Added per-device MIDI controller modes for basic Mackie Control (MCU) transport and mixer input, with presets for MCU-capable Komplete Kontrol, Arturia KeyLab and Behringer X-Touch models, plus Korg nanoKONTROL2 factory CC mappings. Hardware mode must match; HUI, NKS browsing, displays and motor-fader feedback are not included.</li>
 <li style="margin:10px 0">Ctrl/Cmd+Shift-drag selects clips and notes with a rectangle in the Playlist and Piano Roll. Drag from Playlist headers to select whole tracks&#x27; clips, or Piano Roll keys to select whole pitch rows across time.</li>
 <li style="margin:10px 0">Fixed Piano Roll key highlights remaining lit after note audition ends.</li>

@@ -15,6 +15,8 @@
 // lemon-transient-processor.md, lemon-chorus.md, lemon-stereo-shaper.md), plugins/plugin-formats.md
 #![allow(semicolon_in_expressions_from_non_local_macros)]
 
+pub mod tape;
+pub mod hall;
 pub mod balance;
 pub mod chorus;
 pub mod editor;
@@ -314,7 +316,7 @@ impl<K: Kind> Vst3Plugin for SmallFx<K> {
 mod tests {
     use super::*;
 
-    pub const SPECS: [&Spec; 7] = [
+    pub const SPECS: [&Spec; 9] = [
         soft_clipper::SPEC,
         fast_distortion::SPEC,
         balance::SPEC,
@@ -322,6 +324,8 @@ mod tests {
         transient_processor::SPEC,
         chorus::SPEC,
         stereo_shaper::SPEC,
+        tape::SPEC,
+        hall::SPEC,
     ];
 
     /// Every effect: ids unique, starts inside the ranges, a control per setting, the plugin ids distinct.
@@ -346,6 +350,8 @@ mod tests {
             assert!(s.name.starts_with("Lemon "));
         }
         let ids = [
+            <hall::LemonHall as ClapPlugin>::CLAP_ID,
+            <tape::LemonTape as ClapPlugin>::CLAP_ID,
             <soft_clipper::LemonSoftClipper as ClapPlugin>::CLAP_ID,
             <fast_distortion::LemonFastDistortion as ClapPlugin>::CLAP_ID,
             <balance::LemonBalance as ClapPlugin>::CLAP_ID,
@@ -355,6 +361,8 @@ mod tests {
             <stereo_shaper::LemonStereoShaper as ClapPlugin>::CLAP_ID,
         ];
         let classes = [
+            <hall::LemonHall as Vst3Plugin>::VST3_CLASS_ID,
+            <tape::LemonTape as Vst3Plugin>::VST3_CLASS_ID,
             <soft_clipper::LemonSoftClipper as Vst3Plugin>::VST3_CLASS_ID,
             <fast_distortion::LemonFastDistortion as Vst3Plugin>::VST3_CLASS_ID,
             <balance::LemonBalance as Vst3Plugin>::VST3_CLASS_ID,
@@ -430,7 +438,7 @@ mod tests {
             }
             v.into_iter().map(|x| x.expect("every parameter listed")).collect()
         };
-        for spec in [soft_clipper::SPEC, fast_distortion::SPEC, stereo_enhancer::SPEC, transient_processor::SPEC, chorus::SPEC, stereo_shaper::SPEC] {
+        for spec in [hall::SPEC, soft_clipper::SPEC, fast_distortion::SPEC, stereo_enhancer::SPEC, transient_processor::SPEC, chorus::SPEC, stereo_shaper::SPEC] {
             for name in all(spec) {
                 read(spec, &name);
             }

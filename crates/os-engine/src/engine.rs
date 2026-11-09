@@ -27,6 +27,7 @@ use crate::laws;
 use crate::sample::{Sample, SampleLibrary};
 
 mod mix_workers;
+mod instrument_workers;
 mod layers;
 mod marks;
 mod notes;
@@ -1011,6 +1012,7 @@ pub struct Engine {
     /// Mixer tracks in processing order: every track before the tracks it sends to.
     order: Vec<usize>,
     parallel: mix_workers::State,
+    instrument_workers: instrument_workers::State,
     mpe:Vec<(usize,crate::mpe::Playback)>,
     triggers: Vec<Trigger>,
     next_trigger: usize,
@@ -1620,6 +1622,7 @@ impl Engine {
             tracks,
             order,
             parallel: mix_workers::State::new(),
+            instrument_workers: instrument_workers::State::new(),
             mpe,
             triggers,
             next_trigger: 0,
@@ -3419,6 +3422,9 @@ impl Engine {
             self.scratch.1.resize(n, 0.0);
         }
         let mut active = false;
+        let parallel = self.parallel.enabled && self.instrument_workers.ready(&self.channels);
+        let mut pending = 0;
+        self.instrument_workers.outputs.clear();
         for (c, ch) in self.channels.iter().enumerate() {
             // A poisoned instance (it panicked while held) stays silent.
             let Some(inst) = ch.instrument.0.as_ref().filter(|i| !i.is_poisoned()) else { continue };
@@ -3530,65 +3536,76 @@ impl Engine {
                     }
                 }
             }
-            let (l, r) = (&mut self.scratch.0[..n], &mut self.scratch.1[..n]);
-            inst.process(self.rate, l, r);
-            // Its delay, read while it is held: a change works the pads out again with the next tick.
-            let delay = inst.reported_delay();
-            if let Some(d) = self.pdc.chan_delay.get_mut(c).filter(|d| **d != delay) {
-                *d = delay;
-                self.pdc.due = true;
-            }
-            // An instrument without voice gains: the clips' shapes on its whole output. A clip that has ended keeps the
-            // channel silent through its choke's tail only while no other clip of the channel plays; then the playing
-            // clips' gains alone count. Clips that overlap still share one gain, so a crossfade between them dips.
-            if !voiced && self.inst_shapes.iter().any(|s| s.channel == c) {
-                let shapes = &self.inst_shapes;
-                for f in 0..n {
-                    let ended = |s: &InstClip| s.shape.position(s.age + f as u64) >= s.shape.total;
-                    let playing = shapes.iter().any(|s| s.channel == c && !ended(s));
-                    let g: f32 = shapes.iter().filter(|s| s.channel == c && !(playing && ended(s))).map(|s| s.shape.at(s.age + f as u64)).product();
-                    l[f] *= g;
-                    r[f] *= g;
-                }
-            }
-            // A sample that is still playing must not be cut off by the idle tail.
-            active |= inst.active();
-            // An audio clip channel's voices are its playlist clips: their own level is on the channel's output, since
-            // a hosted sampler takes velocities only up to 128 (spec: audio/audio-clips.md "Level").
             let cl = ch.clip_level;
-            let (gl, gr) = if own_levels { (cl, cl) } else { ch.gain_via(f64::from(cl), 0.0, layer) };
-            self.channel_activity[c]=l.iter().zip(r.iter()).any(|(l,r)|(l*gl).abs().max((r*gr).abs())>0.00001);
-            let out = &mut self.bus[ch.insert];
-            match self.pdc.chan_pad.get_mut(c).filter(|p| p.len() > 0) {
-                // Delay compensation: the channel waits for the latest path into its track.
-                Some(pad) => {
-                    let padded = &mut self.pad_buf;
-                    padded.clear();
-                    padded.extend(l.iter().zip(r.iter()).flat_map(|(&a, &b)| [a * gl, b * gr]));
-                    pad.run(padded);
-                    for (o, s) in out.iter_mut().zip(padded.iter()) {
-                        *o += *s;
-                    }
-                }
-                None => {
-                    for f in 0..n {
-                        out[f * 2] += l[f] * gl;
-                        out[f * 2 + 1] += r[f] * gr;
-                    }
-                }
-            }
-            for port in 0..inst.extra_outputs().min(15) {
-                let target = ch.insert + port + 1;
-                if target >= self.bus.len() { break; }
-                l.fill(0.);r.fill(0.);
-                if !inst.extra_output(port,l,r) {continue;}
-                self.channel_activity[c]|=l.iter().zip(r.iter()).any(|(a,b)|(a*gl).abs().max((b*gr).abs())>0.00001);
-                let padded=&mut self.pad_buf;padded.clear();
-                padded.extend(l.iter().zip(r.iter()).flat_map(|(&a,&b)|[a*gl,b*gr]));
-                if let Some(p)=self.pdc.aux_pad.get_mut(c).and_then(|p|p.get_mut(port)) {p.run(padded);}
-                for (o,s) in self.bus[target].iter_mut().zip(padded.iter()) {*o+=*s;}
+            let gains = if own_levels { (cl, cl) } else { ch.gain_via(f64::from(cl), 0.0, layer) };
+            let mut job = self.instrument_workers.spare.pop().unwrap_or_default();
+            job.channel = c;
+            job.instrument = ch.instrument.0.clone();
+            job.frames = n;
+            job.rate = self.rate;
+            job.gains = gains;
+            job.voiced = voiced;
+            job.until = self.busy_until.or_else(|| Some(Instant::now() + self.busy_wait));
+            job.wait = self.busy_wait;
+            job.export = self.exporting;
+            if parallel {
+                drop(inst);
+                mix_workers::submit_instrument(job, self.instrument_workers.tx.clone());
+                pending += 1;
+            } else {
+                job.render(&mut *inst);
+                self.instrument_workers.outputs.push(job);
             }
         }
+        for _ in 0..pending {
+            let job = self.instrument_workers.rx.recv().expect("instrument worker must return its buffers");
+            self.instrument_workers.outputs.push(job);
+        }
+        self.instrument_workers.outputs.sort_by_key(|job| job.channel);
+        self.instrument_workers.cost = self.instrument_workers.outputs.iter().map(|j| j.elapsed).sum();
+        // Sum in channel order even when the workers finish in a different order.
+        let mut outputs = std::mem::take(&mut self.instrument_workers.outputs);
+        for mut job in outputs.drain(..) {
+            let c = job.channel;
+            if !job.rendered {
+                self.inst_owed.resize(self.channels.len(), 0);
+                self.inst_owed[c] += n;
+                self.missed += 1;
+            } else {
+                active |= job.active;
+                if let Some(d) = self.pdc.chan_delay.get_mut(c).filter(|d| **d != job.delay) {
+                    *d = job.delay;
+                    self.pdc.due = true;
+                }
+                let (gl, gr) = job.gains;
+                for (port, (left, right)) in job.audio.iter_mut().take(job.ports).enumerate() {
+                    if port > 0 && job.extra_active & (1 << port) == 0 { continue; }
+                    let target = self.channels[c].insert + port;
+                    if target >= self.bus.len() { break; }
+                    if port == 0 && !job.voiced && self.inst_shapes.iter().any(|s| s.channel == c) {
+                        for f in 0..n {
+                            let ended = |s: &InstClip| s.shape.position(s.age + f as u64) >= s.shape.total;
+                            let playing = self.inst_shapes.iter().any(|s| s.channel == c && !ended(s));
+                            let gain: f32 = self.inst_shapes.iter().filter(|s| s.channel == c && !(playing && ended(s)))
+                                .map(|s| s.shape.at(s.age + f as u64)).product();
+                            left[f] *= gain;
+                            right[f] *= gain;
+                        }
+                    }
+                    self.channel_activity[c] |= left.iter().zip(right.iter())
+                        .any(|(l,r)| (l*gl).abs().max((r*gr).abs()) > 0.00001);
+                    self.pad_buf.clear();
+                    self.pad_buf.extend(left.iter().zip(right.iter()).map(|(&l,&r)| [l*gl,r*gr]).flatten());
+                    let pad = if port == 0 { self.pdc.chan_pad.get_mut(c) }
+                        else { self.pdc.aux_pad.get_mut(c).and_then(|pads| pads.get_mut(port-1)) };
+                    if let Some(pad) = pad { pad.run(&mut self.pad_buf); }
+                    for (out, sample) in self.bus[target].iter_mut().zip(&self.pad_buf) { *out += *sample; }
+                }
+            }
+            job.instrument = None;
+            self.instrument_workers.spare.push(job);
+        }
+        self.instrument_workers.outputs = outputs;
         self.inst_events.clear();
         // A clip's shape is kept half a second past its end (the choke's own fade).
         let tail = u64::from(self.rate / 2);
@@ -3602,7 +3619,171 @@ impl Engine {
         }
     }
 
-    /// Enable independent mixer effect-chain workers. Routing and dependent tracks stay ordered.
+    /// Update console knob targets without replacing the playing mixer or resetting its filter history.
+    pub fn set_mixer_tone(&mut self, index: usize, settings: &os_model::MixerTrack) {
+        use os_model::target::{self, Target};
+        let Ok(id) = u16::try_from(index) else { return };
+        let owned = |control| {
+            self.auto_last.iter().any(|(target, _)| *target == control)
+                || (self.tick != 0 && self.init.iter().any(|(target, _)| *target == control))
+                || self.peak_links.iter().any(|(link, _)| target::decode(link.target) == control)
+        };
+        let Some(track) = self.tracks.get_mut(index) else { return };
+        for (control, &value) in settings.strip[..5].iter().enumerate() {
+            let value = f32::from(value) / 65535.0;
+            if track.stored.strip[control] != value {
+                track.stored.strip[control] = value;
+                if !owned(Target::MixerStrip(id, control as u8)) {
+                    track.strip.automate(control, value);
+                }
+            }
+        }
+        for (band, settings) in settings.eq.iter().enumerate() {
+            for (field, &value) in settings.iter().enumerate() {
+                if track.stored.eq[band][field] != value {
+                    track.stored.eq[band][field] = value;
+                    if !owned(Target::MixerEq(id, band as u8, field as u8)) {
+                        track.eq.set(band, field, value);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Change send targets without rebuilding the engine, plugin instances, or effect tails.
+    pub fn set_mixer_sends(&mut self, index: usize, settings: &os_model::MixerTrack) {
+        use os_model::target::{self, Target};
+        let count = self.tracks.len();
+        if index == 0 || index >= count { return; }
+        let owned = |control| {
+            self.auto_last.iter().any(|(target, _)| *target == control)
+                || (self.tick != 0 && self.init.iter().any(|(target, _)| *target == control))
+                || self.peak_links.iter().any(|(link, _)| target::decode(link.target) == control)
+        };
+        let track = &mut self.tracks[index];
+        let destinations: Vec<_> = settings.routes.iter().map(|&d| usize::from(d))
+            .filter(|&d| d < count && d != index).collect();
+        let topology = !track.routes.iter().map(|r| r.dest).eq(destinations.iter().copied());
+        if topology {
+            let mut old = std::mem::take(&mut track.routes);
+            track.routes = destinations.iter().map(|&dest| {
+                if let Some(at) = old.iter().position(|r| r.dest == dest) { old.remove(at) }
+                else {
+                    let target = Target::MixerSend(index as u16, dest as u16);
+                    let automated = self.auto_last.iter().find(|(t, _)| *t == target)
+                        .or_else(|| (self.tick != 0).then(|| self.init.iter().find(|(t, _)| *t == target)).flatten());
+                    let gain = automated.map_or(0.0, |(_, value)| os_dsp::mixer::send_gain_auto(*value as f64 / 1_073_741_824.0));
+                    Route { dest, gain, glide: Glide::new(0.0), pad: pdc::Pad::default() }
+                }
+            }).collect();
+            track.stored.sends = track.routes.iter().map(|r| r.gain).collect();
+        }
+        for (at, route) in track.routes.iter_mut().enumerate() {
+            let gain = settings.send_levels.iter().find(|(d, _)| usize::from(*d) == route.dest)
+                .map_or(1.0, |(_, level)| os_dsp::mixer::send_gain((level * 16000.0).round() as i32));
+            if topology || track.stored.sends[at] != gain {
+                track.stored.sends[at] = gain;
+                if !owned(Target::MixerSend(index as u16, route.dest as u16)) { route.gain = gain; }
+            }
+        }
+        if topology {
+            self.order = processing_order(&self.tracks);
+            self.pdc.due = true;
+        }
+    }
+
+    /// Apply ordinary mixer controls to the existing processors and their smoothed targets.
+    pub fn set_mixer_controls(&mut self, index: usize, settings: &os_model::MixerTrack) {
+        use os_model::target::{self, Target};
+        self.set_mixer_tone(index, settings);
+        self.set_mixer_sends(index, settings);
+        let id = index as u16;
+        let owned = |control| self.auto_last.iter().any(|(t, _)| *t == control)
+            || (self.tick != 0 && self.init.iter().any(|(t, _)| *t == control))
+            || self.peak_links.iter().any(|(link, _)| target::decode(link.target) == control);
+        let Some(m) = self.tracks.get_mut(index) else { return };
+        for (control, stored, live, value) in [
+            (Target::MixerVolume(id), &mut m.stored.vol, &mut m.vol, (settings.volume.unwrap_or(0.8)*16000.0).round() as i32),
+            (Target::MixerPan(id), &mut m.stored.pan, &mut m.pan, (settings.pan.unwrap_or(0.0)*6400.0).round() as i32),
+            (Target::MixerSeparation(id), &mut m.stored.sep, &mut m.sep, (settings.stereo_separation.unwrap_or(0.0)*64.0).round() as i32),
+        ] {
+            if *stored != value { *stored = value; if !owned(control) { *live = value; } }
+        }
+        if !settings.clip_fx { m.on = settings.enabled; }
+        m.polarity = settings.polarity;
+        m.swap = settings.swap;
+        m.matrix = m.compute_matrix();
+        if m.slots_enabled != settings.slots_enabled { m.slots_enabled = settings.slots_enabled; self.pdc.switched = true; }
+        if m.strip_bypassed != settings.strip_bypassed { m.strip_bypassed = settings.strip_bypassed; self.pdc.due = true; }
+        let latency = (settings.latency_out, settings.latency_in);
+        if m.latency != latency { m.latency = latency; self.pdc.due = true; }
+        for slot in 0..64 {
+            if m.stored.slot_on[slot] != settings.slot_on[slot] {
+                m.stored.slot_on[slot] = settings.slot_on[slot];
+                if !owned(Target::SlotOn(id, slot as u8)) { m.set_slot_on(slot, settings.slot_on[slot]); self.pdc.switched = true; }
+            }
+            let mix = mix_level(settings.slot_mix[slot]);
+            if m.stored.slot_mix[slot] != mix {
+                m.stored.slot_mix[slot] = mix;
+                if !owned(Target::SlotMix(id, slot as u8)) { m.set_slot_mix(slot, mix); }
+            }
+        }
+        if m.parametric_pre != settings.parametric_pre {
+            m.parametric_pre = settings.parametric_pre;
+            m.effects.sort_by_key(|e| if m.strip_slot == Some(e.slot) {0} else if e.slot == 10 {if m.parametric_pre {1}else{66}} else {e.slot+2});
+            self.pdc.due = true;
+        }
+        for control in 5..8 {
+            let value = f32::from(if control == 7 {settings.deess_amount()} else {settings.strip[control]}) / 65535.0;
+            if m.stored.strip[control] != value {
+                m.stored.strip[control] = value;
+                if !owned(Target::MixerStrip(id, control as u8)) { m.strip.automate(control, value); }
+            }
+        }
+        if let Some(tune) = &mut m.tune {
+            let amount = f32::from(settings.tune[0]) / 65535.0;
+            let live = if owned(Target::MixerStrip(id, 8)) {tune.amount} else {amount};
+            if (tune.amount > 0.0) != (live > 0.0) || tune.enabled != settings.tune_enabled { self.pdc.due = true; }
+            m.stored.tune_amount = amount;
+            tune.configure(live, settings.tune[1] as u8, settings.tune[2] as u8, settings.tune[3] as u8, settings.tune_learn, settings.tune_enabled);
+        }
+    }
+
+    /// Master and channel controls retain playing voices, smoothing and resampler history.
+    pub fn set_live_project_controls(&mut self, project: &Project) {
+        use os_model::target::{self, Target};
+        let owned = |control| self.auto_last.iter().any(|(t, _)| *t == control)
+            || (self.tick != 0 && self.init.iter().any(|(t, _)| *t == control))
+            || self.peak_links.iter().any(|(link, _)| target::decode(link.target) == control);
+        let volume = project.main_volume.unwrap_or(os_model::Project::MAIN_VOLUME_DEFAULT);
+        self.main_gain = os_dsp::level::curve(f32::from(volume) * os_dsp::level::R12800);
+        self.main_unity = volume == os_model::Project::MAIN_VOLUME_DEFAULT;
+        self.speed_ratio = 2f64.powf(project.varispeed_cents.clamp(-1200,1200) as f64 / 1200.0);
+        for settings in &project.channels {
+            let Some(ch) = self.channels.get_mut(usize::from(settings.index)) else {continue};
+            let id = settings.index;
+            let v = (ch.init_v != settings.volume && !owned(Target::ChannelVolume(id))).then_some(settings.volume);
+            let p = (ch.init.1 != settings.pan && !owned(Target::ChannelPan(id))).then_some(settings.pan);
+            ch.init_v = settings.volume;
+            ch.init.0 = ch.vol_gain(settings.volume);
+            ch.init.1 = settings.pan;
+            if v.is_some() || p.is_some() { ch.glide(v, p, (self.rate / 100).max(1)); }
+            let pitch = f64::from(settings.pitch_cents);
+            if ch.init_knob != pitch {
+                ch.init_knob = pitch;
+                if !owned(Target::ChannelPitch(id)) {ch.retune(pitch);}
+            }
+            if ch.main_follow {
+                let main = Some(i32::from(project.main_pitch.unwrap_or(0)) + ch.main_offset);
+                if ch.init_main != main {
+                    ch.init_main = main;
+                    if !owned(Target::MainPitch) { ch.main = main; ch.retune(ch.knob); }
+                }
+            }
+        }
+    }
+
+    /// Enable independent instrument and mixer effect-chain workers. Routing stays ordered.
     pub fn set_multicore(&mut self, enabled: bool) { self.parallel.enabled = enabled; }
 
     fn parallel_insert_effects(&mut self, song: &TransportInfo) -> bool {
@@ -7182,6 +7363,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn live_send_edits_preserve_effects_and_automation() {
+        let mut p = Project::default();
+        p.mixer = (0..5).map(os_model::MixerTrack::new).collect();
+        p.mixer[1].routes = vec![0, 2];
+        let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+        let resets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        e.set_effect(2, 0, Arc::new(Mutex::new(Emptied(resets.clone()))));
+        e.tick = 100;
+        let effect = match &e.tracks[2].effects[0].fx { Fx::Hosted(h) => h.clone(), _ => panic!() };
+        e.plan_delays();
+        let before = resets.load(std::sync::atomic::Ordering::Relaxed);
+        p.mixer[1].send_levels = vec![(2, 0.25)];
+        e.set_mixer_sends(1, &p.mixer[1]);
+        assert!(!e.pdc.due, "gain edits do not rebuild delay compensation");
+        assert_eq!(e.tracks[1].routes[1].gain, os_dsp::mixer::send_gain(4000));
+        e.auto_last.push((os_model::target::Target::MixerSend(1, 2), 858993459));
+        e.tracks[1].routes[1].gain = 0.7;
+        p.mixer[1].routes = vec![0, 2, 3, 4, 1, 99];
+        e.set_mixer_sends(1, &p.mixer[1]);
+        assert_eq!(e.tracks[1].routes.iter().map(|r|r.dest).collect::<Vec<_>>(), [0,2,3,4]);
+        assert_eq!(e.tracks[1].routes[1].gain, 0.7, "automation keeps existing send ownership");
+        assert!(e.pdc.due);
+        for dest in [0,2,3,4] {
+            assert!(e.order.iter().position(|&i|i==1) < e.order.iter().position(|&i|i==dest));
+        }
+        p.mixer[1].routes = vec![0];
+        e.set_mixer_sends(1, &p.mixer[1]);
+        p.mixer[1].routes.push(2);
+        e.set_mixer_sends(1, &p.mixer[1]);
+        assert!((e.tracks[1].routes[1].gain - os_dsp::mixer::send_gain_auto(0.8)).abs() < 1e-6,
+            "reconnecting an automated send restores its current target");
+        assert_eq!(e.tick, 100);
+        assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), before);
+        assert!(matches!(&e.tracks[2].effects[0].fx, Fx::Hosted(h) if Arc::ptr_eq(h,&effect)));
+    }
+
+    #[test]
+    fn live_mixer_and_channel_controls_keep_dsp_and_glides() {
+        let mut p = Project::default();
+        p.mixer = (0..4).map(os_model::MixerTrack::new).collect();
+        p.mixer[1].channel_layout = 2;
+        p.channels = vec![channel()];
+        let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+        let resets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        e.set_effect(1,0,Arc::new(Mutex::new(Emptied(resets.clone()))));
+        e.tick=100;
+        let before=e.tracks[1].gains;
+        let m=&mut p.mixer[1];
+        m.pan=Some(0.5);m.volume=Some(0.4);m.stereo_separation=Some(0.5);
+        m.strip[5]=3;m.strip[6]=2;m.deess=Some(12345);m.tune=[15000,2,1,1];
+        m.slot_mix[0]=0.3;m.latency_in=1.0;m.parametric_pre=true;
+        e.set_mixer_controls(1,m);
+        assert_eq!((e.tracks[1].vol,e.tracks[1].pan,e.tracks[1].sep),(6400,3200,32));
+        assert_eq!(e.tracks[1].gains,before,"pan/fader ramps start at their previous values");
+        assert_eq!(e.tracks[1].effects[0].mix,3840);
+        assert_eq!(e.tracks[1].strip.settings()[6],2.0/65535.0);
+        assert_eq!(e.tracks[1].tune.as_ref().unwrap().key,2);
+        e.auto_last.push((os_model::target::Target::MixerPan(1),0));
+        m.pan=Some(-0.5);e.set_mixer_controls(1,m);
+        assert_eq!(e.tracks[1].pan,3200);assert_eq!(e.tracks[1].stored.pan,-3200);
+        p.channels[0].volume=0.4;p.channels[0].pan=0.5;
+        p.main_volume=Some(9000);p.main_pitch=Some(100);p.varispeed_cents=120;
+        e.set_live_project_controls(&p);
+        assert!(e.channels[0].ramp.is_some());
+        assert_eq!((e.channels[0].init_v,e.channels[0].init.1),(0.4,0.5));
+        assert_eq!(e.tick,100);
+        assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed),0);
+        assert!(e.speed_ratio>1.0);
+    }
+
     // spec: audio/mixer.md "Changes while the song plays", "An effect slot", "Equaliser"; flp/events/automation.md "Targets"
     #[test]
     fn automation_drives_mixer_slots_equaliser_sends_and_separation() {
@@ -7910,6 +8162,66 @@ mod tests {
         parallel.tracks[2].routes.push(Route{dest:1,gain:0.0,glide:Glide::new(0.0),pad:Default::default()});
         let song=parallel.transport_at(0);parallel.parallel_insert_effects(&song);
         assert!(!parallel.parallel.done[1] && !parallel.parallel.done[2]);
+    }
+
+    #[test]
+    fn instrument_workers_preserve_audio_and_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Tone { value: f32, calls: usize, live: Arc<AtomicUsize>, peak: Arc<AtomicUsize> }
+        impl Instrument for Tone {
+            fn parallel_processing(&self) -> bool { true }
+            fn note_on(&mut self, _:u32, _:u8, velocity:f32) { self.value = velocity; }
+            fn note_off(&mut self, _:u32, _:u8) { self.value = 0.; }
+            fn process(&mut self, _:u32, l:&mut[f32], r:&mut[f32]) {
+                let active = self.live.fetch_add(1, Ordering::SeqCst)+1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+                let until = Instant::now()+Duration::from_micros(350);
+                while Instant::now() < until { std::hint::spin_loop(); }
+                self.calls += 1;
+                l.fill(self.value + self.calls as f32 * 0.001);
+                r.copy_from_slice(l);
+                self.live.fetch_sub(1, Ordering::SeqCst);
+            }
+            fn extra_outputs(&self) -> usize { 1 }
+            fn extra_output(&mut self, _:usize, l:&mut[f32], r:&mut[f32]) -> bool {
+                l.fill(self.value*0.25); r.copy_from_slice(l); true
+            }
+            fn active(&self) -> bool { true }
+            fn reported_delay(&self) -> u32 { 17 }
+        }
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut p = song(vec![], vec![]);
+        p.channels = (0..8).map(|i| { let mut ch=channel(); ch.index=i; ch.mixer_track=1; ch }).collect();
+        p.mixer = (0..4).map(os_model::MixerTrack::new).collect();
+        let make = |parallel| {
+            let mut e=Engine::new(&p,&mut SampleLibrary::default(),48000,PlayMode::Song);
+            e.set_multicore(parallel);
+            for c in 0..8 {
+                e.set_instrument(c,Arc::new(Mutex::new(Tone { value:c as f32*0.01,calls:0,live:live.clone(),peak:peak.clone() })));
+            }
+            e
+        };
+        let mut serial=make(false);
+        let mut parallel=make(true);
+        for frames in [64,128,256,31,512] {
+            for e in [&mut serial,&mut parallel] {
+                e.instrument_workers.cost=Duration::from_millis(5);
+                for c in 0..8 { e.inst_live.push((c,60,0.1+c as f32*0.02)); }
+                for b in &mut e.bus { b.resize(frames*2,0.); b.fill(0.); }
+                let song=e.transport_at(0);
+                e.render_instruments(frames,&song);
+            }
+            assert_eq!(serial.bus,parallel.bus);
+            assert_eq!(serial.channel_activity,parallel.channel_activity);
+            assert_eq!(serial.pdc.chan_delay,parallel.pdc.chan_delay);
+            assert_eq!(serial.inst_active,parallel.inst_active);
+        }
+        if mix_workers::available() { assert!(peak.load(Ordering::SeqCst)>1); }
+        let shared=parallel.channels[0].instrument.0.clone().unwrap();
+        parallel.set_instrument(1,shared);
+        parallel.instrument_workers.cost=Duration::from_millis(5);
+        assert!(!parallel.instrument_workers.ready(&parallel.channels));
     }
 
     #[test]

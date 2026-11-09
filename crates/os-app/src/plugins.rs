@@ -331,6 +331,8 @@ pub fn builtin_effects() -> Vec<Available> {
         &lemon_chorus::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void,
         &lemon_stereo_shaper::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void,
         &tesla::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void,
+        &lemon_tape::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void,
+        &lemon_hall::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void,
     ];
     let names = FILE_MAPPED.into_iter().chain(LINKED_EFFECTS);
     LIBS.iter().zip(entries).zip(names).flat_map(|((lib, entry), name)| linked(lib, entry, name)).collect()
@@ -1056,17 +1058,13 @@ impl Plugins {
         w.set_strip(row < FX_KEY && h.name == LEMON_SAMPLER);
         // The editor takes the frame's scale (on Linux the X server's, not the main window's).
         let k = w.scale();
-        // The instance is locked only while its editor opens: the audio thread skips an instance it cannot lock, so
-        // everything done under the lock is silence for that channel. Held through the frame's creation, layout,
-        // painting and raise as well, opening a plugin window made a playing song drop out on that channel.
-        let size = {
-            let mut p = h.plugin.lock().map_err(|_| "plugin busy")?;
-            let result = p.open_editor(w.area(), k);
-            if let Some(path) = os_paths::user_file("plugin-window-report.txt") {
-                let _ = std::fs::write(path, format!("plugin={}\nformat={:?}\nfile={}\nscale={k}\ndetached={}\neditor_result={result:?}\n", p.desc().name, p.desc().format, p.desc().path.display(), h.detached));
-            }
-            let size=result?;crate::rack_mixer::observe_editor(p.desc(),size,k);size
-        };
+        let result = editor_action(&h.plugin, os_host::EditorAction::Open { parent: w.area(), scale: k });
+        let descriptor = h.plugin.lock().map_err(|_| "plugin stopped")?.desc().clone();
+        if let Some(path) = os_paths::user_file("plugin-window-report.txt") {
+            let _ = std::fs::write(path, format!("plugin={}\nformat={:?}\nfile={}\nscale={k}\ndetached={}\neditor_result={result:?}\n", descriptor.name, descriptor.format, descriptor.path.display(), h.detached));
+        }
+        let size = result?;
+        crate::rack_mixer::observe_editor(&descriptor, size, k);
         h.link = fit_editor(&w, size, k);
         if h.name=="Lemon Wave" {w.enable_wave_zoom();}
         // On top: the app stacks it above its other windows (`State::raise`), and a new child window starts below
@@ -1120,11 +1118,13 @@ impl Plugins {
         if w.scale() == scale {
             return;
         }
-        let Ok(mut p) = plugin.try_lock() else { self.pending_scales.insert(row,requested_scale);return };
+        let Ok(p) = plugin.try_lock() else { self.pending_scales.insert(row,requested_scale);return };
+        let descriptor = p.desc().clone();
+        drop(p);
         let page = link.as_ref().map(|l| l.page_now());
-        p.close_editor();
+        let _ = editor_action(plugin, os_host::EditorAction::Close);
         w.set_scale(scale);
-        *link = match p.open_editor(w.area(), scale) {
+        *link = match editor_action(plugin, os_host::EditorAction::Open { parent: w.area(), scale }) {
             Ok(size) => fit_editor(w, size, scale),
             Err(e) => {
                 eprintln!("lemonstudio: plugin editor at the new scale: {e}");
@@ -1132,7 +1132,7 @@ impl Plugins {
             }
         };
         #[cfg(windows)]
-        if p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc()){w.move_into_workspace();}
+        if descriptor.name=="Lemon Chop" && crate::project_plugins::is_builtin(&descriptor){w.move_into_workspace();}
         if let (Some(l), Some(page)) = (link.as_mut(), page) {
             l.set_page(page);
             w.set_page(l.page_now());
@@ -1152,9 +1152,7 @@ impl Plugins {
                 #[cfg(windows)]
                 { h.placed = w.position().or(h.placed); }
             }
-            if let Ok(mut p) = h.plugin.lock() {
-                p.close_editor();
-            }
+            let _ = editor_action(&h.plugin, os_host::EditorAction::Close);
             h.window = None;
             h.link = None;
         }
@@ -1456,6 +1454,21 @@ fn fit_editor(w: &FrameWindow, (ew, eh): (u32, u32), scale: f32) -> Option<os_ho
     link
 }
 
+/// Execute editor-only work after releasing the instance's audio lock.
+fn editor_action(plugin: &SharedPlugin, action: os_host::EditorAction) -> Result<(u32, u32), String> {
+    let job = {
+        let mut instance = plugin.lock().map_err(|_| "plugin stopped")?;
+        match instance.editor_job(action) {
+            Some(job) => job,
+            None => return match action {
+                os_host::EditorAction::Open { parent, scale } => instance.open_editor(parent, scale),
+                os_host::EditorAction::Close => { instance.close_editor(); Ok((0, 0)) }
+            },
+        }
+    };
+    job()
+}
+
 impl Drop for Hosted {
     /// The editor closes before its frame window goes (a frame destroyed under an open editor took the editor's
     /// window with it, and the plugin's own close then crashed at exit). The instance itself is retired, not
@@ -1464,9 +1477,7 @@ impl Drop for Hosted {
         #[cfg(any(windows,target_os="macos"))] if self.rack_editor.is_some(){if let Ok(mut p)=self.plugin.lock(){p.close_editor();}self.rack_editor=None;}
         #[cfg(plugin_windows)]
         if self.window.is_some() {
-            if let Ok(mut p) = self.plugin.lock() {
-                p.close_editor();
-            }
+            let _ = editor_action(&self.plugin, os_host::EditorAction::Close);
         }
         let plugin = self.plugin.clone();
         let _ = RETIRED.try_with(|r| r.borrow_mut().push(plugin));
@@ -1508,7 +1519,7 @@ pub const LEMON_EQ: &str = "Lemon Parametric EQ";
 /// Lemon Studio's effects compiled in besides the EQ (`builtin_effects`, in this order). They have no file plugin of
 /// their own to be stored as, so a project stores them wrapped, as it stored their plugin files
 /// (`project_plugins::is_wrapped`).
-pub const LINKED_EFFECTS: [&str; 11] = [
+pub const LINKED_EFFECTS: [&str; 13] = [
     "Lemon Limiter",
     "Lemon Reverb",
     "Lemon Delay",
@@ -1520,6 +1531,8 @@ pub const LINKED_EFFECTS: [&str; 11] = [
     "Lemon Chorus",
     "Lemon Stereo Shaper",
     TESLA,
+    "Lemon Tape",
+    "Lemon Hall",
 ];
 /// Lemon Studio's effects compiled in that a project stores under the FL plugin they recreate, with that plugin's
 /// state (`new_slot`, `store_builtin_states`), so they are never saved wrapped.
@@ -3937,6 +3950,14 @@ mod tests {
         fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
     }
     impl os_host::Plugin for Tracked {
+        fn editor_job(&mut self, _: os_host::EditorAction) -> Option<os_host::EditorJob> {
+            let thread = std::thread::current().id();
+            Some(Box::new(move || {
+                assert_eq!(std::thread::current().id(), thread, "editor stays on UI thread");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok((320, 240))
+            }))
+        }
         fn desc(&self) -> &os_host::Descriptor {
             &self.0
         }
@@ -3963,6 +3984,42 @@ mod tests {
         fn load_state(&mut self, _: &[u8]) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn editor_lifecycle_keeps_processing_at_64_samples() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let plugin: SharedPlugin = Arc::new(Mutex::new(Tracked(
+            builtin_effects()[0].desc.clone(), Arc::new(Mutex::new(None)),
+        )));
+        let stop = Arc::new(AtomicBool::new(false));
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let audio = plugin.clone();
+        let done = stop.clone();
+        let count = blocks.clone();
+        let worker = std::thread::spawn(move || {
+            let mut left = [0.1; 64];
+            let mut right = [0.1; 64];
+            while !done.load(Ordering::Acquire) {
+                if let Ok(mut instance) = audio.try_lock() {
+                    instance.process_fx(48000, &mut left, &mut right);
+                    assert!(left.iter().chain(&right).all(|&v| v == 0.1));
+                    count.fetch_add(1, Ordering::Release);
+                }
+                std::thread::sleep(std::time::Duration::from_micros(1333));
+            }
+        });
+        let mut progress = Vec::new();
+        for _ in 0..10 {
+            for action in [os_host::EditorAction::Open { parent: std::ptr::null_mut(), scale: 1.0 }, os_host::EditorAction::Close] {
+                let before = blocks.load(Ordering::Acquire);
+                editor_action(&plugin, action).unwrap();
+                progress.push(blocks.load(Ordering::Acquire) - before);
+            }
+        }
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(progress.iter().all(|&blocks| blocks > 10), "audio progress during every editor operation: {progress:?}");
     }
 
     /// The UI locks an instance for its per-tick jobs only when it has work: its attention count moved, its editor is

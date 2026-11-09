@@ -17,6 +17,10 @@ pub const VOICE_GAIN_FRAMES: u32 = 32;
 
 /// A note-driven stereo generator.
 pub trait Instrument: Send {
+    /// Whether processing can move between persistent audio workers between blocks.
+    /// Native integrations and adapters opt in only when their threading contract permits it.
+    fn parallel_processing(&self) -> bool { false }
+
     /// Starts a note `offset` frames into the next `process` call. Velocity 0..=1 (FL velocity / 128).
     fn note_on(&mut self, offset: u32, key: u8, velocity: f32);
     /// Ends a note `offset` frames into the next `process` call.

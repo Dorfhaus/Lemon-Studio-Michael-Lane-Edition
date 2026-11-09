@@ -4,6 +4,20 @@
   "sections": [
     {
       "date": "2026-11-09",
+      "title": "Smoother live mixing, new effects and editing tools \u00b7 public build 2026110906",
+      "changes": [
+        "Reduce playback interruptions when adjusting Mixer pan, faders, stereo separation, sends, EQ, channel-strip controls, effect wet/dry and bypass settings. Preserve running processors and automation during supported live edits.",
+        "Avoid playback rebuilds for duplicate control updates, and correct wet/dry knob targeting across all 64 effect slots.",
+        "Keep VST2 and standard VST3 editor opening and closing off the audio instance lock.",
+        "Process independent hosted instrument chains with persistent audio workers while retaining routing order and the existing sequential fallback.",
+        "Add Lemon Tape and Lemon Hall stock effects with presets and Workspace Visibility controls.",
+        "Add Tesla time stretch and pitch editing with background processing, cancellation and undo.",
+        "Add favorites, filters and sorting to plugin Downloads discovery, plus additional official plugin recommendations.",
+        "Drag the Playlist audio clip menu Send to mixer track entry directly onto a Mixer channel; a regular click still opens the destination picker."
+      ]
+    },
+    {
+      "date": "2026-11-09",
       "title": "Controller setup, selection and mixer workflow improvements \u00b7 public build 2026110905",
       "changes": [
         "Added per-device MIDI controller modes for basic Mackie Control (MCU) transport and mixer input, with presets for MCU-capable Komplete Kontrol, Arturia KeyLab and Behringer X-Touch models, plus Korg nanoKONTROL2 factory CC mappings. Hardware mode must match; HUI, NKS browsing, displays and motor-fader feedback are not included.",

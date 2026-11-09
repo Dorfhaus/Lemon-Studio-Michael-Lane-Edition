@@ -145,7 +145,7 @@ fn set_value(s: &mut State, c: InitControl) -> bool {
         }),
         Target::SlotOn(t, k) => p.mixer.iter_mut().find(|m| m.index == t).is_some_and(|m| set(&mut m.slot_on[usize::from(k).min(9)], v != 0)),
         Target::SlotMix(t, k) => {
-            p.mixer.iter_mut().find(|m| m.index == t).is_some_and(|m| set(&mut m.slot_mix[usize::from(k).min(9)], (f / 12800.0).clamp(0.0, 1.0)))
+            p.mixer.iter_mut().find(|m| m.index == t).is_some_and(|m| set(&mut m.slot_mix[usize::from(k).min(63)], (f / 12800.0).clamp(0.0, 1.0)))
         }
         _ => false,
     }

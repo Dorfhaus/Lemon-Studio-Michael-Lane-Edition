@@ -195,10 +195,20 @@ pub enum PlaybackRequest {
     Cycle(Option<(f64, f64)>),
 }
 
+/// UI-thread editor lifecycle operation.
+#[derive(Clone, Copy)]
+pub enum EditorAction {
+    Open { parent: *mut c_void, scale: f32 },
+    Close,
+}
+/// Prepared under the instance lock, executed immediately on the UI thread after releasing it.
+/// Implementations must isolate editor state from audio processing and retain their interface lifetimes.
+pub type EditorJob = Box<dyn FnOnce() -> Result<(u32, u32), String>>;
+
 /// A plugin instance, whatever its format.
-///
 /// Main-thread calls (everything except the `Instrument` / `HostedEffect` methods) come from the UI thread only.
 pub trait Plugin: Instrument + HostedEffect + Send {
+    fn editor_job(&mut self, _action: EditorAction) -> Option<EditorJob> { None }
     /// MPE delivery path: 0 unavailable, 1 channel MIDI (instrument mode required),
     /// 2 native per-note expressions. This does not promise patch mappings.
     fn mpe_support(&self)->u8{0}
