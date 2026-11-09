@@ -80,16 +80,33 @@ def remote(args,log,sync=False):
             time.sleep(5*(attempt+1))
 
 
+sys.path.insert(0, str(r.ROOT / 'packaging'))
+from maintenance_release import is_maintenance_build
+
+
 def release_notes():
+    if is_maintenance_build(r.ROOT, r.version()):
+        return {'title': 'Maintenance hotfix', 'changes': ['Maintenance hotfix.']}
     history=json.loads((r.ROOT/'packaging/changelog.json').read_text(encoding='utf-8'))
     sections=[s for s in history['sections'] if str(r.version()) in s['title']]
     if not sections or not sections[0]['changes']:raise RuntimeError('Add accurate changelog notes for this build before publishing')
     return sections[0]
 
 
-def prepare(notes):
+def prepare(notes, no_changelog=False):
     live=live_versions();v=r.version()
-    if notes:
+    if no_changelog:
+        v=max(v,max(live.values())+1,int(datetime.date.today().strftime('%Y%m%d')+'01'))
+        version_path=r.ROOT/'crates/os-app/src/updates.rs'
+        version_path.write_text(re.sub(r'pub const VERSION: u64 = \d+;',f'pub const VERSION: u64 = {v};',version_path.read_text(encoding='utf-8')),encoding='utf-8')
+        label=f'{str(v)[:4]}.{str(v)[4:6]}.{str(v)[6:8]}.{int(str(v)[8:])}'
+        installer=r.ROOT/'packaging/windows/LemonStudio.nsi'
+        installer.write_text(re.sub(r'("DisplayVersion" ")[^"]+',lambda m:m[1]+label,installer.read_text(encoding='utf-8')),encoding='utf-8')
+        marker=r.ROOT/'packaging/maintenance-build.txt'
+        marker.write_text(f'{v}\n',encoding='utf-8')
+        r.run('git','add',version_path,installer,marker)
+        r.run('git','commit','-m',f'Prepare maintenance release {v}')
+    elif notes:
         n=json.loads(Path(notes).read_text(encoding='utf-8-sig'))
         if not isinstance(n.get('title'),str) or not n['title'].strip() or not n.get('changes') or not all(isinstance(x,str) and x.strip() for x in n['changes']):raise RuntimeError('Notes need a title and a list of accurate user-facing changes')
         v=max(v,max(live.values())+1,int(datetime.date.today().strftime('%Y%m%d')+'01'))
@@ -253,7 +270,7 @@ def github_verify(plan_path,out,commit=None):
     return release['html_url'],[dest]
 
 
-def coordinator(notes=None,check=False):
+def coordinator(notes=None,check=False,no_changelog=False):
     if platform.system()!='Windows':raise RuntimeError('Run the complete release from the Windows coordinator; this Mac provides native workers.')
     with exclusive(r.PRIVATE/'pipeline.lock'):
         if r.git('status','--porcelain'):raise RuntimeError('Commit intended source changes first; nothing was stashed or reset')
@@ -266,10 +283,14 @@ def coordinator(notes=None,check=False):
         out=output_root();state=out/'state.json'
         previous=json.loads(state.read_text()) if state.exists() else None
         if previous and previous['identity']['commit']==r.git('rev-parse','HEAD'):
-            if notes:raise RuntimeError('Resume this reserved run without --notes')
+            if notes or no_changelog:raise RuntimeError('Resume this reserved run with plain run')
         else:
             if previous and previous['steps'].get('Back up source',{}).get('status')!='complete':raise RuntimeError('An unfinished release belongs to another revision; resume that revision first')
-            prepare(notes);out=output_root();state=out/'state.json'
+            if no_changelog:
+                prepare(None, no_changelog=True)
+            else:
+                prepare(notes)
+            out=output_root();state=out/'state.json'
         release_notes();remote(['probe'],prelog,sync=True)
         out.mkdir(parents=True,exist_ok=True);j=Journal(state,identity())
         def win(attempt):
@@ -328,7 +349,8 @@ def coordinator(notes=None,check=False):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['run','check','status','probe','worker','publish-worker']);parser.add_argument('worker',nargs='?');parser.add_argument('--notes',type=Path);a=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['run','check','status','probe','worker','publish-worker']);parser.add_argument('worker',nargs='?');options=parser.add_mutually_exclusive_group();options.add_argument('--notes',type=Path);options.add_argument('--no-changelog',action='store_true');a=parser.parse_args()
+    if a.no_changelog and a.action!='run':parser.error('--no-changelog requires run')
     if a.action=='probe':print(json.dumps(probe(mac=platform.system()=='Darwin')))
     elif a.action=='worker':
         if a.worker not in ('arm64','x86_64'):parser.error('Choose arm64 or x86_64')
@@ -338,7 +360,7 @@ def main():
         publish_shared(a.worker)
     elif a.action=='status':
         p=output_root()/'Progress.txt';print(p.read_text(encoding='utf-8') if p.exists() else 'No pipeline run for the current source version.')
-    else:coordinator(a.notes,a.action=='check')
+    else:coordinator(a.notes,a.action=='check',a.no_changelog)
 
 if __name__=='__main__':
     try:main()

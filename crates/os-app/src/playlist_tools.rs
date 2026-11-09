@@ -127,6 +127,15 @@ pub fn phase(s: &State) -> u8 {
 }
 pub fn cursor(app: &App) -> Option<Cursor> {
     if app.modal_open() || app.state.settings.open || app.state.playlist.popup.is_some() || app.state.menu_open.is_some() { return None; }
+    if matches!(app.drag, Some(crate::app::Drag::WarpMarker { .. })) {
+        return Some(Cursor::Playlist(PlTool::Draw, GRABBING));
+    }
+    if app.drag.is_none()
+        && matches!(app.hover, Some(Action::Warp(crate::warp::Command::Marker(_))))
+        && app.state.playlist.warp.as_ref().is_some_and(|form| !form.select_mode && form.pending.is_none())
+    {
+        return Some(Cursor::Playlist(PlTool::Draw, GAIN));
+    }
     if matches!(app.drag,Some(crate::app::Drag::Vocal(_)|crate::app::Drag::VocalNav(_)))||matches!(app.hover,Some(Action::Vocal(crate::vocal::Command::Grid(_)|crate::vocal::Command::Note(..)|crate::vocal::Command::Surface|crate::vocal::Command::Boundary(..)))){
         use crate::vocal::Tool;let t=app.state.playlist.vocal.tool;
         if matches!(app.hover,Some(Action::Vocal(crate::vocal::Command::Boundary(..)))){return Some(Cursor::Playlist(PlTool::Slip,RESIZE));}

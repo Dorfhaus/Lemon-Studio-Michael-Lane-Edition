@@ -906,7 +906,8 @@ pub enum Drag {
     Vocal(crate::vocal::Gesture),
     VocalNav(crate::vocal::navigation::Navigation),
     PlRowResize{row:u16,y0:f32,h0:f32},
-    WarpMarker(usize),
+    WarpMarker { index: usize, grab_offset: f32 },
+    WarpSelection,
     /// Settings > MIDI: a handle of the mapping curve window (0 start, 1 middle, 2 end).
     MidiCurve(u8),
     /// Settings > MIDI: a Port or offset box, a step per 8 px up or down (`steps` taken so far).
@@ -6360,7 +6361,8 @@ impl App {
                 Drag::Vocal(_)=>crate::vocal::drag(self,x,y),
                 Drag::PlRowResize{row,y0,h0}=>{crate::playlist::resize_track(&mut self.state,row,h0+y-y0);self.invalidate();},
                 Drag::VocalNav(_)=>crate::vocal::navigation::drag(self,x,y),
-                Drag::WarpMarker(i)=>crate::warp::drag(self,i,x),
+                Drag::WarpMarker { index, grab_offset } => crate::warp::drag(self, index, x - grab_offset),
+                Drag::WarpSelection => crate::warp::drag_selection(self, x),
                 Drag::Tempo { y0, t0, step, moved } => {
                     self.drag = Some(Drag::Tempo { y0, t0, step, moved: moved || (y-y0).abs() >= 3.0 });
                     // Six logical pixels per digit step tame small hand movements.

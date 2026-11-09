@@ -366,7 +366,7 @@ pub fn command(app: &mut App, c: Command) {
             f.select_mode = !f.select_mode;
             f.selection.clear();
             f.selected = None;
-            f.message = if f.select_mode {"Drag across points to select; Shift-drag adds. Then Quantize."} else {"Click to add a marker; drag its handle. Ctrl+wheel zooms time; Alt+wheel enlarges waveform."}.into();
+            f.message = if f.select_mode {"Drag across points to select; Shift-drag adds. Then Quantize."} else {"Click to add a marker; drag its line. Ctrl+wheel zooms time; Alt+wheel enlarges waveform."}.into();
         }
         Command::Grid => f.grid = (f.grid + 1) % GRIDS.len(),
         Command::Strength => f.strength = (f.strength + 1) % 5,
@@ -460,7 +460,7 @@ pub fn command(app: &mut App, c: Command) {
                     vec![]
                 };
                 f.select_to(x);
-                app.drag = Some(crate::app::Drag::WarpMarker(usize::MAX));
+                app.drag = Some(crate::app::Drag::WarpSelection);
                 app.invalidate();
                 return;
             }
@@ -493,7 +493,7 @@ pub fn command(app: &mut App, c: Command) {
             let dst = l.1 + (src - l.0) / (r.0 - l.0) * (r.1 - l.1);
             f.edit.points.insert(i, (src, dst));
             f.selected = Some(i);
-            app.drag = Some(crate::app::Drag::WarpMarker(i));
+            app.drag = Some(crate::app::Drag::WarpMarker { index: i, grab_offset: 0. });
         }
         Command::Marker(i) => {
             if f.select_mode {
@@ -511,7 +511,12 @@ pub fn command(app: &mut App, c: Command) {
             }
             f.selected = Some(i);
             if i > 0 && i + 1 < f.edit.points.len() {
-                app.drag = Some(crate::app::Drag::WarpMarker(i));
+                let wave = f.wave.get();
+                let marker_x = wave.x + (f.edit.points[i].1 / f.end()) as f32 * wave.w;
+                app.drag = Some(crate::app::Drag::WarpMarker {
+                    index: i,
+                    grab_offset: x - marker_x,
+                });
             }
         }
         Command::Delete => {
@@ -584,11 +589,13 @@ pub fn command(app: &mut App, c: Command) {
 }
 pub fn drag(app: &mut App, i: usize, x: f32) {
     if let Some(f) = app.state.playlist.warp.as_mut() {
-        if i == usize::MAX {
-            f.select_to(x);
-        } else {
-            f.moved(i, x);
-        }
+        f.moved(i, x);
+        app.invalidate();
+    }
+}
+pub fn drag_selection(app: &mut App, x: f32) {
+    if let Some(f) = app.state.playlist.warp.as_mut() {
+        f.select_to(x);
         app.invalidate();
     }
 }
@@ -886,7 +893,8 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         } else {
             ui.c.fill_rrect(b, 3., face);
         }
-        ui.c.text_center(Font::new(11), b, ui.t.text, &label);
+        let ink = if cmd == Command::Apply { Color::rgb(0x000000) } else { ui.t.text };
+        ui.c.text_center(Font::new(11), b, ink, &label);
     }
     let wave = Rect::new(
         g.x_of(f.original.position as f32),
@@ -902,7 +910,7 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
     ui.hit(
         visible,
         Action::Warp(Command::Source),
-        if f.select_mode {"Drag to select points; Shift-drag adds. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"} else {"Click to add a marker; drag handle. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"},
+        if f.select_mode {"Drag to select points; Shift-drag adds. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"} else {"Click to add a marker; drag its line. Ctrl+wheel: time zoom; Alt+wheel: waveform zoom"},
     );
     ui.c.push_clip(visible);
     let rate = f.sample.rate as f64;
@@ -958,16 +966,27 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
             Color::rgb(0xdfac50)
         };
         ui.c.line(x, wave.y, x, wave.bottom(), 2., color);
-        let handle = Rect::new(x - 5., wave.y, 10., 15.);
         ui.c.fill_polygon(
             &[(x - 5., wave.y), (x + 5., wave.y), (x, wave.y + 10.)],
             color,
         );
-        ui.hit(
-            handle.intersect(&visible),
-            Action::Warp(Command::Marker(i)),
-            "Drag timing marker; Remove deletes the selected marker",
-        );
+        if f.pending.is_none() && i > 0 && i + 1 < f.edit.points.len() {
+            // Split close hit targets halfway between anchors, so the nearer line wins.
+            let previous_x = wave.x + (f.edit.points[i - 1].1 / f.end()) as f32 * wave.w;
+            let next_x = wave.x + (f.edit.points[i + 1].1 / f.end()) as f32 * wave.w;
+            let left = (x - 5.).max((previous_x + x) * 0.5);
+            let right = (x + 5.).min((x + next_x) * 0.5);
+            // Keep drag-to-select available in the waveform while the Select tool is active.
+            let height = if f.select_mode { 15. } else { wave.h };
+            let target = Rect::new(left, wave.y, right - left, height).intersect(&visible);
+            if !target.is_empty() {
+                ui.hit(
+                    target,
+                    Action::Warp(Command::Marker(i)),
+                    if f.select_mode { "Select timing marker" } else { "Drag timing marker" },
+                );
+            }
+        }
     }
     ui.c.pop_clip();
     ui.c.text_clip(
@@ -1118,6 +1137,25 @@ mod tests {
                 .hits
                 .iter()
                 .any(|h| h.action == Action::Warp(Command::Quantize)));
+            let f = app.state.playlist.warp.as_ref().unwrap();
+            let wave = f.wave.get();
+            let index = 3;
+            let marker_x = wave.x + (f.edit.points[index].1 / f.end()) as f32 * wave.w;
+            let press_x = marker_x + 2.;
+            let press_y = wave.cy();
+            let hand = crate::app::Cursor::Playlist(pl::PlTool::Draw, crate::playlist_tools::GAIN);
+            app.mouse_move(press_x, press_y);
+            assert_eq!(app.top_hit(press_x, press_y).map(|hit| &hit.action), Some(&Action::Warp(Command::Marker(index))), "vintage={vintage} wave={wave:?}");
+            assert_eq!(app.cursor(), hand, "vintage={vintage} hover={:?}", app.hover);
+            app.mouse_down();
+            app.mouse_up();
+            assert_eq!(app.state.playlist.warp.as_ref().unwrap().edit.points, points);
+            app.mouse_down();
+            app.mouse_move(press_x + 32., press_y);
+            app.mouse_up();
+            assert_ne!(app.state.playlist.warp.as_ref().unwrap().edit.points[index], points[index]);
+            command(&mut app, Command::Undo);
+            assert_eq!(app.state.playlist.warp.as_ref().unwrap().edit.points, points);
             let wave_hit = app
                 .hits
                 .iter()

@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key, E
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(root/"packaging"))
 from private_build import require_public_binary
+from maintenance_release import is_maintenance_build
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', type=Path)
 parser.add_argument('--output', required=True, type=Path)
@@ -20,6 +21,8 @@ out = args.output.resolve()
 if out == root or root in out.parents:
     raise SystemExit('Stage releases outside the source checkout.')
 version = int(re.search(r'pub const VERSION: u64 = (\d+);', (root/'crates/os-app/src/updates.rs').read_text()).group(1))
+if args.notes is None and is_maintenance_build(root, version):
+    args.notes = "Maintenance hotfix."
 if args.notes is None:
     history=json.loads((root/'packaging/changelog.json').read_text(encoding='utf-8'))
     section=next((s for s in history['sections'] if str(version) in s['title']),None)
