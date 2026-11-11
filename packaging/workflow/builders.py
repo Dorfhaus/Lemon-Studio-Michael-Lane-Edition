@@ -67,7 +67,7 @@ def linux_package(config,binary,win_plan,out,log):
     win_site=Path(win_plan).parent/'lemon-studio';source=site/'updates'/v/'Lemon Studio Source.zip';source.parent.mkdir(parents=True);shutil.copy2(win_site/'updates'/v/source.name,source)
     archive=site/'linux'/v/f'Lemon-Studio-Linux-x86_64-{v}.tar.gz';archive.parent.mkdir(parents=True)
     with tarfile.open(archive,'w:gz') as t:
-        for src,name,mode in [(Path(binary),'lemonstudio',0o755),(r.ROOT/'packaging/linux/README.txt','README.txt',0o644),(r.ROOT/'LICENSE','LICENSE',0o644),(r.ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644)]:
+        for src,name,mode in [(Path(binary),'lemonstudio',0o755),(r.ROOT/'packaging/linux/README.txt','README.txt',0o644),(r.ROOT/'LICENSE','LICENSE',0o644),(r.ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644), *r.LINUX_LAUNCHER_FILES]:
             info=t.gettarinfo(str(src),'Lemon Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
             with src.open('rb') as f:t.addfile(info,f)
     (site/'platforms').mkdir()

@@ -64,7 +64,7 @@ pub fn edit(app:&mut App,row:usize,child:usize,action:u8)->Option<String>{
         a.plugins.load_sample(child,"C:/added-edited.wav");let saved=a.plugins.state(child).unwrap();a.params_tick();
         history::undo(&mut a.state);a.plugin_tick();assert_eq!(a.state.project.channels.len(),child);assert!(a.state.project.channels[row].layer_children.is_empty());
         history::redo(&mut a.state);a.plugin_tick();assert_eq!(a.plugins.state(child).unwrap(),saved);assert_eq!(a.plugins.state(row).unwrap(),original);
-        crate::rack::solo(&mut a.state,row);assert!(a.state.project.channels[row].enabled&&a.state.project.channels[child].enabled);assert_eq!(a.state.rack.soloed,Some(row));crate::rack::solo(&mut a.state,row);assert!(a.state.rack.soloed.is_none());
+        crate::rack::solo(&mut a.state,row);assert!(a.state.project.channels[row].enabled&&a.state.project.channels[child].enabled);assert!(a.state.rack.soloed.contains(&row));crate::rack::solo(&mut a.state,row);assert!(a.state.rack.soloed.is_empty());
         let mut p=a.state.project.clone();crate::project_plugins::WRAP_BUILTINS.with(|w|w.set(true));crate::project_plugins::store_hosted(&mut p,&a.plugins).unwrap();crate::project_plugins::WRAP_BUILTINS.with(|w|w.set(false));
         let file=os_flp::project::create(&p).unwrap();let loaded=os_flp::project::load(&file).unwrap();assert_eq!(os_model::instrument_stack(&loaded,row),vec![row,child]);
         let mut b=App::new(None);b.plugins.available=crate::plugins::builtin();b.state.project=loaded;b.sync_wrapped();assert_eq!(b.plugins.sampler_path(row).as_deref(),Some("C:/original.wav"));assert_eq!(b.plugins.sampler_path(child).as_deref(),Some("C:/added-edited.wav"));

@@ -10,6 +10,8 @@ CONFIG = PRIVATE/'workflow.json'
 BASE = 'https://michaellanemusic.de/lemon-studio/'
 DOWNLOAD_PAGE = 'https://michaellanemusic.de/ml-studio/'
 SERVICE = 'Lemon Studio publishing'
+LINUX_LAUNCHER_FILES = [(ROOT/'crates/os-app/assets'/name, name, 0o644)
+                        for name in ('lemonstudio.desktop', 'lemonstudio.png')]
 
 def run(*args, cwd=ROOT, env=None):
     subprocess.run([str(x) for x in args], cwd=cwd, env=env, check=True)
@@ -323,7 +325,7 @@ def build_windows(out,cfg):
     finally:run('subst',drive,'/D')
     linux=site/'linux'/v/f'Lemon-Studio-Linux-x86_64-{v}.tar.gz';linux.parent.mkdir(parents=True)
     with tarfile.open(linux,'w:gz') as t:
-        for src,name,mode in [(ROOT/'target/x86_64-unknown-linux-gnu/release/lemonstudio','lemonstudio',0o755),(ROOT/'packaging/linux/README.txt','README.txt',0o644),(ROOT/'LICENSE','LICENSE',0o644),(ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644)]:
+        for src,name,mode in [(ROOT/'target/x86_64-unknown-linux-gnu/release/lemonstudio','lemonstudio',0o755),(ROOT/'packaging/linux/README.txt','README.txt',0o644),(ROOT/'LICENSE','LICENSE',0o644),(ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644), *LINUX_LAUNCHER_FILES]:
             info=t.gettarinfo(str(src),'Lemon Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
             with src.open('rb') as f:t.addfile(info,f)
     (site/'platforms').mkdir(exist_ok=True)

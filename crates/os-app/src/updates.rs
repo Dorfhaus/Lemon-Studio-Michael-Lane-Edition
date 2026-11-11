@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 #[path = "update_retention.rs"]
 mod retention;
 
-pub const VERSION: u64 = 2026111101;
+pub const VERSION: u64 = 2026111102;
 #[cfg(windows)]
 pub const FEED: &str = "https://michaellanemusic.de/lemon-studio/updates/stable.json";
 #[cfg(windows)]
@@ -164,7 +164,18 @@ pub fn report_result(message: &str) {
 }
 pub fn take_result() -> Option<String> {
     let file=cache().ok()?.join("last-update-result.txt");
-    let message=fs::read_to_string(&file).ok()?;let _=fs::remove_file(file);Some(message)
+    let message=fs::read_to_string(&file).ok()?;
+    let _=fs::remove_file(file);
+    #[cfg(windows)]
+    if message.starts_with("ML Studio updated to ") {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
+        if let Ok(exe) = std::env::current_exe() {
+            let path: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            unsafe { SHChangeNotify(SHCNE_UPDATEITEM as i32, SHCNF_PATHW, path.as_ptr().cast(), std::ptr::null()) };
+        }
+    }
+    Some(message)
 }
 
 /// Starts a separate copy of this trusted executable; it waits for our process to exit normally.

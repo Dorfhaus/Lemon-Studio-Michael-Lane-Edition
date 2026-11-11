@@ -63,6 +63,7 @@ pub struct FrameInfo {
     /// The song position slider's handle is being dragged (it shows the dragged position, not the playhead).
     pub song_pos_drag: bool,
     pub active_knob: Option<crate::knobs::KnobId>,
+    pub rack_drag: Option<crate::rack_drag::Overlay>,
     /// What the toolbar editor's drag carries (spec: ui/toolbar-menu.md §8).
     pub bar_drag: Option<crate::toolbar::BarDrag>,
 }

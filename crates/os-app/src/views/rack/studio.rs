@@ -38,8 +38,7 @@ impl Grid {
 pub(super) fn paint(ui: &mut Ui, s: &State, frame: &FrameInfo) {
     let window = rect(s);
     let columns = cols(s);
-    let panel = panel(s);
-    let rows = Rect::new(panel.x, panel.y, panel.w - STUDIO_SCROLL_GUTTER, panel.h);
+    let rows = row_view(s);
     let count = visible_steps(s);
     let grid = Grid {
         area: Rect::new(
@@ -86,6 +85,7 @@ pub(super) fn paint(ui: &mut Ui, s: &State, frame: &FrameInfo) {
             }
         }
     });
+    draw_row_drag(ui, rows, frame);
     ui.c.pop_clip();
 
     let height = content_h(s);
@@ -489,7 +489,7 @@ fn controls(
     let hot = ui.hit(
         name,
         Action::ChannelSelect(index),
-        "Click: plugin window, Shift+click: rename, right-click: channel menu",
+        "Click: plug-in window; drag: select channels; Ctrl+drag: move rows",
     );
     let base = ui.t.s(FACE);
     let base = channel
@@ -567,7 +567,7 @@ fn controls(
         ui,
         mute,
         Action::ChannelEnable(index),
-        "Mute channel (Shift: lock, Ctrl/Alt: solo)",
+        "Mute selected channels when this row is selected (Shift: lock, Ctrl/Alt: solo)",
         false,
     );
     if !channel.enabled {
@@ -589,8 +589,8 @@ fn controls(
         );
     }
     let solo = Rect::new(name.right() + 115.0, y, 29.0, name.h);
-    let active = s.rack.soloed == Some(index) && rk::solo_of(s, index);
-    let hot = face(ui, solo, Action::RackSolo(index), "Solo channel", active);
+    let active = rk::solo_active(s, index);
+    let hot = face(ui, solo, Action::RackSolo(index), "Solo selected channels when this row is selected", active);
     label(
         ui,
         solo,
@@ -725,7 +725,7 @@ fn sequence(
             "Piano roll preview - click to open the Piano roll",
         );
     } else {
-        ui.hit(row, Action::Swallow, "Step sequencer");
+        ui.hit(row, Action::RackStepGap, "Drag between steps to select channels");
         let length = rk::row_len(s, index);
         for step in grid.steps() {
             let cell = Rect::new(grid.x(step), y, STEP_W - 2.0, row.h);

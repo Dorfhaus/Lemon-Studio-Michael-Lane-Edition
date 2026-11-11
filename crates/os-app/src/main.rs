@@ -108,6 +108,7 @@ mod piano_split;
 mod piano_tools;
 mod rack;
 mod rack_controls;
+mod rack_drag;
 mod remote;
 mod peak_link;
 mod render;
@@ -213,6 +214,8 @@ mod waves;
 mod win_clamp;
 #[cfg(windows)]
 mod file_assoc;
+#[cfg(target_os = "linux")]
+mod linux_launcher;
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -1449,7 +1452,7 @@ const APP_ID: &str = "lemonstudio";
 /// desktop entry's).
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
-    let png = tiny_skia::Pixmap::decode_png(include_bytes!("../assets/lemonstudio.png")).ok()?;
+    let png = tiny_skia::Pixmap::decode_png(linux_launcher::ICON).ok()?;
     let rgba = png.pixels().iter().flat_map(|p| {
         let c = p.demultiply();
         [c.red(), c.green(), c.blue(), c.alpha()]
@@ -2063,6 +2066,8 @@ fn main() {
     // crashed, or ended with a plugin) are given back (`device::heal_sound_server`).
     #[cfg(target_os = "linux")]
     std::thread::spawn(device::heal_sound_server);
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(linux_launcher::refresh);
     let start = path.is_none();
     splash::step(&splash, splash::SETTINGS, if start { "Reading settings" } else { "Opening project" });
     let mut app = App::new(path);

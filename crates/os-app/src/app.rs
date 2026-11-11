@@ -281,6 +281,7 @@ pub enum Action {
     PlaylistArea,
     MixerArea,
     RackArea,
+    RackStepGap,
     Swallow,
     /// The value box of "Type in value..." (spec: ui/type-in-value.md).
     TypeIn(crate::typein::TiAct),
@@ -627,6 +628,7 @@ fn hover_is_visible(a: &Action) -> bool {
             | Action::MixerArea
             | Action::Mix(crate::mixer::MHit::Strip(_) | crate::mixer::MHit::Scale)
             | Action::RackArea
+            | Action::RackStepGap
             | Action::Swallow
             | Action::PianoGrid
             | Action::PianoNote(_)
@@ -997,7 +999,7 @@ pub enum Drag {
     Knob { id: crate::knobs::KnobId, y0: f32, v0: f32, group:Vec<(crate::knobs::KnobId,f32)> },
     /// Left button held on the piano keyboard: each key entered is auditioned (§8).
     PianoKeys { key: i32 },
-    RackPreset { row:usize,m0:(f32,f32),started:bool },
+    RackRows(crate::rack_drag::RowDrag),
     /// Scroll axes from a start mouse position: value = start + (mouse - m0) × ratio per axis
     /// (ratio < 0 grabs the content, as with the middle button).
     Scroll { m0: (f32, f32), axes: Vec<(Scroll, bool, f32, f32)> },
@@ -1020,10 +1022,9 @@ pub enum Drag {
     Pl(crate::playlist::PlDrag),
     /// A browser item pressed (`started` once it moved far enough), spec: ui/browser.md §3.
     Browser { item: views::browser::Item, label: String, m0: (f32, f32), started: bool },
-    /// Channel rack (spec: ui/channel-rack.md): step painting along the start row (§9), slot range select (§8),
+    /// Channel rack (spec: ui/channel-rack.md): step painting along the start row (§9),
     /// name width (§7), pattern length (§7), a row's loop length (§15), graph editor values (§14).
     RackPaint { row: usize, on: bool, last: u32 },
-    RackSel { from: usize },
     RackDots { x0: f32, p0: u32 },
     RackLen { y0: f32, v0: u32 },
     RackLoopLen { row: usize, y0: f32, v0: u32 },
@@ -3511,8 +3512,10 @@ impl App {
         }
         let k = f64::from(self.px_scale);
         let exact = |v: f64| (v * 256.0).fract() == 0.0 && (v * k).fract() == 0.0;
-        // Vocal tools are anchored to the viewport; moving clip pixels would also move them.
-        let can = (d.0 == 0.0 || self.state.playlist.vocal.row.is_none())
+        // Inline editor controls are anchored to the viewport; horizontal pixel shifts would move them.
+        let playlist = &self.state.playlist;
+        let inline_editor = playlist.vocal.row.is_some() || playlist.warp.is_some() || playlist.warp_loading.is_some();
+        let can = (d.0 == 0.0 || !inline_editor)
             && exact(d.0)
             && exact(d.1)
             && self.pl_grid.is_some()
@@ -4738,6 +4741,10 @@ impl App {
             sounding: self.shown.sounding.clone(),
             song_pos_drag: matches!(self.drag, Some(Drag::SongPos { .. })),
             active_knob: match self.drag {Some(Drag::Knob{id,..})=>Some(id),_=>None},
+            rack_drag: match &self.drag {
+                Some(Drag::RackRows(drag)) => drag.overlay(&self.state, self.mouse),
+                _ => None,
+            },
             bar_drag: match self.drag {
                 Some(Drag::Bar(d)) => Some(d),
                 _ => None,
@@ -6002,11 +6009,13 @@ impl App {
                         self.damage_win(Win::Playlist);
                     }
                 }
-                Drag::RackPreset{row,m0,started}=>{
-                    if started || (x-m0.0).abs()+(y-m0.1).abs()>6. {
-                        self.armed=None;self.drag=Some(Drag::RackPreset{row,m0,started:true});
-                        self.hint=Cow::Borrowed("Drop in the browser to save a plugin preset");self.invalidate();
+                Drag::RackRows(mut drag) => {
+                    drag.motion(&mut self.state, (x, y));
+                    if drag.started {
+                        self.armed = None;
+                        self.damage_win(Win::ChannelRack);
                     }
+                    self.drag = Some(Drag::RackRows(drag));
                 }
                 Drag::Browser { item, label, m0, started } => self.browser_drag_move(label, m0, started, item),
                 Drag::Pl(d) => {
@@ -6302,15 +6311,6 @@ impl App {
                             self.invalidate();
                         }
                     }
-                }
-                Drag::RackSel { from } => {
-                    if let Some(r) = views::rack::row_at(&self.state, y) {
-                        let shown = crate::rack::shown(&self.state);
-                        if let (Some(a), Some(b)) = (shown.iter().position(|&x| x == from), shown.iter().position(|&x| x == r)) {
-                            self.state.rack.sel = shown[a.min(b)..=a.max(b)].iter().copied().collect();
-                        }
-                    }
-                    self.invalidate();
                 }
                 Drag::RackDots { x0, p0 } => {
                     let base = views::rack::base_name_width(&self.state);
@@ -6905,8 +6905,10 @@ impl App {
             return;
         }
         if let Some(a) = action {
-            if let Action::ChannelSelect(row)=a {if !self.shift&&!self.ctrl&&!self.alt {self.drag=Some(Drag::RackPreset{row,m0:self.mouse,started:false});}}
-            if self.acts_on_release(&a) {
+            if let Some(drag) = crate::rack_drag::RowDrag::begin(self, &a) {
+                self.drag = Some(Drag::RackRows(drag));
+                self.armed = Some(a);
+            } else if self.acts_on_release(&a) {
                 self.armed = Some(a);
             } else {
                 self.act(a);
@@ -7535,6 +7537,7 @@ impl App {
         crate::vocal::audition::stop(self);
         self.hold_key(None,false);
         self.cancel_channel_route();
+        self.cancel_rack_rows();
         if matches!(self.drag,Some(Drag::PianoKeys{..})){self.drag=None;}
         if matches!(self.drag, Some(Drag::ClipPicker { .. })) {
             self.drag = None;
@@ -7542,6 +7545,16 @@ impl App {
             self.state.playlist.picker_ui.destination = None;
             self.damage_win(Win::Playlist);
         }
+    }
+
+    fn cancel_rack_rows(&mut self) -> bool {
+        if !matches!(self.drag, Some(Drag::RackRows(_))) { return false; }
+        if let Some(Drag::RackRows(drag)) = self.drag.take() {
+            drag.cancel(&mut self.state);
+        }
+        self.clear_binding_press();
+        self.invalidate();
+        true
     }
 
     fn cancel_channel_route(&mut self) -> bool {
@@ -7598,13 +7611,13 @@ impl App {
             self.invalidate();
             return;
         }
-        if let Some(Drag::RackPreset{row,started:true,..})=self.drag {
-            self.drag=None;self.armed=None;self.pressed=None;
-            let (x,y)=self.mouse;
-            if self.state.show_browser && !self.state.browser_auto_hidden && self.state.native_view.is_none() && x>=0. && x<crate::views::browser_w(&self.state) && y>=self.state.work_rect().y {
-                self.state.message=crate::presets::save_channel_drop(self,row);
-            }
-            self.invalidate();return;
+        if matches!(self.drag, Some(Drag::RackRows(_)))
+            && let Some(Drag::RackRows(drag)) = self.drag.take()
+            && drag.started
+        {
+            self.clear_binding_press();
+            drag.finish(self);
+            return;
         }
         // A held nudge ends with the button (spec: ui/tempo-tapper.md §6).
         if crate::tapper::nudge_flag().swap(0, std::sync::atomic::Ordering::Relaxed) != 0 {
@@ -8554,6 +8567,7 @@ impl App {
             return;
         }
         use winit::keyboard::{Key, NamedKey};
+        if matches!(key, Key::Named(NamedKey::Escape)) && self.cancel_rack_rows() { return; }
         if matches!(key,Key::Named(NamedKey::Escape)) && matches!(self.drag,Some(Drag::MixSelect{..})) {self.drag=None;self.pressed=None;return;}
 
         if !ctrl && !alt && !self.shift && !self.repeat && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("d")) {
@@ -9988,7 +10002,7 @@ impl App {
             Action::CloseWin(w) => s.hide(w),
             Action::BrowserPreview(_) | Action::StarterPack(_) | Action::PluginDownload(_, _) | Action::BrowserRow(_) | Action::BrowserTab(_) | Action::BrowserList | Action::BrowserScroll | Action::BrowserCollapse | Action::BrowserReread | Action::BrowserMenu | Action::BrowserSearch | Action::BrowserSplitter => {}
             Action::TypeIn(t) => crate::typein::click(s, t),
-            Action::Ai | Action::Donate | Action::ReportBug | Action::Updates | Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::Swallow => {}
+            Action::Ai | Action::Donate | Action::ReportBug | Action::Updates | Action::PlaylistArea | Action::MixerArea | Action::RackArea | Action::RackStepGap | Action::Swallow => {}
             Action::PlTool(_)
             | Action::PlSnap
             | Action::PlOptions
@@ -10175,8 +10189,6 @@ impl App {
                     self.focus_channel(i);
                     if studio {
                         rk::set_graph_open(&mut self.state, !close_graph);
-                    } else {
-                        self.drag = Some(Drag::RackSel { from: i });
                     }
                 }
             }
@@ -10193,14 +10205,14 @@ impl App {
             Action::ChannelEnable(i) => {
                 let s = &mut self.state;
                 if ctrl || alt {
-                    rk::solo(s, i);
+                    rk::solo_selection(s, i);
                 } else if shift {
                     rk::toggle_lock(s, i);
                 } else {
                     crate::rack_controls::toggle_enabled(s, i);
                 }
             }
-            Action::RackSolo(i) => rk::solo(&mut self.state, i),
+            Action::RackSolo(i) => rk::solo_selection(&mut self.state, i),
             Action::Step(i, k) => self.rack_step(i, k, false),
             Action::RackMixer(i) => {
                 let s = &mut self.state;
@@ -19927,6 +19939,124 @@ LemonStudioStyle.button-radius=8
         assert_eq!(app.state.midi_activity.row(other), 1.0);
     }
 
+    fn rack_drag_fixture(vintage: bool) -> (App, Canvas) {
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.show_browser = false;
+        app.state.vintage_2005 = vintage;
+        app.state.z = vec![Win::ChannelRack];
+        app.state.rack_pos = (120.0, 130.0);
+        app.state.rack_size.1 = 320.0;
+        app.state.rack.filter = crate::rack::Filter::All;
+        let mut canvas = Canvas::new(1280, 720, 1.0).unwrap();
+        frame(&mut app, &mut canvas, None);
+        (app, canvas)
+    }
+
+    #[test]
+    fn rack_selection_drag_and_group_controls() {
+        use crate::knobs::KnobId;
+        use winit::keyboard::{Key, NamedKey};
+        for vintage in [false, true] {
+            let (mut app, mut canvas) = rack_drag_fixture(vintage);
+            let first = views::rack::name_rect(&app.state, 0).unwrap();
+            let third = views::rack::name_rect(&app.state, 2).unwrap();
+            let drag_to_third = |app: &mut App| {
+                app.mouse_move(first.cx(), first.cy());
+                app.mouse_down();
+                app.mouse_move(third.cx() + 15.0, third.cy());
+            };
+            app.state.rack.select_only(4);
+            drag_to_third(&mut app);
+            assert_eq!(app.state.rack.sel, [0, 1, 2].into_iter().collect());
+            assert!(matches!(&app.drag, Some(Drag::RackRows(d))
+                if matches!(d.overlay(&app.state, app.mouse), Some(crate::rack_drag::Overlay::Selection(_)))));
+            frame(&mut app, &mut canvas, None);
+            app.key(&Key::Named(NamedKey::Escape), false, false);
+            app.mouse_up();
+            assert_eq!(app.state.rack.sel, [4].into_iter().collect());
+            drag_to_third(&mut app);
+            app.mouse_up();
+            assert_eq!(app.state.rack.sel, [0, 1, 2].into_iter().collect());
+            frame(&mut app, &mut canvas, None);
+
+            let mute = hit_rect(&app, &Action::ChannelEnable(1));
+            click(&mut app, &mut canvas, mute);
+            assert!(app.state.project.channels[..3].iter().all(|c| !c.enabled));
+            assert!(app.state.project.channels[3..].iter().all(|c| c.enabled));
+            let solo = if vintage { mute } else { hit_rect(&app, &Action::RackSolo(1)) };
+            app.ctrl = vintage;
+            click(&mut app, &mut canvas, solo);
+            assert_eq!(app.state.rack.soloed, [0, 1, 2].into_iter().collect());
+            assert!(app.state.project.channels[..3].iter().all(|c| c.enabled));
+            assert!(app.state.project.channels[3..].iter().all(|c| !c.enabled));
+            click(&mut app, &mut canvas, solo);
+            app.ctrl = false;
+            assert!(app.state.rack.soloed.is_empty());
+
+            let knobs: &[fn(usize) -> KnobId] = if vintage {
+                &[KnobId::ChanVol, KnobId::ChanPan]
+            } else {
+                &[KnobId::ChanVol, KnobId::ChanPan, KnobId::ChanPitch]
+            };
+            for knob in knobs {
+                let before: Vec<_> = (0..5).map(|row| app.state.knob(knob(row))).collect();
+                let hit = hit_rect(&app, &Action::Knob(knob(1)));
+                app.mouse_move(hit.cx(), hit.cy());
+                app.mouse_down();
+                app.mouse_move(hit.cx(), hit.cy() + 14.0);
+                app.mouse_up();
+                let after: Vec<_> = (0..5).map(|row| app.state.knob(knob(row))).collect();
+                let delta = after[1] - before[1];
+                assert_ne!(delta, 0.0);
+                for row in 0..3 {
+                    assert!((after[row] - before[row] - delta).abs() < 0.001);
+                }
+                assert_eq!(after[3..], before[3..]);
+            }
+            app.key(&Key::Named(NamedKey::Delete), false, false);
+            if app.state.rack.pending_delete.is_some() {
+                assert_eq!(app.state.rack.pending_delete, Some(vec![0, 1, 2]));
+                frame(&mut app, &mut canvas, None);
+                let confirm = hit_rect(&app, &Action::Pat(crate::patterns::Hit::ConfirmOk));
+                click(&mut app, &mut canvas, confirm);
+            }
+            assert_eq!(app.state.project.channels.iter().map(|c| c.name.as_deref().unwrap()).collect::<Vec<_>>(), ["Snare", "Pluck"]);
+            assert!(crate::history::undo(&mut app.state).is_some());
+            assert_eq!(app.state.project.channels.len(), 5);
+        }
+    }
+
+    #[test]
+    fn rack_selection_ctrl_drag_remaps_and_undoes() {
+        use crate::history::{redo, undo};
+        let (mut app, mut canvas) = rack_drag_fixture(false);
+        app.state.rack.sel = [0, 1].into_iter().collect();
+        app.state.project.patterns[0].notes.push(os_model::Note::step(0, 0));
+        let first = views::rack::name_rect(&app.state, 0).unwrap();
+        let third = views::rack::name_rect(&app.state, 2).unwrap();
+        let order = |app: &App| app.state.project.channels.iter().map(|c| c.name.clone().unwrap()).collect::<Vec<_>>();
+        let original = order(&app);
+        app.ctrl = true;
+        app.mouse_move(first.cx(), first.cy());
+        app.mouse_down();
+        app.mouse_move(third.cx(), third.bottom() - 1.0);
+        assert_eq!(order(&app), original);
+        assert!(matches!(&app.drag, Some(Drag::RackRows(d))
+            if matches!(d.overlay(&app.state, app.mouse), Some(crate::rack_drag::Overlay::Insertion(_)))));
+        frame(&mut app, &mut canvas, None);
+        app.mouse_up();
+        assert_eq!(order(&app), ["Hat", "Kick", "Clap", "Snare", "Pluck"]);
+        assert_eq!(app.state.rack.sel, [1, 2].into_iter().collect());
+        assert_eq!(app.state.project.patterns[0].notes[0].channel, 1);
+        assert_eq!(undo(&mut app.state), Some("Move channels"));
+        assert_eq!(order(&app), original);
+        assert_eq!(app.state.project.patterns[0].notes[0].channel, 0);
+        assert_eq!(redo(&mut app.state), Some("Move channels"));
+        assert_eq!(order(&app), ["Hat", "Kick", "Clap", "Snare", "Pluck"]);
+        assert_eq!(app.state.project.patterns[0].notes[0].channel, 1);
+    }
+
     #[test]
     fn studio_rack_keeps_pitch_knobs_and_inline_graph_targets() {
         let mut app = App::new(None);
@@ -20028,9 +20158,9 @@ LemonStudioStyle.button-radius=8
         assert_ne!(app.state.project.channels[2].pitch_cents, 300);
         let solo = hit_rect(&app, &Action::RackSolo(2));
         click(&mut app, &mut canvas, solo);
-        assert_eq!(app.state.rack.soloed, Some(2));
+        assert!(app.state.rack.soloed.contains(&2));
         click(&mut app, &mut canvas, solo);
-        assert_eq!(app.state.rack.soloed, None);
+        assert!(app.state.rack.soloed.is_empty());
         let menu = hit_rect(&app, &Action::RackGraphMenu);
         click(&mut app, &mut canvas, menu);
         let pan = app.state.playlist.popup.as_ref().unwrap().items.iter()
@@ -22646,7 +22776,7 @@ LemonStudioStyle.button-radius=8
         let step=hit_rect(&app,&Action::Step(0,0));
         let next=hit_rect(&app,&Action::Step(0,1));
         app.mouse_move((step.right()+next.x)*0.5,step.cy());
-        assert_eq!(app.top_hit(app.mouse.0,app.mouse.1).map(|h|&h.action),Some(&Action::Swallow));
+        assert_eq!(app.top_hit(app.mouse.0,app.mouse.1).map(|h|&h.action),Some(&Action::RackStepGap));
         app.mouse_down();app.mouse_up();app.mouse_down_right();app.mouse_up();
         assert!(!app.state.plugin_picker.open && app.state.playlist.popup.is_none());
         let rack = views::rack::rect(&app.state);

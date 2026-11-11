@@ -4,6 +4,17 @@
   "sections": [
     {
       "date": "2026-11-11",
+      "title": "ML Studio Channel Rack editing and Playlist timing fixes \u00b7 public build 2026111102",
+      "changes": [
+        "Drag across Channel Rack rows to select channels. The selection box and row highlights show the selection as you drag. Press Delete to remove the selected channels together.",
+        "Use Mute or Solo on a selected Channel Rack row to apply it to the group. Adjust Pitch, Volume, or Pan together while keeping the relative settings between channels.",
+        "Hold Ctrl and drag to reorder a Channel Rack row or move the selected channels together. An insertion line shows where the rows will land. Undo and Redo preserve the notes and instruments attached to each channel.",
+        "Fixed the Playlist audio timing editor closing or placing an extra clip when you clicked or dragged inside the editor.",
+        "Fixed distorted PAT and SONG labels and sharpened the Play, Pause, and Stop icons. Updated the ML Studio app icon for Windows, macOS, and Linux."
+      ]
+    },
+    {
+      "date": "2026-11-11",
       "title": "ML Studio workspace refresh and Playlist editing \u00b7 public build 2026111101",
       "changes": [
         "ML Studio has a refreshed toolbar and Channel Rack with compact channel controls, a pitch knob on each row and an inline graph editor. Studio and Console are the new names for the built-in workspace styles.",

@@ -978,15 +978,17 @@ pub fn inline(ui: &mut Ui, s: &State, g: &pl::PGeom) {
         return;
     }
     let y = g.y_of(row) + g.rows.base_height(row);
-    let area = Rect::new(g.grid.x, y, g.grid.w, EXTRA - 3.);
-    let visible = area.intersect(&g.grid);
-    if visible.is_empty() || !ui.c.visible(visible) {
+    let panel = Rect::new(g.grid.x, y, g.grid.w, EXTRA);
+    let area = Rect::new(panel.x, panel.y, panel.w, panel.h - 3.);
+    let visible = panel.intersect(&g.grid);
+    // A partial Playlist paint still rebuilds its hit map, even outside the damaged pixels.
+    if visible.is_empty() {
         return;
     }
     ui.c.push_clip(visible);
     ui.clip_hit_rect(visible, |ui| {
         editor_style::editor_face(ui, area);
-        ui.hit(area, Action::Swallow, "Audio timing editor");
+        ui.hit(panel, Action::Swallow, "Audio timing editor");
         if loading.is_some() {
             crate::loading::activity_icon(ui.c, area.x + 12., area.y + 17., ui.t.accent);
             ui.c.text_clip(
@@ -1168,9 +1170,11 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
     f.wave.set(wave);
     let visible = wave.intersect(&surface).intersect(&g.grid);
     ui.c.fill_rect(surface, ui.t.s(0x202b31));
-    ui.c.push_clip(surface);
-    editor_style::time_grid(ui, s, g, surface);
-    ui.c.pop_clip();
+    if ui.c.visible(surface) {
+        ui.c.push_clip(surface);
+        editor_style::time_grid(ui, s, g, surface);
+        ui.c.pop_clip();
+    }
     ui.hit(
         visible,
         Action::Warp(Command::Source),
@@ -1187,7 +1191,8 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
     );
     let signal = ui.t.s(0x91b4bd);
     let rate = f.sample.rate as f64;
-    for col in 0..visible.w.ceil() as usize {
+    let columns = if ui.c.visible(visible) { visible.w.ceil() as usize } else { 0 };
+    for col in 0..columns {
         let x = visible.x + col as f32;
         let dst = (x - wave.x) as f64 / wave.w as f64 * f.end();
         let src = interpolate(&f.edit.points, dst, true);
@@ -1448,6 +1453,13 @@ mod tests {
             let press_x = marker_x + 2.;
             let press_y = wave.cy();
             let hand = crate::app::Cursor::Playlist(pl::PlTool::Draw, crate::playlist_tools::GAIN);
+            // A repaint of the Playlist above the editor leaves the editor's pixels on screen.
+            // Its controls must still take the next click instead of the underlying Draw tool.
+            let grid = app.pl_grid().unwrap();
+            let damage = Rect::new(grid.x + 1., grid.y, 30., 3.);
+            assert!(damage.bottom() < wave.y);
+            app.paint(&mut canvas, Some(damage));
+            let clip_count = pl::clips(&app.state).len();
             app.mouse_move(press_x, press_y);
             assert_eq!(
                 app.top_hit(press_x, press_y).map(|hit| &hit.action),
@@ -1469,6 +1481,7 @@ mod tests {
             app.mouse_down();
             app.mouse_move(press_x + 32., press_y);
             app.mouse_up();
+            assert_eq!(pl::clips(&app.state).len(), clip_count);
             assert_ne!(
                 app.state.playlist.warp.as_ref().unwrap().edit.points[index],
                 points[index]
@@ -1478,6 +1491,15 @@ mod tests {
                 app.state.playlist.warp.as_ref().unwrap().edit.points,
                 points
             );
+            let close = app.hits.iter().find(|h| h.action == Action::Warp(Command::Close)).unwrap().rect;
+            let _ = app.take_damage();
+            let before_scroll = app.state.playlist_scroll;
+            app.state.playlist_scroll.0 += 12.;
+            app.playlist_scrolled(before_scroll);
+            let damage = app.take_damage().expect("horizontal scroll needs a repaint");
+            app.paint_region(&mut canvas, damage.as_deref());
+            assert!(app.take_moved().is_empty(), "the editor's toolbar stays anchored while scrolling");
+            assert_eq!(app.top_hit(close.cx(), close.cy()).map(|hit| &hit.action), Some(&Action::Warp(Command::Close)));
             let wave_hit = app
                 .hits
                 .iter()

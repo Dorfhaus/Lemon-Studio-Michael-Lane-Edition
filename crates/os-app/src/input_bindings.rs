@@ -696,6 +696,7 @@ pub fn press(app: &mut App, button: usize) -> bool {
                 | Action::PlaylistArea
                 | Action::MixerArea
                 | Action::RackArea
+                | Action::RackStepGap
                 | Action::Step(..)
                 | Action::RackSelect(_)
                 | Action::BrowserRow(_)

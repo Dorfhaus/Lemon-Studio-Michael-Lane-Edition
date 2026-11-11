@@ -54,6 +54,8 @@ pub const PROJECT_INFO: &str = "Project info";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Snap {
     ChannelEnabled(usize,bool),
+    /// Permutation to apply, with a channel snapshot only when protecting a shared edit.
+    RackOrder(Vec<usize>, Option<Vec<os_model::Channel>>),
     PitchFollow(usize,bool,i32),
     AudioWarps(Vec<os_model::AudioWarp>),
     Vocals(Vec<os_model::vocal::Edit>),
@@ -427,6 +429,7 @@ impl Snap {
             Snap::AllEffects(_) => Snap::AllEffects(s.mixer.all_fx_bypassed),
             Snap::Effects(t, _, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::Effects(*t, m.slots_enabled, s.mixer.all_fx_bypassed)),
             Snap::ChannelEnabled(row,_) => s.project.channels.get(*row).map_or_else(||self.clone(),|c|Snap::ChannelEnabled(*row,c.enabled)),
+            Snap::RackOrder(order, _) => Snap::RackOrder(crate::rack::inverse_order(order), s.collaborating.then(|| s.project.channels.clone())),
             Snap::PitchFollow(row,..) => s.project.channels.get(*row).map_or_else(||self.clone(),|c|Snap::PitchFollow(*row,c.misc.main_pitch,c.misc.pitch_follow_offset)),
             Snap::Param(key, i, _) => crate::params::param_value(s, *key, *i).map_or_else(|| self.clone(), |v| Snap::Param(*key, *i, v)),
             // A channel gone since is left as the step has it (`put` does nothing then).
@@ -527,6 +530,7 @@ impl Snap {
             | Snap::AllEffects(..)
             | Snap::Effects(..)
             | Snap::ChannelEnabled(..)
+            | Snap::RackOrder(..)
             | Snap::PitchFollow(..)
             | Snap::Param(..)
             | Snap::Sample { .. }
@@ -600,6 +604,12 @@ impl Snap {
                 }
             }
             Snap::ChannelEnabled(row,on) => {if let Some(c)=s.project.channels.get_mut(row){c.enabled=on;}},
+            Snap::RackOrder(order, _) => {
+                if order.len() == s.project.channels.len() {
+                    let map = crate::rack::reorder_state(s, &order);
+                    s.rows_moved.push((map, Vec::new()));
+                }
+            }
             Snap::PitchFollow(row,on,offset) => {
                 if let Some(c)=s.project.channels.get_mut(row){c.misc.main_pitch=on;c.misc.pitch_follow_offset=offset;}
                 if let Some(i)=s.params.lists.get(&row).and_then(|l|l.params.iter().position(|p|p.name=="Affected by the main pitch")){crate::params::set_param_value(s,row,i,f64::from(on));}
@@ -942,7 +952,10 @@ pub fn unrecord(s: &mut State) {
 /// note that did not move it, a knob clicked without a turn).
 pub fn settle(s: &mut State) {
     let h = &s.history;
-    if h.fresh && h.done > 0 && h.done == h.steps.len() && h.steps[h.done - 1].snap.now(s) == h.steps[h.done - 1].snap {
+    if h.fresh && h.done > 0 && h.done == h.steps.len()
+        && !matches!(h.steps[h.done - 1].snap, Snap::RackOrder(..))
+        && h.steps[h.done - 1].snap.now(s) == h.steps[h.done - 1].snap
+    {
         unrecord(s);
     }
     protect_collaboration_step(s);

@@ -1,7 +1,7 @@
 //! Channel-rack group edits. Relative knob offsets survive common-limit clamping.
 use crate::{app::{App,State},knobs::KnobId,history::{self,Snap}};
 pub fn rows(s:&State,row:usize)->Vec<usize>{
-    let rows:Vec<_>=if row==usize::MAX {(0..s.project.channels.len()).collect()}else if s.rack.sel.contains(&row){s.rack.sel.iter().copied().collect()}else{vec![row]};
+    let rows = if row == usize::MAX { (0..s.project.channels.len()).collect() } else { crate::rack::selection_for(s, row) };
     rows.into_iter().filter(|&r|s.project.channels.get(r).is_some_and(|c|c.kind!=os_model::ChannelKind::Automation)).collect()
 }
 pub fn all_follow(s:&State)->bool {let r=rows(s,usize::MAX);!r.is_empty()&&r.iter().all(|&r|s.project.channels[r].misc.main_pitch)}
@@ -36,7 +36,8 @@ pub fn snapshot(s:&mut State,id:KnobId,wheel:bool){
 }
 pub fn toggle_enabled(s:&mut State,row:usize){
     let Some(c)=s.project.channels.get(row)else{return};let on=!c.enabled;
-    let rows=rows(s,row);let snaps=rows.iter().map(|&r|Snap::ChannelEnabled(r,s.project.channels[r].enabled)).collect();
+    let rows: Vec<_> = crate::rack::selection_for(s, row).into_iter().filter(|&r| r < s.project.channels.len()).collect();
+    let snaps=rows.iter().map(|&r|Snap::ChannelEnabled(r,s.project.channels[r].enabled)).collect();
     history::record(s,"Selected channels on/off",Snap::Several(snaps));
     for r in rows {s.project.channels[r].enabled=on;}s.piano.dirty=true;
 }

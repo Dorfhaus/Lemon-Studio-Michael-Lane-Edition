@@ -178,6 +178,14 @@ pub fn panel(s: &State) -> Rect {
     }
 }
 
+/// Row viewport, excluding the vertical scrollbar.
+pub(crate) fn row_view(s: &State) -> Rect {
+    let panel = panel(s);
+    let gutter = if !s.vintage_2005 { STUDIO_SCROLL_GUTTER }
+        else if content_h(s) > panel.h + 0.5 { 11.0 } else { 0.0 };
+    Rect::new(panel.x, panel.y, (panel.w - gutter).max(0.0), panel.h)
+}
+
 /// Steps that fit the window width (§3: 16 at the default width, 36 at 819 px).
 pub fn visible_steps(s: &State) -> u32 {
     (((rect(s).w - base_w(s)) / step_width(s)).floor() as i32 + 1).max(1) as u32
@@ -229,13 +237,13 @@ pub fn content_h(s: &State) -> f32 {
     rows_h(s) + 2.0 * row_padding(s)
 }
 
-fn scroll(s: &State) -> f32 {
+pub(crate) fn scroll(s: &State) -> f32 {
     let inner = panel(s);
     s.rack_scroll.clamp(0.0, (content_h(s) - inner.h).max(0.0))
 }
 
 /// Screen y of a row's name button top.
-fn row_y(s: &State, p: &RowPos) -> f32 {
+pub(crate) fn row_y(s: &State, p: &RowPos) -> f32 {
     panel(s).y + p.top - scroll(s) - 2.0
 }
 
@@ -249,6 +257,22 @@ pub fn row_at(s: &State, y: f32) -> Option<usize> {
         let band = row_y(s, p);
         y >= band && y < band + p.pitch()
     }).map(|p| p.row)
+}
+
+fn draw_row_drag(ui: &mut Ui, view: Rect, frame: &FrameInfo) {
+    match frame.rack_drag {
+        Some(crate::rack_drag::Overlay::Selection(rect)) => {
+            let rect = rect.intersect(&view);
+            if !rect.is_empty() {
+                ui.c.fill_rect(rect, ui.t.accent.with_alpha(42));
+                ui.c.stroke_rrect(rect, 2.0, 1.0, ui.t.accent);
+            }
+        }
+        Some(crate::rack_drag::Overlay::Insertion(y)) => {
+            ui.c.fill_rect(Rect::new(view.x + 2.0, y, view.w - 4.0, 2.0), ui.t.accent);
+        }
+        None => {}
+    }
 }
 
 /// The name button of row `r` when it is shown.
@@ -391,7 +415,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
     let view_h = inner.h;
     let total_h = content_h(s);
     let vbar = total_h > view_h + 0.5;
-    let rows_clip = if vbar { Rect::span(inner.x, inner.right() - 11.0, inner.y, inner.bottom()) } else { inner };
+    let rows_clip = row_view(s);
     let scroll = scroll(s);
     let steps_shown = visible_steps(s);
     let len = rk::pattern_steps(s);
@@ -483,7 +507,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
         if hov {ui.c.stroke_rrect(follow,3.,1.5,t.glyph);}
         }
         // Name button (§13): the channel colour fills the face.
-        let nhov = ui.hit(nb, Action::ChannelSelect(i), "Click: plugin window, Shift+click: rename, right-click: channel menu");
+        let nhov = ui.hit(nb, Action::ChannelSelect(i), "Click: plug-in window; drag: select channels; Ctrl+drag: move rows");
         let base = ch.color.map_or(t.name_button, |col| rgb(col).mix(t.name_button, NAME_MIX));
         let face = if focused { base.shade(0.18).mix(t.name_button_sel, 0.5) } else { base };
         let face = if nhov { face.shade(0.06) } else { face };
@@ -573,7 +597,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             ui.hit(block.intersect(&rows_clip), Action::RackRoll(i), "Piano roll preview - click to open the Piano roll");
         } else {
             let row_len = rk::row_len(s, i);
-            ui.hit(Rect::span(step_x0-1.,steps_right,ry,ry+p.pitch()).intersect(&rows_clip),Action::Swallow,"Step sequencer");
+            ui.hit(Rect::span(step_x0-1.,steps_right,ry,ry+p.pitch()).intersect(&rows_clip),Action::RackStepGap,"Drag between steps to select channels");
             ui.c.push_clip(step_area);
             for k in first_step..(first_step + steps_shown + 1) {
                 let sr = Rect::new(step_x0 + step_width(s) * k as f32 - sx, ry + if s.vintage_2005 {0.0} else {4.0}, step_width(s) - if s.vintage_2005 { 0.0 } else { 3.0 }, if s.vintage_2005 { 28.0 } else { 19.0 });
@@ -599,6 +623,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             ui.c.text_center(Font::new(13), lb, tc, &txt);
         }
     }
+    draw_row_drag(ui, rows_clip, f);
     ui.c.pop_clip();
     if vbar {
         let track = Rect::span(inner.right() - 10.0, inner.right(), inner.y, inner.bottom());

@@ -396,7 +396,7 @@ fn target_controls(ui: &mut Ui, s: &State, r: Rect, mut x: f32) {
     if right - x >= 78.0 {
         for (label, cmd, on, verb) in [
             ("M", NCmd::ChannelMute, channel.is_some_and(|c| !c.enabled), "Mute"),
-            ("S", NCmd::ChannelSolo, s.rack.soloed == Some(s.selected_channel), "Solo"),
+            ("S", NCmd::ChannelSolo, crate::rack::solo_active(s, s.selected_channel), "Solo"),
         ] {
             let button = Rect::new(x, r.y + 2.0, 20.0, 18.0);
             let hover = ui.hit(button, Action::PianoCommand(cmd), format!("{verb} channel: {name}"));

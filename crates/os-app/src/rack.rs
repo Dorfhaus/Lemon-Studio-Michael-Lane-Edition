@@ -199,8 +199,8 @@ pub struct RackUi {
     pub zipped: BTreeSet<usize>,
     /// Channels whose mute state solo leaves alone (§10).
     pub locked: BTreeSet<usize>,
-    /// The channel the last solo click soloed.
-    pub soloed: Option<usize>,
+    /// The channel rows explicitly soloed together.
+    pub soloed: BTreeSet<usize>,
     /// Mute states (`enabled` per row) from before the first solo: what unsolo puts back when "Restore previous
     /// state after solo" is on.
     pub pre_solo: Option<Vec<bool>>,
@@ -245,7 +245,7 @@ impl Default for RackUi {
             groups: Vec::new(),
             zipped: BTreeSet::new(),
             locked: BTreeSet::new(),
-            soloed: None,
+            soloed: BTreeSet::new(),
             pre_solo: None,
             pattern_seen: None,
             name_pct: 100,
@@ -292,8 +292,17 @@ impl RackUi {
         for g in &mut self.groups {
             g.members = set(&g.members);
         }
-        self.soloed = self.soloed.and_then(m);
-        self.pre_solo = None; // rows renumbered: unsolo turns everything on
+        self.soloed = set(&self.soloed);
+        if let Some(previous) = self.pre_solo.take() {
+            let mut mapped = vec![true; previous.len()];
+            for (row, enabled) in previous.into_iter().enumerate() {
+                if let Some(new) = m(row) {
+                    if new >= mapped.len() { mapped.resize(new + 1, true); }
+                    mapped[new] = enabled;
+                }
+            }
+            self.pre_solo = (!self.soloed.is_empty()).then_some(mapped);
+        }
         self.loop_len = self.loop_len.iter().filter_map(|(&r, &l)| m(r).map(|n| (n, l))).collect();
         if let Some(f) = self.fill.as_mut() {
             match m(f.row) {
@@ -700,18 +709,31 @@ pub fn gradient(s: &mut State) {
 /// with "Restore previous state after solo" on, puts back the states from before the first solo (a solo moved to
 /// another channel keeps them; spec: ui/settings-choices.md "Miscellaneous"). Locked channels keep their state.
 pub fn solo(s: &mut State, r: usize) {
-    let locked = s.rack.locked.clone();
-    let group=os_model::instrument_stack(&s.project,r);
-    let soloed_now = solo_of(s, r);
+    solo_rows(s, BTreeSet::from([r]));
+}
+
+/// Controls on selected rows act on the selection; a control elsewhere acts on its own row.
+pub fn selection_for(s: &State, row: usize) -> BTreeSet<usize> {
+    if s.rack.sel.contains(&row) { s.rack.sel.clone() } else { BTreeSet::from([row]) }
+}
+
+pub fn solo_selection(s: &mut State, row: usize) {
+    let selected = selection_for(s, row);
+    solo_rows(s, selected);
+}
+
+fn solo_rows(s: &mut State, rows: BTreeSet<usize>) {
+    let group = solo_group(s, &rows);
+    let soloed_now = (rows.len() == 1 || s.rack.soloed == rows) && solo_shape(s, &rows, &group);
     // A solo still in effect (the last solo click's shape, untouched since) keeps the states saved when it started.
-    let in_solo = s.rack.soloed.is_some_and(|a| solo_of(s, a));
+    let in_solo = solo_shape(s, &s.rack.soloed, &solo_group(s, &s.rack.soloed));
     if !soloed_now && !in_solo {
         s.rack.pre_solo = Some(s.project.channels.iter().map(|c| c.enabled).collect());
     }
     let back = if soloed_now { s.rack.pre_solo.take().filter(|_| in_solo && crate::prefs::check(&crate::prefs::RESTORE_AFTER_SOLO)) } else { None };
     for (i, c) in s.project.channels.iter_mut().enumerate() {
-        if locked.contains(&i) {
-            if i == r {
+        if s.rack.locked.contains(&i) {
+            if !soloed_now && rows.contains(&i) {
                 c.enabled = true;
             }
         } else if let Some(b) = &back {
@@ -720,7 +742,7 @@ pub fn solo(s: &mut State, r: usize) {
             c.enabled = group.contains(&i) || soloed_now;
         }
     }
-    s.rack.soloed = (!soloed_now).then_some(r);
+    s.rack.soloed = if soloed_now { BTreeSet::new() } else { rows };
     s.piano.dirty = true;
 }
 
@@ -764,12 +786,17 @@ impl App {
     }
 }
 
-/// Channel `r` is the only unlocked channel on.
-pub(crate) fn solo_of(s: &State, r: usize) -> bool {
-    let locked = &s.rack.locked;
-    let group=os_model::instrument_stack(&s.project,r);
-    s.project.channels.get(r).is_some_and(|c| c.enabled)
-        && s.project.channels.iter().enumerate().all(|(i, c)| group.contains(&i) || locked.contains(&i) || !c.enabled)
+fn solo_group(s: &State, rows: &BTreeSet<usize>) -> BTreeSet<usize> {
+    rows.iter().flat_map(|&row| os_model::instrument_stack(&s.project, row)).collect()
+}
+
+fn solo_shape(s: &State, rows: &BTreeSet<usize>, group: &BTreeSet<usize>) -> bool {
+    !rows.is_empty() && rows.iter().all(|&r| s.project.channels.get(r).is_some_and(|c| c.enabled))
+        && s.project.channels.iter().enumerate().all(|(i, c)| s.rack.locked.contains(&i) || c.enabled == group.contains(&i))
+}
+
+pub(crate) fn solo_active(s: &State, row: usize) -> bool {
+    s.rack.soloed.contains(&row) && solo_shape(s, &s.rack.soloed, &solo_group(s, &s.rack.soloed))
 }
 
 pub fn toggle_mute(s: &mut State, r: usize) {
@@ -905,17 +932,27 @@ pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
 /// app state and the hosted plugins.
 pub fn reorder(app: &mut App, order: &[usize]) {
     app.vocal_job=None;app.state.playlist.vocal.busy=false;app.state.playlist.vocal.selected.clear();
-    let n = app.state.project.channels.len();
+    let map = reorder_state(&mut app.state, order);
+    app.remap_rows(&|r| map.get(r).copied().flatten());
+    app.invalidate();
+}
+
+pub(crate) fn reorder_state(s: &mut State, order: &[usize]) -> Vec<Option<usize>> {
+    let n = s.project.channels.len();
     let mut map = vec![None; n];
     for (new, &old) in order.iter().enumerate() {
         if old < n {
             map[old] = Some(new);
         }
     }
-    let m = |r: usize| map.get(r).copied().flatten();
-    remap_state(&mut app.state, &map);
-    app.remap_rows(&m);
-    app.invalidate();
+    remap_state(s, &map);
+    map
+}
+
+pub(crate) fn inverse_order(order: &[usize]) -> Vec<usize> {
+    let mut inverse = vec![0; order.len()];
+    for (new, &old) in order.iter().enumerate() { inverse[old] = new; }
+    inverse
 }
 
 /// The last row's channel goes (an undone drop that made it, `history`): `reorder` without the app, whose instrument
@@ -1838,7 +1875,7 @@ pub fn mixer_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
 
 /// Right click on a LED (§10).
 pub fn led_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
-    let soloed = s.rack.soloed == Some(r);
+    let soloed = solo_active(s, r);
     let mut items = vec![
         it("Solo", RCmd::Solo(r)).mark(Mark::Check(soloed)),
         it("Lock active/mute state", RCmd::Lock(r)).mark(Mark::Check(s.rack.locked.contains(&r))),
@@ -2083,7 +2120,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
             None
         }
         RCmd::Solo(r) => {
-            solo(s, r);
+            solo_selection(s, r);
             None
         }
         RCmd::Lock(r) => {
@@ -2400,7 +2437,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
             let j = if *k == NamedKey::PageUp { (i + all.len() - 1) % all.len() } else { (i + 1) % all.len() };
             RCmd::SetFilter(all[j])
         }
-        Key::Named(NamedKey::Delete) if alt => RCmd::DeleteSel,
+        Key::Named(NamedKey::Delete) if !ctrl => RCmd::DeleteSel,
         Key::Named(NamedKey::Escape) => {
             s.hide(Win::ChannelRack);
             app.invalidate();

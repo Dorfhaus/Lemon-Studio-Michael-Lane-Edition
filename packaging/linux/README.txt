@@ -2,6 +2,9 @@ Lemon Studio - Michael Lane edition / Linux x86-64
 
 Extract the entire .tar.gz folder, then double-click lemonstudio or run ./lemonstudio in that folder.
 The executable has its Linux permission bits stored in the archive.
+For an application menu entry, place lemonstudio.desktop in $XDG_DATA_HOME/applications and
+lemonstudio.png in $XDG_DATA_HOME/icons/hicolor/256x256/apps. XDG_DATA_HOME defaults to ~/.local/share.
+If lemonstudio is outside your PATH, set Exec in the desktop entry to its full path followed by %f.
 Requires glibc 2.36 or newer, the ALSA shared library (libasound.so.2), and a desktop session with X11 or Wayland libraries and a file-picker portal.
 Use your distribution's package manager if a required library is missing. ARM Linux is not included.
 

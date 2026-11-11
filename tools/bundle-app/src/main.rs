@@ -4,9 +4,8 @@
 
 //! `cargo run -p bundle-app [-- --install]` (macOS): builds Lemon Studio in release mode and writes
 //! `<target>/bundled/Lemon Studio.app`: the program, its icon and an `Info.plist` that lets the Finder open `.flp`
-//! projects with it. The icon is made from the Icon Composer document `assets/logo/macOS.icon` by
-//! `tools/logo/macos-icon.sh`: `assets/lemonstudio.car` (the bundle's `Assets.car`) is the icon macOS 26 and later draw,
-//! in every appearance, and `assets/lemonstudio.icns` the one older macOS shows. The bundle is signed ad hoc, as Apple
+//! projects with it. `tools/logo/macos-icon.sh` generates `assets/lemonstudio.icns` from the ML Studio emblem.
+//! `Assets.car` stays in the signed bundle layout so existing updaters accept it. The bundle is signed ad hoc, as Apple
 //! silicon requires of any program it runs. `--install` copies it to `~/Applications`.
 //!
 //! The macOS counterpart of Linux's desktop entry (`crates/os-app/assets/lemonstudio.desktop`).
@@ -89,8 +88,6 @@ fn info_plist() -> String {
 	<key>CFBundleIdentifier</key>
 	<string>{IDENTIFIER}</string>
 	<key>CFBundleIconFile</key>
-	<string>{EXE}</string>
-	<key>CFBundleIconName</key>
 	<string>{EXE}</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>

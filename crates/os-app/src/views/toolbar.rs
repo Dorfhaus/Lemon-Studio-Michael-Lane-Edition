@@ -596,6 +596,13 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     let song = a.span(384.0, 418.0, 20.0, 35.0);
     ui.hit(pat, Action::PatSong(false), "Pattern mode: play the current pattern");
     ui.hit(song, Action::PatSong(true), "Song mode: play the playlist");
+    let mode_font = if s.vintage_2005 {
+        Font::vintage(9)
+    } else {
+        (8..=11).rev().map(|size| Font::new(size).bold())
+            .find(|&font| ui.c.text_width(font, "SONG") <= song.w - 4.0 && ui.c.line_height(font) <= song.h)
+            .unwrap_or(Font::new(8).bold())
+    };
     for (r, label, active) in [(pat, "PAT", !s.song_mode), (song, "SONG", s.song_mode)] {
         if t.style.vintage_2005 {
             os_ui::kit::styled_surface(ui.c, t, r.inset(1.0), 0.0, t.window_border,
@@ -608,7 +615,7 @@ fn transport(ui: &mut Ui, c: &Ctx) {
             ui.c.fill_rrect(capsule.inset(1.0), 14.0, t.pill);
             ui.c.pop_clip();
         }
-        ui.c.text_center(if s.vintage_2005 {Font::vintage(9)}else{Font::condensed(10, 5)}, Rect::new(r.x + 1.0, r.y, r.w, r.h), if active { t.pill_text } else { t.glyph_dim }, label);
+        ui.c.text_center(mode_font, r, if active { t.pill_text } else { t.text_dim }, label);
     }
     // Lit while playing, with a pause glyph (Play pauses); unlit with the play glyph when paused.
     let play_on = f.playing && !f.paused;
@@ -642,17 +649,9 @@ fn transport(ui: &mut Ui, c: &Ctx) {
             for k in [-1.0, 0.0, 1.0] {
                 ui.c.fill_circle(g.cx() + k * g.w * 0.32, g.cy(), (g.w * 0.1).max(1.5), c);
             }
-        } else if icon == Icon::Play && on {
-            if ui.c.icon_pack() == 0 {
-                let (w, h) = (g.w * 0.22, g.h * 0.7);
-                let y = g.cy() - h / 2.0;
-                ui.c.fill_rrect(Rect::new(g.cx() - w * 1.6, y, w, h), 1.0, c);
-                ui.c.fill_rrect(Rect::new(g.cx() + w * 0.6, y, w, h), 1.0, c);
-            } else {
-                icons::draw(ui.c, Icon::Pause, g, c);
-            }
         } else {
-            icons::draw(ui.c, icon, g, c);
+            let glyph = if icon == Icon::Play && on { Icon::Pause } else { icon };
+            draw_transport_icon(ui.c, glyph, g, c);
         }
     }
     // Record (spec: ui/recording.md §2): armed, the whole round face fills with the record colour, a lighter rim and a
@@ -704,6 +703,27 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     // Lemon displays show their digits in the brand colour.
     let digits = if t.style.vintage_2005 {Color::rgb(0x23383d)}else if lemon { t.pill } else { t.glyph };
     tempo_readout(ui, s, tb, f.tempo, digits, c.preview);
+}
+
+/// Use grayscale coverage for the small, solid default glyphs so their edges stay the color of the ink.
+fn draw_transport_icon(canvas: &mut os_ui::Canvas, icon: Icon, bounds: Rect, ink: Color) {
+    if canvas.icon_pack() != 0 || canvas.icon_override(icon as usize) != (0, None) {
+        icons::draw(canvas, icon, bounds, ink);
+        return;
+    }
+    let size = bounds.w.min(bounds.h) * 0.78;
+    let half = size * 0.5;
+    let (x, y) = (bounds.cx(), bounds.cy());
+    match icon {
+        Icon::Play => canvas.fill_polygon(&[(x - half * 0.8, y - half), (x + half, y), (x - half * 0.8, y + half)], ink),
+        Icon::Stop => canvas.fill_rrect(Rect::new(x - half, y - half, size, size), 1.5, ink),
+        Icon::Pause => {
+            let width = size * 0.32;
+            canvas.fill_rrect(Rect::new(x - half, y - half, width, size), 0.8, ink);
+            canvas.fill_rrect(Rect::new(x + half - width, y - half, width, size), 0.8, ink);
+        }
+        _ => icons::draw(canvas, icon, bounds, ink),
+    }
 }
 
 /// Center the full BPM value on one baseline. Drag boundaries follow the rendered decimal digits.

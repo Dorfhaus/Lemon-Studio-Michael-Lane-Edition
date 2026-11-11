@@ -105,6 +105,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Live MIDI note glow", crate::midi_play::RACK_ACTIVITY),
         ("Loop mode button", "visible_rack-loop"),
         ("Graph editor shortcut", "visible_rack-graph"),
+        ("Channel selection outline", crate::rack_drag::OVERLAY_VISIBILITY),
     ]),
     #[cfg(plugin_windows)]
     ("Plugin windows", &[("Detach button", crate::plugin_window::DETACH_VISIBILITY)]),

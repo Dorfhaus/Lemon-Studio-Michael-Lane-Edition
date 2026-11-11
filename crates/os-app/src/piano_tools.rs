@@ -457,7 +457,7 @@ pub fn target_menu(s: &State, x: f32, y: f32) -> Popup {
     let head = |name: String| PItem { label: name.into(), ..PItem::head("") };
     let mut items = vec![
         item("Mute channel",NCmd::ChannelMute).mark(Mark::Check(s.project.channels.get(s.selected_channel).is_some_and(|c|!c.enabled))),
-        item("Solo channel",NCmd::ChannelSolo).mark(Mark::Check(s.rack.soloed==Some(s.selected_channel))),
+        item("Solo channel",NCmd::ChannelSolo).mark(Mark::Check(crate::rack::solo_active(s, s.selected_channel))),
         PItem::head("Current pattern")];
     items.extend((0..n).filter(|&r| has_notes(s, r)).map(row_item));
     for g in &s.rack.groups {
