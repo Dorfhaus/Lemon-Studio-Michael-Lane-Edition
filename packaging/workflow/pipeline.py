@@ -9,7 +9,7 @@ from checkpoints import Journal, atomic_json, digest, exclusive, plan_files, sta
 
 CONFIG=r.PRIVATE/'pipeline.json'
 PLATFORMS=('windows','linux','mac-arm64','mac-x86_64')
-REPOSITORY='Dorfhaus/Lemon-Studio-Michael-Lane-Edition'
+REPOSITORY='Dorfhaus/ML-Studio'
 
 
 def config():
@@ -208,7 +208,7 @@ def verify_live(plans,out):
         if not dest.exists():shutil.copyfile(a['local'],dest)
         if digest(dest)!=a['sha256']:raise RuntimeError('Desktop artifact hash differs')
     notes=release_notes();v=str(r.version());label=f'{v[:4]}.{v[4:6]}.{v[6:8]}.{int(v[8:])}'
-    plan=dict(tag='v'+label,title='Lemon Studio Michael Lane Edition '+label,notes='\n'.join('- '+x for x in notes['changes'])+'\n\n'+r.BASE,assets=[{k:a[k] for k in ('name','url','sha256')} for a in assets])
+    plan=dict(tag='v'+label,title='ML Studio '+label,notes='\n'.join('- '+x for x in notes['changes'])+'\n\n'+r.BASE,assets=[{k:a[k] for k in ('name','url','sha256')} for a in assets])
     atomic_json(out/'github-release.json',plan);atomic_json(out/'VERIFIED.json',{'version':r.version(),'platforms':list(PLATFORMS),'signatures':4,'download_hashes_verified_by_publishers':True,'website_exact':True})
     return str(out/'github-release.json'),[out/'github-release.json',out/'VERIFIED.json']+[out/'Downloads'/a['name'] for a in assets]
 

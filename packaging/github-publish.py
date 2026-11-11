@@ -3,7 +3,7 @@ import hashlib,json,os,re,subprocess,tempfile,urllib.parse,urllib.request
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 plan=json.loads((root/'packaging/github-release.json').read_text())
-if os.environ.get('GH_REPO')!='Dorfhaus/Lemon-Studio-Michael-Lane-Edition':raise SystemExit('Wrong public repository')
+if os.environ.get('GH_REPO')!='Dorfhaus/ML-Studio':raise SystemExit('Wrong public repository')
 tag=plan['tag']
 if not re.fullmatch(r'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+',tag):raise SystemExit('Invalid release tag')
 def gh(*args):subprocess.run(['gh',*args],check=True)

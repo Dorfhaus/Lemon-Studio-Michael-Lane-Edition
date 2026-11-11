@@ -4,20 +4,20 @@
 
 An open-source digital audio workstation maintained by **Michael Lane**. Compose with patterns and the Piano Roll, arrange and record in the Playlist, and finish the mix with studio-style channel strips and integrated mastering.
 
-[Downloads and change log](https://michaellanemusic.de/lemon-studio/) · [Current release](https://github.com/Dorfhaus/Lemon-Studio-Michael-Lane-Edition/releases/latest) · [Report a bug](https://michaellanemusic.de/lemon-studio/features/feedback.html)
+[Downloads and change log](https://michaellanemusic.de/lemon-studio/) · [Current release](https://github.com/Dorfhaus/ML-Studio/releases/latest) · [Report a bug](https://michaellanemusic.de/lemon-studio/features/feedback.html)
 
-![ML Studio Development preview with the gray toolbar, Channel Rack, Playlist, and Piano Roll](docs/assets/ml-studio/studio.webp)
+![ML Studio with the gray toolbar, Channel Rack, Playlist, and Piano Roll](docs/assets/ml-studio/studio.webp)
 
-The images show the upcoming ML Studio design. The download page lists the current public builds and matching source for Windows, Apple silicon and Intel Macs, and Linux x86-64.
+Download ML Studio and its matching source for Windows, Apple silicon and Intel Macs, and Linux x86-64.
 
 ## Inside ML Studio
 
 - **Compose and arrange.** Pattern sequencing, Piano Roll editing, MPE, and a Playlist for patterns, audio, and automation.
 - **Record and edit.** Mixer input recording, take lanes, comping, stretching, and clip effects.
 - **Mix and master.** Analog-style and compact mixers, buses, sends, built-in effects, and the integrated Master Assistant. Compatible third-party plugins are installed separately.
-- **Upcoming stock synth.** ML Plasma, adapted from Gridline Plasma, is shown in the Development preview below.
+- **Stock synthesizer.** ML Plasma is adapted from Gridline Plasma.
 
-| Mixer | ML Plasma · Development preview |
+| Mixer | ML Plasma |
 | --- | --- |
 | ![ML Studio mixer](docs/assets/ml-studio/mixer.webp) | ![ML Plasma synth editor](docs/assets/ml-studio/plasma.webp) |
 

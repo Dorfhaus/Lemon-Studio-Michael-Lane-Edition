@@ -1,4 +1,4 @@
-name: Publish complete Michael Lane Edition
+name: Publish complete ML Studio release
 on:
   push:
     branches: [michael-lane]
