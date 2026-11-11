@@ -5,7 +5,7 @@ Lemon Studio is an existing GPL-licensed project by ItsAlphaNeon and its contrib
 ## Source and build
 Linux release 2026103102: x86-64, glibc 2.36 baseline, cross-compiled on Windows with cargo-zigbuild 0.24.0 / Zig 0.13.0 and Debian 12 ALSA development files. Compiled and packaged only; not run or audio-tested on Linux, at the owner's request. For a native build install Rust, a C/C++ toolchain, pkg-config, and ALSA development headers; set OPENSTUDIO_NO_PLUGIN_BUILD=1 and run `cargo build --locked --release -p os-app`. The local mp3lame-sys patch preserves native builds and fixes Linux ABI/header selection when its build script runs on Windows.
 
-Cross-platform download page: https://michaellanemusic.de/lemon-studio/ . Windows supports automatic installation; Linux and Mac Update buttons open the download page. Mac release instructions and packaging scripts are in packaging/mac. A Mac binary is available only after a native Mac build and publication.
+Cross-platform download page: https://michaellanemusic.de/ml-studio/ . Windows supports automatic installation; Linux and Mac Update buttons open the download page. Mac release instructions and packaging scripts are in packaging/mac. A Mac binary is available only after a native Mac build and publication.
 
 This archive includes the corresponding modified source and required embedded assets. No external plugins, personal projects, recordings or device configuration are required. Cargo.lock pins dependencies; network access is required to download them. Rust 1.99.1 was used for the Windows build.
 

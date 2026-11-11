@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PRIVATE = Path.home()/'.lemon-studio-release'
 CONFIG = PRIVATE/'workflow.json'
 BASE = 'https://michaellanemusic.de/lemon-studio/'
+DOWNLOAD_PAGE = 'https://michaellanemusic.de/ml-studio/'
 SERVICE = 'Lemon Studio publishing'
 
 def run(*args, cwd=ROOT, env=None):
@@ -145,7 +146,8 @@ def permitted(rel,scope):
     return False
 
 def verify_remote(rel,p):
-    with urllib.request.urlopen(BASE+urllib.parse.quote(rel)+'?verify='+uuid.uuid4().hex,timeout=120) as r:
+    url = DOWNLOAD_PAGE if rel == 'index.html' else BASE + urllib.parse.quote(rel)
+    with urllib.request.urlopen(url+'?verify='+uuid.uuid4().hex,timeout=120) as r:
         h=hashlib.sha256()
         while block:=r.read(1024*1024): h.update(block)
     if h.hexdigest()!=digest(p): raise RuntimeError('Public download checksum mismatch: '+rel)

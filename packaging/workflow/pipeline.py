@@ -181,7 +181,9 @@ def artifacts(plans):
         for rel in (manifest['url'],manifest['source']):
             f,h=index[rel]
             if any(a['path']==rel for a in assets):continue
-            dest=f.name if f.name!='Lemon Studio Source.zip' else 'Lemon-Studio-Source-'+str(r.version())+'.zip'
+            dest = f'ML-Studio-Source-{r.version()}.zip' if f.name == 'Lemon Studio Source.zip' else f.name
+            if dest.startswith('Lemon-Studio-'):
+                dest = 'ML-Studio-' + dest.removeprefix('Lemon-Studio-')
             assets.append(dict(name=dest,url=r.BASE+urllib.parse.quote(rel),sha256=h,path=rel,local=str(f)))
     return index,assets
 
@@ -198,7 +200,7 @@ def verify_live(plans,out):
             Ed25519PublicKey.from_public_bytes(bytes.fromhex(key.read_text().strip())).verify(bytes.fromhex(value['signature']),value['payload'].encode())
             value=json.loads(value['payload'])
         if value['version']!=r.version():raise RuntimeError('Wrong live release version')
-    if read_url(r.BASE+'?verify='+str(time.time_ns()))!=(r.ROOT/'packaging/download-page.html').read_bytes():raise RuntimeError('Live changelog page differs')
+    if read_url(r.DOWNLOAD_PAGE+'?verify='+str(time.time_ns()))!=(r.ROOT/'packaging/download-page.html').read_bytes():raise RuntimeError('Live changelog page differs')
     # Artifact bytes were verified over HTTPS by each publisher before its manifest became live.
     for path in plans:
         p=json.loads(Path(path).read_text());receipt=json.loads(Path(path).with_name('PUBLISHED.json').read_text())
@@ -208,7 +210,7 @@ def verify_live(plans,out):
         if not dest.exists():shutil.copyfile(a['local'],dest)
         if digest(dest)!=a['sha256']:raise RuntimeError('Desktop artifact hash differs')
     notes=release_notes();v=str(r.version());label=f'{v[:4]}.{v[4:6]}.{v[6:8]}.{int(v[8:])}'
-    plan=dict(tag='v'+label,title='ML Studio '+label,notes='\n'.join('- '+x for x in notes['changes'])+'\n\n'+r.BASE,assets=[{k:a[k] for k in ('name','url','sha256')} for a in assets])
+    plan=dict(tag='v'+label,title='ML Studio '+label,notes='\n'.join('- '+x for x in notes['changes'])+'\n\n'+r.DOWNLOAD_PAGE,assets=[{k:a[k] for k in ('name','url','sha256')} for a in assets])
     atomic_json(out/'github-release.json',plan);atomic_json(out/'VERIFIED.json',{'version':r.version(),'platforms':list(PLATFORMS),'signatures':4,'download_hashes_verified_by_publishers':True,'website_exact':True})
     return str(out/'github-release.json'),[out/'github-release.json',out/'VERIFIED.json']+[out/'Downloads'/a['name'] for a in assets]
 

@@ -4,7 +4,7 @@
 
 An open-source digital audio workstation maintained by **Michael Lane**. Compose with patterns and the Piano Roll, arrange and record in the Playlist, and finish the mix with studio-style channel strips and integrated mastering.
 
-[Downloads and change log](https://michaellanemusic.de/lemon-studio/) · [Current release](https://github.com/Dorfhaus/ML-Studio/releases/latest) · [Report a bug](https://michaellanemusic.de/lemon-studio/features/feedback.html)
+[Downloads and change log](https://michaellanemusic.de/ml-studio/) · [Current release](https://github.com/Dorfhaus/ML-Studio/releases/latest) · [Report a bug](https://michaellanemusic.de/lemon-studio/features/feedback.html)
 
 ![ML Studio with the gray toolbar, Channel Rack, Playlist, and Piano Roll](docs/assets/ml-studio/studio.webp)
 
