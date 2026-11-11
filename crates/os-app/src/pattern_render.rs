@@ -128,7 +128,7 @@ pub fn add_channel(s: &mut State, path: &str, pattern: u16) -> u16 {
 /// clips are selected. Returns how many there were.
 pub fn replace_clips(s: &mut State, pattern: u16, ch: u16) -> usize {
     let src = ClipSource::Channel(ch);
-    let found: Vec<Clip> = crate::playlist::clips(s).iter().filter(|c| c.source == ClipSource::Pattern(pattern)).copied().collect();
+    let found: Vec<Clip> = crate::playlist::clips(s).iter().filter(|c| c.source == ClipSource::Pattern(pattern)).cloned().collect();
     if found.is_empty() {
         return 0;
     }
@@ -247,7 +247,7 @@ impl App {
                 Some(f) => {
                     let m = place(&mut self.state, &p, f);
                     let s = &mut self.state;
-                    let view_h = crate::views::rack::panel(crate::views::rack::rect(s)).h;
+                    let view_h = crate::views::rack::panel(s).h;
                     s.rack_scroll = (crate::views::rack::content_h(s) - view_h).max(0.0);
                     m
                 }

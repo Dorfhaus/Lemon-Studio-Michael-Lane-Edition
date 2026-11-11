@@ -118,6 +118,9 @@ pub const STRIP_H: f32 = 46.0;
 pub const BORDER: f32 = 7.0;
 /// Width of the Presets box in the title bar (its right edge is 49 px from the window's).
 const PRESETS_W: f32 = 80.0;
+const MIN_FRAME_W: f32 = 180.0;
+const DETACH_SPACE: f32 = 23.0;
+pub(crate) const DETACH_VISIBILITY: &str = "visible_plugin-window-detach";
 
 fn c_frame() -> Color {
     os_theme::current().s(0x25292b)
@@ -191,6 +194,7 @@ pub struct ChannelInfo {
 #[derive(Clone, Debug, PartialEq)]
 pub enum FrameEvent {
     Close,
+    Detach(bool),
     /// The user picked page `n` of the plugin (a tab left of the Misc tab).
     Page(usize),
     ToggleOn,
@@ -316,6 +320,11 @@ struct State {
     /// A title-bar button (close, minimize) pressed and not released yet: it acts on the release over it (owner,
     /// 2026-10-15: acting on the press made accidental closes easy).
     armed: Option<Part>,
+    show_detach: bool,
+    hover_detach: bool,
+    can_attach: bool,
+    // Reattaching from another monitor may put the frame outside the DAW workspace.
+    fit_on_attach: bool,
     /// A top-level window (menu arrow > Detached) instead of a child of the main window (always when the main window is
     /// a native Wayland one).
     detached: bool,
@@ -351,12 +360,37 @@ impl State {
             drag: None,
             moving: None,
             armed: None,
+            show_detach: crate::workspace_visibility::shown(DETACH_VISIBILITY),
+            hover_detach: false,
+            can_attach: true,
+            fit_on_attach: false,
             detached,
             clip: None,
             clip_key: None,
         }
     }
 
+
+    fn change_dock_mode(&mut self, detached: bool) {
+        self.detached = detached;
+        self.fit_on_attach = !detached;
+        self.clip = None;
+        self.clip_key = None;
+    }
+
+    fn set_info(&mut self, info: ChannelInfo) -> bool {
+        let show_detach = crate::workspace_visibility::shown(DETACH_VISIBILITY);
+        let visibility_changed = self.show_detach != show_detach;
+        self.show_detach = show_detach;
+        if !show_detach {
+            self.hover_detach = false;
+        }
+        if self.info != info && self.drag.is_none() && self.misc_ui.drag.is_none() {
+            self.info = info;
+            return true;
+        }
+        visibility_changed
+    }
 
     fn knob_value(&self, k: Knob) -> f32 {
         let i = &self.info;
@@ -406,7 +440,7 @@ impl State {
     }
     fn size(&self) -> (f32, f32) {
         let (w, h) = self.shown();
-        (w + 2.0 * BORDER, self.area_y() + h + BORDER)
+        ((w + 2.0 * BORDER).max(MIN_FRAME_W), self.area_y() + h + BORDER)
     }
     /// The size of what the editor area shows: the Misc page's own while that tab is open (the frame fits it, as a
     /// tab change in FL does), the plugin's editor otherwise.
@@ -431,6 +465,7 @@ impl State {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Part {
     Close,
+    Detach,
     Minimize,
     /// Maximize / restore (resizable editors).
     Maximize,
@@ -517,6 +552,9 @@ fn parts(st: &State) -> Vec<(Rect, Part)> {
         v.push((Rect::new(w - BORDER, TITLE_H, BORDER, h - TITLE_H), Part::Edge { right: true, bottom: false }));
         v.push((Rect::new(0.0, h - BORDER, w, BORDER), Part::Edge { right: false, bottom: true }));
     }
+    if st.show_detach {
+        v.push((detach_rect(st), Part::Detach));
+    }
     v.extend([
         (Rect::new(w - 23.0, 7.0, 17.0, 17.0), Part::Close),
         (Rect::new(w - 42.0 - max_w(st), 7.0, 17.0, 17.0), Part::Minimize),
@@ -547,7 +585,8 @@ fn parts(st: &State) -> Vec<(Rect, Part)> {
 
 // Keep the zoom control reachable when a docked Wave editor extends beyond the workspace.
 fn wave_size_handle(st:&State)->Option<Rect>{
-    (st.resizable() && st.wave_zoom).then(||Rect::new(48.,5.,75.,20.))
+    (st.resizable() && st.wave_zoom && presets_rect(st).x >= 131.0)
+        .then(|| Rect::new(48.0, 5.0, 75.0, 20.0))
 }
 
 fn part_at(st: &State, x: f32, y: f32) -> Option<Part> {
@@ -580,9 +619,17 @@ const STRIP_RIGHT: f32 = 570.0;
 const MENU_RECT: Rect = Rect { x: 8.0, y: 5.0, w: 14.0, h: 21.0 };
 const GEAR_RECT: Rect = Rect { x: 24.0, y: 5.0, w: 21.0, h: 21.0 };
 
-/// The Presets box: right side of the title bar, left of minimize.
+/// The D button sits immediately left of the existing window controls.
+fn detach_rect(st: &State) -> Rect {
+    Rect::new(st.size().0 - 42.0 - max_w(st) - DETACH_SPACE, 7.0, 19.0, 17.0)
+}
+
+/// The Presets box gives up width before overlapping the menu or window buttons.
 fn presets_rect(st: &State) -> Rect {
-    Rect::new(st.size().0 - 49.0 - max_w(st) - PRESETS_W, 6.0, PRESETS_W, 19.0)
+    let detach_space = if st.show_detach { DETACH_SPACE } else { 0.0 };
+    let right = st.size().0 - 49.0 - max_w(st) - detach_space;
+    let left = (right - PRESETS_W).max(48.0);
+    Rect::new(left, 6.0, right - left, 19.0)
 }
 
 /// The room the maximize button takes in the title bar: a resizable editor's frame has one.
@@ -681,7 +728,21 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
     c.text_clip(f, tx, ty, troom, c_grey(), &target);
     let tw = c.text_width(f, &target).min(troom);
     let off = st.off_hint.map(crate::app::off_text).or_else(|| st.box_hint.map(|k| st.box_text(k)));
-    let hint = if let Some(o) = &off { o } else if st.misc { &st.misc_ui.hint } else { &st.hint };
+    let hint = if st.hover_detach && st.show_detach {
+        if !st.can_attach {
+            "This editor is detached under Wayland"
+        } else if st.detached {
+            "Attach plugin window"
+        } else {
+            "Detach plugin window"
+        }
+    } else if let Some(o) = &off {
+        o
+    } else if st.misc {
+        &st.misc_ui.hint
+    } else {
+        &st.hint
+    };
     if !hint.is_empty() {
         let hx = tx + tw + 14.0;
         let hf = Font::new(12);
@@ -700,6 +761,15 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
     c.text_clip(f, p.x + 9.0, ty, p.w - 9.0 - 31.0, c_text(), st.preset.as_deref().unwrap_or("Presets"));
     icon_at(c, crate::icons::Icon::ArrowLeft, p.right() - 22.2, 15.5, 18.9, c_icon());
     icon_at(c, crate::icons::Icon::ArrowRight, p.right() - 7.8, 15.5, 18.9, c_icon());
+    if st.show_detach {
+        let palette = os_theme::current();
+        let rect = detach_rect(st);
+        let hover = st.hover_detach && st.can_attach;
+        c.fill_rrect(rect, 2.0, if hover { palette.button_hi } else { palette.sunken });
+        let outline = if hover || (st.detached && st.can_attach) { palette.accent } else { palette.text_dim };
+        c.stroke_rrect(rect, 2.0, 1.0, outline);
+        c.text_center(Font::new(13), rect, if st.can_attach { palette.text } else { palette.text_dim }, "D");
+    }
     let mw = max_w(st);
     if c.icon_pack() == 0 {
         c.icon_stroke(&tb::MINUS, Rect::new(w - 39.5 - mw, 7.0, 12.0, 12.0), c_icon(), 2.0);
@@ -928,8 +998,9 @@ impl State {
             _ => {}
         }
         match part {
-            // Close and minimize only arm on the press; the release over the same button acts (`left_up`).
-            Some(Part::Close | Part::Minimize | Part::Maximize) => {
+            Some(Part::Detach) if !self.can_attach => Reply::None,
+            // Window buttons act when released over the same button.
+            Some(Part::Close | Part::Minimize | Part::Maximize | Part::Detach) => {
                 self.armed = part;
                 Reply::Capture
             }
@@ -1115,7 +1186,9 @@ impl State {
             Some(Part::Track) => Some(Knob::Track),
             _ => None,
         };
-        if off != self.off_hint || boxed != self.box_hint {
+        let detach = part == Some(Part::Detach);
+        if off != self.off_hint || boxed != self.box_hint || detach != self.hover_detach {
+            self.hover_detach = detach;
             self.off_hint = off;
             self.box_hint = boxed;
             return Reply::Repaint;
@@ -1145,6 +1218,11 @@ impl State {
         match armed {
             Some(Part::Close) if over => {
                 self.events.push(FrameEvent::Close);
+                Reply::Repaint
+            }
+            Some(Part::Detach) if over => {
+                self.events.push(FrameEvent::Detach(!self.detached));
+                os_clap::wake();
                 Reply::Repaint
             }
             Some(Part::Minimize) if over => Reply::Minimize,
@@ -1443,9 +1521,10 @@ mod tests {
         let at = |x, y| part_at(&st, x, y);
         assert_eq!(at(15.0, 15.0), Some(Part::Menu));
         assert_eq!(at(34.0, 15.0), Some(Part::Gear));
-        assert_eq!(at(390.0, 15.0), Some(Part::Presets));
-        assert_eq!(at(422.0, 15.0), Some(Part::PresetPrev));
-        assert_eq!(at(438.0, 15.0), Some(Part::PresetNext));
+        let presets = presets_rect(&st);
+        assert_eq!(at(presets.x + 20.0, 15.0), Some(Part::Presets));
+        assert_eq!(at(presets.right() - 23.0, 15.0), Some(Part::PresetPrev));
+        assert_eq!(at(presets.right() - 8.0, 15.0), Some(Part::PresetNext));
         assert_eq!(at(460.0, 15.0), Some(Part::Minimize));
         assert_eq!(at(479.0, 15.0), Some(Part::Close));
 
@@ -1472,6 +1551,42 @@ mod tests {
         assert_eq!(at(200.0, 15.0), Some(Part::Caption));
         assert_eq!(at(29.0, 50.0), Some(Part::Tab(0)));
         assert_eq!(at(74.0, 50.0), Some(Part::Tab(1)));
+    }
+
+    #[test]
+    fn detach_button_toggles_only_on_release_and_fits_narrow_editors() {
+        let screen = |_: f32, _: f32| (0, 0);
+        for resizable in [false, true] {
+            let mut st = state(true, "Master");
+            st.show_detach = true;
+            st.editor.0 = 100.0;
+            st.resize_min = resizable.then_some((100.0, 80.0));
+            let detach = detach_rect(&st);
+            let presets = presets_rect(&st);
+            assert!(presets.x > GEAR_RECT.right() && presets.right() < detach.x);
+            assert!(parts(&st).iter().filter(|(_, part)| matches!(part, Part::Minimize | Part::Maximize | Part::Close))
+                .all(|(rect, _)| rect.x > detach.right()));
+            let (x, y) = (detach.cx(), detach.cy());
+            assert_eq!(part_at(&st, x, y), Some(Part::Detach));
+            assert_eq!(st.left_down(x, y, false, &screen), Reply::Capture);
+            assert!(st.events.is_empty());
+            st.left_up(presets.cx(), y);
+            assert!(st.events.is_empty(), "release outside D cancels");
+            st.left_down(x, y, false, &screen);
+            st.left_up(x, y);
+            assert_eq!(st.events.pop(), Some(FrameEvent::Detach(true)));
+            st.change_dock_mode(true);
+            st.left_down(x, y, false, &screen);
+            st.left_up(x, y);
+            assert_eq!(st.events.pop(), Some(FrameEvent::Detach(false)));
+            st.can_attach = false;
+            st.left_down(x, y, false, &screen);
+            st.left_up(x, y);
+            assert!(st.events.is_empty(), "Wayland frames are already detached");
+            st.show_detach = false;
+            assert_ne!(part_at(&st, x, y), Some(Part::Detach));
+            assert!(st.detached);
+        }
     }
 
     /// Renders the frame offscreen (`OS_SHOT_DIR=<dir> cargo test -p os-app frame_shots -- --ignored`).

@@ -4,9 +4,9 @@ const CHIME: &[u8] = include_bytes!("../assets/startup.wav");
 
 pub const VINTAGE_SOUND: &str = "visible_vintage_startup_sound";
 
-pub fn play_launch(_vintage: bool) {
+pub fn play_launch() {
     #[cfg(all(windows, not(test)))]
-    play(_vintage, true);
+    play(false, true);
 }
 
 pub fn play_vintage() {
@@ -65,9 +65,9 @@ mod tests {
         assert_eq!(&w[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(w[24..28].try_into().unwrap()), 44100);
         let samples: Vec<i16> = w[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
-        assert_eq!(samples.len(), 39690);
-        assert!(samples.iter().any(|x| x.abs() > 3000));
-        assert!(samples.iter().all(|x| x.abs() < 4000));
+        assert_eq!(samples.len(), 79380);
+        assert!(samples.iter().any(|x| x.abs() > 2000));
+        assert!(samples.iter().all(|x| x.abs() < 5500));
         assert_eq!(samples[0], 0);
         assert!(samples[samples.len()-100..].iter().all(|x| x.abs() < 10));
     }

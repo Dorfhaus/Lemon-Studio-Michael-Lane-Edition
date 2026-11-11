@@ -5,8 +5,10 @@
 use crate::settings_file;
 
 pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
+    ("Collaboration", &[("Host and join sessions", crate::collaboration::VISIBLE)]),
     ("Toolbar panels", &[
         ("Hint panel", "visible_hint"),
+        ("Hint panel MIDI light", crate::midi_play::HINT_ACTIVITY),
         ("Time display", "visible_time"),
         ("Output monitor", "visible_monitor"),
         ("Recording options", "visible_recording"),
@@ -51,6 +53,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Tesla shortcut", "visible_tesla"),
         ("Lemon Tape in plugin menus", "visible_plugin-tape"),
         ("Lemon Hall in plugin menus", "visible_plugin-hall"),
+        ("ML Plasma in plugin menus", ml_plasma::VISIBILITY),
         ("Tesla time stretch and pitch shift", "visible_tesla-stretch"),
         ("Tesla audio cleanup / Playlist cleanup action", "visible_tesla-cleanup"),
         ("Update button", "visible_update"),
@@ -78,6 +81,8 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Stretch button", "visible_playlist-stretch"),
         ("Comping button", "visible_playlist-comp"),
         ("Clip picker preview buttons", "visible_playlist-picker-preview"),
+        ("Clip Picker preview loop switch", crate::clip_picker::LOOP_VISIBILITY),
+        ("Clip Picker resize handle", crate::clip_picker::RESIZE_VISIBILITY),
         ("Clip picker usage filters", crate::clip_picker::FILTER_VISIBILITY),
         ("Clip picker color strips", crate::clip_picker::COLOR_VISIBILITY),
         ("Clips picker button", "visible_playlist-clips"),
@@ -97,13 +102,20 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Place Pattern to Playlist button", "visible_piano-place-pattern"),
     ]),
     ("Channel Rack", &[
+        ("Live MIDI note glow", crate::midi_play::RACK_ACTIVITY),
         ("Loop mode button", "visible_rack-loop"),
         ("Graph editor shortcut", "visible_rack-graph"),
+    ]),
+    #[cfg(plugin_windows)]
+    ("Plugin windows", &[("Detach button", crate::plugin_window::DETACH_VISIBILITY)]),
+    ("Plugin Picker", &[
+        ("Effect Chain multi-selection and dragging", crate::plugin_picker::chains::BATCH_VISIBILITY),
     ]),
     ("Mixer", &[
         ("Mixer channel lock buttons", "visible_mixer-channel-lock"),
         ("Group lock option in Mixer padlock menu", crate::mixer::GROUP_LOCK_VISIBILITY),
         ("Insert Multiple Tracks menu item", crate::mixer::INSERT_MULTIPLE_VISIBILITY),
+        ("Delete extra effect slots button", crate::mixer::DELETE_EXTRA_SLOT_VISIBILITY),
         ("Mixer section shortcuts", crate::views::mixer::SECTION_SHORTCUTS),
         ("Stereo separation on Full Mixer strips", crate::views::mixer::STEREO_SEPARATION),
         ("Scroll to Drums button", crate::mixer::Section::Drums.visibility()),
@@ -133,10 +145,11 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Menus tab and customization shortcut", crate::menu_layout::VISIBILITY),
         ("Controls tab", crate::input_bindings::VISIBILITY),
     ]),
-    ("Lemon EQ", &[
+    ("ML EQ", &[
         ("Band controls card", lemon_parametric_eq_2::visibility::BAND_CARD),
+        ("Band overview and quick actions", lemon_parametric_eq_2::visibility::BAND_OVERVIEW),
     ]),
-    ("Lemon Wave", &[
+    ("ML Wave", &[
         ("Right-click modulation controls", lemon_wave::visibility::MODULATION_MENU),
         ("Phase FM and ring modulation controls", lemon_wave::visibility::HARMONIC_CONTROLS),
     ]),

@@ -188,7 +188,7 @@ mod tests {
         ];
         let grid = Rect::new(200., 100., 1000., 600.);
         let g = pl::PGeom::new(&app.state, grid);
-        let orig = vec![(0, pl::clips(&app.state)[0]), (2, pl::clips(&app.state)[2])];
+        let orig = vec![(0, pl::clips(&app.state)[0].clone()), (2, pl::clips(&app.state)[2].clone())];
         let drag = pl::PlDrag::Move {
             x0: 300.,
             y0: g.y_of(1) + 10.,

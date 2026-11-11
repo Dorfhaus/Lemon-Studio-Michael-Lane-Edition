@@ -94,7 +94,7 @@ fn measure(
     library: &mut os_engine::SampleLibrary,
 ) -> Result<Option<f64>, String> {
     let (mut engine, rate) = analysis_engine(
-        input.clip,
+        input.clip.clone(),
         &input.channel,
         &input.path,
         batch.tempo,
@@ -151,7 +151,7 @@ impl Batch {
         let inputs = selection
             .into_iter()
             .filter_map(|index| {
-                let clip = *pl::clips(s).get(index)?;
+                let clip = pl::clips(s).get(index)?.clone();
                 let ClipSource::Channel(id) = clip.source else {
                     return None;
                 };
@@ -278,13 +278,13 @@ mod tests {
         a.state.project = crate::app::default_project();
         let path = file.to_str().unwrap();
         let i = pl::add_audio_clip(&mut a.state, path, 0, 0).unwrap();
-        let mut peer = pl::clips(&a.state)[i];
+        let mut peer = pl::clips(&a.state)[i].clone();
         peer.track = 1;
         peer.set_gain(0.5);
-        pl::arr_mut(&mut a.state).clips.push(peer);
+        pl::arr_mut(&mut a.state).clips.push(peer.clone());
         let mut outside = peer;
         outside.track = 2;
-        pl::arr_mut(&mut a.state).clips.push(outside);
+        pl::arr_mut(&mut a.state).clips.push(outside.clone());
         for mode in Mode::ALL {
             a.state.playlist.sel = vec![i, i + 1];
             pl::run(&mut a, pl::Cmd::Normalize(i, mode));
@@ -471,7 +471,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) {
 pub fn paint(ui: &mut crate::app::Ui, r: os_ui::Rect, f: &Form) {
     use crate::{app::Action, dialog::DHit};
     use os_ui::{Color, Font, Rect};
-    let yellow = Color::rgb(0xe8cf62);
+    let yellow = Color::rgb(0x2096f3);
     ui.c.text(
         Font::new(13),
         r.x + 20.,

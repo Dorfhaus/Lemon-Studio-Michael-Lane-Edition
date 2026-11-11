@@ -15,22 +15,54 @@ use crate::knobs::KnobId;
 use crate::vintage_rack_art as art;
 use crate::rack::{self as rk, FillHit, FillType, Tab};
 
-pub const ROW_H: f32 = 30.0;
-pub const STEP_W: f32 = 16.0;
+mod studio;
+
+pub const ROW_H: f32 = 36.0;
+pub const STEP_W: f32 = 26.0;
+const VINTAGE_ROW_H: f32 = 28.0;
+const STUDIO_TITLE_H: f32 = 56.0;
+const STUDIO_RULER_H: f32 = 30.0;
+const STUDIO_FOOTER_H: f32 = 44.0;
+const STUDIO_MARGIN: f32 = 14.0;
+const STUDIO_NAME_X: f32 = 104.0;
+const STUDIO_NAME_W: f32 = 128.0;
+const STUDIO_CONTROLS_W: f32 = 151.0;
+const STUDIO_SCROLL_GUTTER: f32 = 12.0;
+const STUDIO_GRAPH_H: f32 = 43.0;
+
+pub fn title_height(s: &State) -> f32 {
+    if s.vintage_2005 { 30.0 } else { STUDIO_TITLE_H }
+}
+
+pub fn row_pitch(s: &State) -> f32 {
+    if s.vintage_2005 { VINTAGE_ROW_H } else { ROW_H }
+}
+
+pub fn base_name_width(s: &State) -> f32 {
+    if s.vintage_2005 { 64.0 } else { STUDIO_NAME_W }
+}
 
 pub fn step_width(s: &State) -> f32 {
     if s.vintage_2005 { 16.0 } else { STEP_W }
 }
 
-/// Default outer size (§1): 16 steps, FL's 499 px plus Lemon Studio's wider name button (§17).
-pub const DEFAULT_SIZE: (f32, f32) = (539.0 + rk::NAME_W - rk::FL_NAME_W, 246.0);
-/// Smallest height: one row (§5).
-pub const MIN_H: f32 = 96.0 + ROW_H;
+/// The default frame shows one 16-step bar and fits smaller workspaces.
+pub const DEFAULT_SIZE: (f32, f32) = (
+    STUDIO_NAME_X + STUDIO_NAME_W + STUDIO_CONTROLS_W + 16.0 * STEP_W + STUDIO_MARGIN + STUDIO_SCROLL_GUTTER,
+    STUDIO_TITLE_H + STUDIO_RULER_H + STUDIO_FOOTER_H + 5.0 * ROW_H,
+);
+
+pub fn height_overhead(s: &State) -> f32 {
+    if s.vintage_2005 { 96.0 } else { STUDIO_TITLE_H + STUDIO_RULER_H + STUDIO_FOOTER_H }
+}
+
+pub fn min_h(s: &State) -> f32 {
+    height_overhead(s) + if s.vintage_2005 { 30.0 } else { ROW_H }
+}
 /// Space above the first row and below the last one inside the rows panel.
-const PAD: f32 = 18.0;
 
 fn row_padding(s: &State) -> f32 {
-    if s.vintage_2005 { 4.0 } else { PAD }
+    if s.vintage_2005 { 4.0 } else { 0.0 }
 }
 /// The Classic name button's face: the channel colour mixed this far toward the theme's neutral face (`clip_colors`
 /// stores new clip channels' colours through it).
@@ -69,32 +101,39 @@ pub fn cols(s: &State) -> Cols {
             slot_x: 125.0 + delta, step_x: 137.0 + delta,
             loop_w: if s.rack.loop_mode { rk::LOOP_W } else { 0.0 } };
     }
-    let mix_off = if s.rack.show_mixer { 0.0 } else { rk::MIX_W };
-    let name_w = (rk::NAME_W * s.rack.name_pct as f32 / 100.0).round();
-    let dx = name_w - rk::FL_NAME_W - mix_off + 40.0;
-    Cols { name_x: 148.0 - mix_off, name_w, dx, slot_x: 200.0 + dx, step_x: 217.0 + dx, loop_w: if s.rack.loop_mode { rk::LOOP_W } else { 0.0 } }
+    let name_w = (STUDIO_NAME_W * s.rack.name_pct as f32 / 100.0).round().max(40.0);
+    Cols {
+        name_x: STUDIO_NAME_X,
+        name_w,
+        dx: name_w - STUDIO_NAME_W,
+        slot_x: 24.0,
+        step_x: STUDIO_NAME_X + name_w + STUDIO_CONTROLS_W,
+        loop_w: if s.rack.loop_mode { rk::LOOP_W } else { 0.0 },
+    }
 }
 
 /// Width of a window showing one step (§5: W = 259 + 16·(n − 1) in the default layout).
 pub fn base_w(s: &State) -> f32 {
     let c = cols(s);
-    if s.vintage_2005 { c.step_x + step_width(s) + 16.0 + c.loop_w } else { 259.0 + c.dx + c.loop_w }
+    if s.vintage_2005 { c.step_x + step_width(s) + 16.0 + c.loop_w } else { c.step_x + STEP_W + STUDIO_MARGIN + STUDIO_SCROLL_GUTTER + c.loop_w }
 }
 
 /// Smallest width (Lemon Studio's; FL's is 4 steps, §5): four beats of the project's signature, and never under the
 /// default 16 steps, below which the title bar's right group runs into the speaker and the "Channel rack" title.
 pub fn min_w(s: &State) -> f32 {
     let steps = (4 * rk::beat_steps(s)).max(16);
-    base_w(s) + step_width(s) * (steps - 1) as f32
+    let grid = base_w(s) + step_width(s) * (steps - 1) as f32;
+    if s.vintage_2005 { grid } else { grid.max(750.0) }
 }
 
 /// Snap a dragged size so whole steps and rows appear (§5), at least [`min_w`] and one row.
 pub fn snap_size(s: &State, w: f32, h: f32) -> (f32, f32) {
     let b = base_w(s);
     let w = b + step_width(s) * ((w - b) / step_width(s)).round();
-    let pitch = if s.vintage_2005 { 28.0 } else { ROW_H };
-    let h = 96.0 + pitch * ((h - 96.0) / pitch).round();
-    (w.max(min_w(s)), h.max(MIN_H))
+    let pitch = row_pitch(s);
+    let overhead = height_overhead(s);
+    let h = overhead + pitch * ((h - overhead) / pitch).round();
+    (w.max(min_w(s)), h.max(min_h(s)))
 }
 
 /// Whether every note of channel `ch` in the pattern is a plain step (§6: otherwise the row shows
@@ -105,11 +144,12 @@ fn plain_steps(notes: &[os_model::Note], ch: u16) -> bool {
 
 /// The window's outer rectangle.
 pub fn rect(s: &State) -> Rect {
-    Rect::new(s.rack_pos.0, s.rack_pos.1, if s.vintage_2005 { s.rack_size.0.max(min_w(s)) } else { s.rack_size.0 }, s.rack_size.1)
+    Rect::new(s.rack_pos.0, s.rack_pos.1, s.rack_size.0.max(min_w(s)), s.rack_size.1.max(min_h(s)))
 }
 
 /// Where the window paints: its rect and the graph editor, which hangs below it (§14).
 pub fn paint_area(s: &State) -> Rect {
+    if !s.vintage_2005 { return rect(s); }
     match graph_rect(s) {
         Some(g) => rect(s).union(&g.outset(2.0)),
         None => rect(s),
@@ -120,6 +160,7 @@ pub fn paint_area(s: &State) -> Rect {
 /// below the window, §14).
 pub fn bounds(s: &State) -> Rect {
     let r = rect(s).outset(4.0);
+    if !s.vintage_2005 { return r; }
     match graph_rect(s) {
         Some(g) => r.union(&g.outset(2.0)),
         None => r,
@@ -127,8 +168,14 @@ pub fn bounds(s: &State) -> Rect {
 }
 
 /// Inside of the rows panel (§1: border at x 4 and W−6, y 29 and H−30).
-pub fn panel(win: Rect) -> Rect {
-    Rect::span(win.x + 5.0, win.right() - 6.0, win.y + 30.0, win.bottom() - 30.0)
+pub fn panel(s: &State) -> Rect {
+    let win = rect(s);
+    if s.vintage_2005 {
+        Rect::span(win.x + 5.0, win.right() - 6.0, win.y + 30.0, win.bottom() - 30.0)
+    } else {
+        Rect::span(win.x + STUDIO_MARGIN, win.right() - STUDIO_MARGIN,
+            win.y + STUDIO_TITLE_H + STUDIO_RULER_H, win.bottom() - STUDIO_FOOTER_H)
+    }
 }
 
 /// Steps that fit the window width (§3: 16 at the default width, 36 at 819 px).
@@ -157,16 +204,24 @@ pub fn layout(s: &State) -> Vec<RowPos> {
         .into_iter()
         .map(|row| {
             let zipped = s.rack.zipped.contains(&row);
-            let p = RowPos { row, top: y, zipped, pitch: if s.vintage_2005 { 28.0 } else { ROW_H } };
-            y += p.pitch();
+            let p = RowPos { row, top: y, zipped, pitch: row_pitch(s) };
+            y += p.pitch() + graph_lane(s, &p);
             p
         })
         .collect()
 }
 
-/// Height of the shown rows.
+fn graph_lane(s: &State, row: &RowPos) -> f32 {
+    if !s.vintage_2005 && s.rack.graph_open && row.row == s.selected_channel && !row.zipped {
+        STUDIO_GRAPH_H
+    } else {
+        0.0
+    }
+}
+
+/// Height of the shown rows and inline graph editor.
 pub fn rows_h(s: &State) -> f32 {
-    layout(s).iter().map(RowPos::pitch).sum()
+    layout(s).iter().map(|row| row.pitch() + graph_lane(s, row)).sum()
 }
 
 /// Height of all rows plus the padding (content pixels for the vertical scroll bar).
@@ -175,23 +230,23 @@ pub fn content_h(s: &State) -> f32 {
 }
 
 fn scroll(s: &State) -> f32 {
-    let inner = panel(rect(s));
+    let inner = panel(s);
     s.rack_scroll.clamp(0.0, (content_h(s) - inner.h).max(0.0))
 }
 
 /// Screen y of a row's name button top.
 fn row_y(s: &State, p: &RowPos) -> f32 {
-    s.rack_pos.1 + 30.0 + p.top - scroll(s) - 2.0
+    panel(s).y + p.top - scroll(s) - 2.0
 }
 
 /// The channel row at screen y `y` (inside the rows panel), if any.
 pub fn row_at(s: &State, y: f32) -> Option<usize> {
-    let inner = panel(rect(s));
+    let inner = panel(s);
     if y < inner.y || y >= inner.bottom() {
         return None;
     }
     layout(s).into_iter().find(|p| {
-        let band = row_y(s, p) - if s.vintage_2005 {0.0}else{(ROW_H - 22.0) / 2.0};
+        let band = row_y(s, p);
         y >= band && y < band + p.pitch()
     }).map(|p| p.row)
 }
@@ -201,13 +256,17 @@ pub fn name_rect(s: &State, r: usize) -> Option<Rect> {
     let p = layout(s).into_iter().find(|p| p.row == r)?;
     let c = cols(s);
     let ry = row_y(s, &p);
-    Some(Rect::new(s.rack_pos.0 + c.name_x, ry, c.name_w, if s.vintage_2005 { 28.0 } else { 26.0 }))
+    Some(Rect::new(s.rack_pos.0 + c.name_x, ry, c.name_w, if s.vintage_2005 { 28.0 } else { ROW_H - 2.0 }))
 }
 
 /// The step column under screen x `x` (any row), if inside the step area.
 pub fn step_at(s: &State, x: f32) -> Option<u32> {
     let c = cols(s);
-    let f = (x - (s.rack_pos.0 + c.step_x) + sx(s)) / step_width(s);
+    let left = s.rack_pos.0 + c.step_x;
+    if !s.vintage_2005 && (x < left || x >= left + visible_steps(s) as f32 * STEP_W) {
+        return None;
+    }
+    let f = (x - left + sx(s)) / step_width(s);
     (f >= 0.0).then_some(f as u32)
 }
 
@@ -221,7 +280,8 @@ fn sx(s: &State) -> f32 {
 /// Name width that fits the longest channel name (Options > Channel button width > Size to fit).
 pub fn fit_name_w(s: &State) -> f32 {
     let longest = s.project.channels.iter().map(|c| c.name.as_deref().unwrap_or("Channel 00").chars().count()).max().unwrap_or(8);
-    (longest as f32 * 7.5 + 14.0).max(40.0)
+    let routing = if !s.vintage_2005 && s.rack.show_mixer { 24.0 } else { 0.0 };
+    (longest as f32 * 7.5 + 14.0 + routing).max(40.0)
 }
 
 /// Graph editor panel (§14) under the focused row: steps area wide, `GRAPH_H` tall.
@@ -230,6 +290,10 @@ pub fn graph_rect(s: &State) -> Option<Rect> {
         return None;
     }
     let p = layout(s).into_iter().find(|p| p.row == s.selected_channel && !p.zipped)?;
+    if !s.vintage_2005 {
+        let panel = panel(s);
+        return Some(Rect::new(panel.x, row_y(s, &p) + p.pitch(), panel.w - STUDIO_SCROLL_GUTTER, STUDIO_GRAPH_H - 4.0));
+    }
     let c = cols(s);
     let x = s.rack_pos.0 + c.step_x - 2.0;
     let w = visible_steps(s) as f32 * step_width(s) + 3.0;
@@ -247,7 +311,7 @@ pub fn step_columns(s: &State, a: f64, b: f64) -> Vec<Rect> {
         return Vec::new();
     }
     let win = rect(s);
-    let inner = panel(win);
+    let inner = panel(s);
     let x0 = win.x + cols(s).step_x - sx(s);
     let bottom = win.bottom() - 22.0;
     [ka, kb].into_iter().map(|k| Rect::new(x0 + step_width(s) * k as f32 - 2.0, inner.y, step_width(s) + 1.0, bottom - inner.y)).collect()
@@ -255,7 +319,14 @@ pub fn step_columns(s: &State, a: f64, b: f64) -> Vec<Rect> {
 
 /// The bars area of the graph editor (above its tab row).
 pub fn graph_bars(s: &State) -> Option<Rect> {
-    graph_rect(s).map(|g| Rect::new(g.x, g.y + 2.0, g.w, g.h - GRAPH_TABS_H - 4.0))
+    graph_rect(s).map(|g| {
+        if s.vintage_2005 {
+            Rect::new(g.x, g.y + 2.0, g.w, g.h - GRAPH_TABS_H - 4.0)
+        } else {
+            let x = rect(s).x + cols(s).step_x;
+            Rect::new(x, g.y + 4.0, visible_steps(s) as f32 * STEP_W, g.h - 8.0)
+        }
+    })
 }
 
 /// "808 A..omic": shorten in the middle until it fits (§13).
@@ -278,6 +349,9 @@ fn shorten(ui: &mut Ui, f: Font, text: &str, w: f32) -> String {
 }
 
 pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
+    if !s.vintage_2005 {
+        return studio::paint(ui, s, f);
+    }
     let t = ui.t;
     let win = rect(s);
     let (x, y, w, h) = (win.x, win.y, win.w, win.h);
@@ -304,7 +378,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
     title_bar(ui, s, win, c, f);
 
     // Rows panel (§1, §3).
-    let inner = panel(win);
+    let inner = panel(s);
     if t.style.vintage_2005 {
         // The original has a continuous steel body, not a second boxed inset.
         ui.c.fill_rect(Rect::span(x+8.,win.right()-6.,y+32.,inner.bottom()),Color::rgb(0x5f686d));
@@ -428,11 +502,12 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) {
             let col = if ch.color.is_some() { name_c.shade(0.2) } else { name_c };
             if focused { col.shade(0.25) } else { col }
         };
+        midi_glow(ui, s, ch, nb);
         let label = ch.name.clone().unwrap_or_else(|| format!("Channel {}", ch.index + 1));
         let nf = if s.vintage_2005 { Font::vintage(11) } else { Font::new(14) };
         let label = shorten(ui, nf, &label, nb.w - 8.0);
         ui.c.push_clip(nb.inset(1.0));
-        if s.rack.align_left {
+        if s.rack.align_left.unwrap_or(false) {
             let lh = ui.c.line_height(nf);
             ui.c.text(nf, nb.x + if lemon { 9.0 } else { 5.0 }, (nb.cy() - lh / 2.0).round(), col, &label);
         } else {
@@ -813,6 +888,19 @@ fn title_bar(ui: &mut Ui, s: &State, win: Rect, c: Cols, f: &FrameInfo) {
 
 /// One step button (§3): bordered, lighter at the top, a dark dash below the top edge (red at the play position).
 /// `odd`: in an odd colour group (red; a group is a beat of the project's signature, §23).
+fn midi_glow(ui: &mut Ui, s: &State, channel: &os_model::Channel, tile: Rect) {
+    if !channel.enabled || !crate::workspace_visibility::shown(crate::midi_play::RACK_ACTIVITY) {
+        return;
+    }
+    ui.live(Live::MidiRack(channel.index), tile);
+    let level = s.midi_activity.row(channel.index);
+    if level > 0.0 {
+        let blue = Color::rgb(0x84d2ff);
+        ui.c.fill_rrect(tile.inset(1.0), 3.0, blue.with_alpha((53.0 * level) as u8));
+        ui.c.stroke_rrect(tile.inset(0.8), 3.0, 1.4, blue.with_alpha((225.0 * level) as u8));
+    }
+}
+
 fn step_button(ui: &mut Ui, r: Rect, odd: bool, on: bool, past_len: bool, hov: bool, playing: bool) {
     let t = ui.t;
     if t.style.vintage_2005 {

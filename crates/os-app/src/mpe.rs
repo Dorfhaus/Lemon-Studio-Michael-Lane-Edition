@@ -47,6 +47,11 @@ struct Held {
     row: usize,
     src: crate::step_edit::Src,
 }
+impl UiState {
+    pub(crate) fn held_rows(&self) -> impl Iterator<Item = usize> + '_ {
+        self.held.iter().map(|note| note.row)
+    }
+}
 fn selected(s: &State) -> Option<usize> {
     let sel = s.piano.selection(s.pattern, piano::channel(s));
     (sel.len() == 1).then(|| sel[0])
@@ -530,6 +535,7 @@ impl App {
                         row,
                         src,
                     });
+                    self.midi_row_activity(channel);
                 }
                 E::Off { id, velocity, .. } => {
                     if let Some(i) = self

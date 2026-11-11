@@ -21,7 +21,7 @@ pub const PACKS: [Pack; os_theme::appearance::CUSTOM_ICON_PACKS as usize + 1] = 
         round: true,
         badge: 0,
         shadow: false,
-        tint: 0xf4e4b6,
+        tint: 0x2096f3,
     },
     Pack {
         name: "Workshop",
@@ -30,7 +30,7 @@ pub const PACKS: [Pack; os_theme::appearance::CUSTOM_ICON_PACKS as usize + 1] = 
         round: true,
         badge: 0,
         shadow: false,
-        tint: 0xf4e4b6,
+        tint: 0x2096f3,
     },
     Pack {
         name: "Draft",

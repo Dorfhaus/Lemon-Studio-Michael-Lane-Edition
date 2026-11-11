@@ -3035,7 +3035,7 @@ mod tests {
         };
         let at = |t: u64| os_engine::Clock::frame_of_tick(48000, 96, 130.0, t) as usize;
         let first = Clip::new(0, 384, 0, ClipSource::Channel(0));
-        let alone = render(vec![first]);
+        let alone = render(vec![first.clone()]);
         let level = alone[24000];
         assert!(level > 0.1, "{level}");
         let both = render(vec![first, Clip::new(192, 384, 0, ClipSource::Channel(0))]);

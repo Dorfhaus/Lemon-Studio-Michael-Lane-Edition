@@ -11,7 +11,7 @@ Writes:
   crates/os-app/src/logo.rs        the full-colour logo's parts (the startup splash) and the greyscale mark (drawn in
                                    one tint), as absolute M/L/Q/C/Z path data
   crates/os-app/assets/lemonstudio.ico  app icon, 16..256 px (exe, window, taskbar), from the owner's
-                                        bitmap assets/logo/icon-lemon.png (edited in icon-lemon.pdn, Paint.NET)
+                                        bitmap assets/logo/ml-emblem.png
   crates/os-app/assets/lemonstudio.png  the same icon at 256 px (Linux: window icon and desktop entry)
 """
 import importlib.util
@@ -94,7 +94,7 @@ def write_rs():
 def write_icons():
     from PIL import Image
 
-    src = Image.open(os.path.join(ASSETS, "logo", "icon-lemon.png")).convert("RGBA")
+    src = Image.open(os.path.join(ASSETS, "logo", "ml-emblem.png")).convert("RGBA")
     src = src.crop(src.getchannel("A").getbbox())  # no transparent margin: fill the whole icon cell
     side = max(src.size)
     sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))

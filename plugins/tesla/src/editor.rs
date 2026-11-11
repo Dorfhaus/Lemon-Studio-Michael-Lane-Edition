@@ -109,12 +109,12 @@ pub fn load_file(path: &str) -> Result<Sample, String> {
 fn file_stem(title: &str) -> String {
     let t: String = title.chars().map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '_' } else { c }).collect();
     let t = t.trim().trim_end_matches(".wav").trim_end_matches(".WAV").to_string();
-    if t.is_empty() { "Tesla".into() } else { t }
+    if t.is_empty() { "ML Tesla".into() } else { t }
 }
 
 /// Where a sample handed out of the plugin (dragged out, sent to the host) is written.
 fn out_path(title: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("Tesla");
+    let dir = std::env::temp_dir().join("ML Tesla");
     let _ = std::fs::create_dir_all(&dir);
     let stem = file_stem(title);
     let mut p = dir.join(format!("{stem}.wav"));
@@ -1726,7 +1726,7 @@ impl Logic {
         self.hint = match (ok, channel) {
             (true, false) => "Sent to the playlist".into(),
             (true, true) => "Sent to the selected channel".into(),
-            (false, _) => "Sending needs Lemon Studio".into(),
+            (false, _) => "Sending needs ML Studio".into(),
         };
     }
 
@@ -1852,7 +1852,7 @@ impl Logic {
 }
 
 fn about() -> String {
-    format!("Tesla {}: Lemon Studio's audio editor and recorder", env!("CARGO_PKG_VERSION"))
+    format!("Tesla {}: ML Studio's audio editor and recorder", env!("CARGO_PKG_VERSION"))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1945,7 +1945,7 @@ mod win32 {
                 tracking: false,
                 slot: slot.clone(),
             });
-            let title = pw::wide("Tesla");
+            let title = pw::wide("ML Tesla");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),

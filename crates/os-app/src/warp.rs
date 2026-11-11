@@ -1234,7 +1234,7 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
         let color = if f.selection.contains(&src) {
             Color::rgb(0x70dfff)
         } else if f.selected == Some(i) {
-            Color::rgb(0xffdd70)
+            Color::rgb(0x7ac4ff)
         } else {
             Color::rgb(0xdfac50)
         };

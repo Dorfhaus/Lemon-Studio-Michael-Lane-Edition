@@ -1,3 +1,17 @@
+ML Plasma — Gridline / Plasma
+===========================
+Gridline and Plasma by lolitemaultes, GNU GPL v3 (GPL-3.0-only).
+Source: https://github.com/lolitemaultes/Gridline
+Pinned revision: 5ed1fa53f52df0009d2c6294a5e0b6e6861dba35.
+ML adaptation source and original licence texts: plugins/ml-plasma/vendor/gridline.
+ML modifications: separate plugin identity, editor branding/palette and stock embedding.
+The complete matching native source is included in the ML Studio source distribution.
+The embedded payload also carries Gridline's GPL and its vendored dependency notices,
+including Dear ImGui (MIT), CLAP (MIT), SDL2 (zlib), Inter (OFL), JetBrains Mono (OFL),
+Signalsmith (MIT), Rubber Band (GPL), Lua (MIT), and the other original licence texts.
+No Serum code, factory presets or audio assets are bundled. Import compatibility
+uses Gridline Plasma's own importer and synthesis engine; results can differ.
+
 Lemon Hall — Dragonfly / Freeverb3
 ==================================
 Dragonfly Reverb: Copyright (c) 2018 Michael Willis, Rob van den Berg. GPL-3.0-or-later.

@@ -16,7 +16,7 @@ use os_model::{Channel, ChannelKind, Project};
 use crate::plugins::{Plugins, FX_KEY};
 
 /// The built-in plugin's name (picker, window title).
-pub const LEMON_TRIO: &str = "Lemon Trio";
+pub const LEMON_TRIO: &str = "ML Trio";
 /// The plugin id project files store for it (event 201).
 pub const FILE_NAME: &str = "3x Osc";
 

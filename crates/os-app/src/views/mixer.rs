@@ -56,9 +56,65 @@ pub fn channel_width(s:&State,n:u16)->f32{
     let base=strip_width(s);
     if mx::view(s)==crate::rack_mixer::VIEW && crate::rack_mixer::slot(s,n).is_some(){s.mixer.rack_auto_width.get(&n).copied().unwrap_or(base).max(32.)}else{base}
 }
-pub fn channel_offset(s:&State,n:u16)->f32{
-    if mx::view(s)!=crate::rack_mixer::VIEW{return strip_width(s)*f32::from(n.saturating_sub(1));}
-    (1..n).map(|n|channel_width(s,n)).sum()
+const SEPARATOR_WIDTH: f32 = 6.0;
+const SEPARATOR_GUTTER: f32 = SEPARATOR_WIDTH + 3.0;
+
+#[derive(Clone, Copy)]
+struct InsertSlot {
+    offset: f32,
+    gutter: f32,
+    width: f32,
+}
+
+impl InsertSlot {
+    fn left(self) -> f32 { self.offset + self.gutter }
+    fn right(self) -> f32 { self.left() + self.width }
+    fn center(self) -> f32 { self.left() + self.width / 2.0 }
+}
+
+struct InsertBank {
+    slots: Vec<InsertSlot>,
+    end: f32,
+    master_separator: bool,
+}
+
+impl InsertBank {
+    fn new(s: &State) -> Self {
+        let names = if s.vintage_2005 { Vec::new() } else { mx::separator_names() };
+        let mut end = 0.0;
+        let slots = (1..=mx::inserts(s)).map(|n| {
+            let gutter = if !s.vintage_2005 && mx::has_separator_named(s, n, &names) {
+                SEPARATOR_GUTTER
+            } else { 0.0 };
+            let slot = InsertSlot { offset: end, gutter, width: channel_width(s, n) };
+            end = slot.right();
+            slot
+        }).collect();
+        let master_separator = !s.vintage_2005 && mx::has_separator_named(s, 0, &names);
+        Self { slots, end, master_separator }
+    }
+
+    fn get(&self, n: u16) -> Option<InsertSlot> {
+        n.checked_sub(1).and_then(|i| self.slots.get(usize::from(i))).copied()
+    }
+
+    fn visible(&self, scroll: f32, width: f32) -> impl Iterator<Item = (u16, InsertSlot)> + '_ {
+        self.slots.iter().copied().enumerate()
+            .filter(move |(_, slot)| slot.right() > scroll && slot.offset < scroll + width)
+            .map(|(i, slot)| (i as u16 + 1, slot))
+    }
+}
+
+pub(crate) fn channel_span(s: &State, n: u16) -> (f32, f32) {
+    let bank = InsertBank::new(s);
+    bank.get(n).map_or_else(
+        || (if n == 0 { 0.0 } else { bank.end }, strip_width(s)),
+        |slot| (slot.offset, slot.gutter + slot.width),
+    )
+}
+
+pub fn channel_offset(s: &State, n: u16) -> f32 {
+    channel_span(s, n).0
 }
 pub fn fader_per_px(s: &State,track:u16) -> f64 {
     let r=super::frame_rects(s,Win::Mixer,s.win_rect(Win::Mixer)).0;
@@ -173,7 +229,7 @@ impl Ly {
 
 fn channel_lock(ui: &mut Ui, s: &State, track: u16, rect: Rect) {
     if !crate::workspace_visibility::shown("visible_mixer-channel-lock") || mx::track(s, track).is_none() { return; }
-    let channel_locked = mx::locked(s, track);
+    let channel_locked = mx::individually_locked(s, track);
     let group_locked = mx::group_locked(s, track);
     let locked = channel_locked || group_locked;
     let hint = match (group_locked, channel_locked) {
@@ -189,7 +245,7 @@ fn channel_lock(ui: &mut Ui, s: &State, track: u16, rect: Rect) {
     }
     // These are status colours, so theme accents cannot make the two locks look the same.
     let ink = if group_locked { Color::rgb(0xff5656) }
-        else if channel_locked { Color::rgb(0xffd44d) } else if hot { t.text } else { t.text_dim };
+        else if channel_locked { Color::rgb(0x2096f3) } else if hot { t.text } else { t.text_dim };
     super::playlist::draw_padlock(ui.c, rect.cx(), rect.cy(), (rect.w / 14.).min(0.86), ink, locked);
 }
 
@@ -231,7 +287,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let fill = if ui.mixer_finish == Finish::Theme { ui.t.mixer_bg } else { ui.t.s(0x232527) };
     ui.c.fill_rect(Rect::new(r.x, client.y, r.w - panel_w, client.h), fill);
     ui.hit(strips, Action::MixerArea, "Mixer");
-    let inserts = mx::inserts(s);
+    let bank = InsertBank::new(s);
     let bottom = r.bottom();
 
     // Fixed master strip; inserts scroll immediately beside it.
@@ -250,32 +306,37 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let lemon = super::lemon(ui);
     let area = Rect::new(r.x + 9.0 + width, client.y, strips.w - 9.0 - width, client.h);
     ui.c.fill_rect(Rect::new(r.x + width, client.y, 9.0, client.h), ui.t.s(0x1a1e20));
-    for k in 0..3 {
-        ui.c.fill_rect(Rect::new(r.x + 4.0 + width, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
-    }
-    ui.c.push_clip(area);
-    let mut end=0.;
-    let mut visible=Vec::new();
-    for n in 1..=inserts {
-        let x=end-s.mixer_scroll;
-        let w=channel_width(s,n);
-        if x+w>0. && x<area.w{visible.push((n,area.x+x));}
-        end+=w;
-    }
-    for &(n,left) in &visible {
-        if mx::view(s) == mx::WIDE {
-            let bounds=Rect::new(left,client.y,channel_width(s,n),client.h);
-            ui.part(crate::app::Seg::MixerStrip(n as u16),bounds,|ui|strip(ui,s,n as u16,left,bottom,f,&ly));
-        } else {
-            strip(ui,s,n as u16,left,bottom,f,&ly);
+    if bank.master_separator {
+        let top = ly.y(HEAD_Y0);
+        console_skin::separator(ui, Rect::new(r.x + width + 1.0, top, SEPARATOR_WIDTH, bottom - top - 16.0));
+    } else {
+        for k in 0..3 {
+            ui.c.fill_rect(Rect::new(r.x + 4.0 + width, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
         }
     }
-    // Narrow boundary targets reveal an insertion button only while hovered.
-    for &(n,x) in &visible {
-        insertion_button(ui,s,area,bottom-ROUTING_DECK_H,n as u16,x);
+    ui.c.push_clip(area);
+    let origin = area.x - s.mixer_scroll;
+    for (n, slot) in bank.visible(s.mixer_scroll, area.w) {
+        let paint = |ui: &mut Ui| {
+            if slot.gutter > 0.0 {
+                let top = ly.y(HEAD_Y0);
+                console_skin::separator(ui, Rect::new(origin + slot.offset, top, SEPARATOR_WIDTH, bottom - top - 16.0));
+            }
+            strip(ui, s, n, origin + slot.left(), bottom, f, &ly);
+        };
+        if mx::view(s) == mx::WIDE {
+            let bounds = Rect::new(origin + slot.offset, client.y, slot.gutter + slot.width, client.h);
+            ui.part(crate::app::Seg::MixerStrip(n), bounds, paint);
+        } else {
+            paint(ui);
+        }
+    }
+    // The insertion target remains at the start of the separator/channel slot.
+    for (n, slot) in bank.visible(s.mixer_scroll, area.w) {
+        insertion_button(ui, s, area, bottom - ROUTING_DECK_H, n, origin + slot.offset);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
-    let px = area.x + end - s.mixer_scroll + 14.0;
+    let px = origin + bank.end + 14.0;
     let pb = Rect::new(px - 9.0, ly.y(HANDLE_0DB) - 9.0, 18.0, 18.0);
     if px < area.right() + 10.0 {
         let hov = ui.hit(pb, Action::Mix(MHit::Add), "Add more tracks");
@@ -290,7 +351,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     strip(ui, s, 0, r.x, bottom, f, &ly);
 
     if crate::workspace_visibility::shown("visible_mixer-cables") {
-        cables(ui, s, strips, area, bottom);
+        cables(ui, s, strips, area, bottom, &bank);
     } else {
         s.cables.borrow_mut().clear();
     }
@@ -299,26 +360,30 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let footer = Rect::new(strips.x, bottom - 26.0, strips.w, 26.0);
     ui.hit(footer, Action::Swallow, "Mixer scroll area");
     let sb = Rect::new(area.x, footer.y, area.w, footer.h);
-    crate::views::scrollbar(ui, sb, false, s.mixer_scroll, area.w, end+width, crate::app::Scroll::MixerX);
+    ui.live(Live::MixerScroll, area.union(&sb));
+    crate::views::scrollbar(ui, sb, false, s.mixer_scroll, area.w, bank.end + width, crate::app::Scroll::MixerX);
 
-    slot_panel(ui, s, inspector);
+    ui.part(crate::app::Seg::MixerInspector, inspector, |ui| slot_panel(ui, s, inspector));
     window_buttons(ui, Win::Mixer, full_title.right() - 58.0, full_title.y, ui.t.tx(0xd4dade), ui.t.tx(0xffffff));
     resize_zones(ui, s, Win::Mixer, outer);
 }
 
 /// The routing cables (spec: ui/mixer.md §5): one from the current track's ⬇ into each of its send knobs, sagging
 /// and swinging (crate::cable). Sockets on strips scrolled out of view still hold their cable's end.
-fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32) {
+fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32, bank: &InsertBank) {
     let width = strip_width(s);
     let socket_x = |n: u16| match n {
         0 => strips.x + width / 2.0,
-        n => area.x + channel_offset(s,n) - s.mixer_scroll + channel_width(s,n) / 2.0,
+        n => area.x - s.mixer_scroll + bank.get(n).map_or(0.0, InsertSlot::center),
     };
     // Each cable is plugged in under the middle of its ⬇ and its knob, which are drawn again over the cables' ends.
     let (ay, ky) = (bottom - 38.0, bottom - 40.0);
     let cur = s.selected_mixer;
     let from = (socket_x(cur), ay);
     let sends: Vec<(u16, f64)> = (0..=mx::inserts(s)).filter(|&n| n != cur).filter_map(|n| Some((n, mx::send(s, cur, n)?))).collect();
+    if sends.iter().any(|&(n, _)| cur == 0 || n == 0) {
+        master_cable_scroll_region(ui, s, strips, area, bottom);
+    }
     if s.vintage_2005 {
         s.cables.borrow_mut().clear();
         if crate::workspace_visibility::shown("visible_mixer-cables") {
@@ -365,6 +430,12 @@ fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32) {
         send_knob(ui, s, n, socket_x(n), ky, level);
         ui.c.pop_clip();
     }
+}
+
+/// Master cables can cross the fixed strip and gutter. Vintage cables stay in the routing deck.
+fn master_cable_scroll_region(ui: &mut Ui, s: &State, strips: Rect, inserts: Rect, bottom: f32) {
+    let top = if s.vintage_2005 { strips.y.max(bottom - 56.0) } else { strips.y };
+    ui.live(Live::MixerScroll, Rect::new(strips.x, top, inserts.x - strips.x, bottom - top));
 }
 
 fn title_tools(ui: &mut Ui, s: &State, r: Rect) {
@@ -488,7 +559,7 @@ fn meter_bar(ui: &mut Ui, x: f32, w: f32, bottom: f32, db: f32, hold: f32, cfg: 
     let edge = cfg.v[k::EDGE];
     // Zone colours at the zone's top and bottom (measured 0xa0db40 / 0xb6db4d, 0xeec757 / 0xfac050).
     let green = (ui.t.a(0xa0db40), ui.t.a(0xb6db4d));
-    let yellow = (ui.t.h(0xeec757), ui.t.h(0xfac050));
+    let yellow = (Color::rgb(0xeec757), Color::rgb(0xfac050));
     let red = (t.meter_clip, t.meter_clip);
     let y_yel = ys(cfg.v[k::YELLOW_DB]);
     let y_red = ys(cfg.v[k::RED_DB].max(cfg.v[k::YELLOW_DB]));
@@ -607,7 +678,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
             if console && selected {
                 if ui.mixer_finish==Finish::Original {
                     original::button(ui,Rect::new(hr.cx()-14.,hr.y+2.,28.,hr.h-4.),true,false,Color::rgb(0x999c76));
-                } else {ui.c.stroke_rrect(hr.inset(1.),3.,1.,Color::rgb(0xe4c74f));}
+                } else {ui.c.stroke_rrect(hr.inset(1.),3.,1.,Color::rgb(0x2096f3));}
             } else if selected && lemon {
                 lk::lit_in(ui.c, ui.t, Rect::new(hr.x + 3.0, hr.y + 2.0, hr.w - 6.0, hr.h - 4.0), lk::r_btn(t), false);
             } else if selected {
@@ -808,7 +879,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     }
     if selected && console && !t.style.vintage_2005 && ui.mixer_finish != Finish::Original {
         let unity_y = position(0.8);
-        ui.c.fill_rect(Rect::new(mx-1.,hy.min(unity_y),2.,(hy-unity_y).abs()), Color::rgb(0xe8c74f));
+        ui.c.fill_rect(Rect::new(mx-1.,hy.min(unity_y),2.,(hy-unity_y).abs()), Color::rgb(0x2096f3));
     } else if selected && !t.style.vintage_2005 {
         if lemon {
             ui.c.fill_rrect(Rect::new(mx - 1.5, hy, 3.0, track_y1 - hy), 1.5, t.accent);
@@ -832,7 +903,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     } else {
         ui.c.fill_rrect(fx_button, 3.0, if fx_on { ui.t.a(0x465d49) } else { ui.t.s(0x272d30) });
         ui.c.stroke_rrect(fx_button, 3.0, 1.0, if fx_hover { ui.t.accent } else { ui.t.s(0x64776a) });
-        if console {console_skin::button(ui,fx_button,fx_on,fx_hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x90ae75} else {0xe8c74f}));}
+        if console {console_skin::button(ui,fx_button,fx_on,fx_hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x90ae75} else {0x2096f3}));}
         ui.c.text_center(console_font(ui,s,11), fx_button, if console && fx_on {Color::rgb(0x161a1d)}else if fx_on { ui.t.tx(0xe4efd8) } else { ui.t.text_dim }, "FX");
     }
     // One aligned navigation column, visually separate from record arm and FX.
@@ -874,7 +945,7 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         let hover = ui.hit(all, Action::Mix(MHit::AllEffects), if on { "Bypass ALL mixer effects (keeps your individual choices)" } else { "Restore ALL mixer effects to your previous choices" });
         ui.c.fill_rrect(all, 3.0, if on { ui.t.a(0x50694a) } else { ui.t.s(0x665037) });
         ui.c.stroke_rrect(all, 3.0, 1.0, if hover { ui.t.accent } else { ui.t.s(0x899182) });
-    if console {console_skin::button(ui,all,on,hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x9caf75} else {0xe8c74f}));}
+    if console {console_skin::button(ui,all,on,hover,Color::rgb(if ui.mixer_finish==Finish::Original {0x9caf75} else {0x2096f3}));}
         ui.c.text_center(console_font(ui,s,10), all, if console && on {Color::rgb(0x161a1d)}else{ui.t.tx(0xe4efd8)}, if on { "ALL FX" } else { "FX OFF" });
     }
     if !master {
@@ -925,9 +996,10 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         if full && t.style.vintage_2005 { Color::rgb(0x92a2a7) } else { ui.t.accent }
     } else { ui.t.s(0x464f54) };
     ui.c.stroke_rrect(Rect::new(left + 0.75, top + 0.75, width - 1.5, height - 1.5), 0.0, 1.0, border);
-    if mx::has_separator(s, n) {
-        if vintage_full {crate::vintage::mixer_divider(ui.c,Rect::new(left,top,6.,height));}
-        else if console {console_skin::separator(ui,Rect::new(left,top,6.,height));}else{ui.c.fill_rect(Rect::new(left, top, 6.0, height), ui.t.s(0x919da3));}
+    if s.vintage_2005 && mx::has_separator(s, n) {
+        if vintage_full { crate::vintage::mixer_divider(ui.c, Rect::new(left, top, SEPARATOR_WIDTH, height)); }
+        else if console { console_skin::separator(ui, Rect::new(left, top, SEPARATOR_WIDTH, height)); }
+        else { ui.c.fill_rect(Rect::new(left, top, SEPARATOR_WIDTH, height), ui.t.s(0x919da3)); }
     }
 
 }
@@ -1103,10 +1175,17 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         ui.hit(Rect::new(row.right() - 18.0, row.y, 18.0, row.h), Action::Mix(MHit::SlotLed(k)), "Mute / solo  (ctrl)0..9");
         led(ui, row.right() - 10.0, row.cy(), track.is_none_or(|m| m.slot_on[k as usize]));
     }
-    let add=Rect::new(r.x+3.,r.y+61.+300.*kp,r.w-6.,28.*kp);
+    let mut add=Rect::new(r.x+3.,r.y+61.+300.*kp,r.w-6.,28.*kp);
+    if crate::workspace_visibility::shown(mx::DELETE_EXTRA_SLOT_VISIBILITY) && mx::has_extra_slot(s, n) {
+        add.w -= 25.0;
+        let delete = Rect::new(add.right() + 2.0, add.y, 23.0, add.h);
+        let hover = ui.hit(delete, Action::Mix(MHit::DeleteExtraSlot), mx::DELETE_EXTRA_SLOT_HINT);
+        ui.c.fill_rect(delete, if hover { t.button } else { ui.t.s(0x24292a) });
+        ui.c.text_center(console_font(ui, s, 12), delete, t.text, "−");
+    }
     let hover=ui.hit(add,Action::Mix(MHit::AddSlot),"Add another effect slot (up to 63)");
     ui.c.fill_rect(add,if hover {t.button}else{ui.t.s(0x24292a)});
-    ui.c.text(console_font(ui,s,12),add.x+6.,add.y+2.,t.text,&format!("+  Add slot       {}–{} / {}",first+1,(first+10).min(count),count));
+    ui.c.text_clip(console_font(ui,s,12),add.x+6.,add.y+2.,add.w-12.,t.text,&format!("+  Add slot       {}–{} / {}",first+1,(first+10).min(count),count));
     let sep = r.y + 61.0 + 330.0 * kp;
     ui.c.fill_rect(Rect::new(r.x, sep, r.w, 1.0), ui.t.s(0x1f2224));
 
@@ -1368,7 +1447,7 @@ fn channel_controls(ui:&mut Ui,s:&State,n:u16,active:Option<KnobId>,r:Rect) {
             ui.c.fill_rect(box_r.inset(2.0), Color::rgb(0x26383c));
             Color::rgb(0xc4d9cf)
         } else {
-            ui.c.fill_rrect(box_r,3.,Color::rgb(0xe8c74f));
+            ui.c.fill_rrect(box_r,3.,Color::rgb(0x2096f3));
             Color::rgb(0x171717)
         };
         ui.c.push_clip(box_r);
@@ -1461,8 +1540,12 @@ pub(crate) fn vertical_panes(s:&State,outer:Rect)->Vec<crate::rack_mixer::Pane>{
     let r=super::frame_rects(s,Win::Mixer,outer).0;if r.h<2.*TITLE_H{return vec![];}
     let width=strip_width(s);let left=s.vintage_2005 || mx::inspector_left();let x=r.x+if left{221.}else{0.};
     let area=Rect::new(x+9.+width,r.y+TITLE_H,r.w-221.-9.-width-7.,r.h-TITLE_H);let ly=Ly::for_state(r,s);
-    let mut x=area.x-s.mixer_scroll;
-    (1..=mx::inserts(s)).filter_map(|n|{let w=channel_width(s,n);let rect=vertical_rect(x,w,&ly);x+=w;let clip=rect.intersect(&area);(!clip.is_empty()).then_some(crate::rack_mixer::Pane{track:n,rect,clip})}).collect()
+    let bank = InsertBank::new(s);
+    bank.visible(s.mixer_scroll, area.w).filter_map(|(n, slot)| {
+        let rect = vertical_rect(area.x - s.mixer_scroll + slot.left(), slot.width, &ly);
+        let clip = rect.intersect(&area);
+        (!clip.is_empty()).then_some(crate::rack_mixer::Pane { track: n, rect, clip })
+    }).collect()
 }
 
 pub(crate) fn vertical_pane_height(outer:Rect)->f32{{let mut ly=Ly::new(outer);ly.compression=STRIP_FADER_COMPRESSION;vertical_rect(0.,128.,&ly).h}}

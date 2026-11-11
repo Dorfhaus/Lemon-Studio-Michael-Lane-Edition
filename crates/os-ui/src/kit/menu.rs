@@ -110,6 +110,19 @@ pub fn app_font(t: &Palette, size: u16) -> Font {
     if t.style.vintage_2005 { Font::vintage(size) } else { Font::new(size + 2) }
 }
 
+/// Shortcuts use the same upright lettering as their row in the modern theme.
+pub fn app_shortcut_font(t: &Palette, font: Font) -> Font {
+    if super::lemon::on(t) { font } else { font.italic() }
+}
+
+pub fn app_row_text_y(c: &mut Canvas, t: &Palette, row: Rect, font: Font, legacy_offset: f32) -> f32 {
+    if super::lemon::on(t) {
+        (row.cy() - c.line_height(font) / 2.0).round()
+    } else {
+        row.y + legacy_offset + (row.h - ROW) / 2.0
+    }
+}
+
 /// Raised steel border with square corners and a device-pixel bevel.
 pub fn vintage_frame(c: &mut Canvas, t: &Palette, r: Rect, m: &Metrics) {
     c.fill_rect(r, t.menu_pop_border);

@@ -641,7 +641,7 @@ mod public_tests {
                 settings.knobs[r::DECAY]=match label {"VERB LONG"=>32,"VERB SHORT"=>7,"VOCAL VERB"=>18,"ANALOG VERB"=>16,_=>12};
                 settings.knobs[r::PREDELAY]=match label {"VERB LONG"=>10,"VOCAL VERB"=>12,_=>3};
                 settings.knobs[r::ROOM]=if label=="VERB SHORT" {30}else{70};
-                m.slots[0]=Some(slot("Lemon Reverb",lemon_reverb::params::plugin_state_from_fl(&settings.to_state())));
+                m.slots[0]=Some(slot("ML Reverb",lemon_reverb::params::plugin_state_from_fl(&settings.to_state())));
                 if label=="VOCAL VERB" {
                     let mut raw=lemon_limiter::params::default_state();
                     let mut values=c::DEFAULTS;values[c::LIM_ATT]=0;values[c::CEILING]=2000;
@@ -649,7 +649,7 @@ mod public_tests {
                     values[c::COMP_ATT]=2000;values[c::COMP_REL]=8000;
                     for (k,v) in values.into_iter().enumerate(){raw[(k+1)*4..(k+2)*4].copy_from_slice(&v.to_le_bytes());}
                     raw[164..168].copy_from_slice(&1i32.to_le_bytes());
-                    let mut fx=slot("Lemon Limiter",lemon_limiter::params::plugin_state_from_fl(&raw));
+                    let mut fx=slot("ML Limiter",lemon_limiter::params::plugin_state_from_fl(&raw));
                     fx.state=os_flp::wrapper::set_input_port(&fx.state,1,port as i32).unwrap();m.slots[1]=Some(fx);
                 }
             } else if ["SLAP","1/8","1/4","1/2"].contains(&label) {
@@ -658,7 +658,7 @@ mod public_tests {
                 settings.v[d::SYNC]=if label=="SLAP" {0}else{1};
                 settings.v[d::TIME]=match label {"1/8"=>96,"1/4"=>192,"1/2"=>384,_=>339};
                 settings.v[d::FEEDBACK]=if label=="SLAP" {576}else{1440};settings.v[d::CUTOFF]=4500;settings.v[d::RESONANCE]=0;
-                m.slots[0]=Some(slot("Lemon Delay",lemon_delay::params::plugin_state_from_fl(&settings.to_state())));
+                m.slots[0]=Some(slot("ML Delay",lemon_delay::params::plugin_state_from_fl(&settings.to_state())));
             }
         }
         let bytes=os_flp::project::create(&p).unwrap().to_bytes().unwrap();
@@ -674,18 +674,18 @@ mod public_tests {
         let mut plugins=crate::plugins::Plugins::builtins();let mut count=0;
         for m in &p.mixer {for (k,fx) in m.slots.iter().enumerate().filter_map(|(k,s)|s.as_ref().map(|s|(k,s))) {
             let reference=os_flp::wrapper::decode(&fx.state).unwrap();assert!(!reference.path.contains(':'));
-            assert!(["Lemon Reverb","Lemon Delay","Lemon Limiter"].contains(&reference.name.as_str()));
+            assert!(["ML Reverb","ML Delay","ML Limiter"].contains(&reference.name.as_str()));
             let index=plugins.effects.iter().position(|a|a.desc.name==reference.name).unwrap();
             plugins.create_effect(m.index,k as u8,index,Some(&reference.state)).unwrap();
             let label=m.name.as_deref().unwrap();
-            if reference.name=="Lemon Delay" {
+            if reference.name=="ML Delay" {
                 let raw=lemon_delay::params::fl_from_plugin_state(&reference.state).unwrap();let settings=d::Settings::from_state(&raw).unwrap();
                 if label!="SLAP" {assert_eq!(settings.v[d::TYPE],d::PING_PONG);assert_eq!(settings.v[d::SYNC],1);
                     let beats=match label {"1/8"=>0.5,"1/4"=>1.0,"1/2"=>2.0,_=>panic!()};
                     for bpm in [90.0,120.0,150.0] {assert!((d::delay_seconds(d::norm(d::TIME,settings.v[d::TIME]),true,bpm)-beats*60.0/bpm).abs()<1e-7);}
                 }
             }
-            if reference.name=="Lemon Limiter" {
+            if reference.name=="ML Limiter" {
                 let ports=os_flp::wrapper::input_ports(&fx.state);assert!(ports[1]>0);
                 let incoming:Vec<_>=p.mixer.iter().filter(|t|t.index!=m.index&&t.routes.contains(&m.index)).collect();
                 assert_eq!(incoming[ports[1] as usize-1].name.as_deref(),Some("Vocal Mix"));

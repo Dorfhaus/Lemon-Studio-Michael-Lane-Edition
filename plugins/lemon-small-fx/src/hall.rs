@@ -334,7 +334,7 @@ fn space(c: &mut Canvas, r: Rect, v: &[i32]) {
     }
 }
 pub const SPEC: &Spec = &Spec {
-    name: "Lemon Hall",
+    name: "ML Hall",
     word: "HALL",
     about: "Hall reverb powered by Dragonfly / Freeverb3 — GPL-3.0-or-later",
     settings: &SETTINGS,

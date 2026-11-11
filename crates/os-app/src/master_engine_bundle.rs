@@ -21,7 +21,8 @@ pub fn bundle_path() -> Option<PathBuf> {
 }
 fn safe_path(name: &str) -> Result<&Path, String> {
     let p = Path::new(name);
-    if name.contains('\\') || name.contains(':') || !name.starts_with("Lemon Master Assistant.vst3/")
+    let bundle = name.split_once('/').map(|(bundle, _)| bundle);
+    if name.contains('\\') || name.contains(':') || !matches!(bundle, Some(super::FILE | super::LEGACY_FILE))
         || !p.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
         return Err("Invalid engine path".into());
     }
@@ -45,10 +46,15 @@ fn unpack(bytes: &[u8], root: &Path) -> Result<PathBuf, String> {
         return Err("Engine platform does not match this application".into());
     }
     if zip.len() != manifest.files.len() + 1 { return Err("Unexpected engine files".into()) }
-    for e in &manifest.files { safe_path(&e.path)?; }
+    let bundle = safe_path(&manifest.files[0].path)?.components().next().unwrap().as_os_str();
+    for e in &manifest.files {
+        if !safe_path(&e.path)?.starts_with(Path::new(bundle)) {
+            return Err("Engine manifest contains more than one bundle".into());
+        }
+    }
     let hash = format!("{:x}", Sha256::digest(bytes));
     let dest = root.join(&hash);
-    if verified(&dest, &manifest.files) { return Ok(dest.join(super::FILE)) }
+    if verified(&dest, &manifest.files) { return Ok(dest.join(bundle)) }
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     // Each process writes its own staging directory. A complete validated directory is renamed atomically.
     let stage = root.join(format!("{hash}-{}.tmp", std::process::id()));
@@ -75,7 +81,7 @@ fn unpack(bytes: &[u8], root: &Path) -> Result<PathBuf, String> {
     if let Err(e) = fs::rename(&stage, &dest) {
         if !verified(&dest, &manifest.files) { return Err(e.to_string()) }
     }
-    Ok(dest.join(super::FILE))
+    Ok(dest.join(bundle))
 }
 #[cfg(test)]
 mod tests {
@@ -86,6 +92,7 @@ mod tests {
             assert!(safe_path(p).is_err());
         }
         assert!(safe_path("Lemon Master Assistant.vst3/Contents/x86_64-win/Lemon Master Assistant.vst3").is_ok());
+        assert!(safe_path("ML Master Assistant.vst3/Contents/x86_64-win/ML Master Assistant.vst3").is_ok());
     }
     #[test]
     fn embedded_release_can_extract_and_reuse() {

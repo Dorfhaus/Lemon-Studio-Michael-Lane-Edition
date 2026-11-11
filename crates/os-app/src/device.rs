@@ -47,7 +47,7 @@ pub(crate) fn heal_sound_server() {
     #[cfg(target_os = "linux")]
     if !cfg!(test) || HEAL_IN_TESTS.load(Ordering::Relaxed) {
         for card in sound_server::heal() {
-            eprintln!("sound server: opened {card} again (it gave up while Lemon Studio had it through ALSA)");
+            eprintln!("sound server: opened {card} again (it gave up while ML Studio had it through ALSA)");
         }
     }
 }

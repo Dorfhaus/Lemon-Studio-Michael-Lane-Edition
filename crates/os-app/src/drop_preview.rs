@@ -482,7 +482,7 @@ pub fn paint(ui: &mut crate::app::Ui, s: &State, g: &pl::PGeom) {
     if s.sample_drop.surface != s.native_view {
         return;
     }
-    let lemon = Color::rgb(0xffdc58);
+    let lemon = Color::rgb(0x2096f3);
     for (n, p) in s.sample_drop.plan.iter().enumerate() {
         let x = g.x_of(p.tick as f32);
         let right = g.x_of(p.tick.saturating_add(p.length) as f32);
@@ -542,7 +542,7 @@ pub fn paint(ui: &mut crate::app::Ui, s: &State, g: &pl::PGeom) {
                         px,
                         body.cy() - lo.clamp(-1., 1.) * body.h * 0.42,
                         1.,
-                        Color::rgb(0xfff2b5).with_alpha(175),
+                        Color::rgb(0x7ac4ff).with_alpha(175),
                     );
                 }
             }
@@ -553,7 +553,7 @@ pub fn paint(ui: &mut crate::app::Ui, s: &State, g: &pl::PGeom) {
             r.x.max(g.grid.x) + 6.,
             r.y + 1.,
             (r.right() - r.x.max(g.grid.x) - 10.).max(0.),
-            Color::rgb(0xfff5ce),
+            Color::rgb(0xc6e6ff),
             name,
         );
         ui.c.pop_clip();

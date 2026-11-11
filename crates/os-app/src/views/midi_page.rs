@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! Settings > MIDI's own rows, drawn: the output and input device lists and the selected device's options, the sync
+//! Settings > MIDI's controller list and Advanced rows: the output and input lists, device options, the sync
 //! offsets, the link combos with their curve buttons, External clock sync and its status line, and the mapping curve
 //! window. The page's plain checks, combos and channel boxes are `crate::prefs` declarations drawn by
 //! `super::settings`; what the rows do is `App::midi_page_act`.
@@ -14,11 +14,15 @@ use os_ui::{Color, Font, Rect};
 
 use super::settings::{grey, led, value_red, SAct};
 use crate::app::{Action, State, Ui};
+use crate::controller::Transport;
 use crate::midi_cfg::{self as cfg, Curve, CurveOf, Offset};
+use crate::prefs::language::Language;
 
 /// The MIDI page's rows of its own (`super::settings::Row::Midi`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MRow {
+    Controller(usize),
+    NoControllers,
     Outputs,
     /// The selected output's Send master sync, Send all notes off and Port.
     OutOptions,
@@ -27,6 +31,9 @@ pub enum MRow {
     Inputs,
     /// The selected input's Enable and Port.
     InOptions,
+    Transport,
+    ControllerOptions,
+    Monitor(bool),
     /// A link combo with its curve button.
     Link(CurveOf),
     ExtSync,
@@ -46,9 +53,13 @@ impl MRow {
 
     pub fn height(&self) -> f32 {
         match self {
+            MRow::Controller(_) | MRow::NoControllers => 38.0,
             MRow::Outputs => LIST_HEAD + ROW_H * OUT_ROWS as f32 + 10.0,
             MRow::Inputs => LIST_HEAD + ROW_H * IN_ROWS as f32 + 10.0,
             MRow::OutOptions | MRow::InOptions | MRow::Offset(_) | MRow::Link(_) | MRow::ExtSync => 27.0,
+            MRow::Transport => 130.0,
+            MRow::ControllerOptions => 58.0,
+            MRow::Monitor(open) => if *open { 112.0 } else { 29.0 },
             MRow::Status => 20.0,
         }
     }
@@ -57,11 +68,21 @@ impl MRow {
 /// What a click on one of the rows does (`SAct::Midi`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MAct {
+    View(bool),
+    ToggleController(usize),
     /// Selects list row i.
     Output(usize),
     Input(usize),
     /// An input row's power icon: switches it on or off.
     Power(usize),
+    ListScroll(bool, i8),
+    Learn(Transport),
+    ClearBinding(Transport),
+    InputRole,
+    OneShot,
+    PairOutput(bool),
+    Monitor,
+    Preset(bool),
     OutSync,
     OutNotesOff,
     /// The selected device's Port box (the wheel and a drag step it; right-click resets).
@@ -97,11 +118,34 @@ pub struct CurveEdit {
 
 const LIST_HEAD: f32 = 18.0;
 const ROW_H: f32 = 17.0;
-const OUT_ROWS: usize = 5;
-const IN_ROWS: usize = 7;
+pub(crate) const OUT_ROWS: usize = 5;
+pub(crate) const IN_ROWS: usize = 7;
 
 fn act(m: MAct) -> Action {
     Action::Settings(SAct::Midi(m))
+}
+
+/// Normal / Advanced stays in the title bar while the settings page scrolls.
+pub(super) fn paint_view_switch(ui: &mut Ui, close: Rect, advanced: bool) {
+    let t = ui.t;
+    let language = Language::current();
+    let right = close.x - 8.0;
+    for (mode, label, x, w) in [
+        (false, "Normal", right - 156.0, 70.0),
+        (true, "Advanced", right - 84.0, 84.0),
+    ] {
+        let r = Rect::new(x, close.y - 1.0, w, 22.0);
+        let on = mode == advanced;
+        let hov = !on && ui.hit(r, act(MAct::View(mode)), language.text(label));
+        let ink = if on {
+            lk::lit_in(ui.c, t, r, lk::r_btn(t), false);
+            lk::ink_on_lit(t)
+        } else {
+            button_face(ui, r, hov);
+            t.text
+        };
+        ui.c.text_center(Font::new(12), r, ink, language.text(label));
+    }
 }
 
 fn port_text(p: Option<u8>) -> String {
@@ -117,6 +161,35 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
     let ty = (cy - ui.c.line_height(f) / 2.0).round();
     let p = &s.midi;
     match m {
+        MRow::Controller(i) => {
+            let Some(input) = p.inputs.get(i) else { return };
+            let on = cfg::input(&input.name).enabled;
+            let language = Language::current();
+            let label = language.text(if on { "Enabled" } else { "Disabled" });
+            let row = Rect::new(g.x + 8.0, y + 2.0, g.w - 16.0, h - 4.0);
+            let hint = if input.failed {
+                "MIDI input unavailable. Click to disable."
+            } else if on {
+                "Disable MIDI input"
+            } else {
+                "Enable MIDI input"
+            };
+            let track = Rect::new(row.right() - 45.0, cy - 8.0, 33.0, 16.0);
+            let label_x = track.x - 10.0;
+            let label_w = ui.c.text_width(f, label);
+            let control = Rect::span(label_x - label_w - 10.0, row.right(), row.y, row.bottom());
+            let hovered = ui.hit(control, act(MAct::ToggleController(i)), language.text(hint));
+            button_face(ui, row, hovered);
+            ui.c.text_clip(f, row.x + 12.0, ty, label_x - label_w - row.x - 24.0, t.text, &input.name);
+            ui.c.text_right(f, label_x, ty, if on { t.text } else { t.text_dim }, label);
+            ui.c.fill_rrect(track, 8.0, if on { t.accent } else { t.s(0x494c50) });
+            let dot_x = if on { track.right() - 8.0 } else { track.x + 8.0 };
+            ui.c.fill_circle(dot_x, cy, 5.0, Color::rgb(0xf3f5f8));
+        }
+        MRow::NoControllers => {
+            let language = Language::current();
+            ui.c.text(f, g.x + 12.0, ty, t.text_dim, language.text("No MIDI controllers connected"));
+        }
         MRow::Outputs => {
             let rows: Vec<(String, String, bool)> = p
                 .outputs
@@ -130,7 +203,7 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
                     (n.clone(), info, false)
                 })
                 .collect();
-            list(ui, Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, h - 6.0), "Installed MIDI output devices", &rows, p.output, OUT_ROWS, false);
+            list(ui, Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, h - 6.0), "Installed MIDI output devices", &rows, p.output, p.output_top, OUT_ROWS, false);
         }
         MRow::Inputs => {
             let rows: Vec<(String, String, bool)> = p
@@ -142,7 +215,7 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
                     (i.name.clone(), format!("{kind}   port {}", port_text(c.port)), c.enabled)
                 })
                 .collect();
-            list(ui, Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, h - 6.0), "Installed MIDI input devices", &rows, p.input, IN_ROWS, true);
+            list(ui, Rect::new(x0 - 4.0, y + 2.0, g.w - 16.0, h - 6.0), "Installed MIDI input devices", &rows, p.input, p.input_top, IN_ROWS, true);
         }
         MRow::OutOptions => {
             let out = p.selected_output().map(|n| cfg::output(n));
@@ -156,6 +229,91 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
             let c = inp.unwrap_or_default();
             check(ui, g.x + 22.0, cy, c.enabled, MAct::Enable, "Enable", "Enable input from this device", inp.is_some());
             port_box(ui, g, y, &port_text(c.port), MAct::InPort, "Unique / feedback port number (right-click: reset)", inp.is_some());
+        }
+        MRow::ControllerOptions => {
+            let input = p.selected_input().map(|i| i.name.as_str());
+            let role = input.map(crate::controller::role).unwrap_or_default();
+            let output = input.and_then(crate::controller::feedback_output);
+            let one_shot = input.is_some_and(crate::controller::one_shot);
+            let role_label = format!("Input role · {}", role.label());
+            let button = |x, y, w| Rect::new(x, y, w, 23.0);
+            text_button(ui, button(x0, y + 2.0, 224.0), MAct::InputRole, &role_label, "Cycle the selected input's routing role", input.is_some());
+            text_button(ui, button(x0 + 232.0, y + 2.0, 181.0), MAct::OneShot,
+                if one_shot { "Learned CC · Single press" } else { "Learned CC · Press / release" },
+                "Choose single-press mode for buttons that only send a press message", input.is_some());
+            let label = output.as_deref().unwrap_or("Unpaired");
+            ui.c.text_clip(f, x0, y + 34.0, 298.0, t.text_dim, &format!("DAW feedback · {label}"));
+            text_button(ui, button(x0 + 305.0, y + 29.0, 143.0), MAct::PairOutput(true), "Pair selected output",
+                "Pair this DAW input with the output selected in the list above", input.is_some() && p.selected_output().is_some());
+            text_button(ui, button(x0 + 456.0, y + 29.0, 60.0), MAct::PairOutput(false), "Unpair",
+                "Remove the feedback output for this input", output.is_some());
+        }
+        MRow::Monitor(open) => {
+            text_button(ui, Rect::new(x0, y + 3.0, 144.0, 23.0), MAct::Monitor, if open { "Hide MIDI Monitor" } else { "Show MIDI Monitor" },
+                "View recent messages and routing for the selected input", true);
+            if open {
+                let name = p.selected_input().map_or("Select a MIDI input", |i| i.name.as_str());
+                ui.c.text_clip(f, x0 + 153.0, y + 7.0, g.right() - x0 - 165.0, t.text_dim, name);
+                if p.trace.is_empty() {
+                    ui.c.text(f, x0 + 6.0, y + 32.0, t.text_dim, "Waiting for messages on this input…");
+                }
+                for (i, trace) in p.trace.iter().rev().enumerate() {
+                    let line = Rect::new(x0, y + 30.0 + i as f32 * 19.0, g.right() - x0 - 10.0, 18.0);
+                    ui.c.fill_rect(line, t.s(if i % 2 == 0 { 0x222527 } else { 0x26292b }));
+                    ui.c.text_clip(f, line.x + 6.0, line.y + 1.0, line.w - 12.0, t.text, &trace.label());
+                }
+            }
+        }
+        MRow::Transport => {
+            let input = p.selected_input();
+            let mapped = input.map(|i| crate::controller::bindings(&i.name)).unwrap_or_default();
+            let armed = p.learning.as_ref().map(|(_, action)| *action);
+            let instruments_only = input.is_some_and(|i| crate::controller::role(&i.name) == crate::controller::Role::Instrument);
+            let enabled = input.is_some_and(|i| i.open) && cfg::Switch::Remote.on() && !instruments_only;
+            let hint = if armed.is_some() {
+                "Press a controller button now. Esc cancels."
+            } else if !cfg::Switch::Remote.on() {
+                "Enable MIDI remote control to learn transport buttons."
+            } else if instruments_only {
+                "Set the input role to include controls to use MIDI Learn."
+            } else if !enabled {
+                "Enable an available MIDI input to learn DAW controls."
+            } else {
+                "DAW MIDI Learn   ·   Select an action, then press a controller button."
+            };
+            ui.c.text_clip(f, x0, y + 3.0, g.right() - x0 - 8.0, t.text_dim, hint);
+            let w = (g.right() - x0 - 42.0) / 5.0;
+            for (i, action) in Transport::ALL.into_iter().enumerate() {
+                let binding = mapped[i];
+                let group = Rect::new(x0 + (i % 5) as f32 * (w + 8.0), y + 23.0 + (i / 5) as f32 * 39.0, w, 34.0);
+                let b = Rect::new(group.x, group.y, group.w - 19.0, group.h);
+                let waiting = armed == Some(action);
+                let hov = enabled && ui.hit(b, act(MAct::Learn(action)), if waiting { "Cancel MIDI Learn" } else { "Learn a MIDI note or button CC (64–127 on, 0–63 off)" });
+                button_face(ui, b, hov || waiting);
+                let label = if waiting {
+                    "Listening…".to_string()
+                } else if let Some(binding) = binding {
+                    binding.label()
+                } else {
+                    "Click to learn".to_string()
+                };
+                let title = Rect::new(b.x, b.y + 1.0, b.w, 16.0);
+                let detail = Rect::new(b.x, b.y + 17.0, b.w, 15.0);
+                let title_font = ui.c.fit_font(f, action.label(), title.w - 6.0);
+                let detail_font = ui.c.fit_font(Font::new(11), &label, detail.w - 6.0);
+                ui.c.text_center(title_font, title, if enabled { t.glyph } else { t.text_dim }, action.label());
+                ui.c.text_center(detail_font, detail, t.text_dim, &label);
+                if binding.is_some() {
+                    let clear = Rect::new(b.right() + 3.0, b.y, 16.0, b.h);
+                    let hov = ui.hit(clear, act(MAct::ClearBinding(action)), "Clear this MIDI binding");
+                    button_face(ui, clear, hov);
+                    ui.c.text_center(f, clear, t.text, "×");
+                }
+            }
+            text_button(ui, Rect::new(x0, y + 102.0, 119.0, 23.0), MAct::Preset(true), "Save Learn preset",
+                "Save this input's learned actions to a shareable preset file", input.is_some() && mapped.iter().any(Option::is_some));
+            text_button(ui, Rect::new(x0 + 127.0, y + 102.0, 119.0, 23.0), MAct::Preset(false), "Load Learn preset",
+                "Replace learned actions on the selected input with a preset", input.is_some());
         }
         MRow::Offset(o) => {
             let v = cfg::offset(o).to_string();
@@ -215,7 +373,7 @@ pub fn paint_row(ui: &mut Ui, s: &State, m: MRow, g: Rect, x0: f32, y: f32, h: f
 /// A device list: title, rows (name, second column, power lit), the selected row, rows shown, whether rows have a
 /// power icon.
 #[allow(clippy::too_many_arguments)]
-fn list(ui: &mut Ui, b: Rect, title: &'static str, rows: &[(String, String, bool)], sel: usize, n: usize, power: bool) {
+fn list(ui: &mut Ui, b: Rect, title: &'static str, rows: &[(String, String, bool)], sel: usize, first: usize, n: usize, power: bool) {
     let t = ui.t;
     let lemon = super::lemon(ui);
     if lemon {
@@ -230,8 +388,21 @@ fn list(ui: &mut Ui, b: Rect, title: &'static str, rows: &[(String, String, bool
     if rows.is_empty() {
         ui.c.text(f, b.x + 8.0, top + 1.0, t.text_dim, "(no devices)");
     }
-    for (i, (name, info, on)) in rows.iter().take(n).enumerate() {
-        let rr = Rect::new(b.x + 2.0, top + i as f32 * ROW_H, b.w - 4.0, ROW_H);
+    if rows.len() > n {
+        let indicator = format!("{}–{} of {}", first + 1, first + n, rows.len());
+        ui.c.text_right(f, b.right() - 53.0, b.y + 2.0, t.text_dim, &indicator);
+        for (x, delta, active, label) in [
+            (b.right() - 47.0, -1, first > 0, "▲"),
+            (b.right() - 24.0, 1, first + n < rows.len(), "▼"),
+        ] {
+            let arrow = Rect::new(x, b.y + 2.0, 20.0, 15.0);
+            let hov = active && ui.hit(arrow, act(MAct::ListScroll(power, delta)), "Scroll MIDI devices");
+            button_face(ui, arrow, hov);
+            ui.c.text_center(Font::new(10), arrow, if active { t.glyph } else { t.text_dim }, label);
+        }
+    }
+    for (i, (name, info, on)) in rows.iter().enumerate().skip(first).take(n) {
+        let rr = Rect::new(b.x + 2.0, top + (i - first) as f32 * ROW_H, b.w - 4.0, ROW_H);
         let act_row = if power { MAct::Input(i) } else { MAct::Output(i) };
         let hov = ui.hit(rr, act(act_row), title);
         if i == sel {
@@ -290,6 +461,12 @@ fn port_box(ui: &mut Ui, g: Rect, y: f32, v: &str, a: MAct, hint: &'static str, 
         let lw = ui.c.text_width(f, "Port");
         grey(ui, Rect::span(b.x - 8.0 - lw, b.right(), b.y, b.bottom()));
     }
+}
+
+fn text_button(ui: &mut Ui, b: Rect, action: MAct, text: &str, hint: &'static str, enabled: bool) {
+    let hov = enabled && ui.hit(b, act(action), hint);
+    button_face(ui, b, hov);
+    ui.c.text_center(Font::new(12), b, if enabled { ui.t.text } else { ui.t.text_dim }, text);
 }
 
 fn button_face(ui: &mut Ui, b: Rect, hov: bool) {

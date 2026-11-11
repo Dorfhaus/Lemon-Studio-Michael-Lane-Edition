@@ -1,6 +1,6 @@
 //! Per-note expression data. Curve records are immutable once attached to a note;
 //! editors append a replacement so note copies and undo remain independent.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
     pub enabled: bool,
     pub upper: bool,
@@ -70,13 +70,13 @@ impl Config {
 fn finite(v: f32, f: f32) -> f32 {
     if v.is_finite() { v } else { f }
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point {
     pub at: f32,
     pub value: f32,
     pub smooth: bool,
 }
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Expression {
     pub lanes: [Vec<Point>; 3],
 }
@@ -129,7 +129,7 @@ impl Expression {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Data {
     pub channels: Vec<(u16, Config)>,
     pub expressions: Vec<Expression>,

@@ -6,7 +6,7 @@ fn verify(lib: Arc<dyn Library>) {
     let desc = lib
         .plugins()
         .iter()
-        .find(|d| d.name == "Lemon Wave")
+        .find(|d| d.name == "ML Wave")
         .expect("instrument descriptor")
         .clone();
     assert!(desc.is_instrument());

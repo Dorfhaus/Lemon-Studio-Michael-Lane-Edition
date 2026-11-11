@@ -357,7 +357,7 @@ impl Shared {
     /// One pass of `precompute`. **(Lemon Studio)** Keep on disk: a played sample that is the file's frames as they
     /// are, from a file that can stream, plays from disk: the frames around the points voices start at are read, the
     /// decoded file is let go. Otherwise the file is decoded (when it is not already) and built as always (spec:
-    /// plugins/lemon-sampler.md "Keep on disk (Lemon Studio)").
+    /// plugins/lemon-sampler.md "Keep on disk (ML Studio)").
     fn update(&self, params: &SamplerParams) {
         let version = self.raw_version.load(Ordering::Acquire);
         let key = params.fx_key(self.tempo(), self.rate());
@@ -393,7 +393,7 @@ impl Shared {
             }
             let disk = match &old {
                 Some(d) => Some(d.disk().clone()),
-                None => stream::Disk::open(Path::new(&path), l).map_err(|e| nih_log!("Lemon Sampler: {e}")).ok(),
+                None => stream::Disk::open(Path::new(&path), l).map_err(|e| nih_log!("ML Sampler: {e}")).ok(),
             };
             if let Some(disk) = disk {
                 let played = stream::Played::new(disk, &points, old.as_deref());
@@ -441,7 +441,7 @@ impl Shared {
         let s = match os_engine::sample::load_shared(Path::new(path)) {
             Ok(s) => s,
             Err(e) => {
-                nih_log!("Lemon Sampler: {e}");
+                nih_log!("ML Sampler: {e}");
                 return None;
             }
         };
@@ -718,8 +718,8 @@ impl LemonSampler {
 }
 
 impl Plugin for LemonSampler {
-    const NAME: &'static str = "Lemon Sampler";
-    const VENDOR: &'static str = "Lemon Studio";
+    const NAME: &'static str = "ML Sampler";
+    const VENDOR: &'static str = "ML Studio";
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -761,7 +761,7 @@ impl Plugin for LemonSampler {
         let path = self.params.sample_path.read().map(|p| p.clone()).unwrap_or_default();
         if !path.is_empty() && path != self.shared.loaded_path() {
             if let Err(e) = self.shared.load_for_host(&path, &self.params) {
-                nih_log!("Lemon Sampler: {e}");
+                nih_log!("ML Sampler: {e}");
             }
         } else if path.is_empty() && !self.shared.loaded_path().is_empty() {
             // A restored state without a sample (the host undid a load into an empty channel): nothing plays.
@@ -836,7 +836,7 @@ impl Plugin for LemonSampler {
 // plugins by them (spec: plugins/plugin-formats.md, identity).
 impl ClapPlugin for LemonSampler {
     const CLAP_ID: &'static str = "org.openstudio.open-sampler";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("Lemon Studio's sampler instrument");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("ML Studio's sampler instrument");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Instrument, ClapFeature::Sampler, ClapFeature::Stereo];
@@ -1001,7 +1001,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------------------------------
-    // Keep on disk (spec: plugins/lemon-sampler.md "Keep on disk (Lemon Studio)")
+    // Keep on disk (spec: plugins/lemon-sampler.md "Keep on disk (ML Studio)")
 
     use std::path::PathBuf;
     use std::time::{Duration, Instant};

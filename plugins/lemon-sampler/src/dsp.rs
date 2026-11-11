@@ -422,7 +422,7 @@ impl Rt {
     }
 
     /// Starts the stretcher for a voice heard from `pos` on, its latency taken out (spec: audio/time-stretch.md
-    /// "Lemon Studio"). **(OS)** How it starts: a voice on the sample's first frame starts the way the library starts a
+    /// "ML Studio"). **(OS)** How it starts: a voice on the sample's first frame starts the way the library starts a
     /// whole buffer (silence before it; what comes out before the start is folded back onto what follows, so a
     /// stretched note starts like the same sample stretched first). A voice further in (a start offset, a trimmed
     /// clip, a voice that starts stretching while it plays) first gives the stretcher the frames before `pos` and runs
@@ -1494,7 +1494,7 @@ mod tests {
         assert!(e.streams.iter().all(|r| !r.busy), "stretchers freed");
     }
 
-    // spec: audio/time-stretch.md "Lemon Studio" (OS): a realtime voice with nothing to stretch plays the sample as
+    // spec: audio/time-stretch.md "ML Studio" (OS): a realtime voice with nothing to stretch plays the sample as
     // it is, its stretcher never started (here a 44.1 kHz sample at 48 kHz: rate conversion alone).
     #[test]
     fn a_realtime_voice_with_nothing_to_stretch_plays_the_sample_as_it_is() {
@@ -1520,7 +1520,7 @@ mod tests {
         assert!(e.streams.iter().any(|r| r.started), "stretching");
     }
 
-    // spec §5.6 + audio/time-stretch.md "Lemon Studio" (OS): a voice whose pitch moves while it plays starts its
+    // spec §5.6 + audio/time-stretch.md "ML Studio" (OS): a voice whose pitch moves while it plays starts its
     // stretcher then, without a click, and keeps its length.
     #[test]
     fn a_realtime_voice_starts_stretching_when_its_pitch_moves() {
@@ -1550,7 +1550,7 @@ mod tests {
         assert!(rms(&out[4800..5400]) > 0.3, "{}", rms(&out[4800..5400]));
     }
 
-    // spec: audio/time-stretch.md "Lemon Studio" (OS): a stretched voice from the sample's start begins the way the
+    // spec: audio/time-stretch.md "ML Studio" (OS): a stretched voice from the sample's start begins the way the
     // sample stretched first begins: on time, at its level.
     #[test]
     fn a_realtime_voice_starts_like_the_sample_stretched_first() {
@@ -1569,7 +1569,7 @@ mod tests {
         assert!(err < 1e-4, "{err}");
     }
 
-    // spec: audio/time-stretch.md "Lemon Studio" (OS): a stretched voice that starts inside the sample is heard at
+    // spec: audio/time-stretch.md "ML Studio" (OS): a stretched voice that starts inside the sample is heard at
     // once at full level (its stretcher is given what lies before the start).
     #[test]
     fn a_realtime_voice_inside_the_sample_starts_at_full_level() {

@@ -9,6 +9,11 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 pub const COLOR_VISIBILITY: &str = "visible_playlist-picker-colors";
 pub const FILTER_VISIBILITY: &str = "visible_playlist-picker-filter";
+pub const LOOP_VISIBILITY: &str = "visible_playlist-picker-loop";
+pub const RESIZE_VISIBILITY: &str = "visible_playlist-picker-resize";
+const LOOP_KEY: &str = "playlist_picker_loop";
+const WIDTH_KEY: &str = "playlist_picker_width";
+const DEFAULT_WIDTH: f32 = 132.0;
 pub(crate) const PREVIEW_LIMIT: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,6 +41,7 @@ pub struct Picker {
     pub selected: Vec<ClipSource>,
     anchor: Option<ClipSource>,
     pub destination: Option<Destination>,
+    pub width: Option<f32>,
     previews: Vec<(ClipSource, Arc<AtomicBool>)>,
 }
 
@@ -64,6 +70,34 @@ impl Picker {
         let before = self.previews.len();
         self.previews.retain(|(_, active)| active.load(Ordering::Acquire));
         before != self.previews.len()
+    }
+}
+
+pub fn looping() -> bool {
+    crate::settings_file::flag(LOOP_KEY, false)
+}
+
+pub fn toggle_loop(app: &App) {
+    let on = !looping();
+    crate::settings_file::set_flag(LOOP_KEY, on);
+    app.transport.set_picker_loop(on);
+}
+
+pub fn width(s: &State, area: Rect) -> f32 {
+    if !s.playlist.picker_visible || area.w < 430.0 {
+        return 0.0;
+    }
+    let saved = s.playlist.picker_ui.width.or_else(|| crate::settings_file::get(WIDTH_KEY)?.parse().ok());
+    clamp_width(saved.filter(|w| w.is_finite()).unwrap_or(DEFAULT_WIDTH), area.w)
+}
+
+pub fn clamp_width(width: f32, area_width: f32) -> f32 {
+    width.clamp(112.0, (area_width - 295.0).clamp(112.0, 360.0))
+}
+
+pub fn save_width(s: &State) {
+    if let Some(width) = s.playlist.picker_ui.width {
+        crate::settings_file::write(WIDTH_KEY, &width.round().to_string());
     }
 }
 
@@ -146,6 +180,7 @@ pub fn press(app: &mut App, source: ClipSource) {
         s.playlist.picker_ui.anchor = Some(source);
     }
     s.playlist.source = Some(source);
+    s.playlist.audio_template = None;
     if let ClipSource::Pattern(number) = source {
         s.pattern = number;
     }
@@ -237,11 +272,26 @@ fn reorder(s: &mut State, items: &[ClipSource], target: Option<(ClipSource, bool
 }
 
 pub fn toggle_preview(app: &mut App, source: ClipSource) {
+    let pattern = matches!(source, ClipSource::Pattern(_));
     let picker = &mut app.state.playlist.picker_ui;
     picker.prune_previews();
     if let Some(index) = picker.previews.iter().position(|(item, _)| *item == source) {
         picker.previews.remove(index).1.store(false, Ordering::Release);
         return;
+    }
+    if pattern && app.transport.playing() {
+        app.state.message = Some("Stop playback to preview a pattern in the Clip Picker.".into());
+        return;
+    }
+    if pattern {
+        picker.previews.retain(|(item, active)| {
+            if matches!(item, ClipSource::Pattern(_)) {
+                active.store(false, Ordering::Release);
+                false
+            } else {
+                true
+            }
+        });
     }
     if picker.previews.len() >= PREVIEW_LIMIT {
         app.state.message = Some("Stop a clip preview before starting another (8 active previews).".into());
@@ -250,14 +300,14 @@ pub fn toggle_preview(app: &mut App, source: ClipSource) {
     crate::browser_preview::dismiss(app);
     let project = preview_project(&app.state, source);
     let active = Arc::new(AtomicBool::new(true));
-    app.transport.preview_picker(project, active.clone());
+    app.transport.preview_picker(project, active.clone(), pattern, looping());
     app.state.playlist.picker_ui.previews.push((source, active));
 }
 
-fn preview_project(state: &State, source: ClipSource) -> os_model::Project {
+pub(crate) fn preview_project(state: &State, source: ClipSource) -> os_model::Project {
     let mut project = crate::rack::play_project(state);
     let clip = os_model::Clip::new(0, pl::source_len(state, source).max(1), 0, source);
-    let channels = project.clip_channels(&[clip]);
+    let channels = project.clip_channels(&[clip.clone()]);
     // The engine schedules audio clips and notes by rack slot. Keep those slots
     // intact, while skipping sample loads for channels this preview never plays.
     for channel in &mut project.channels {

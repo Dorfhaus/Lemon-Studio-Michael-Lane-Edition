@@ -68,8 +68,8 @@ pub fn paint(ui: &mut Ui, s: &State, b: &LinkBox) {
     if !omni {
         super::settings::grey(ui, Rect::new(r.x + 140.0, gy + 67.0, 70.0, 18.0));
     }
-    let mode = Rect::new(r.x + 20.0, gy + 88.0, 90.0, 21.0);
-    let hov = hit(ui, mode, RAct::Mode, "How to treat a note or button link (click for the next)");
+    let mode = Rect::new(r.x + 20.0, gy + 88.0, 175.0, 21.0);
+    let hov = hit(ui, mode, RAct::Mode, "How to interpret buttons or encoders (click for the next mode)");
     combo(ui, mode, b.mode.name(), hov);
     ui.c.text(f, mode.right() + 8.0, mode.y + 3.0, t.text, "Mode");
 

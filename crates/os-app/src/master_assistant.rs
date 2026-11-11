@@ -6,8 +6,9 @@ use os_host::{Descriptor, Format};
 use std::path::PathBuf;
 
 pub const AVAILABLE: bool = true;
-pub const NAME: &str = "Lemon Master Assistant";
-pub const FILE: &str = "Lemon Master Assistant.vst3";
+pub const NAME: &str = "ML Master Assistant";
+pub const FILE: &str = "ML Master Assistant.vst3";
+pub const LEGACY_FILE: &str = "Lemon Master Assistant.vst3";
 
 #[path = "master_engine_bundle.rs"]
 mod embedded;
@@ -23,25 +24,26 @@ pub fn bundle_path() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let local = dir.join("Builtin Plugins").join(FILE);
-    if local.exists() { return Some(local); }
+    let find_bundle = |dir: &std::path::Path| {
+        [FILE, LEGACY_FILE].into_iter().map(|name| dir.join("Builtin Plugins").join(name)).find(|path| path.exists())
+    };
+    if let Some(local) = find_bundle(dir) { return Some(local); }
     // The private Development launcher uses its own executable beside the main app.
     if exe.file_stem()?.to_string_lossy().eq_ignore_ascii_case("lemonstudio-development") {
-        let shared = dir.parent()?.join("Builtin Plugins").join(FILE);
-        if shared.exists() { return Some(shared); }
+        return find_bundle(dir.parent()?);
     }
     None
 }
 
 pub fn is_bundled(d: &Descriptor) -> bool {
-    d.format == Format::Vst3 && d.name == NAME && bundle_path().is_some_and(|p| d.path.starts_with(p))
+    d.format == Format::Vst3 && crate::plugins::canonical_name(&d.name) == NAME && bundle_path().is_some_and(|p| d.path.starts_with(p))
 }
 
 pub fn available() -> Vec<Available> {
     let Some(path) = bundle_path() else { return Vec::new() };
     match crate::plugins::load_file(&path, Format::Vst3) {
-        Ok(lib) => lib.plugins().iter().filter(|d| d.name == NAME)
-            .map(|desc| Available { lib: lib.clone(), desc: desc.clone() }).collect(),
+        Ok(lib) => lib.plugins().iter().filter(|d| crate::plugins::canonical_name(&d.name) == NAME)
+            .map(|desc| {let mut desc=desc.clone();desc.name=NAME.into();Available { lib: lib.clone(), desc }}).collect(),
         Err(e) => { eprintln!("Master Assistant: {e}"); Vec::new() }
     }
 }
@@ -49,8 +51,8 @@ pub fn available() -> Vec<Available> {
 pub fn slot(s: &State) -> Option<u8> {
     mixer::track(s, 0)?.slots.iter().enumerate().find_map(|(i, p)| {
         let p = p.as_ref()?;
-        let ours = p.name == NAME || crate::project_plugins::wrapped_slot(p)
-            .is_some_and(|r| r.name == NAME && r.vendor == "Lemon Studio");
+        let ours = crate::plugins::canonical_name(&p.name) == NAME || crate::project_plugins::wrapped_slot(p)
+            .is_some_and(|r| crate::plugins::canonical_name(&r.name) == NAME && matches!(r.vendor.as_str(),"Lemon Studio"|"ML Studio"));
         (i != 10 && ours).then_some(i as u8)
     })
 }
@@ -123,7 +125,7 @@ mod tests {
         m.slots[9] = Some(os_model::SlotPlugin {name:"Existing limiter".into(),state:vec![42]});
         m.slots[10] = Some(os_model::SlotPlugin {name:"EQ".into(),state:vec![7]});
         assert_eq!(destination(&app.state), Some(63));
-        let r = os_model::PluginRef {format:"vst3".into(), name:NAME.into(), vendor:"Lemon Studio".into(), path:FILE.into(), ..Default::default()};
+        let r = os_model::PluginRef {format:"vst3".into(), name:"Lemon Master Assistant".into(), vendor:"Lemon Studio".into(), path:LEGACY_FILE.into(), ..Default::default()};
         mixer::track_mut(&mut app.state,0).unwrap().slots[11] = Some(os_model::SlotPlugin {name:os_flp::wrapper::WRAPPER.into(),state:os_flp::wrapper::encode(None,&r)});
         assert_eq!(slot(&app.state),Some(11));
         assert!((0..mixer::user_slot_capacity(&app.state,0)).all(|i|mixer::visible_user_slot(&app.state,0,i)!=11));
@@ -166,7 +168,7 @@ mod tests {
         }
         let path=PathBuf::from(std::env::var_os("LEMON_MASTER_TEST_BUNDLE").expect("bundle path"));
         let lib=crate::plugins::load_file(&path,Format::Vst3).expect("load real bundle");
-        let desc=lib.plugins().iter().find(|d|d.name==NAME).expect("bundled identity").clone();
+        let desc=lib.plugins().iter().find(|d|crate::plugins::canonical_name(&d.name)==NAME).expect("bundled identity").clone();
         let instance=lib.clone().create(&desc.id).expect("instantiate");
         let normal=instance.lock().unwrap().save_state().expect("default state");
         let state={

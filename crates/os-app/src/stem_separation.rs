@@ -79,9 +79,9 @@ fn ready(root: &Path) -> bool {
         && root.join("models/955717e8-8726e21a.th").is_file()
 }
 fn source(s: &State, i: usize) -> Result<(Clip, Channel)> {
-    let c = *pl::clips(s)
+    let c = pl::clips(s)
         .get(i)
-        .ok_or("The sample is no longer in the playlist")?;
+        .ok_or("The sample is no longer in the playlist")?.clone();
     if pl::source_kind(s, c.source) != pl::PickKind::Audio {
         return Err("Choose an audio clip".into());
     }
@@ -177,7 +177,7 @@ pub fn selected(app: &mut App, i: usize, selected: u8) {
         start(app, i, false, selected);
     } else {
         app.show_msg(Msg::new(Kind::Question,"Download stem separation?",spans(&[
-            "Would you like to download the stem separation engine and AI model?\n\nThis one-time setup needs internet and several GB of free space. It installs only for Lemon Studio.\n\nThen your selected stems will be saved as separate tracks. Your audio stays on your computer."
+            "Would you like to download the stem separation engine and AI model?\n\nThis one-time setup needs internet and several GB of free space. It installs only for ML Studio.\n\nThen your selected stems will be saved as separate tracks. Your audio stays on your computer."
         ]),&[Answer::Yes,Answer::No],Then::StemDownload(i, selected)));
         app.invalidate();
     }
@@ -272,7 +272,7 @@ pub fn tick(app: &mut App) {
             app.state.message =
                 Some("Stem separation cancelled; the original sample is unchanged".into());
         } else {
-            match result.and_then(|out| import(&mut app.state,job.clip,job.original,&job.channel,&out,job.selected)) {
+            match result.and_then(|out| import(&mut app.state,job.clip,job.original.clone(),&job.channel,&out,job.selected)) {
             Ok(())=>app.state.message=Some(format!("Stems ready: {}. Original clip muted; Undo restores it.", names(job.selected))),
             Err(e)=>error(app,&format!("{e}\n\nYour original sample is unchanged. Choose Stem separation again to retry. Details are in the Stem separation folder's setup.log.")),
         }
@@ -356,7 +356,7 @@ fn import(
                 .to_string_lossy()
                 .into_owned(),
         );
-        let mut c = original;
+        let mut c = original.clone();
         c.source = ClipSource::Channel(ch.index);
         c.track = row;
         let arr = pl::arr_mut(s);
@@ -643,7 +643,7 @@ fn work(
         .write(true)
         .open(root.join("runtime.lock")))?;
     lock.try_lock().map_err(|_| {
-        "Stem separation is already running in another Lemon Studio window".to_string()
+        "Stem separation is already running in another ML Studio window".to_string()
     })?;
     io(fs::write(root.join("separate.py"), RUNNER))?;
     io(fs::write(
@@ -764,16 +764,16 @@ mod tests {
         );
         assert!(a.stem_job.is_none());
         assert_eq!(before, a.state.project);
-        let mut original = pl::clips(&a.state)[i];
+        let mut original = pl::clips(&a.state)[i].clone();
         original.window = Some((125., 750.));
         original.length = 120;
-        pl::arr_mut(&mut a.state).clips[i] = original;
+        pl::arr_mut(&mut a.state).clips[i] = original.clone();
         let (_, ch) = source(&a.state, i).unwrap();
         let before = a.state.project.clone();
         for stem in STEMS {
             fs::copy(dir.join("input.wav"), dir.join(format!("{stem}.wav"))).unwrap();
         }
-        import(&mut a.state, i, original, &ch, &dir, 15).unwrap();
+        import(&mut a.state, i, original.clone(), &ch, &dir, 15).unwrap();
         assert!(pl::clips(&a.state)[i].muted);
         for c in pl::clips(&a.state).iter().rev().take(4) {
             assert_eq!(c.position, 384);
@@ -1010,7 +1010,7 @@ impl Drop for ProcessGroup {
 /// Called only by the instrument's background worker; never opens hardware or downloads.
 pub(crate) fn separate_for_chop(input: &str, stop: &AtomicBool) -> Result<[String; 4]> {
     let root = root()?;
-    if !ready(&root) { return Err("Set up Stem separation from an audio clip in Lemon Studio first, then retry here.".into()); }
+    if !ready(&root) { return Err("Set up Stem separation from an audio clip in ML Studio first, then retry here.".into()); }
     let (tx, _rx) = mpsc::channel();
     let out = work(&root, Path::new(input), false, stop, &tx, 15)?;
     Ok(std::array::from_fn(|n| out.join(format!("{}.wav", STEMS[n])).to_string_lossy().into_owned()))

@@ -160,7 +160,7 @@ fn playlist_edits_survive() {
         let arr = &mut project.arrangements[0];
         arr.clips[0].position += 96;
         arr.clips[0].muted = !arr.clips[0].muted;
-        let mut copy = arr.clips[1];
+        let mut copy = arr.clips[1].clone();
         copy.track = (copy.track + 1).min(499);
         copy.position += 384;
         arr.clips.push(copy);

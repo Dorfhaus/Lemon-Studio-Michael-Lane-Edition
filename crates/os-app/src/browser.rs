@@ -552,6 +552,22 @@ impl App {
             }
             // An effect dropped on the mixer goes into the slot under the mouse, else the current track's first free
             // slot (spec §3).
+            Item::EffectChains(chains) => {
+                if win == Some(Win::Mixer) {
+                    let mut track = self.state.selected_mixer;
+                    let mut slot = None;
+                    for h in self.hits.iter().rev().filter(|h| h.win == Some(Win::Mixer) && h.rect.contains(x, y)) {
+                        use crate::mixer::MHit;
+                        match h.action {
+                            Action::Mix(MHit::TrackSlot(t, k)) => { track = t; slot = Some(k); break; }
+                            Action::Mix(MHit::Strip(t)) => { track = t; break; }
+                            Action::Mix(MHit::SlotName(k) | MHit::SlotArrow(k)) => { slot = Some(k); break; }
+                            _ => {}
+                        }
+                    }
+                    crate::plugin_picker::chains::load_into(self, &chains, track, slot);
+                }
+            }
             Item::Effects(indices)=>{
                 if win==Some(Win::Mixer){
                     let target=self.hits.iter().rev().find_map(|h|if h.rect.contains(x,y){match h.action{Action::Mix(crate::mixer::MHit::Strip(t)|crate::mixer::MHit::TrackSlot(t,_))=>Some(t),_=>None}}else{None});
@@ -1077,7 +1093,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
                 r("Open in new sampler channel",RowCmd::NewChannel)]);
             for e in &s.plugdb.lists.gens {
                 let name=e.name.to_lowercase();
-                let chop=name=="lemon chop";
+                let chop=crate::plugins::canonical_name(&e.name)=="ML Chop";
                 let ext=cfg!(windows) && ["fruity granulizer","fruity slicer","slicex"].iter().any(|n| name==*n);
                 if chop||ext {items.push(PItem::new(format!("Open in new {} channel",e.label),Cmd::Browser(BCmd::Row(RowCmd::Instrument(e.index)))));}
             }
@@ -1105,7 +1121,7 @@ pub fn row_menu(s: &crate::app::State, row: &view::Row) -> Vec<PItem> {
             let it = PItem::new("Load into selected channel", Cmd::Preset(crate::presets::PCmd::Load(key, p.into())));
             items.push(if s.hosted_rows.contains(&key) { it } else { it.off() });
         }
-        Item::None | Item::File(_) | Item::Param(..) | Item::Effects(_) | Item::Samples(_) => {}
+        Item::None | Item::File(_) | Item::Param(..) | Item::Effects(_) | Item::EffectChains(_) | Item::Samples(_) => {}
     }
     if let Some(path) = row.path.as_ref().filter(|_| !matches!(row.item,Item::Sample(_))) {
         sep(&mut items);

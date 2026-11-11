@@ -11,7 +11,7 @@
 use crate::sample::{Cue, Format, Sample};
 
 /// What Tesla writes as the software name (`LIST INFO` ISFT); Edison writes "Edison".
-pub const SOFTWARE: &str = "Tesla";
+pub const SOFTWARE: &str = "ML Tesla";
 
 /// The bit depth to save.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

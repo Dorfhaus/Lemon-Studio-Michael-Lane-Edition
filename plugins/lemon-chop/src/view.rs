@@ -73,9 +73,9 @@ impl Logic {
         c.clear(plug::BG);
         c.fill_rect_gradient(Rect::new(0., 0., W as f32, 48.), plug::PANEL, plug::BG, 0.);
         c.fill_rrect(Rect::new(16., 15., 4., 24.), 2., brand::MAIN);
-        c.text(Font::new(24).bold(), 30., 11., brand::TEXT, "LEMON");
-        c.text(Font::new(24).bold(), 119., 11., brand::MAIN, "CHOP");
-        c.text(Font::new(11), 201., 21., plug::DIM, "SAMPLING INSTRUMENT");
+        c.text(Font::new(24).bold(), 30., 11., brand::TEXT, "ML");
+        c.text(Font::new(24).bold(), 76., 11., brand::MAIN, "CHOP");
+        c.text(Font::new(11), 158., 21., plug::DIM, "SAMPLING INSTRUMENT");
         let d = self.params.document();
         let missing = !d.path.is_empty()
             && self.shared.audio.lock().unwrap().is_none()

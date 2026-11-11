@@ -4227,9 +4227,8 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
             let i0 = (pos - w).ceil().max(0.0) as usize;
             let i1 = ((pos + w).floor() as usize).min(n - 1);
             let (mut l, mut r) = (0.0f64, 0.0f64);
-            for i in i0..=i1 {
-                let t = i as f64 - pos;
-                let k = sinc(t / scale) / scale * blackman(t, w);
+            let weights=os_dsp::sinc_kernel::BlackmanSinc::new(i0 as f64-pos,1.0/scale,w);
+            for (i,k) in (i0..=i1).zip(weights) {
                 l += f64::from(s.left[i]) * k;
                 r += f64::from(s.right[i]) * k;
             }
@@ -4264,23 +4263,6 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
     v.gain = (gl, gr);
     v.ramp_left = left;
     pos < n as f64
-}
-
-fn sinc(x: f64) -> f64 {
-    if x == 0.0 {
-        1.0
-    } else {
-        let px = std::f64::consts::PI * x;
-        px.sin() / px
-    }
-}
-
-fn blackman(t: f64, w: f64) -> f64 {
-    if t.abs() >= w {
-        return 0.0;
-    }
-    let x = std::f64::consts::PI * t / w;
-    0.42 + 0.5 * x.cos() + 0.08 * (2.0 * x).cos()
 }
 
 /// One tick of a mixer slot over interleaved `buf`: skipped when its switch is off, blended with the dry signal by its
@@ -5697,8 +5679,8 @@ mod tests {
         // A clip at bar 2 with the window [96, 288): the notes at 96 and 192 play at 384 and 480.
         let mut c = Clip::new(384, 192, 0, ClipSource::Pattern(1));
         c.window = Some((96.0, 288.0));
-        assert_eq!(song_triggers(&song(notes.clone(), vec![c])), vec![384, 480]);
-        let mut m = c;
+        assert_eq!(song_triggers(&song(notes.clone(), vec![c.clone()])), vec![384, 480]);
+        let mut m = c.clone();
         m.muted = true;
         assert!(song_triggers(&song(notes.clone(), vec![m])).is_empty(), "muted clip");
         let mut p = song(notes.clone(), vec![c]);
@@ -5724,9 +5706,9 @@ mod tests {
         // The second clip starts at 150, inside the first: the first plays 0 (keeping its 300 ticks) and 96.
         let first = Clip::new(0, 384, 0, ClipSource::Pattern(1));
         let second = Clip::new(150, 384, 1, ClipSource::Pattern(1));
-        assert_eq!(song_notes(&song(notes.clone(), vec![first, second])), vec![(0, Some(300)), (96, Some(144)), (150, Some(450)), (246, Some(294)), (342, Some(390)), (438, Some(486))]);
+        assert_eq!(song_notes(&song(notes.clone(), vec![first.clone(), second])), vec![(0, Some(300)), (96, Some(144)), (150, Some(450)), (246, Some(294)), (342, Some(390)), (438, Some(486))]);
         // Two clips on one tick sound once.
-        assert_eq!(song_triggers(&song(notes.clone(), vec![first, first])).len(), 4);
+        assert_eq!(song_triggers(&song(notes.clone(), vec![first.clone(), first.clone()])).len(), 4);
         // Another pattern's clip does not interrupt.
         let mut p = song(notes, vec![first, Clip::new(150, 384, 1, ClipSource::Pattern(2))]);
         p.patterns.push(Pattern { number: 2, notes: vec![Note::step(0, 0)], ..Pattern::default() });
@@ -8930,7 +8912,7 @@ mod tests {
         }
         let mut p=project(vec![Note::step(0,0)],vec![]);
         let original=os_model::Clip::new(0,96,0,os_model::ClipSource::Pattern(1));
-        let mut tr=os_model::PlaylistTrack::new(1);tr.frozen=Some(vec![original]);
+        let mut tr=os_model::PlaylistTrack::new(1);tr.frozen=Some(vec![original.clone()]);
         p.arrangements=vec![os_model::Arrangement{tracks:vec![tr,os_model::PlaylistTrack::new(2)],..Default::default()}];
         let calls=Arc::new(AtomicUsize::new(0));
         let probe:SharedInstrument=Arc::new(Mutex::new(Probe(calls.clone())));

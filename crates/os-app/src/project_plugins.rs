@@ -21,7 +21,7 @@ use crate::plugins::{format_name, fx_of, Available, Plugins};
 
 /// A plugin compiled into Lemon Studio (its library is this program).
 pub fn is_builtin(d: &Descriptor) -> bool {
-    std::env::current_exe().is_ok_and(|exe| exe == d.path)
+    ml_plasma::is_builtin(d) || std::env::current_exe().is_ok_and(|exe| exe == d.path)
 }
 
 #[cfg(test)]
@@ -63,14 +63,14 @@ pub fn is_wrapped(d: &Descriptor) -> bool {
     if WRAP_BUILTINS.with(|w| w.get()) {
         return matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2);
     }
-    matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2) && (!is_builtin(d) || matches!(d.name.as_str(),"Lemon Chop"|"Lemon Wave") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str()))
+    matches!(d.format, Format::Clap | Format::Vst3 | Format::Vst2) && (!is_builtin(d) || matches!(d.name.as_str(),"ML Chop"|"ML Wave"|"ML Plasma") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str()))
 }
 
 /// The project-file identity of a hosted plugin with its saved state. A built-in effect with no file plugin of its own
 /// (`plugins::LINKED_EFFECTS`) names its CLAP bundle in the per-user CLAP folder, where `bundle-plugins --install` puts
 /// it: the wrapper takes the format from the file's extension, and another host can find the bundle there.
 pub fn plugin_ref(d: &Descriptor, state: Vec<u8>) -> PluginRef {
-    let path = if is_builtin(d) && (matches!(d.name.as_str(),"Lemon Chop"|"Lemon Wave") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str())) {
+    let path = if is_builtin(d) && (matches!(d.name.as_str(),"ML Chop"|"ML Wave"|"ML Plasma") || crate::plugins::LINKED_EFFECTS.contains(&d.name.as_str())) {
         let file = format!("{}.clap", d.name);
         os_clap::standard_dirs().into_iter().next().map_or_else(|| file.clone().into(), |dir| dir.join(&file))
     } else {
@@ -307,15 +307,19 @@ fn find(list: &[Available], r: &PluginRef) -> Option<usize> {
 
 fn app_requires_substitute_approval(report:&crate::import_report::Report,other:&Option<String>)->bool {report.source.is_some()&&!report.approved&&other.is_some()}
 
+fn same_plugin_name(d: &Descriptor, saved: &str) -> bool {
+    d.name == saved || (is_builtin(d) && d.name == crate::plugins::canonical_name(saved))
+}
+
 fn find_installed(list: &[Available], r: &PluginRef, missing: &std::collections::HashSet<String>) -> Option<usize> {
     let format = Format::parse(&r.format);
     for exact in [true,false] {
         if let Some(i)=list.iter().position(|a|!missing.contains(&a.desc.uid()) && if exact {
             !r.id.is_empty()&&Some(a.desc.format)==format&&a.desc.id.eq_ignore_ascii_case(&r.id)
-        }else{!r.path.is_empty()&&same_file(&a.desc.path,&r.path)&&a.desc.name==r.name}){return Some(i);}
+        }else{!r.path.is_empty()&&same_file(&a.desc.path,&r.path)&&same_plugin_name(&a.desc, &r.name)}){return Some(i);}
     }
     for same_format in [true,false]{
-        let candidates:Vec<_>=list.iter().enumerate().filter(|(_,a)|a.desc.name==r.name&&!missing.contains(&a.desc.uid())&&(!same_format||Some(a.desc.format)==format)).collect();
+        let candidates:Vec<_>=list.iter().enumerate().filter(|(_,a)|same_plugin_name(&a.desc, &r.name)&&!missing.contains(&a.desc.uid())&&(!same_format||Some(a.desc.format)==format)).collect();
         if candidates.len()==1{return Some(candidates[0].0);}
         if candidates.len()>1{return None;} // An ambiguous catalog entry is never an automatic identity match.
     }
@@ -341,8 +345,8 @@ fn substitute_notice(d:&Descriptor,r:&PluginRef)->Option<String>{
         let stored_file=r.path.rsplit(['\\','/']).next().unwrap_or("");
         let local=plugin_ref(d,Vec::new());
         let local_file=local.path.rsplit(['\\','/']).next().unwrap_or("");
-        let portable_builtin=is_builtin(d)&&Format::parse(&r.format)==Some(d.format)&&d.name==r.name;
-        let file=r.id.is_empty()&&d.name==r.name&&(portable_builtin||(!stored_file.is_empty()
+        let portable_builtin=is_builtin(d)&&Format::parse(&r.format)==Some(d.format)&&same_plugin_name(d, &r.name);
+        let file=r.id.is_empty()&&same_plugin_name(d, &r.name)&&(portable_builtin||(!stored_file.is_empty()
             &&(same_file(&d.path,&r.path)||stored_file.eq_ignore_ascii_case(local_file))));
         (!identity&&!file).then(||format!("{} (identity unverified; default preset)",r.name))
     })
@@ -369,12 +373,12 @@ fn name_list(mut names: Vec<String>, max: usize) -> String {
 
 /// What a channel's plugin is called on screen: a wrapped plugin's own name, else the plugin name.
 pub fn plugin_title(ch: &Channel) -> Option<String> {
-    wrapped_channel(ch).map(|r| r.name).filter(|n| !n.is_empty()).or_else(|| ch.plugin.as_deref().map(|n| crate::osc3::label(n).to_string()))
+    wrapped_channel(ch).map(|r| crate::plugins::canonical_name(&r.name).to_string()).filter(|n| !n.is_empty()).or_else(|| ch.plugin.as_deref().map(|n| crate::osc3::label(n).to_string()))
 }
 
 /// What a mixer slot shows: a wrapped plugin's own name, else the slot's label (spec: ui/mixer.md §7).
 pub fn slot_title(s: &SlotPlugin) -> String {
-    match wrapped_slot(s).map(|r| r.name).filter(|n| !n.is_empty()) {
+    match wrapped_slot(s).map(|r| crate::plugins::canonical_name(&r.name).to_string()).filter(|n| !n.is_empty()) {
         Some(n) => n,
         None => crate::plugins::slot_label(&s.name).to_string(),
     }
@@ -798,31 +802,64 @@ mod tests {
     #[test]
     fn linked_effects_hall_visibility_keeps_host_available(){
         let mut a=App::new(None);a.plugins.effects=crate::plugins::builtin_effects();
-        let index=a.plugins.effect_index("Lemon Hall").expect("stock effect registered");
+        let index=a.plugins.effect_index("ML Hall").expect("stock effect registered");
         crate::settings_file::set_flag("visible_plugin-hall",true);a.state.plugdb.rebuild(&a.plugins);
-        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Hall"));
         crate::settings_file::set_flag("visible_plugin-hall",false);a.state.plugdb.rebuild(&a.plugins);
-        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
-        assert_eq!(a.plugins.effect_index("Lemon Hall"),Some(index));
+        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Hall"));
+        assert_eq!(a.plugins.effect_index("ML Hall"),Some(index));
         a.plugins.create_effect(1,0,index,None).unwrap();
         assert!(a.plugins.state(fx_key(1,0)).is_some());
         crate::settings_file::set_flag("visible_plugin-hall",true);a.state.plugdb.rebuild(&a.plugins);
-        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Hall"));
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Hall"));
     }
 
     #[test]
     fn linked_effects_tape_visibility_keeps_host_available(){
         let mut a=App::new(None);a.plugins.effects=crate::plugins::builtin_effects();
-        let index=a.plugins.effect_index("Lemon Tape").expect("stock effect registered");
+        let index=a.plugins.effect_index("ML Tape").expect("stock effect registered");
         crate::settings_file::set_flag("visible_plugin-tape",true);a.state.plugdb.rebuild(&a.plugins);
-        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Tape"));
         crate::settings_file::set_flag("visible_plugin-tape",false);a.state.plugdb.rebuild(&a.plugins);
-        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
-        assert_eq!(a.plugins.effect_index("Lemon Tape"),Some(index));
+        assert!(!a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Tape"));
+        assert_eq!(a.plugins.effect_index("ML Tape"),Some(index));
         a.plugins.create_effect(1,0,index,None).unwrap();
         assert!(a.plugins.state(fx_key(1,0)).is_some());
         crate::settings_file::set_flag("visible_plugin-tape",true);a.state.plugdb.rebuild(&a.plugins);
-        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="Lemon Tape"));
+        assert!(a.state.plugdb.lists.fx.iter().any(|e|e.name=="ML Tape"));
+    }
+
+    #[test]
+    fn ml_renames_restore_legacy_wrappers_without_substitution() {
+        let mut plugins=Plugins::default();
+        plugins.available=crate::plugins::builtin();
+        plugins.effects=crate::plugins::builtin_effects();
+        for (old,now) in crate::plugins::OLD_NAMES {
+            for list in [&plugins.available,&plugins.effects] {
+                let Some(index)=list.iter().position(|a|a.desc.name==now) else {continue};
+                let d=&list[index].desc;
+                assert_eq!(crate::plugins::canonical_name(old),now);
+                let mut r=plugin_ref(d,vec![1,2,3]);
+                r.name=old.into();r.path=format!("C:/Old plugins/{old}.clap");
+                assert_eq!(find(list,&r),Some(index),"{old}");
+                assert!(substitute_notice(d,&r).is_none(),"{old}");
+                assert_eq!(crate::plugins::slot_label(old),now);
+            }
+        }
+        let index=plugins.effect_index("Lemon Reverb").unwrap();
+        plugins.create_effect(3,0,index,None).unwrap();
+        let key=fx_key(3,0);
+        let p=plugins.param_infos(key).into_iter().find(|p|!p.read_only&&!p.bypass).unwrap();
+        plugins.set_param_named(key,&p.name,p.min+0.37*(p.max-p.min));
+        plugins.hosted[&key].plugin.lock().unwrap().idle();
+        let value=plugins.param_value(key,p.id).unwrap();
+        let mut r=plugin_ref(&plugins.descriptor(key).unwrap(),plugins.state(key).unwrap());
+        r.name="Lemon Reverb".into();r.path="C:/Previous/Lemon Reverb.clap".into();
+        let mut restored=Plugins::default();restored.effects=crate::plugins::builtin_effects();
+        let found=find(&restored.effects,&r).unwrap();
+        assert!(substitute_notice(&restored.effects[found].desc,&r).is_none());
+        restored.create_effect(3,0,found,Some(&r.state)).unwrap();
+        assert!((restored.param_value(key,p.id).unwrap()-value).abs()<1e-5);
     }
 
     #[test]
@@ -1336,4 +1373,105 @@ mod tests {
         r.name = "Something else".into();
         assert_eq!(find(&list, &r), None);
     }
+    #[test]
+    fn ml_plasma_project_identity_survives_updates_and_hidden_menus() {
+        let list = crate::plugins::builtin();
+        let index = list.iter().position(|a| a.desc.id == ml_plasma::ID).unwrap();
+        let descriptor = &list[index].desc;
+        assert!(is_builtin(descriptor));
+        assert!(is_wrapped(descriptor));
+        let mut reference = plugin_ref(descriptor, vec![11, 22, 33]);
+        assert!(reference.path.ends_with("ML Plasma.clap"));
+        assert!(!reference.path.contains("Builtin Plugins"), "version hashes do not enter portable project paths");
+        reference.path = "/another-computer/ML Plasma.clap".into();
+        crate::settings_file::set_flag(ml_plasma::VISIBILITY, false);
+        assert_eq!(find(&list, &reference), Some(index));
+        assert!(switched_format(descriptor, &reference).is_none());
+        assert!(substitute_notice(descriptor, &reference).is_none());
+        let roundtrip = os_flp::wrapper::decode(&os_flp::wrapper::encode(None, &reference)).unwrap();
+        assert_eq!(roundtrip.state, reference.state);
+        crate::settings_file::set_flag(ml_plasma::VISIBILITY, true);
+    }
+
+    // Runs against a separately compiled native editor fixture; the shipping DLL
+    // contains no editor-test entry point. No windows or audio devices are used.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires ML_PLASMA_EDITOR_TEST_LIBRARY from the native fixture target"]
+    fn ml_plasma_editor_state_changes_prompt_before_close() {
+        let path = std::path::PathBuf::from(std::env::var_os("ML_PLASMA_EDITOR_TEST_LIBRARY")
+            .expect("build ml_plasma_editor_fixture and set its path"));
+        // SAFETY: the explicitly supplied fixture is built from our native test target.
+        let module = unsafe { os_host::load_module(&path) }.unwrap();
+        let edit = unsafe { *module.get::<unsafe extern "C" fn(i32) -> bool>(b"ml_plasma_editor_test_edit\0").unwrap() };
+        let library = os_clap::Library::load(&path).unwrap();
+        let descriptor = library.plugins[0].clone();
+        let mut app = App::new(None);
+        app.plugins = Plugins::default();
+        app.plugins.available.push(crate::plugins::Available { lib: library, desc: descriptor });
+        let row = crate::app::add_plugin_channel(&mut app.state.project, ml_plasma::NAME);
+        app.plugins.create(row, 0).unwrap();
+        app.state.hosted_rows.push(row);
+        assert!(unsafe { edit(0) }, "seed an already saved custom wavetable");
+        app.plugins.hosted[&row].plugin.lock().unwrap().idle();
+        app.params_tick();
+        let dir = os_paths::user_dir().unwrap().join(format!("plasma-editor-regression-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Saved.lmn");
+        app.save_to(file.clone());
+        assert!(file.exists());
+        assert!(!app.unsaved(), "the starting project is saved");
+        let state = || app.plugins.hosted[&row].plugin.lock().unwrap().save_state().unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&state()).unwrap();
+        assert!(unsafe { edit(1) }, "edit an existing custom table without changing parameters");
+        let after: serde_json::Value = serde_json::from_slice(&state()).unwrap();
+        assert_eq!(before["plugin"]["params"], after["plugin"]["params"]);
+        assert_ne!(before["plugin"]["data"], after["plugin"]["data"]);
+        assert!(app.plugins.hosted[&row].plugin.lock().unwrap().take_param_events().is_empty(),
+            "this edit can only reach the host through state.mark_dirty");
+        app.params_tick();
+        assert!(app.unsaved(), "an editor-only asset edit dirties a saved ML project");
+        crate::dialog::fake::live(true);
+        app.ask_discard("closing", crate::dialog::Next::Close);
+        assert!(app.modal_open() && !app.want_exit, "closing asks to save the table edit");
+        assert!(app.top_message().unwrap().1.contains("Save the changes"));
+        app.state.dialogs.clear();
+        crate::dialog::fake::live(false);
+        app.save_to(file.clone());
+        app.plugins.hosted[&row].plugin.lock().unwrap().idle();
+        app.params_tick();
+        assert!(!app.unsaved(), "saving the asset does not echo a late dirty event");
+        let saved = app.plugins.hosted[&row].plugin.lock().unwrap().save_state().unwrap();
+        for command in [2, 3, 4] { // bulk (>8 parameters), Undo, Redo
+            assert!(unsafe { edit(command) });
+            app.plugins.hosted[&row].plugin.lock().unwrap().idle();
+            app.params_tick();
+            assert!(app.unsaved(), "editor command {command} must dirty the project even via a rescan");
+            app.save_to(file.clone());
+            app.params_tick();
+            assert!(!app.unsaved());
+        }
+        {
+            let mut plugin = app.plugins.hosted[&row].plugin.lock().unwrap();
+            assert!(plugin.load_state(&saved));
+            plugin.idle();
+        }
+        assert!(unsafe { edit(5) }); // idle without an edit, after host state restoration
+        app.params_tick();
+        assert!(!app.unsaved(), "host state loading and idle do not masquerade as editor edits");
+        {
+            let mut plugin = app.plugins.hosted[&row].plugin.lock().unwrap();
+            let volume = (0..plugin.param_count()).filter_map(|i| plugin.param_info(i))
+                .find(|p| p.name == "Main Volume").unwrap().id;
+            assert!(plugin.set_param(volume, 0.41));
+            plugin.idle();
+        }
+        assert!(unsafe { edit(5) });
+        assert!(!app.plugins.hosted[&row].plugin.lock().unwrap().take_state_changed(),
+            "host automation must not echo state.mark_dirty");
+        assert!(unsafe { edit(1) });
+        app.params_tick();
+        assert!(app.unsaved(), "asset editing still notifies after host automation");
+    }
+
 }

@@ -581,11 +581,11 @@ void MainComponent::drawBranding(juce::Graphics& g, juce::Rectangle<float> area)
     auto text = area.reduced(12, 8);
     g.setColour(oxygen::Theme::Colors::Primary);
     g.setFont(juce::Font("Segoe UI", 25.0f, juce::Font::bold));
-    g.drawText("LEMON MASTER", text.removeFromTop(30), juce::Justification::centredLeft);
+    g.drawText("ML MASTER", text.removeFromTop(30), juce::Justification::centredLeft);
     g.setColour(oxygen::Theme::Colors::OnSurface);
     g.setFont(juce::Font("Segoe UI", 18.0f, juce::Font::bold));
     g.drawText("ASSISTANT  /  MASTERING SUITE", text.removeFromTop(24), juce::Justification::centredLeft);
     g.setColour(oxygen::Theme::Colors::OnSurfaceVariant);
     g.setFont(12.0f);
-    g.drawText("Lemon Studio / oXygen engine", text, juce::Justification::centredLeft);
+    g.drawText("ML Studio / oXygen engine", text, juce::Justification::centredLeft);
 }

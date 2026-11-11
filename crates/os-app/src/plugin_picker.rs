@@ -26,9 +26,14 @@ fn entries(s:&State,effect:bool)->Vec<&Entry>{
     if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
         || (v.filter==1 && effect) || (v.filter==2 && !effect) {return Vec::new();}
     let q=v.query.to_lowercase();
+    let words: Vec<_> = q.split_whitespace().collect();
     let lists=if v.filter==5{&s.plugdb.blacklisted}else{&s.plugdb.lists};let list=if effect{&lists.fx}else{&lists.gens};
-    let mut rows:Vec<_>=list.iter().filter(|e| (v.filter!=3 || e.favorite) && (v.filter!=4 || !e.builtin) && q.split_whitespace().all(|w|
-        format!("{} {} {} {}",e.label,e.vendor,e.category,crate::plugin_db::format_label(e.format)).to_lowercase().contains(w))).collect();
+    let mut rows:Vec<_>=list.iter().filter(|e| {
+        if v.filter == 3 && !e.favorite { return false; }
+        if words.is_empty() { return true; }
+        let text = format!("{} {} {} {}",e.label,e.vendor,e.category,crate::plugin_db::format_label(e.format)).to_lowercase();
+        words.iter().all(|word| text.contains(word))
+    }).collect();
     rows.sort_by_cached_key(|e| (match v.sort {1=>e.vendor.to_lowercase(),2=>e.category.to_lowercase(),_=>String::new()},e.label.to_lowercase()));
     rows
 }
@@ -41,26 +46,23 @@ fn panes(s:&State)->Vec<bool>{
 }
 fn geometry(s:&State)->(Rect,usize,usize){
     let (w,h)=s.screen;
-    let rw=(w-36.).clamp(200.,1480.);let rh=(h-96.).clamp(180.,880.);
-    let mut r=Rect::new((w-rw)/2.,(h-rh)/2.+12.,rw,rh);
+    let rw=(w-36.).clamp(200.,1120.);let rh=(h-96.).clamp(180.,650.);
+    let initial = Rect::new((w-rw)/2.,(h-rh)/2.+12.,rw,rh);
+    let r = chains::panel_rect(s, s.plugin_picker.chains.rect.unwrap_or(initial));
     if s.plugin_picker.filter == chains::FILTER {
-        r = chains::panel_rect(s, s.plugin_picker.chains.rect.unwrap_or(r));
         let (_, cols, rows) = chains::layout(r);
         return (r, cols, rows);
     }
-    let cols=((r.w-40.)/panes(s).len() as f32/212.).floor().max(1.) as usize;
-    let count=panes(s).into_iter().map(|fx| entries(s,fx).len()).max().unwrap_or(0);
-    let rows=((r.h-273.)/138.).floor().max(1.) as usize;
-    let rows=rows.min(count.div_ceil(cols).max(2));
-    r.h=r.h.min(273.+138.*rows as f32);
-    r.y=(h-r.h)/2.+12.;
+    let cols=((r.w-40.)/panes(s).len() as f32/192.).floor().max(1.) as usize;
+    let rows=((r.h-260.)/138.).floor().max(1.) as usize;
     (r,cols,rows)
 }
 fn max_first(s:&State)->usize{let (_,cols,rows)=geometry(s);entries(s,true).len().max(entries(s,false).len()).div_ceil(cols).div_ceil(rows).saturating_sub(1)*rows}
 pub fn open(app:&mut App,target:Target){
     app.state.menu_open=None;app.state.playlist.popup=None;app.state.plugin_picker=View{open:true,target,sort:crate::prefs::text("picker_sort").and_then(|v|v.parse::<u8>().ok()).unwrap_or(0).min(2),..Default::default()};
     app.state.plugin_picker.images=crate::plugin_artwork::load(app.state.plugdb.lists.fx.iter().chain(&app.state.plugdb.lists.gens).chain(&app.state.plugdb.blacklisted.fx).chain(&app.state.plugdb.blacklisted.gens).cloned());
-    if chains::allowed(target) { app.state.plugin_picker.chains = chains::View::load(); }
+    app.state.plugin_picker.chains = chains::View::load();
+    app.state.plugin_picker.chains.focused = true;
     app.pressed=None;app.invalidate();
 }
 pub fn close(app:&mut App){
@@ -68,7 +70,7 @@ pub fn close(app:&mut App){
     app.hits.retain(|h|!matches!(h.action,Action::PluginPicker(_)));app.invalidate();
 }
 pub fn floating(s: &State) -> bool {
-    s.plugin_picker.open && s.plugin_picker.filter == chains::FILTER
+    s.plugin_picker.open
 }
 fn choose(app:&mut App,fx:bool,index:usize){
     if app.state.plugin_picker.filter==5||!choices(&app.state).contains(&(fx,index)){return;}
@@ -110,11 +112,28 @@ pub fn act(app:&mut App,hit:Hit){
         Hit::Sort=>app.state.plugin_picker.sort_open=!app.state.plugin_picker.sort_open,
         Hit::Choose if app.state.plugin_picker.filter == chains::FILTER => chains::choose(app),
         Hit::Choose=>{if let Some(&(fx,index))=choices(&app.state).get(app.state.plugin_picker.selected){choose(app,fx,index);}}
-        Hit::SortBy(order)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.sort_open=false;v.sort=order.min(2);crate::prefs::set_text("picker_sort",&v.sort.to_string());v.first=0;v.selected=0;v.hovered=None;v.chains.first=0;v.chains.selected=0;}
+        Hit::SortBy(order)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.sort_open=false;v.sort=order.min(2);crate::prefs::set_text("picker_sort",&v.sort.to_string());v.first=0;v.selected=0;v.hovered=None;v.chains.first=0;v.chains.reset_selection();}
         Hit::Close=>close(app),
         Hit::Minimize=>{app.state.plugin_picker.minimized=!app.state.plugin_picker.minimized;app.state.plugin_picker.sort_open=false;},
-        Hit::Filter(f)=>{let v=&mut app.state.plugin_picker;if v.target==Target::All || f==0 || f==3 || f==4||f==5 || (f==chains::FILTER && chains::allowed(v.target)){v.multi.clear();v.anchor=None;v.filter=f;v.first=0;v.selected=0;v.hovered=None;v.chains.first=0;v.chains.selected=0;v.chains.focused=true;}},
-        Hit::Clear=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.clear();v.first=0;v.selected=0;v.chains.first=0;v.chains.selected=0;},
+        Hit::Filter(f) => {
+            let v = &mut app.state.plugin_picker;
+            if matches!(f, 0 | 3 | 5) || (matches!(f, 1 | 2) && v.target == Target::All)
+                || (f == chains::FILTER && chains::allowed(v.target)) {
+                if (v.filter == chains::FILTER) != (f == chains::FILTER) { v.query.clear(); }
+                v.multi.clear();
+                v.anchor = None;
+                v.last_click = None;
+                v.filter = f;
+                v.first = 0;
+                v.selected = 0;
+                v.hovered = None;
+                v.sort_open = false;
+                v.chains.first = 0;
+                v.chains.reset_selection();
+                v.chains.focused = true;
+            }
+        }
+        Hit::Clear=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.clear();v.first=0;v.selected=0;v.chains.first=0;v.chains.reset_selection();},
         Hit::Favorite(fx,i)=>{
             let list=if fx{&app.plugins.effects}else{&app.plugins.available};
             if let Some(uid)=list.get(i).map(|e|e.desc.uid()){
@@ -138,20 +157,26 @@ pub fn act(app:&mut App,hit:Hit){
     }
     app.invalidate();
 }
+pub fn under_pointer(app: &App) -> bool {
+    app.state.plugin_picker.open && app.top_hit(app.mouse.0, app.mouse.1)
+        .is_some_and(|h| matches!(h.action, Action::PluginPicker(_)))
+}
+
 pub fn mouse_down(app:&mut App)->bool{
     if app.modal_open() { return false; }
     if floating(&app.state) && (app.state.playlist.popup.is_some() || app.state.menu_open.is_some()) { return false; }
     if !app.state.plugin_picker.open{return false;}
-    if app.state.plugin_picker.minimized && !app.top_hit(app.mouse.0,app.mouse.1).is_some_and(|h|matches!(h.action,Action::PluginPicker(_))){return false;}
-    let floating = app.state.plugin_picker.filter == chains::FILTER && !app.state.plugin_picker.minimized;
     let (rect, _, _) = geometry(&app.state);
-    if floating {
-        let inside = rect.contains(app.mouse.0, app.mouse.1);
-        app.state.plugin_picker.chains.focused = inside;
-        if !inside { return false; }
-    }
-    if app.hits.iter().any(|h|matches!(h.action,Action::Close|Action::Minimize|Action::Maximize) && h.rect.contains(app.mouse.0,app.mouse.1)) {close(app);return false;}
-    let hit=app.top_hit(app.mouse.0,app.mouse.1).and_then(|h|if let Action::PluginPicker(a)=h.action{Some(a)}else{None}).unwrap_or(Hit::Background);
+    let hit = match app.top_hit(app.mouse.0, app.mouse.1).map(|h| &h.action) {
+        Some(Action::PluginPicker(hit)) => Some(*hit),
+        Some(Action::Close | Action::Minimize | Action::Maximize) => {
+            close(app);
+            return false;
+        }
+        _ => None,
+    };
+    app.state.plugin_picker.chains.focused = hit.is_some();
+    let Some(hit) = hit else { return false };
     if matches!(hit, Hit::ChainMovePanel | Hit::ChainResizePanel) {
         app.state.plugin_picker.chains.drag_start = Some(rect);
     }
@@ -161,8 +186,7 @@ pub fn mouse_up(app:&mut App)->bool{
     if app.modal_open() { return false; }
     if floating(&app.state) && (app.state.playlist.popup.is_some() || app.state.menu_open.is_some()) { return false; }
     if !app.state.plugin_picker.open{return false;}
-    if app.state.plugin_picker.minimized && app.state.plugin_picker.pending.is_none(){return false;}
-    if app.state.plugin_picker.filter == chains::FILTER && app.state.plugin_picker.pending.is_none() { return false; }
+    if app.state.plugin_picker.pending.is_none() { return false; }
     if app.state.plugin_picker.chains.drag_start.take().is_some() {
         if let Some(r) = app.state.plugin_picker.chains.rect {
             let text = serde_json::to_string(&[r.x, r.y, r.w, r.h]).unwrap();
@@ -181,27 +205,27 @@ pub fn mouse_up(app:&mut App)->bool{
 pub fn mouse_move(app:&mut App,x:f32,y:f32)->bool{
     if app.modal_open() { return false; }
     if floating(&app.state) && (app.state.playlist.popup.is_some() || app.state.menu_open.is_some()) { return false; }
-    if !app.state.plugin_picker.open || app.state.plugin_picker.minimized{return false;}
-    if app.state.plugin_picker.filter == chains::FILTER {
-        if let Some(start) = app.state.plugin_picker.chains.drag_start
-            && let Some((hit, (x0, y0))) = app.state.plugin_picker.pending {
-            let (dx, dy) = (x - x0, y - y0);
-            let next = if hit == Hit::ChainResizePanel {
-                Rect::new(start.x, start.y, start.w + dx, start.h + dy)
-            } else {
-                Rect::new(start.x + dx, start.y + dy, start.w, start.h)
-            };
-            app.state.plugin_picker.chains.rect = Some(chains::panel_rect(&app.state, next));
-            app.mouse = (x, y);
-            app.invalidate();
-            return true;
-        }
-        if app.state.plugin_picker.pending.is_none() && !geometry(&app.state).0.contains(x, y) {
-            return false;
-        }
+    if !app.state.plugin_picker.open || app.state.plugin_picker.minimized || app.drag.is_some(){return false;}
+    if let Some(start) = app.state.plugin_picker.chains.drag_start
+        && let Some((hit, (x0, y0))) = app.state.plugin_picker.pending {
+        let (dx, dy) = (x - x0, y - y0);
+        let next = if hit == Hit::ChainResizePanel {
+            Rect::new(start.x, start.y, start.w + dx, start.h + dy)
+        } else {
+            Rect::new(start.x + dx, start.y + dy, start.w, start.h)
+        };
+        app.state.plugin_picker.chains.rect = Some(chains::panel_rect(&app.state, next));
+        app.mouse = (x, y);
+        app.invalidate();
+        return true;
+    }
+    if app.state.plugin_picker.pending.is_none() && !geometry(&app.state).0.contains(x, y) {
+        return false;
     }
     app.mouse=(x,y);
-    let hit=app.top_hit(x,y).map(|h|(h.action.clone(),h.hint.clone()));app.hover=hit.as_ref().map(|h|h.0.clone());
+    let hit=app.top_hit(x,y).map(|h|(h.action.clone(),h.hint.clone()));
+    let previous = app.hover.take();
+    app.hover=hit.as_ref().map(|h|h.0.clone());
     app.state.plugin_picker.hovered=None;
     if let Some((action,hint))=hit{if let Action::PluginPicker(Hit::Tile(fx,i)|Hit::Favorite(fx,i))=action{
         app.state.plugin_picker.hovered=Some((fx,i));
@@ -221,14 +245,30 @@ pub fn mouse_move(app:&mut App,x:f32,y:f32)->bool{
             }
         }
     }
-    app.invalidate();true
+    if let Some((Hit::ChainTile(row), m0)) = app.state.plugin_picker.pending
+        && !app.ctrl && !app.shift
+        && crate::workspace_visibility::shown(chains::BATCH_VISIBILITY)
+        && (x - m0.0).hypot(y - m0.1) > 5.
+    {
+        let chains = chains::dragged(&app.state.plugin_picker, row);
+        if !chains.is_empty() {
+            let label = chains::drag_label(&chains);
+            close(app);
+            app.state.raise(crate::app::Win::Mixer);
+            app.drag = Some(Drag::Browser { item: crate::views::browser::Item::EffectChains(chains.into()),
+                label: label.clone(), m0, started: true });
+            app.state.browser_drag = Some((label, x, y));
+        }
+    }
+    if previous != app.hover { app.invalidate(); }
+    true
 }
 pub fn wheel(app:&mut App,dy:f32)->bool{
     if app.modal_open() { return false; }
     if floating(&app.state) && (app.state.playlist.popup.is_some() || app.state.menu_open.is_some()) { return false; }
     if !app.state.plugin_picker.open || app.state.plugin_picker.minimized{return false;}
+    if !geometry(&app.state).0.contains(app.mouse.0, app.mouse.1) { return false; }
     if app.state.plugin_picker.filter == chains::FILTER {
-        if !geometry(&app.state).0.contains(app.mouse.0, app.mouse.1) { return false; }
         let (_, cols, rows) = geometry(&app.state);
         chains::scroll(&mut app.state.plugin_picker, if dy > 0. { -1 } else if dy < 0. { 1 } else { 0 }, cols, rows);
         app.invalidate();
@@ -241,7 +281,7 @@ pub fn key(app:&mut App,key:&Key,ctrl:bool,alt:bool)->bool{
     if app.modal_open() { return false; }
     if floating(&app.state) && (app.state.playlist.popup.is_some() || app.state.menu_open.is_some()) { return false; }
     if !app.state.plugin_picker.open || app.state.plugin_picker.minimized{return false;}
-    if app.state.plugin_picker.filter == chains::FILTER && !app.state.plugin_picker.chains.focused { return false; }
+    if !app.state.plugin_picker.chains.focused { return false; }
     if chains::editing(&app.state.plugin_picker) {
         match key {
             Key::Named(NamedKey::Escape) => act(app, Hit::ChainCancel),
@@ -260,21 +300,25 @@ pub fn key(app:&mut App,key:&Key,ctrl:bool,alt:bool)->bool{
         Key::Named(NamedKey::Enter)=>act(app, Hit::Choose),
         Key::Named(NamedKey::ArrowDown|NamedKey::ArrowUp|NamedKey::ArrowLeft|NamedKey::ArrowRight)=>{
             app.state.plugin_picker.hovered=None;
-            let all=choices(&app.state);let (_,cols,rows)=geometry(&app.state);
+            let (_,cols,rows)=geometry(&app.state);
             let step=match key{Key::Named(NamedKey::ArrowUp)=>-(cols as isize),Key::Named(NamedKey::ArrowDown)=>cols as isize,Key::Named(NamedKey::ArrowLeft)=>-1,_=>1};
             if app.state.plugin_picker.filter == chains::FILTER {
                 chains::navigate(&mut app.state.plugin_picker, step, cols, rows);
                 app.invalidate();
                 return true;
             }
+            let all=choices(&app.state);
             let sel=app.state.plugin_picker.selected.saturating_add_signed(step).min(all.len().saturating_sub(1));
             app.state.plugin_picker.selected=sel;app.state.plugin_picker.multi=all.get(sel).copied().into_iter().collect();app.state.plugin_picker.anchor=Some(sel);
             if let Some(&(fx,i))=all.get(sel){let row=entries(&app.state,fx).iter().position(|e|e.index==i).unwrap_or(0)/cols;
                 let v=&mut app.state.plugin_picker;if row<v.first{v.first=row;}else if row>=v.first+rows{v.first=row+1-rows;}}
         },
-        Key::Named(NamedKey::Backspace)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.pop();v.first=0;v.selected=0;v.chains.first=0;v.chains.selected=0;},
-        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a")=>{app.state.plugin_picker.multi=choices(&app.state);},
-        Key::Character(c) if !ctrl && !alt=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;for ch in c.chars().filter(|c|!c.is_control()){if v.query.chars().count()<128{v.query.push(ch);}}v.first=0;v.selected=0;v.chains.first=0;v.chains.selected=0;},
+        Key::Named(NamedKey::Backspace)=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;v.query.pop();v.first=0;v.selected=0;v.chains.first=0;v.chains.reset_selection();},
+        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => {
+            if app.state.plugin_picker.filter == chains::FILTER { chains::select_all(&mut app.state.plugin_picker); }
+            else { app.state.plugin_picker.multi = choices(&app.state); }
+        },
+        Key::Character(c) if !ctrl && !alt=>{let v=&mut app.state.plugin_picker;v.multi.clear();v.anchor=None;for ch in c.chars().filter(|c|!c.is_control()){if v.query.chars().count()<128{v.query.push(ch);}}v.first=0;v.selected=0;v.chains.first=0;v.chains.reset_selection();},
         _=>{},
     }
     app.invalidate();true
@@ -291,13 +335,10 @@ pub fn paint(ui:&mut Ui,s:&State){
     }
     let (r,cols,rows)=geometry(s);let panes=panes(s);
     let chain_mode = v.filter == chains::FILTER;
-    let backdrop = if chain_mode { r } else { Rect::new(0.,0.,s.screen.0,s.screen.1) };
-    ui.hit(backdrop,Action::PluginPicker(Hit::Background),"Plugin picker");
-    if chain_mode {
-        ui.hit(Rect::new(r.x, r.y, r.w - 88., 49.), Action::PluginPicker(Hit::ChainMovePanel), "Drag to move Effect Chains");
-    }
+    ui.hit(r,Action::PluginPicker(Hit::Background),"Plugin picker");
+    ui.hit(Rect::new(r.x, r.y, r.w - 88., 49.), Action::PluginPicker(Hit::ChainMovePanel), "Drag to move Plugin Picker");
     use os_ui::Color;
-    let lemon=Color::rgb(0xf2d451);
+    let lemon=Color::rgb(0x2096f3);
     ui.c.fill_rect_gradient(r,Color::rgb(0x202124),Color::rgb(0x111215),14.);
     ui.c.stroke_rrect(r,14.,1.,Color::rgb(0x46474b));
     let title=match v.target{Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)=>"Choose an effect",Target::All=>"Choose a plugin"};
@@ -310,32 +351,38 @@ pub fn paint(ui:&mut Ui,s:&State){
     };
     ui.c.fill_circle(r.x+32.,r.y+29.,13.,lemon);
     for i in 0..6 {let a=i as f32*std::f32::consts::TAU/6.;ui.c.line(r.x+32.,r.y+29.,r.x+32.+11.*a.cos(),r.y+29.+11.*a.sin(),1.,Color::rgb(0x212222));}
-    ui.c.text_clip(Font::light(19,0).bold(),r.x+55.,r.y+17.,145.,ui.t.text,"Lemon Studio");
+    ui.c.text_clip(Font::light(19,0).bold(),r.x+55.,r.y+17.,145.,ui.t.text,"ML Studio");
     ui.c.text_clip(Font::light(15,0),r.x+203.,r.y+20.,r.w-260.,ui.t.text_dim,title);
     btn(ui,Rect::new(r.right()-81.,r.y+12.,30.,28.),"−",Hit::Minimize,false);
     btn(ui,Rect::new(r.right()-46.,r.y+12.,30.,28.),"×",Hit::Close,false);
-    let mut filters:Vec<(u8,&str)>=if v.target==Target::All{vec![(0,"All"),(1,"Instruments"),(2,"Effects"),(3,"Favorites"),(4,"Installed"),(5,"Blacklist")]}else{vec![(0,"All"),(3,"Favorites"),(4,"Installed"),(5,"Blacklist")]};
+    let mut filters:Vec<(u8,&str)>=if v.target==Target::All{vec![(0,"All"),(1,"Instruments"),(2,"Effects"),(3,"Favorites"),(5,"Blacklist")]}else{vec![(0,"All"),(3,"Favorites"),(5,"Blacklist")]};
     if chains::allowed(v.target) { filters.insert(filters.len() - 1, (chains::FILTER, "Effect Chains")); }
-    let fw=((r.w-270.) / filters.len() as f32 - 5.).clamp(36., 88.);
-    let sw=(r.w-146.-filters.len() as f32*(fw+5.)-38.).max(72.);
+    let tab_width = |filter| match filter { 0 => 36., 1 => 79., 2 => 54., 3 => 64., 5 => 62., _ => 88. };
+    let tabs: f32 = filters.iter().map(|(f, _)| tab_width(*f) + 4.).sum();
+    let sort = Rect::new(r.right()-128.,r.y+54.,110.,32.);
+    let sw = (sort.x - r.x - 26. - tabs).max(1.);
     let search=Rect::new(r.x+18.,r.y+54.,sw,33.);
     ui.c.fill_rrect(search,16.,Color::rgb(0x161719));ui.c.stroke_rrect(search,16.,1.,lemon.with_alpha(170));
     ui.c.stroke_circle(search.x+15.,search.cy()-2.,4.,1.2,ui.t.text_dim);
     ui.c.line(search.x+18.,search.cy()+1.,search.x+22.,search.cy()+5.,1.3,ui.t.text_dim);
     ui.c.text_clip(Font::light(13,0),search.x+29.,search.y+8.,search.w-55.,ui.t.text,if v.query.is_empty(){if v.filter==chains::FILTER{"Search chains..."}else{"Search plugins..."}}else{&v.query});
     if !v.query.is_empty(){btn(ui,Rect::new(search.right()-26.,search.y+4.,22.,24.),"×",Hit::Clear,false);}
-    for (i,(f,label)) in filters.iter().enumerate(){btn(ui,Rect::new(search.right()+6.+i as f32*(fw+5.),search.y,fw,32.),label,Hit::Filter(*f),v.filter==*f);}
-    let sort=Rect::new(r.right()-146.,search.y,128.,32.);
+    let mut tab_x = search.right() + 4.;
+    for (f, label) in filters {
+        let width = tab_width(f);
+        btn(ui, Rect::new(tab_x, search.y, width, 32.), label, Hit::Filter(f), v.filter == f);
+        tab_x += width + 4.;
+    }
     let sort_labels = if chain_mode { ["Name", "Favorites", "Category"] } else { ["Name", "Vendor", "Category"] };
     let sort_buttons = if chain_mode { ["Sort: Name ▾", "Sort: Favorites ▾", "Sort: Category ▾"] } else { ["Sort: Name ▾", "Sort: Vendor ▾", "Sort: Category ▾"] };
     btn(ui,sort,sort_buttons[v.sort as usize],Hit::Sort,v.sort_open);
+    let grip = Rect::new(r.right() - 16., r.bottom() - 16., 16., 16.);
+    ui.hit(grip, Action::PluginPicker(Hit::ChainResizePanel), "Drag to resize Plugin Picker");
+    for offset in [4., 8., 12.] {
+        ui.c.line(r.right() - 4. - offset, r.bottom() - 4., r.right() - 4., r.bottom() - 4. - offset, 1., ui.t.text_dim);
+    }
     if chain_mode {
         chains::paint(ui, s, r);
-        let grip = Rect::new(r.right() - 16., r.bottom() - 16., 16., 16.);
-        ui.hit(grip, Action::PluginPicker(Hit::ChainResizePanel), "Drag to resize Effect Chains");
-        for offset in [4., 8., 12.] {
-            ui.c.line(r.right() - 4. - offset, r.bottom() - 4., r.right() - 4., r.bottom() - 4. - offset, 1., ui.t.text_dim);
-        }
         if v.sort_open {
             for (i, name) in sort_labels.into_iter().enumerate() {
                 btn(ui, Rect::new(sort.x, sort.bottom()+2.+26.*i as f32, sort.w, 26.), name, Hit::SortBy(i as u8), v.sort as usize==i);
@@ -343,14 +390,18 @@ pub fn paint(ui:&mut Ui,s:&State){
         }
         return;
     }
-    let all=choices(s);let selected=all.get(v.selected).copied();
+    let mut lists = panes.iter().map(|&fx| (fx, entries(s, fx))).collect::<Vec<_>>();
+    let current = lists.iter().flat_map(|(fx, list)| list.iter().map(|e| (*fx, *e))).nth(v.selected);
+    let max = lists.iter().map(|(_, list)| list.len()).max().unwrap_or(0)
+        .div_ceil(cols).div_ceil(rows).saturating_sub(1) * rows;
+    let first = v.first.min(max);
     let width=(r.w-36.-12.*(panes.len()-1) as f32)/panes.len() as f32;
     let cardw=(width-8.*(cols-1) as f32)/cols as f32;
-    for (pane,fx) in panes.into_iter().enumerate(){
-        let x=r.x+18.+pane as f32*(width+12.);let list=entries(s,fx);
+    for (pane,(fx,list)) in lists.drain(..).enumerate(){
+        let x=r.x+18.+pane as f32*(width+12.);
         ui.c.text_clip(Font::new(12).bold(),x,r.y+100.,width,ui.t.text_dim,&format!("{}  ·  {}",if fx{"EFFECTS"}else{"INSTRUMENTS"},list.len()));
         if list.is_empty(){ui.c.text_clip(Font::new(13),x,r.y+146.,width,ui.t.text_dim,"No matching plugins");}
-        for (n,e) in list.iter().skip(v.first*cols).take(rows*cols).enumerate(){
+        for (n,e) in list.iter().skip(first*cols).take(rows*cols).enumerate(){
             let card=Rect::new(x+(n%cols) as f32*(cardw+8.),r.y+122.+(n/cols) as f32*138.,cardw,130.);
             let hover=ui.hit(card,Action::PluginPicker(Hit::Tile(fx,e.index)),if v.filter==5{format!("{} - select, then Restore to show again",e.label)}else{format!("{} - select, double-click to add, or drag to {}",e.label,if fx{"the mixer"}else{"the channel rack"})});
             let accent=lemon;
@@ -364,19 +415,16 @@ pub fn paint(ui:&mut Ui,s:&State){
     }
     let inspector=Rect::new(r.x+18.,r.bottom()-76.,r.w-36.,66.);
     ui.c.fill_rrect(inspector,6.,ui.t.s(0x111a1e));
-    let current=selected;
-    if let Some((fx,index))=current{
-        if let Some(e)=entries(s,fx).into_iter().find(|e|e.index==index){
+    if let Some((fx,e))=current {
             let pic=Rect::new(inspector.x+8.,inspector.y+5.,112.,56.);
             if let Some(p)=v.images.get(&e.uid){crate::plugin_artwork::draw(ui,pic,p);}else{fallback(ui,pic,fx);}
             let x=inspector.x+134.;let w=(inspector.w-390.).max(80.);
             ui.c.text_clip(Font::light(15,0).natural().bold(),x,inspector.y+8.,w,ui.t.text,&e.label);
-            ui.c.text_clip(Font::new(11),x,inspector.y+29.,w,ui.t.text_dim,&format!("Category: {}   |   Developer: {}",e.category,e.vendor));
+            ui.c.text_clip(Font::new(11),x,inspector.y+29.,w,ui.t.text_dim,&format!("Category: {}   |   Developer: {}",e.category,if e.builtin && e.vendor == crate::plugin_db::BUILTIN_VENDOR { "ML Studio" } else { &e.vendor }));
             ui.c.text_clip(Font::new(10),x,inspector.y+47.,w,ui.t.text_dim,if v.filter==5{"Hidden from picker - select and Restore below"}else if progress.summary.is_empty(){"Ctrl/Cmd-click: toggle - Shift-click: range"}else{&progress.summary});
             if v.filter!=5{btn(ui,Rect::new(inspector.right()-186.,inspector.y+17.,100.,32.),"Choose",Hit::Choose,true);}
-            btn(ui,Rect::new(inspector.right()-78.,inspector.y+17.,69.,32.),"Close",Hit::Close,false);
-        }
     }
+    btn(ui,Rect::new(inspector.right()-78.,inspector.y+17.,69.,32.),"Close",Hit::Close,false);
     let y=inspector.y-62.;let bulk=inspector.y-31.;
     btn(ui,Rect::new(r.x+18.,bulk,100.,24.),"Favorite +",Hit::BulkFavorite(true),false);
     btn(ui,Rect::new(r.x+122.,bulk,100.,24.),"Favorite −",Hit::BulkFavorite(false),false);
@@ -389,12 +437,11 @@ pub fn paint(ui:&mut Ui,s:&State){
         btn(ui,Rect::new(r.x+18.,y,133.,24.),if progress.running{"Cancel generation"}else{"Generate previews"},if progress.running{Hit::CancelGeneration}else{Hit::Generate},false);
     }
     btn(ui,Rect::new(r.x+156.,y,112.,24.),"Manage plugins",Hit::Manage,false);
-    if let Some((fx,i))=current {
-        btn(ui,Rect::new(r.x+273.,y,110.,24.),if progress.failed>0{"Preview report"}else{"Choose picture"},if progress.failed>0{Hit::PreviewReport}else{Hit::Picture(fx,i)},false);
+    if let Some((fx,e))=current {
+        btn(ui,Rect::new(r.x+273.,y,110.,24.),if progress.failed>0{"Preview report"}else{"Choose picture"},if progress.failed>0{Hit::PreviewReport}else{Hit::Picture(fx,e.index)},false);
     }
-    let max=max_first(s);
     btn(ui,Rect::new(r.right()-142.,y,26.,24.),"<",Hit::Page(-1),false);
-    ui.c.text_center(Font::new(11),Rect::new(r.right()-112.,y,56.,24.),ui.t.text_dim,&format!("{}/{}",v.first/rows+1,max.div_ceil(rows)+1));
+    ui.c.text_center(Font::new(11),Rect::new(r.right()-112.,y,56.,24.),ui.t.text_dim,&format!("{}/{}",first/rows+1,max.div_ceil(rows)+1));
     btn(ui,Rect::new(r.right()-48.,y,26.,24.),">",Hit::Page(1),false);
     if v.sort_open {
         for (i,name) in ["Name","Vendor","Category"].into_iter().enumerate(){
@@ -422,6 +469,31 @@ mod tests{
       let bytes=serde_json::to_vec(&a.state.plugdb.prefs).unwrap();let back:crate::plugin_db::Prefs=serde_json::from_slice(&bytes).unwrap();assert_eq!(back,a.state.plugdb.prefs);
     }
     fn app()->App{let mut a=App::new(None);a.plugins=crate::plugins::Plugins::builtins();a.state.plugdb.rebuild(&a.plugins);a}
+    #[test]
+    fn plugin_picker_tabs_use_one_clickable_panel() {
+        let mut app = app();
+        let mut canvas = Canvas::new(800, 600, 1.).unwrap();
+        open(&mut app, Target::All);
+        app.paint(&mut canvas, None);
+        let bounds = geometry(&app.state).0;
+        for filter in [1, 2, 3, 5, chains::FILTER, 0] {
+            let button = app.hits.iter().find(|h| h.action == Action::PluginPicker(Hit::Filter(filter))).unwrap().rect;
+            // Underlying window chrome must never intercept a tab above it.
+            app.hits.insert(0, crate::app::Hit {
+                rect: button, action: Action::Close, hint: "Underlying close".into(),
+                win: Some(crate::app::Win::Mixer), menu: 0, reveal: None,
+            });
+            app.mouse_move(button.cx(), button.cy());
+            app.mouse_down();
+            app.mouse_up();
+            assert!(app.state.plugin_picker.open);
+            assert_eq!(app.state.plugin_picker.filter, filter);
+            app.paint(&mut canvas, None);
+            assert_eq!(geometry(&app.state).0, bounds);
+            assert!(!app.hits.iter().any(|h| h.action == Action::PluginPicker(Hit::Filter(4))));
+        }
+    }
+
     #[test]
     fn plugin_picker_search_favorites_keyboard_and_layout(){
         let mut a=app();let mut c=Canvas::new(1280,900,1.).unwrap();
@@ -452,7 +524,12 @@ mod tests{
     fn plugin_picker_artwork_and_context_fill_the_view(){
         let mut a=app();let mut c=Canvas::new(1280,900,1.).unwrap();a.paint(&mut c,None);
         open(&mut a,Target::All);
-        assert!(a.state.plugdb.lists.gens.iter().chain(&a.state.plugdb.lists.fx).all(|e|a.state.plugin_picker.images.contains_key(&e.uid)),"all built-ins have real previews");
+        for entry in a.state.plugdb.lists.gens.iter().chain(&a.state.plugdb.lists.fx) {
+            // Tape and Hall were added without bundled artwork and use the category icon.
+            if !matches!(entry.name.as_str(), "ML Tape" | "ML Hall") {
+                assert!(a.state.plugin_picker.images.contains_key(&entry.uid), "missing preview for {}", entry.name);
+            }
+        }
         let hybrid_cols=geometry(&a.state).1;
         for (target,fx) in [(Target::Gen(None),false),(Target::Replace(0),false),(Target::Fx(Some(2)),true)]{
             open(&mut a,target);assert_eq!(panes(&a.state),vec![fx]);assert!(geometry(&a.state).1>hybrid_cols);

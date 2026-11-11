@@ -881,7 +881,8 @@ main_gui_scaling = 200%
     /// `OFF_PAGE_COMBOS` are on no page.
     #[test]
     fn declarations_match_the_settings_pages() {
-        let app = App::new(None);
+        let mut app = App::new(None);
+        app.state.midi.advanced = true;
         let mut checks_shown = Vec::new();
         let mut combos_shown = Vec::new();
         let mut numbers_shown = Vec::new();

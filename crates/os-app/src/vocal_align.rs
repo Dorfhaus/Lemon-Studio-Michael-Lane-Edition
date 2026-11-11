@@ -92,7 +92,7 @@ impl Drop for Rendered {
 }
 
 fn audio_clip(s: &State, index: usize) -> Option<(Clip, &Channel)> {
-    let clip = *pl::clips(s).get(index)?;
+    let clip = pl::clips(s).get(index)?.clone();
     let ClipSource::Channel(id) = clip.source else { return None };
     let channel = s.project.channel(id)?;
     (channel.kind == ChannelKind::AudioClip && channel.sample_path.is_some())
@@ -131,14 +131,14 @@ impl Batch {
         }
         let mut inputs = vec![input(s, guide).unwrap()];
         inputs.extend(s.playlist.sel.iter().copied().filter(|&i| i != guide).filter_map(|i| input(s, i)));
-        let guide = inputs[0].clip;
+        let guide = inputs[0].clip.clone();
         guide.position.checked_add(guide.length).ok_or("Guide position is out of range")?;
         let mut rows = std::collections::BTreeSet::from([guide.track]);
         for take in &inputs[1..] {
             if !rows.insert(take.clip.track) {
                 return Err("Put the guide and each take on separate Playlist tracks".into());
             }
-            if overlaps(s, take, guide) {
+            if overlaps(s, take, guide.clone()) {
                 return Err(format!("{} would overlap another clip on its track", name(take)));
             }
         }
@@ -174,7 +174,7 @@ impl Batch {
             && self.arrangement == s.project.current_arrangement
             && self.inputs.iter().all(|v| pl::clips(s).get(v.index) == Some(&v.clip)
                 && s.project.channel(v.channel.index) == Some(&v.channel))
-            && self.inputs[1..].iter().all(|v| !overlaps(s, v, self.inputs[0].clip))
+            && self.inputs[1..].iter().all(|v| !overlaps(s, v, self.inputs[0].clip.clone()))
     }
 }
 
@@ -346,7 +346,7 @@ fn apply(s: &mut State, batch: &Batch, renders: Vec<Rendered>) -> Result<usize, 
     if first + renders.len() > u16::MAX as usize {
         return Err("There are no free audio channel IDs".into());
     }
-    let guide = batch.inputs[0].clip;
+    let guide = batch.inputs[0].clip.clone();
     let count = renders.len();
     let extra = Snap::Several(vec![
         Snap::Tail(Box::new(Tail::now(s, first))),
@@ -647,7 +647,7 @@ pub fn paint(ui: &mut Ui, r: os_ui::Rect, form: &Form) {
     let ink = Color::rgb(0xeaf0f3);
     let dim = Color::rgb(0xa4b0bd);
     let mint = Color::rgb(0x65e2c3);
-    let gold = Color::rgb(0xf1d45a);
+    let gold = Color::rgb(0x2096f3);
     let purple = Color::rgb(0xa9a0f8);
     let x = r.x + 18.;
     let width = r.w - 36.;
@@ -791,7 +791,7 @@ mod tests {
         let b = pl::add_audio_clip(&mut app.state, dub.to_str().unwrap(), 2, 56).unwrap();
         let original = std::fs::read(&dub).unwrap();
         let unpadded = app.state.project.clone();
-        let guide_clip = pl::clips(&app.state)[g];
+        let guide_clip = pl::clips(&app.state)[g].clone();
         let extra = u32::from(app.state.project.ppq) / 2;
         let clips = &mut pl::arr_mut(&mut app.state).clips;
         clips[g].length += extra;

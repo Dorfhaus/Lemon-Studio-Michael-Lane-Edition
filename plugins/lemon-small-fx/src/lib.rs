@@ -122,11 +122,11 @@ pub trait Sound: Send {
 
 /// Everything that makes one of the effects.
 pub struct Spec {
-    /// "Lemon Soft Clipper": the plugin's name.
+    /// "ML Soft Clipper": the plugin's name.
     pub name: &'static str,
     /// The wordmark's word: "SOFT CLIPPER".
     pub word: &'static str,
-    /// The About menu's line: "Lemon Studio's soft clipper".
+    /// The About menu's line: "ML Studio's soft clipper".
     pub about: &'static str,
     /// The settings in the original's saved order.
     pub settings: &'static [Setting],
@@ -243,7 +243,7 @@ impl<K: Kind> SmallFx<K> {
 
 impl<K: Kind> Plugin for SmallFx<K> {
     const NAME: &'static str = K::SPEC.name;
-    const VENDOR: &'static str = "Lemon Studio";
+    const VENDOR: &'static str = "ML Studio";
     const URL: &'static str = "";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -377,7 +377,7 @@ mod tests {
                 assert_ne!(classes[i], classes[j]);
             }
         }
-        assert_eq!(<balance::LemonBalance as Plugin>::NAME, "Lemon Balance");
+        assert_eq!(<balance::LemonBalance as Plugin>::NAME, "ML Balance");
     }
 
     #[test]

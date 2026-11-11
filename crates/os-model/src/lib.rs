@@ -14,7 +14,7 @@ pub mod curve;
 pub mod vocal;
 
 /// An RGB color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -28,10 +28,10 @@ impl Rgb {
 }
 
 /// Original source and editable source-seconds -> destination-beats anchors for a rendered warp.
-#[derive(Debug,Clone,PartialEq)]
+#[derive(Debug,Clone,PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AudioWarp {pub source:String,pub rendered:String,pub points:Vec<(f64,f64)>}
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Project {
     pub mpe:mpe::Data,
     /// Audio sources privately owned by individual clip effects chains.
@@ -112,13 +112,13 @@ pub struct Project {
 }
 
 /// A direct audio-envelope link; range is normalized to the destination parameter.
-#[derive(Debug,Clone,Copy,PartialEq)]
+#[derive(Debug,Clone,Copy,PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PeakLink {pub source:u16,pub target:u32,pub base:f32,pub depth:f32,pub inverted:bool,pub release_ms:u16}
 
 /// One of the project's initial values: a control and the value it takes when the song starts (spec:
 /// ui/settings-choices.md "Advanced: Initialize controls automatically"). A 12-byte record of event 216, kept as read,
 /// so a record whose meaning isn't known (a plugin parameter's) is written back as it was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InitControl {
     /// Bytes 0..3 of the record: 0 in every record seen.
     pub head: u32,
@@ -202,7 +202,7 @@ impl InitControl {
 }
 
 /// Event 237: two doubles in days (spec: flp/events/project-info.md).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct WorkTime {
     /// When the project was started: days since 1899-12-30 00:00, local time.
     pub started: f64,
@@ -305,7 +305,7 @@ pub fn rescale_length(t: u32, from: u16, to: u16) -> u32 {
 
 /// The playlist view a project stores: scroll, time zoom and track height (event 242, 28 bytes; spec:
 /// flp/events/playlist.md "Playlist view"). Pixels are FL's at 100 % UI scale.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PlaylistView {
     pub raw: [u8; 28],
 }
@@ -548,7 +548,7 @@ impl Project {
 
 /// A project's data folder as the file keeps it (spec: ui/data-folder.md §2, flp/events/project-info.md): a folder of
 /// its own for its backups and the copies of the samples it uses. An event the file lacks reads as its default.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct DataFolder {
     /// Event 167, the Project page's choice: [`DataFolder::NONE`], [`DataFolder::RELATIVE`] or
     /// [`DataFolder::SPECIFIED`].
@@ -567,7 +567,7 @@ impl DataFolder {
     pub const SPECIFIED: u32 = 2;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProjectInfo {
     pub title: Option<String>,
     pub author: Option<String>,
@@ -577,7 +577,7 @@ pub struct ProjectInfo {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChannelKind {
     Sampler,
     Plugin,
@@ -596,7 +596,7 @@ impl ChannelKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Channel {
     /// Position in the Channel rack, 0-based.
     pub index: u16,
@@ -644,7 +644,7 @@ impl Channel {
 
 /// A channel's filter, sampler and declick settings as stored (spec: flp/engine-events.md "A channel",
 /// audio/channel-filter.md, audio/sampler.md, audio/declick.md, audio/audio-clips.md).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelSound {
     /// Filter cutoff (mod X) and resonance (mod Y), 0..=256; filter type 0..=7 (event 219, ints 3..5).
     pub cutoff: i32,
@@ -689,7 +689,7 @@ impl ChannelSound {
 
 /// A sample channel's start, length, loop options and precomputed effects as stored, in the file's units (spec:
 /// audio/precomputed-effects.md "Settings"). Saving writes it back for sampler channels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SampleFx {
     /// Event 70: `FADE_STEREO`, `REVERSE`, `CLIP`, `SWAP`.
     pub flags: u16,
@@ -804,7 +804,7 @@ pub mod stretch_mode {
 }
 
 /// How a sample channel's stretch settings play (spec: audio/time-stretch.md "How each method plays").
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Stretching {
     /// The sample plays as it is.
     None,
@@ -912,7 +912,7 @@ impl Default for ChannelSound {
 /// A channel's Misc tab settings (spec: ui/plugin-window.md "Misc tab"; storage: flp/events/channels.md "Misc
 /// settings"). Knobs are 0.0..=1.0; bipolar knobs (levels, tracking, echo pan / mod / pitch) are -1.0..=1.0 with 0
 /// = centre.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelMisc {
     /// Levels adjustment: panning, volume, Mod X, Mod Y (bipolar).
     pub levels: [f32; 4],
@@ -957,7 +957,7 @@ pub struct ChannelMisc {
 }
 
 /// A layer channel's settings besides its children (spec: audio/note-rules.md "Settings", "Layer channels").
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LayerSettings {
     /// Event 144: [`LayerSettings::RANDOM`], [`LayerSettings::CROSSFADE`], [`LayerSettings::IN_TURN`].
     pub flags: u32,
@@ -1005,7 +1005,7 @@ impl Default for ChannelMisc {
 }
 
 /// One tracking page of the Misc tab (by volume or by key; spec: audio/channel-misc.md "Settings").
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tracking {
     /// Middle point: the mid volume (100 for a new channel) or the mid key (60).
     pub mid: u8,
@@ -1022,7 +1022,7 @@ impl Default for Tracking {
 }
 
 /// The Misc tab's arpeggiator (spec: audio/channel-misc.md "Settings", "Arpeggiator").
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Arpeggio {
     /// 0 off, 1 up, 2 down, 3 up-down (bounce), 4 up-down (sticky), 5 random.
     pub direction: u8,
@@ -1051,7 +1051,7 @@ impl Default for Arpeggio {
 }
 
 /// The Misc tab's echo delay (spec: audio/channel-misc.md "Settings", "Echo delay").
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Echo {
     /// Feed knob: the stored feed 0..=25600 as 0..=1 (0.5 = 100 %, 0 = no echo).
     pub feed: f32,
@@ -1081,10 +1081,11 @@ impl Default for Echo {
 }
 
 /// Channel rack settings of one channel (spec: flp/events/channels.md).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChannelRack {
     /// Index of the file block this channel was loaded from (`None` = created in Lemon Studio). A clone keeps its
     /// source's origin, so the writer copies the source block (spec: channels.md "Deleting, cloning and moving").
+    #[serde(skip)]
     pub origin: Option<u16>,
     /// Lock active/mute state (event 32).
     pub locked: bool,
@@ -1099,7 +1100,7 @@ pub struct ChannelRack {
 
 /// One channel envelope record, values as stored (spec: audio/channel-envelopes.md). Times are knob
 /// values (100 = none), `sustain` is 0..=128, tensions are -128..=128.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Envelope {
     pub enabled: bool,
     pub delay: i32,
@@ -1159,7 +1160,7 @@ impl Default for Envelope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Pattern {
     /// 1-based.
     pub number: u16,
@@ -1194,7 +1195,7 @@ impl Pattern {
 /// One point of a pattern's channel control lane (event 223 record). `kind` is
 /// `channel << 16 | parameter`; only [`ControlPoint::VOLUME`], [`ControlPoint::PAN`] and
 /// [`ControlPoint::PITCH`] are edited, other targets are kept as read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ControlPoint {
     pub position: u32,
     pub kind: u32,
@@ -1225,7 +1226,7 @@ impl ControlPoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Independent Lemon Sampler voice drive, 0 (bypass) to 127.
     pub drive:u8,
@@ -1344,7 +1345,7 @@ impl Note {
 }
 
 /// A real hosted processor replacing the native mixer strip. Its audio/state remain in the normal slot system.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RackStrip {
     pub slot: u8,
     pub native_bypassed: bool,
@@ -1352,15 +1353,16 @@ pub struct RackStrip {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MixerTrack {
     /// In-memory identity, preserved across edits/reordering; never serialized.
+    #[serde(skip)]
     pub runtime_id: u64,
     pub clip_fx:bool,
     pub rack_strip: Option<RackStrip>,
     /// Protects the channel from manual configuration edits.
     pub edit_locked: bool,
-    /// Protects the structure and routing of the section starting at this separator.
+    /// Protects manual edits to all channels in the section starting at this separator.
     pub group_locked: bool,
     /// 0 = Master.
     pub index: u16,
@@ -1368,6 +1370,7 @@ pub struct MixerTrack {
     pub color: Option<Rgb>,
     pub enabled: bool,
     /// Up to 63 user effects; physical index 10 is reserved for the dedicated parametric EQ.
+    #[serde(with = "collab_array")]
     pub slots: [Option<SlotPlugin>; 64],
     /// Destination tracks this track sends to.
     pub routes: Vec<u16>,
@@ -1388,7 +1391,9 @@ pub struct MixerTrack {
     /// Draw a group separator before this track (FL event 236, flag 0x400).
     pub separator: bool,
     /// Per slot: enabled (the slot LED) and mix level 0..=1 (spec: ui/mixer.md §7).
+    #[serde(with = "collab_array")]
     pub slot_on: [bool; 64],
+    #[serde(with = "collab_array")]
     pub slot_mix: [f64; 64],
     /// The three-band equaliser as stored, per band `[gain, frequency, width]`: gain -1800..=1800 in 0.01 dB,
     /// frequency and width 0..=65536 (spec: audio/mixer.md "Equaliser"). Band 1 low shelf, 2 peaking, 3 high shelf.
@@ -1403,6 +1408,7 @@ pub struct MixerTrack {
     pub tune: [u16;4],
     pub tune_enabled: bool,
     /// Transient learning request; never saved to the project.
+    #[serde(skip)]
     pub tune_learn: u32,
     /// 0 Standard, 1 Custom, 2 Vox. Travels with the channel.
     pub channel_layout: u8,
@@ -1419,6 +1425,7 @@ pub struct MixerTrack {
     /// moved, deleted or trimmed, the writer takes the track's effect-slot events from that block (spec:
     /// flp/events/mixer.md "Removing tracks"). Bookkeeping, not part of the track: tracks that differ only here are
     /// equal.
+    #[serde(skip)]
     pub origin: Option<u16>,
 }
 
@@ -1551,7 +1558,7 @@ impl MixerTrack {
 }
 
 /// A plugin in a mixer slot: its name and its opaque saved state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlotPlugin {
     pub name: String,
     pub state: Vec<u8>,
@@ -1559,7 +1566,7 @@ pub struct SlotPlugin {
 
 /// A third-party plugin (CLAP, VST3, VST2) as a project file names it: its format, identity and saved state.
 /// spec: flp/events/plugins.md §4
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PluginRef {
     /// `clap`, `vst3` or `vst2`.
     pub format: String,
@@ -1574,7 +1581,7 @@ pub struct PluginRef {
     pub state: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Arrangement {
     pub number: u16,
     pub name: Option<String>,
@@ -1585,7 +1592,7 @@ pub struct Arrangement {
     pub markers: Vec<TimeMarker>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ClipSource {
     /// 1-based pattern number.
     Pattern(u16),
@@ -1599,8 +1606,14 @@ pub const CLIP_RECORD_LEN: usize = 88;
 /// A playlist clip. `start` / `end` are the clip's window into its source in the source's unit: pattern ticks,
 /// audio milliseconds, automation beats (spec: flp/events/playlist.md "Clip offsets"); `None` = from the
 /// source's start for the clip's length.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Clip {
+    /// Optional Playlist presentation, independent of the shared source.
+    pub name: Option<std::sync::Arc<str>>,
+    pub color: Option<Rgb>,
+    /// An automation placement explicitly moved to its own Playlist row.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub independent_automation: bool,
     /// Source pattern ticks per arrangement tick; independent for each clip.
     pub pattern_speed: f64,
     pub position: u32,
@@ -1611,6 +1624,7 @@ pub struct Clip {
     pub muted: bool,
     pub window: Option<(f64, f64)>,
     /// The stored record (fields not modeled are written back from here; a new clip gets FL's defaults).
+    #[serde(with = "collab_raw_clip")]
     pub raw: [u8; CLIP_RECORD_LEN],
 }
 
@@ -1642,7 +1656,7 @@ impl Clip {
     };
 
     pub fn new(position: u32, length: u32, track: u16, source: ClipSource) -> Clip {
-        Clip { pattern_speed:1.0, position, length, track, source, muted: false, window: None, raw: Clip::TEMPLATE }
+        Clip { name: None, color: None, independent_automation: false, pattern_speed:1.0, position, length, track, source, muted: false, window: None, raw: Clip::TEMPLATE }
     }
 
     pub fn end(&self) -> u32 {
@@ -1797,7 +1811,7 @@ pub fn fade_curve(x: f64, tension: f64) -> f64 {
 }
 
 /// A time marker (spec: flp/events/playlist.md "Time markers").
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TimeMarker {
     /// Optional marker-tab RGB color, stored in Lemon project metadata.
     pub color: Option<u32>,
@@ -1836,7 +1850,7 @@ impl TimeMarker {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlaylistTrack {
     /// Optional individual lane height in logical pixels.
     pub height:Option<f32>,
@@ -1868,7 +1882,7 @@ impl PlaylistTrack {
 
 /// The data of an automation clip channel (spec: flp/events/automation.md): its points (event 234) and the
 /// targets it moves (one event 227 each).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Automation {
     /// Channel index of the automation clip channel.
     pub channel: u16,
@@ -1883,7 +1897,7 @@ pub struct Automation {
 }
 
 /// One automation point. `mode` shapes the segment that ends at this point.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AutoPoint {
     pub beat: f64,
     /// Normalized 0..=1.
@@ -1902,7 +1916,7 @@ impl AutoPoint {
 }
 
 /// Segment shapes, by stored value (spec: flp/events/automation.md).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AutoMode {
     Single,
     Double,
@@ -2073,7 +2087,7 @@ pub mod target {
     }
 
     /// What a target id names.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub enum Target {
         ChannelVolume(u16),
         ChannelPan(u16),
@@ -2392,7 +2406,7 @@ impl Project {
     }
     pub fn frozen_instrument_rows(&self) -> Vec<usize> {
         let Some(a)=self.arrangement() else {return vec![];};
-        let original: Vec<_>=a.tracks.iter().filter_map(|t|t.frozen.as_ref()).flatten().copied().collect();
+        let original: Vec<_>=a.tracks.iter().filter_map(|t|t.frozen.as_ref()).flatten().cloned().collect();
         let frozen=self.clip_channels(&original);
         // Even muted material on another row retains its generator for audition/unmute.
         let mut clips=a.clips.clone(); for c in &mut clips {c.muted=false;}
@@ -2413,4 +2427,22 @@ pub fn instrument_stack(p:&Project,row:usize)->Vec<usize>{
         }
     }
     result
+}
+
+// Network representation only; native project serialization is unchanged.
+mod collab_raw_clip {
+    use serde::{Serialize,Deserialize};
+    pub fn serialize<S:serde::Serializer>(v:&[u8;88],s:S)->Result<S::Ok,S::Error>{v.as_slice().serialize(s)}
+    pub fn deserialize<'de,D:serde::Deserializer<'de>>(d:D)->Result<[u8;88],D::Error>{
+        let v=Vec::<u8>::deserialize(d)?; v.try_into().map_err(|_|serde::de::Error::custom("invalid clip record"))
+    }
+}
+
+// Collaboration wire arrays; the native project codec remains unchanged.
+mod collab_array {
+ use serde::{Serialize,Deserialize,Serializer,Deserializer};
+ pub fn serialize<T:Serialize,S:Serializer,const N:usize>(v:&[T;N],s:S)->Result<S::Ok,S::Error>{v.as_slice().serialize(s)}
+ pub fn deserialize<'de,T:Deserialize<'de>,D:Deserializer<'de>,const N:usize>(d:D)->Result<[T;N],D::Error>{
+  let v=Vec::<T>::deserialize(d)?;v.try_into().map_err(|_:Vec<T>|serde::de::Error::custom("Invalid array length"))
+ }
 }

@@ -75,7 +75,7 @@ endif()
 
 # Create the plugin target
 juce_add_plugin(oXygen
-    COMPANY_NAME "Lemon Studio"
+    COMPANY_NAME "ML Studio"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -85,7 +85,7 @@ juce_add_plugin(oXygen
     PLUGIN_MANUFACTURER_CODE "Lemn"
     PLUGIN_CODE "LmMa"
     FORMATS VST3
-    PRODUCT_NAME "Lemon Master Assistant"
+    PRODUCT_NAME "ML Master Assistant"
 
 )
 

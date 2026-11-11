@@ -299,9 +299,7 @@ impl FrameWindow {
         }
         {
             let mut st = self.state.borrow_mut();
-            st.detached = on;
-            st.clip = None;
-            st.clip_key = None;
+            st.change_dock_mode(on);
         }
         unsafe {
             let mut r: RECT = std::mem::zeroed();
@@ -323,6 +321,7 @@ impl FrameWindow {
             SetWindowPos(self.hwnd, HWND_TOP, p.x, p.y, 0, 0, SWP_NOSIZE | SWP_FRAMECHANGED);
         }
         self.raise();
+        unsafe { InvalidateRect(self.hwnd, std::ptr::null(), 0) };
     }
 
     /// Clips a docked window to `work` minus the `covers` (the app's windows and popups above it), all in the parent's
@@ -331,8 +330,14 @@ impl FrameWindow {
         if self.detached() {
             return;
         }
-        let changed = self.state.borrow().clip.as_ref().is_none_or(|c| c.0 != work);
-        self.state.borrow_mut().clip = Some((work, covers.to_vec()));
+        let mut state = self.state.borrow_mut();
+        let changed = state.clip.as_ref().is_none_or(|c| c.0 != work);
+        let fit = std::mem::take(&mut state.fit_on_attach);
+        state.clip = Some((work, covers.to_vec()));
+        drop(state);
+        if fit {
+            self.place(|frame| crate::win_clamp::inside_px(frame, work));
+        }
         if changed {
             if let Some(w) = unsafe { win_of(self.hwnd) } {
                 unsafe { refit(self.hwnd, w) };
@@ -411,8 +416,7 @@ impl FrameWindow {
 
     pub fn set_info(&self, info: ChannelInfo) {
         let mut st = self.state.borrow_mut();
-        if st.info != info && st.drag.is_none() && st.misc_ui.drag.is_none() {
-            st.info = info;
+        if st.set_info(info) {
             drop(st);
             unsafe { InvalidateRect(self.hwnd, std::ptr::null(), 0) };
         }
@@ -1413,7 +1417,7 @@ mod tests {
             CreateWindowExW(0, class.as_ptr(), std::ptr::null(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0, 1300, 900, std::ptr::null_mut(), std::ptr::null_mut(), GetModuleHandleW(std::ptr::null()), std::ptr::null())
         };
         assert!(!owner.is_null());
-        let info = ChannelInfo { name: "Tesla".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Tesla".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         let mut r: RECT = unsafe { std::mem::zeroed() };
         unsafe { GetWindowRect(owner, &mut r) };
         let f = FrameWindow::new(owner as isize, info, (480.0, 270.0), 1.0, (r.left + 300, r.top + 200), false).unwrap();

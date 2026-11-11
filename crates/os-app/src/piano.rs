@@ -71,7 +71,7 @@ impl ClipSession {
     pub fn clip(&self,s:&State,index:usize)->Option<os_model::Clip> {
         if self.arrangement!=s.project.arrangement_index(){return None;}
         let (i,old)=self.parts.get(index)?;
-        crate::playlist::clips(s).get(*i).copied().filter(|c|c.track==old.track && c.position==old.position && c.source==old.source)
+        crate::playlist::clips(s).get(*i).cloned().filter(|c|c.track==old.track && c.position==old.position && c.source==old.source)
     }
 }
 pub fn active_clip(s:&State)->Option<os_model::Clip>{

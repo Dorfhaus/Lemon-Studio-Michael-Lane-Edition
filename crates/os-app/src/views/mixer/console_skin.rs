@@ -169,7 +169,7 @@ pub(super) fn knob(
             start,
             1.5 * PI * (value - neutral).abs(),
             1.5,
-            Color::rgb(0xe8c74f),
+            Color::rgb(0x2096f3),
         );
     }
 }

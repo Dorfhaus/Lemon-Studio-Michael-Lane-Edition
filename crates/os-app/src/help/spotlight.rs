@@ -440,7 +440,7 @@ pub(crate) fn paint(ui: &mut Ui, s: &State) {
     let label = if let Some((rect, label)) = found {
         let outline = rect.outset(3.).intersect(&screen.inset(1.));
         ui.c.stroke_rrect(outline, 3., 4., Color::rgb(0x121416));
-        ui.c.stroke_rrect(outline, 3., 2., Color::rgb(0xffda50));
+        ui.c.stroke_rrect(outline, 3., 2., Color::rgb(0x2096f3));
         label
     } else if matches!(visit.target.destination(), Destination::Editor(win) if s.native_detached.contains(&win))
     {

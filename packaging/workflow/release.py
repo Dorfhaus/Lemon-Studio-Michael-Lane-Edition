@@ -2,6 +2,7 @@
 from pathlib import Path, PurePosixPath
 import argparse, datetime, ftplib, getpass, hashlib, io, json, os, platform, re
 import shutil, ssl, subprocess, sys, tarfile, urllib.request, urllib.parse, uuid, shlex, stat
+import storage
 
 ROOT = Path(__file__).resolve().parents[2]
 PRIVATE = Path.home()/'.lemon-studio-release'
@@ -293,6 +294,7 @@ def write_plan(site,out,scope):
     return plan
 
 def build_windows(out,cfg):
+    storage.build_preflight(Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target')), out)
     env=dict(os.environ,OPENSTUDIO_NO_PLUGIN_BUILD='1',LIBCLANG_PATH=cfg['llvm'],LEMON_RELEASE='1')
     windows_bundle=os.environ.get('LEMON_MASTER_WINDOWS_BUNDLE')
     linux_bundle=os.environ.get('LEMON_MASTER_LINUX_BUNDLE')
@@ -344,7 +346,7 @@ def build(publish_now):
             label=f'{str(new)[:4]}.{str(new)[4:6]}.{str(new)[6:8]}.{int(str(new)[8:])}'
             p=ROOT/'packaging/windows/LemonStudio.nsi';p.write_text(re.sub(r'("DisplayVersion" ")[^"]+',lambda m:m[1]+label,p.read_text()))
             run('git','add','crates/os-app/src/updates.rs','packaging/windows/LemonStudio.nsi');run('git','commit','-m',f'Prepare release {new}');run('git','push','--receive-pack=git -c receive.autogc=false receive-pack','home','HEAD:main')
-        out=Path.home()/'Desktop/Lemon Studio/Lemon Studio Public Download'/str(version())
+        out=storage.app_root()/'Lemon Studio Public Download'/str(version())
         if out.exists():raise RuntimeError('Local release folder already exists. Preserve it; resume its publish plan or increment version.')
         out.mkdir(parents=True);plan=build_windows(out,cfg)
     elif platform.system()=='Darwin':
@@ -355,7 +357,7 @@ def build(publish_now):
         for rel in (m['url'],m['source']):
             p=site/rel;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(out/Path(rel).name,p)
         shutil.copy2(out/f'mac-{arch}.json',site/'platforms'/f'mac-{arch}.json')
-        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path(os.environ.get('CARGO_TARGET_DIR',Path.home()/'.cache/lemon-studio-remote-target'))/'bundled/Lemon Studio.app')
+        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path(os.environ.get('CARGO_TARGET_DIR',Path.home()/'.cache/lemon-public-builds'/('mac-'+arch)))/'bundled/Lemon Studio.app')
         plan=write_plan(site,out,f'mac-{arch}')
     else:raise RuntimeError('Use the Windows desktop or MacBook for this release workflow.')
     # Archive the concrete publication plan and artifacts on the home server too.

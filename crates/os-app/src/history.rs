@@ -417,7 +417,7 @@ impl Snap {
             Snap::PeakLinks(_)=>Snap::PeakLinks(s.project.peak_links.clone()),
             Snap::TuneEnabled(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::TuneEnabled(*t,m.tune_enabled)),
             Snap::Tune(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::Tune(*t,m.tune)),
-            Snap::MixerLock(t, _) => Snap::MixerLock(*t, crate::mixer::locked(s, *t)),
+            Snap::MixerLock(t, _) => Snap::MixerLock(*t, crate::mixer::individually_locked(s, *t)),
             Snap::MixerGroupLock(t, _) => Snap::MixerGroupLock(*t, crate::mixer::group_locked(s, *t)),
             Snap::EqEnabled(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::EqEnabled(*t, m.slot_on[usize::from(crate::mini_eq::SLOT)])),
             Snap::EqPosition(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::EqPosition(*t,m.parametric_pre)),
@@ -803,6 +803,7 @@ fn knob_name(id: KnobId) -> &'static str {
 struct Step {
     name: &'static str,
     snap: Snap,
+    expected: Option<Box<Snap>>,
 }
 
 /// The project's undo history (`State::history`).
@@ -833,7 +834,7 @@ impl History {
         let snaps: Vec<_> = sequence.steps.into_iter().take(sequence.done).map(|step|step.snap).collect();
         if snaps.is_empty() { return; }
         self.steps.truncate(self.done);
-        self.steps.push(Step { name: "Custom action sequence", snap: Snap::Several(snaps) });
+        self.steps.push(Step { name: "Custom action sequence", snap: Snap::Several(snaps), expected:None });
         self.done = self.steps.len();
         self.undid = false;
         self.wheel = None;
@@ -907,9 +908,10 @@ impl History {
 /// Records step `name`: `snap` holds what the edit is about to change. Undone steps are dropped (a new action ends
 /// their branch), and the oldest step past Maximum undo levels.
 pub fn record(s: &mut State, name: &'static str, snap: Snap) {
+    protect_collaboration_step(s);
     let h = &mut s.history;
     h.steps.truncate(h.done);
-    h.steps.push(Step { name, snap });
+    h.steps.push(Step { name, snap, expected:None });
     h.done = h.steps.len();
     h.undid = false;
     h.wheel = None;
@@ -943,6 +945,7 @@ pub fn settle(s: &mut State) {
     if h.fresh && h.done > 0 && h.done == h.steps.len() && h.steps[h.done - 1].snap.now(s) == h.steps[h.done - 1].snap {
         unrecord(s);
     }
+    protect_collaboration_step(s);
     s.history.fresh = false;
 }
 
@@ -1059,14 +1062,34 @@ pub fn knob(s: &mut State, id: KnobId, wheel: bool) {
     }
 }
 
+/// Seal a completed local edit before applying remote data. A later undo must still match it.
+pub(crate) fn protect_collaboration_step(s:&mut State){
+    if !s.collaborating || s.history.done==0{return;}
+    let i=s.history.done-1;
+    if s.history.fresh || s.history.steps[i].expected.is_none(){s.history.steps[i].expected=Some(Box::new(s.history.steps[i].snap.now(s)));}
+}
+pub(crate) fn collaboration_received(s:&mut State){
+    protect_collaboration_step(s);
+    // A remote commit ends local coalescing. Later mouse releases or keyboard
+    // actions must not re-seal the old step against someone else's new values.
+    s.history.fresh=false;
+    s.history.wheel=None;
+}
+fn permitted(s:&State,i:usize)->bool {
+    !s.collaborating || s.history.steps[i].expected.as_ref().is_none_or(|v|**v==s.history.steps[i].snap.now(s))
+}
 fn swap(s: &mut State, i: usize) {
     let now = s.history.steps[i].snap.now(s);
     let old = std::mem::replace(&mut s.history.steps[i].snap, now);
+    let expected=s.collaborating.then(||Box::new(old.clone()));
     old.put(s);
+    if s.collaborating{s.history.steps[i].expected=expected;}
 }
 
 /// Undoes the newest done step; its name, or `None` when nothing is done.
 pub fn undo(s: &mut State) -> Option<&'static str> {
+    protect_collaboration_step(s);
+    if s.history.done>0 && !permitted(s,s.history.done-1){return None;}
     crate::vocal::history_changed(s);
     let h = &mut s.history;
     if h.done == 0 {
@@ -1081,6 +1104,7 @@ pub fn undo(s: &mut State) -> Option<&'static str> {
 
 /// Redoes the oldest undone step; its name, or `None` when nothing is undone.
 pub fn redo(s: &mut State) -> Option<&'static str> {
+    if s.history.done<s.history.steps.len() && !permitted(s,s.history.done){return None;}
     crate::vocal::history_changed(s);
     let h = &mut s.history;
     if h.done == h.steps.len() {
@@ -1104,6 +1128,7 @@ fn did(s: &mut State, redo_it: bool) -> String {
     let (verb, name) = if redo_it { ("Redo", redo(s)) } else { ("Undo", undo(s)) };
     match name {
         Some(n) => format!("{verb}: {}", lower(n)),
+        None if s.collaborating => "Undo/redo unavailable: another edit changed the affected item, or session history is empty.".into(),
         None => format!("Nothing to {}", verb.to_lowercase()),
     }
 }
@@ -1142,10 +1167,10 @@ fn shown_in_browser(s: &mut State) {
 pub fn go_to(s: &mut State, p: usize) -> Option<String> {
     let p = p.min(s.history.steps.len());
     while s.history.done > p {
-        undo(s);
+        if undo(s).is_none(){return Some("History stopped to preserve shared edits".into());}
     }
     while s.history.done < p {
-        redo(s);
+        if redo(s).is_none(){return Some("History stopped to preserve shared edits".into());}
     }
     let name = if p == 0 { LAST_RESET } else { s.history.steps[p - 1].name };
     Some(format!("History: {}", lower(name)))

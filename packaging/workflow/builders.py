@@ -2,6 +2,7 @@
 from pathlib import Path
 import json, os, shutil, subprocess, tarfile
 import release as r
+import storage
 from checkpoints import atomic_json, digest
 
 
@@ -11,6 +12,10 @@ def environment(config,platform):
     env['CARGO_TARGET_DIR']=str(Path(config['cache'])/platform)
     env['LEMON_MASTER_BUNDLE']=config['engines'][platform]['bundle']
     env['LEMON_JUCE_SOURCE']=config['juce_source']
+    if bundle := config.get('plasma_bundles', {}).get(platform):
+        target = {'windows': 'WINDOWS_X86_64', 'linux': 'LINUX_X86_64',
+                  'mac-arm64': 'MACOS_AARCH64', 'mac-x86_64': 'MACOS_X86_64'}[platform]
+        env['ML_PLASMA_BUNDLE_' + target] = bundle
     if platform.startswith('mac-'):
         env.update(LEMON_MAC_ARCH=platform[4:],LEMON_PIPELINE='1')
         env['PATH']=str(Path.home()/'.cargo/bin')+os.pathsep+str(Path.home()/'.lemon-studio-release/tools/bin')+os.pathsep+env.get('PATH','')
@@ -26,6 +31,7 @@ def command(log,*args,env=None,cwd=r.ROOT):
 
 
 def windows(config,out,log):
+    storage.build_preflight(Path(config['cache'])/'windows', out)
     out=Path(out);out.mkdir(parents=True);env=environment(config,'windows');cfg=r.read_config()
     command(log,'cargo','build','--locked','--release','-p','os-app',env=env)
     binary=Path(env['CARGO_TARGET_DIR'])/'release/lemonstudio.exe'
@@ -43,6 +49,7 @@ def windows(config,out,log):
 
 
 def linux_compile(config,log):
+    storage.build_preflight(Path(config['cache'])/'linux', Path(log).parent)
     env=environment(config,'linux');tools=Path(config['linux_tools'])
     # Existing cross-tool wrappers require Q:. Hold the coordinator lock, never replace another mapping.
     if Path('Q:/').exists():raise RuntimeError('Q: is occupied; preserve the existing drive mapping.')
@@ -70,6 +77,7 @@ def linux_package(config,binary,win_plan,out,log):
 
 
 def mac(config,arch,out,log):
+    storage.build_preflight(Path(config['cache'])/('mac-'+arch), out)
     env=environment(config,'mac-'+arch);out=Path(out);out.mkdir(parents=True);env['LEMON_PACKAGE_OUT']=str(out)
     command(log,'bash',r.ROOT/'packaging/mac/build-release.command',env=env)
     manifest=json.loads((out/f'mac-{arch}.json').read_text());site=out/'lemon-studio';(site/'platforms').mkdir(parents=True)

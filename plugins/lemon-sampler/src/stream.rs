@@ -13,7 +13,7 @@
 //! - An offline render waits: a voice whose frames are not in yet reads them itself. Either way a voice reads the
 //!   same frames in the same order as from the sample in memory, so what it plays is the same to the bit.
 //!
-// spec: plugins/lemon-sampler.md "Keep on disk (Lemon Studio)"
+// spec: plugins/lemon-sampler.md "Keep on disk (ML Studio)"
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

@@ -15,13 +15,6 @@ use crate::app::{App, State, Win};
 use crate::knobs::KnobId;
 use crate::playlist::{Cmd, Mark, PItem, Popup};
 
-/// Name button width at 100 % (§17): wide enough for a new project's "Lemon Sampler" at every UI scale with every text
-/// engine; Linux's Barlow is the widest (Lemon Studio).
-pub const NAME_W: f32 = 94.0;
-/// FL's name button width at 100 % (§17): the measured columns right of the name button assume it.
-pub const FL_NAME_W: f32 = 82.0;
-/// Width of the mixer-box column (§17: Alt+M moves everything right of it ≈ 41 px).
-pub const MIX_W: f32 = 41.0;
 /// Extra width of loop mode (§15).
 pub const LOOP_W: f32 = 40.0;
 /// Row pitch of a zipped channel (§17).
@@ -217,7 +210,7 @@ pub struct RackUi {
     pub name_pct: u32,
     pub show_mixer: bool,
     pub colorful: bool,
-    pub align_left: bool,
+    pub align_left: Option<bool>,
     pub auto_resize: AutoResize,
     pub graph_open: bool,
     pub graph_tab: Tab,
@@ -258,7 +251,7 @@ impl Default for RackUi {
             name_pct: 100,
             show_mixer: true,
             colorful: false,
-            align_left: false,
+            align_left: None,
             auto_resize: AutoResize::Min,
             graph_open: false,
             graph_tab: Tab::Vel,
@@ -772,7 +765,7 @@ impl App {
 }
 
 /// Channel `r` is the only unlocked channel on.
-fn solo_of(s: &State, r: usize) -> bool {
+pub(crate) fn solo_of(s: &State, r: usize) -> bool {
     let locked = &s.rack.locked;
     let group=os_model::instrument_stack(&s.project,r);
     s.project.channels.get(r).is_some_and(|c| c.enabled)
@@ -817,8 +810,8 @@ pub fn transpose_selected(s: &mut State, semis: i32) {
 
 /// Window height for Auto resize (§17): Minimum = fit the shown rows; Maximum = down to the screen bottom.
 pub fn auto_height(s: &State) -> Option<f32> {
-    let fit = 96.0 + crate::views::rack::rows_h(s).max(crate::views::rack::ROW_H);
-    let room = (s.screen.1 - s.rack_pos.1 - 4.0).max(crate::views::rack::MIN_H);
+    let fit = crate::views::rack::height_overhead(s) + crate::views::rack::rows_h(s).max(crate::views::rack::row_pitch(s));
+    let room = (s.screen.1 - s.rack_pos.1 - 4.0).max(crate::views::rack::min_h(s));
     match s.rack.auto_resize {
         AutoResize::Off => None,
         AutoResize::Min => Some(fit.min(room)),
@@ -826,11 +819,21 @@ pub fn auto_height(s: &State) -> Option<f32> {
     }
 }
 
+/// Keep the inline lane inside the rack when it opens in Auto resize mode.
+pub fn set_graph_open(s: &mut State, open: bool) {
+    s.rack.graph_open = open;
+    if !s.vintage_2005 {
+        if let Some(height) = auto_height(s) {
+            s.rack_size.1 = height;
+        }
+    }
+}
+
 /// Apply Auto resize after the shown rows changed.
 pub fn autosize(s: &mut State) {
     organize_clips(s);
     if let Some(h) = auto_height(s) {
-        s.rack_size.1 = h.max(crate::views::rack::MIN_H);
+        s.rack_size.1 = h.max(crate::views::rack::min_h(s));
     }
 }
 
@@ -1468,6 +1471,7 @@ pub enum RCmd {
     // Channel menu (§18), on a row.
     PianoRoll(usize),
     Graph(usize),
+    GraphTab(Tab),
     Rename(usize),
     ChangeColor(usize),
     RandomColor(usize),
@@ -1604,7 +1608,7 @@ pub(crate) fn default_options_menu(s: &State, x: f32, y: f32) -> Popup {
                 it("Resize now",RCmd::ResizeNow),
             ]),
             PItem::sub("Channel button width",width),
-            PItem::sub("Channel name alignment",vec![it("Left",RCmd::AlignLeft(true)).mark(Mark::Radio(r.align_left)),it("Center",RCmd::AlignLeft(false)).mark(Mark::Radio(!r.align_left))]),
+            PItem::sub("Channel name alignment",vec![it("Left",RCmd::AlignLeft(true)).mark(Mark::Radio(r.align_left.unwrap_or(!s.vintage_2005))),it("Center",RCmd::AlignLeft(false)).mark(Mark::Radio(!r.align_left.unwrap_or(!s.vintage_2005)))]),
             it("Colorful channel controls",RCmd::Colorful).mark(Mark::Check(r.colorful)),
             PItem::sub(crate::views::menus::EDITORS_LABEL,editor_items()),
         ]),
@@ -1843,6 +1847,20 @@ pub fn led_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
+pub fn graph_menu(s: &State, x: f32, y: f32) -> Popup {
+    let items = Tab::ALL.into_iter().map(|tab| {
+        let label = match tab {
+            Tab::Vel => "Velocity",
+            Tab::Rel => "Release",
+            Tab::Fine => "Fine pitch",
+            Tab::Rep => "Repeat",
+            _ => tab.label(),
+        };
+        it(label, RCmd::GraphTab(tab)).mark(Mark::Radio(tab == s.rack.graph_tab))
+    }).collect();
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
+}
+
 /// Group combo (§7): left click lists the filters.
 pub fn filter_menu(s: &State, x: f32, y: f32) -> Popup {
     let f = s.rack.filter;
@@ -1990,10 +2008,14 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     let msg = match c {
         RCmd::FitSample(..) | RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
         RCmd::PitchFollow(r) => {crate::rack_controls::toggle_follow(app,r);None}
+        RCmd::GraphTab(tab) => {
+            s.rack.graph_tab = tab;
+            None
+        }
         RCmd::Graph(r) => {
             s.selected_channel = r;
             s.rack.select_only(r);
-            s.rack.graph_open = true;
+            set_graph_open(s, true);
             None
         }
         RCmd::Rename(r) => {
@@ -2210,11 +2232,11 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
         }
         RCmd::SizeToFit => {
             let w = crate::views::rack::fit_name_w(s);
-            relayout(s, |s| s.rack.name_pct = ((w / NAME_W * 100.0).ceil() as u32).clamp(40, 400));
+            relayout(s, |s| s.rack.name_pct = ((w / crate::views::rack::base_name_width(s) * 100.0).ceil() as u32).clamp(40, 400));
             None
         }
         RCmd::AlignLeft(l) => {
-            s.rack.align_left = l;
+            s.rack.align_left = Some(l);
             None
         }
         RCmd::ShowMixer => {
@@ -2396,7 +2418,7 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
         Key::Character(c) if ctrl && !alt && !shift && letter(c, "c") => RCmd::CopySel,
         Key::Character(c) if ctrl && !alt && !shift && letter(c, "v") => RCmd::PasteSel,
         Key::Character(c) if ctrl && !alt && letter(c, "k") => {
-            s.rack.graph_open = !s.rack.graph_open;
+            set_graph_open(s, !s.rack.graph_open);
             app.invalidate();
             return true;
         }
@@ -2802,17 +2824,17 @@ mod tests {
         assert!(on(&app)[2]);
     }
 
-    /// A new project's channel name, "Lemon Sampler", fits the 100 % name button at every UI scale: the label keeps
+    /// A new project's channel name, "ML Sampler", fits the 100 % name button at every UI scale: the label keeps
     /// 4 px on each side (§17). Runs with the platform's text engine (GDI's Cuprum on Windows, Barlow on Linux).
     #[test]
     fn default_name_button_shows_lemon_sampler_whole() {
         let app = App::new(None);
         let w = crate::views::rack::cols(&app.state).name_w;
-        assert_eq!(w, NAME_W);
+        assert_eq!(w, crate::views::rack::base_name_width(&app.state));
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
             let mut c = os_ui::Canvas::new(64, 64, scale).expect("canvas");
-            let text = c.text_width(os_ui::Font::new(14), crate::plugins::LEMON_SAMPLER);
-            assert!(text <= w - 8.0, "{text} px at scale {scale}");
+            let text = c.text_width(os_ui::Font::light(13, 0).natural(), crate::plugins::LEMON_SAMPLER);
+            assert!(text <= w - 39.0, "{text} px at scale {scale}");
         }
     }
 

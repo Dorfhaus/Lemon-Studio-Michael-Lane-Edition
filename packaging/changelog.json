@@ -3,6 +3,23 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-11",
+      "title": "ML Studio workspace refresh and Playlist editing \u00b7 public build 2026111101",
+      "changes": [
+        "ML Studio has a refreshed toolbar and Channel Rack with compact channel controls, a pitch knob on each row and an inline graph editor. Studio and Console are the new names for the built-in workspace styles.",
+        "Preview Playlist Clip Picker patterns through the loaded instrument while playback is stopped. Audio and pattern previews play once by default. Turn Loop on to repeat, click the stop button to stop a preview, and drag the picker edge to resize it.",
+        "Make It Fit stretches selected audio clips to one bar each while keeping their original positions and trim windows.",
+        "Click a sliced audio clip with Draw or Paint to use that exact segment for the next placement. Audio placements can also have their own names and colors.",
+        "Drag a Playlist automation clip by its title onto another track. It keeps the curve and the parameter it controls.",
+        "Incoming MIDI lights up the Hint Panel and the receiving Channel Rack row. MIDI setup now separates everyday controls from advanced device mappings and diagnostics.",
+        "ML Plasma is available as a bundled synthesizer. Stock plugins use the ML names, and ML EQ has updated band editing and visual controls.",
+        "Use the D button to detach or reattach stock and third-party plugin editors. Remove extra empty Mixer slots with the minus button beside Add slot.",
+        "Mixer scrolling responds more smoothly, and group locks apply to the controls of every group member.",
+        "Use File > Collaborate to host a direct session and share project edits and audio files with an invited participant. Each participant uses their own audio device and installed plugins.",
+        "High-quality resampling runs faster. Closing during an export cancels the render before plugin shutdown."
+      ]
+    },
+    {
       "date": "2026-11-10",
       "title": "Portable vintage theme and automatic update cleanup \u00b7 public build 2026111001",
       "changes": [

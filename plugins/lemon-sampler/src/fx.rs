@@ -6,7 +6,7 @@
 //! points, files below 8000 Hz, time stretching in the methods that stretch first, and the precomputed effects, all
 //! in the file's units (`os_model::SampleFx`) and in the order and arithmetic of the spec.
 //!
-// spec: audio/precomputed-effects.md, audio/time-stretch.md ("Where it runs", "Lemon Studio"),
+// spec: audio/precomputed-effects.md, audio/time-stretch.md ("Where it runs", "ML Studio"),
 // spec: plugins/lemon-sampler.md (§5.4 - §5.6), audio/conventions.md (Round, single)
 
 use std::f64::consts::PI;

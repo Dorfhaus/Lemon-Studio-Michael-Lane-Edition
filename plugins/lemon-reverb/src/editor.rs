@@ -351,9 +351,9 @@ impl Logic {
             }
             MenuReq::About => {
                 let mut m = MenuDef::new(MenuStyle::Context);
-                m.head("Lemon Reverb", Cmd::None);
+                m.head("ML Reverb", Cmd::None);
                 m.add(MenuItem::item(&format!("Version {}", env!("CARGO_PKG_VERSION"))).enabled(false), Cmd::None);
-                m.add(MenuItem::item("Lemon Studio's recreation of Fruity Reeverb 2").enabled(false), Cmd::None);
+                m.add(MenuItem::item("ML Studio's recreation of Fruity Reeverb 2").enabled(false), Cmd::None);
                 m
             }
         }
@@ -490,7 +490,7 @@ mod win32 {
                 tracking: false,
                 slot: slot.clone(),
             });
-            let title = pw::wide("Lemon Reverb");
+            let title = pw::wide("ML Reverb");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),

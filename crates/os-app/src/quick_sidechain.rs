@@ -19,7 +19,7 @@ fn preset(port: usize) -> Vec<u8> {
 }
 pub fn run(app: &mut App, dst: u16) -> Option<String> {
     let src = app.state.selected_mixer;
-    if mx::routing_locked(&app.state, src) || mx::routing_locked(&app.state, dst) { return Some(mx::LOCK_MESSAGE.into()); }
+    if mx::locked(&app.state, src) || mx::locked(&app.state, dst) { return Some(mx::LOCK_MESSAGE.into()); }
     if src == 0 || src == dst || mx::track(&app.state, dst).is_none() {
         return Some("Select the trigger track, then Quick Sidechain on a different destination".into());
     }
@@ -35,7 +35,7 @@ pub fn run(app: &mut App, dst: u16) -> Option<String> {
         return Some("This channel has reached the 63-effect limit".into());
     }
     let slot = mx::visible_user_slot(&app.state,dst,logical);
-    let Some(index) = app.plugins.effect_index("Lemon Limiter") else {
+    let Some(index) = app.plugins.effect_index("ML Limiter") else {
         return Some("Lemon Limiter is not available yet; try again after plugin loading finishes".into());
     };
     let old_inputs = mx::inputs(&app.state, dst);

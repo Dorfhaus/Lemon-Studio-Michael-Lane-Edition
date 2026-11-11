@@ -1145,10 +1145,10 @@ mod tests {
         assert_eq!(l.pick(&MenuReq::Param("post".into()), Cmd::Automate("post".into()), 0.0, 0.0), vec![Act::Automate(1)]);
         let (x, y) = centre(&l, &Target::Logo);
         assert!(matches!(l.down(x, y, Btn::Left, Mods::default(), false).last(), Some(Act::Menu(MenuReq::About, _, _))));
-        assert_eq!(l.hint, "Lemon Soft Clipper");
+        assert_eq!(l.hint, "ML Soft Clipper");
         assert!(l.wheel(x, y, 1.0, Mods::default()).is_empty());
         let about = l.menu(&MenuReq::About);
-        assert_eq!(about.find("Lemon Studio's soft clipper"), Some(Cmd::None));
+        assert_eq!(about.find("ML Studio's soft clipper"), Some(Cmd::None));
     }
 
     /// `SMALLFX_PNG=<dir> cargo test -p lemon-small-fx -- --ignored`: the editors at a few settings, as PNGs.

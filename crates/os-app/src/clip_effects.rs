@@ -289,7 +289,7 @@ pub fn open(app: &mut App, index: usize) -> Result<(), String> {
         track: None,
         clip: index,
     };
-    let c = *clip(&app.state.project, l).ok_or("Clip no longer exists")?;
+    let c = clip(&app.state.project, l).ok_or("Clip no longer exists")?.clone();
     let ClipSource::Channel(id) = c.source else {
         return Err("Clip Effects require an audio clip".into());
     };
@@ -758,7 +758,7 @@ mod tests {
         sync(&mut a);
         let key = crate::plugins::fx_key(t, 0);
         let original = a.plugins.hosted[&key].plugin.clone();
-        let mut copy = pl::clips(&a.state)[0];
+        let mut copy = pl::clips(&a.state)[0].clone();
         copy.position = 192;
         pl::arr_mut(&mut a.state).clips.push(copy);
         normalize(&mut a).unwrap();
@@ -890,7 +890,7 @@ mod tests {
         normalize(&mut a).unwrap();
         assert!(validate(&a.state.project).is_ok());
         assert_ne!(bus(&a.state, source(&a, 1)), Some(t));
-        let mut duplicate = pl::clips(&a.state)[0];
+        let mut duplicate = pl::clips(&a.state)[0].clone();
         duplicate.position = 384;
         pl::arr_mut(&mut a.state).clips.push(duplicate);
         for m in &mut a.state.project.mixer {

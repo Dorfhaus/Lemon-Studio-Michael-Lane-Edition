@@ -44,7 +44,7 @@ fn limit_timing(before:&Edit,after:&mut Edit){
  after.timing=best;
 }
 pub fn drag(app:&mut App,x:f32,y:f32){
- let Some(Drag::Vocal(mut g))=app.drag.clone()else{return};let Some(i)=doc_index(&app.state,g.clip)else{return};let Some(grid)=app.pl_grid()else{return};let geom=pl::PGeom::new(&app.state,grid);let clip=pl::clips(&app.state)[g.clip];let r=view::pitch_rect(&geom,clip.track);
+ let Some(Drag::Vocal(mut g))=app.drag.clone()else{return};let Some(i)=doc_index(&app.state,g.clip)else{return};let Some(grid)=app.pl_grid()else{return};let geom=pl::PGeom::new(&app.state,grid);let clip=pl::clips(&app.state)[g.clip].clone();let r=view::pitch_rect(&geom,clip.track);
  if (x-g.x).abs()>3.||(y-g.y).abs()>3.{app.state.playlist.vocal.click=None;}
  let mut tool=g.tool;if tool==Tool::Main{if g.axis==0&&((x-g.x).abs()>3.||(y-g.y).abs()>3.){g.axis=if (x-g.x).abs()>(y-g.y).abs(){1}else{2};}if g.axis==0{return;}tool=if g.axis==1{Tool::Time}else{Tool::Select};}
  let mut d=if tool==Tool::Draw{app.state.project.vocal_edits[i].clone()}else{g.before.as_ref().clone()};

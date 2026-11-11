@@ -714,7 +714,7 @@ impl Logic {
             Some(Target::MatrixTab(_)) => "Switch frequency / ring modulation levels".into(),
             Some(Target::Key(k)) => view::key_name(*k),
             Some(Target::PatchText) => "Info / comments".into(),
-            Some(Target::Logo) => "Citrus".into(),
+            Some(Target::Logo) => "ML Citrus".into(),
             Some(Target::Inert(s)) => (*s).into(),
             Some(Target::ArtTab(i)) => {
                 let t = view::targets(self.view.page);
@@ -1563,7 +1563,7 @@ mod win32 {
                 tracking: false,
                 slot: slot.clone(),
             });
-            let title = pw::wide("Citrus");
+            let title = pw::wide("ML Citrus");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),

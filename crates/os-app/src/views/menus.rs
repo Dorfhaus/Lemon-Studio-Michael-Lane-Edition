@@ -163,6 +163,8 @@ const FILE: &[Item] = &[
     it("Revert to last backup", "").on(),
     SEP,
     it("Exit", "").on(),
+    SEP,
+    it(crate::collaboration::LABEL, "").on(),
 ];
 
 /// The project's undo history (spec: ui/settings-choices.md "Undo history: the four checks (2026-10-16)"): the first
@@ -348,7 +350,7 @@ const HELP: &[Item] = &[
     it(crate::change_log::LABEL, "").on(),
     SEP,
     it("About...", "").on(),
-    it("Lemon Studio Discord", "").on(),
+    it("Community Discord", "").on(),
 ];
 
 pub const MENUS: &[Menu] = &[
@@ -370,6 +372,37 @@ pub fn item_at(menu: usize, i: usize) -> Option<&'static Item> {
 /// Menu bar font: Cuprum 18 px condensed (spec §3).
 pub const BAR_FONT: Font = Font::condensed(18, 6);
 pub const VINTAGE_TITLES:[&str;8]=["File","Edit","Add","Patterns","View","Options","Tools","Help"];
+
+/// Lay out the modern menu from the displayed labels and the active font's natural widths.
+pub(super) fn modern_bar(c: &mut os_ui::Canvas) -> (Font, [(&'static str, f32, f32); 8]) {
+    let language = Language::current();
+    let compact = c.size().0 < 1300.0;
+    let titles: [&str; 8] = std::array::from_fn(|i| {
+        if !language.english() {
+            language.text(VINTAGE_TITLES[i])
+        } else if compact && i == HELP_MENU {
+            "…"
+        } else {
+            MENUS[i].title
+        }
+    });
+    const ROOM: f32 = 278.0;
+    const MIN_GAP: f32 = 7.0;
+    let (font, widths, total) = (9..=14).rev().map(|size| {
+        let font = Font::new(size);
+        let widths = titles.map(|title| c.text_width(font, title).ceil());
+        (font, widths, widths.iter().sum::<f32>())
+    }).find(|(font, _, total)| *total + MIN_GAP * 7.0 <= ROOM || font.size == 9).unwrap();
+    let gap = ((ROOM - total) / 7.0).clamp(MIN_GAP, 12.0);
+    let mut x = 10.0;
+    let items = std::array::from_fn(|i| {
+        let start = x;
+        let end = start + widths[i];
+        x = end + gap;
+        (titles[i], start, end)
+    });
+    (font, items)
+}
 
 /// Menu bar item layout: (x0, x1, average character width of the font). Left edges are the measured word
 /// starts. The words are as wide as the font makes them; where a text engine sets them wider than the slots
@@ -490,6 +523,7 @@ pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'stati
 /// Whether an entry is in its menu now: EDIT's Redo only with Alternate undo mode on and a history to act on (spec:
 /// ui/menus.md "EDIT": only Undo while the history is empty).
 pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
+    if item.label==crate::collaboration::LABEL {return s.collaborating || crate::workspace_visibility::shown(crate::collaboration::VISIBLE);}
     if menu == HELP_MENU && item.label == crate::change_log::LABEL {
         return crate::workspace_visibility::shown(crate::change_log::VISIBILITY);
     }
@@ -774,7 +808,15 @@ fn row_h(m: &os_ui::kit::menu::Metrics, it: &Item) -> f32 {
 pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     if s.menu_sub.is_none()&&s.playlist.popup.is_some(){return;}
     let Some(m) = MENUS.get(menu) else { return };
-    let x0 = bar_layout(ui.c,s.vintage_2005)[menu].0;
+    let x0 = if super::lemon(ui) && !s.vintage_2005 {
+        // The dropdown is painted at popup scale, but its anchor uses toolbar font metrics.
+        let old = ui.c.rescale(ui.c.scale / k * super::band_k(s));
+        let start = modern_bar(ui.c).1[menu].1;
+        ui.c.unscale(old);
+        start
+    } else {
+        bar_layout(ui.c, s.vintage_2005)[menu].0
+    };
     let t = ui.t;
     let mt = os_ui::kit::menu::metrics(ui.c.scale);
     let (row, border) = (mt.row, mt.border);
@@ -800,15 +842,16 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
             continue;
         }
         let f = os_ui::kit::menu::app_font(t, 12);
+        let key_font = os_ui::kit::menu::app_shortcut_font(t, f);
         let mut need = *w;
         for it in items.iter().filter(|it| matches!(it.kind, Kind::Item) && in_menu(s, menu, it)) {
-            let key = if it.shortcut.is_empty() { 0.0 } else { ui.c.text_width(f.italic(), shortcut_now(it)) + 16.0 };
+            let key = if it.shortcut.is_empty() { 0.0 } else { ui.c.text_width(key_font, shortcut_now(it)) + 16.0 };
             need = need.max(20.0 + ui.c.text_width(f, &label_now(s, menu, it)) + key + if it.sub { 18.0 } else { 8.0 });
         }
         if has_recent(items) {
             for r in recent.iter().filter(|r| **r != Recent::Head) {
                 let (label, key, sub) = recent_text(r);
-                let key = if key.is_empty() { 0.0 } else { ui.c.text_width(f.italic(), key) + 16.0 };
+                let key = if key.is_empty() { 0.0 } else { ui.c.text_width(key_font, key) + 16.0 };
                 need = need.max(20.0 + ui.c.text_width(f, &label) + key + if sub { 18.0 } else { 8.0 });
             }
         }
@@ -959,18 +1002,20 @@ fn light(ui: &mut Ui, rr: Rect) {
     }
 }
 
-/// A row's text: its label, its key (italic, at the right) and its ▸ (`sub`); dim when it cannot be chosen (`ok`).
+/// A row's text: its label, its shortcut at the right and its ▸ (`sub`); dim when it cannot be chosen (`ok`).
 fn row_text(ui: &mut Ui, rr: Rect, label: &str, key: &str, sub: bool, ok: bool) {
     let t = ui.t;
     let font = os_ui::kit::menu::app_font(t, 12);
-    // Text sits where it does at 100 %, moved by half of what the row lost.
-    let (dy, my) = ((rr.h - os_ui::kit::menu::ROW) / 2.0, rr.cy());
+    let my = rr.cy();
     let color = if ok { t.menu_pop_text } else { t.menu_pop_dim };
-    ui.c.text_clip(font, rr.x + 20.0, rr.y + 2.0 + dy, rr.w - 24.0, color, label);
+    let label_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, font, 2.0);
+    ui.c.text_clip(font, rr.x + 20.0, label_y, rr.w - 24.0, color, label);
     let right = rr.right() - if sub { 16.0 } else { 8.0 };
     if !key.is_empty() {
         let sc = if ok { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
-        ui.c.text_right(font.italic(), right, rr.y + 3.0 + dy, sc, key);
+        let key_font = os_ui::kit::menu::app_shortcut_font(t, font);
+        let key_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, key_font, 3.0);
+        ui.c.text_right(key_font, right, key_y, sc, key);
     }
     if sub {
         let ax = rr.right() - 11.0;

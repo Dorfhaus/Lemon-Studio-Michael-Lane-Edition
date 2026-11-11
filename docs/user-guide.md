@@ -1,4 +1,4 @@
-# Lemon Studio User Guide
+# ML Studio User Guide
 
 ## Getting started
 ### Make your first song
@@ -75,13 +75,12 @@ Plugin delay compensation aligns paths using delays reported by plugins. Input m
 MIDI controller Komplete Kontrol KeyLab Arturia Behringer X-Touch nanoKONTROL Akai Novation Launchkey M-Audio Nektar Mackie MCU
 Guide: midi
 Open Settings > MIDI, select an input device, enable it and choose its Controller type. This choice is saved separately for each device in your profile.
-For musical keys and pads, choose Generic MIDI / MIDI Learn. Standard MIDI keyboards from Native Instruments, Arturia, Akai, Novation, M-Audio and Nektar use this path. Right-click a software knob, choose Link to controller, then move the hardware control to assign it.
-For a controller with Mackie Control Universal support, set its hardware mode to MCU, select its dedicated DAW input in Lemon Studio, and choose Mackie Control or the matching named MCU preset. Keep the separate musical-key input on Generic MIDI. Check your model's manual because MCU support differs between generations.
-MCU input supports play, stop, record, eight channel faders and pan encoders, master fader, mute, solo, channel selection, record arm and bank navigation. Channel locks still apply. Mixer channels begin at Insert 1.
-The Korg nanoKONTROL2 preset uses its factory CC assignments. Use CC mode with the factory mapping. Customized mappings can use Generic MIDI and Link to controller instead.
-This integration handles incoming controls. Motor fader feedback, hardware displays, HUI, proprietary NKS browsing and vendor-specific DAW handshakes are not implemented. Loading the Komplete Kontrol plugin uses the ordinary plugin workflow.
-If notes work but transport does not, check the DAW input and hardware mode. If an input shows in use, close the other application using that MIDI port. Use Refresh device list after connecting hardware.
-Hide the setup controls under Settings > General > Workspace Visibility > Input customization > MIDI controller setup. Hiding them keeps your saved device modes active.
+For musical keys and pads, choose Generic MIDI / MIDI Learn. Use the input role to separate an instrument port from a dedicated DAW controls port. Use Instruments + controls when a keyboard has one shared port. Right-click a software knob, choose Link to controller, then move the hardware control. For an endless encoder, choose the Relative mode that matches its MIDI format.
+Under DAW MIDI Learn, select an action and press a hardware button on the selected input. Single press mode suits CC buttons that send no release. Save Learn preset exports the actions and button behavior to a file. Load Learn preset applies that file to the selected input and replaces its learned actions.
+For a controller with Mackie Control Universal support, set its hardware mode to MCU, select its dedicated DAW input in ML Studio, and choose Mackie Control or the matching named MCU profile. Profiles include Kontrol, KeyLab, X-Touch, Oxygen Pro, nanoKONTROL Studio, SSL UF1/UF8 and iCON QCon. Use the hardware's matching Mackie mode. Select the dedicated DAW output in the output list, then click Pair selected output. Hardware with compatible motor faders, button LEDs, pan rings or track-name displays receives feedback over that output.
+For Launchkey MK4, select its native profile on the DAW input and pair the DAW output to enter DAW mode. Its DAW pads select and mute Mixer inserts, and its mixer encoders and available faders control pan and level. Keep the instrument port available for playing keys. The nanoKONTROL2 factory profile uses CC mode. For Akai and other controllers configured to transmit MIDI Machine Control, choose the MMC profile to receive transport commands alongside notes.
+If notes work but transport does not, turn on the MIDI Monitor and check whether pressing a button generates a message on the selected DAW port. If an input shows in use, close the other application using that MIDI port. Use Refresh device list after connecting hardware.
+Hide the setup controls under Settings > General > Workspace Visibility > Input customization > MIDI controller setup. Saved modes and mappings continue to operate when the controls are hidden.
 
 ### Use MIDI, typing keyboard and step entry
 step edit typing keyboard controllers performance
@@ -269,7 +268,8 @@ Use the slot enable switch to compare the effect with the dry signal, and check 
 effect chains plugin picker save load favorites import export
 Guide: effect-chain
 Open the effect picker and choose Effect Chains. Right-click a Mixer insert and choose Save effect chain to capture its ordered effects and settings. To build one in the picker, Ctrl-click the effects you want and choose Save as chain.
-Choose a saved chain to load it onto the selected insert. Use the available rename, duplicate, favorite, import and export controls to organize and share it. Recipients need the plugins used by the chain.
+Click a chain to select it, Ctrl/Cmd-click to toggle individual chains, or Shift-click to select a range. Click Choose to load them onto the selected Mixer insert, or drag a selected chain to the Mixer insert you want. Dragging a selected card carries the whole selection. Chains load in the order shown, with their effects in order, into consecutive free slots. One Undo removes the whole insertion.
+Use the available rename, duplicate, favorite, import and export controls to organize and share chains. Recipients need the plugins used by the chain.
 
 ### Mix with Lemon Parametric EQ
 eq bell shelf low pass high pass dynamic spectral tame deharsh listen solo
@@ -378,7 +378,7 @@ Open Settings > Controls and look for a matching event in the editor and its par
 macro script lsa saved actions custom toolbar import export
 Guide: controls
 In Settings > Controls, use Append to build a sequence of compatible editing actions. Save a name to reuse it and choose Pin as toolbar button to make it accessible from the toolbar.
-Use Export to back up controls. Import accepts a controls JSON file or a portable .lsa action script. Portable scripts run supported Lemon Studio actions and do not execute system commands.
+Use Export to back up controls. Import accepts a controls JSON file or a portable .lsa action script. Portable scripts run supported ML Studio actions and do not execute system commands.
 
 ## Themes, workspace and sharing
 ### Show or hide interface features
@@ -478,10 +478,10 @@ For the best result, close the cleanup panel, select at least 100 ms of backgrou
 
 Start with 12 dB Reduction and 1.50x Sensitivity. Higher Reduction permits stronger attenuation; higher Sensitivity identifies more audio as noise. Click **Preview cleaned** to render and listen. A progress bar appears while processing; Close/Escape cancels processing without editing the sample. Use **Original**, **Preview cleaned** and **Stop** to compare. Preview never changes the document or saved project. Tesla temporarily suppresses its incoming mixer audio during these previews so it does not double up with the audition.
 
-**Apply cleanup** commits the result inside Tesla with one undo step. If you continue editing afterward, the yellow **Apply to track** button at the bottom of Tesla (also in its File menu) returns the edited sample without running denoise again. **Apply to track**, available only when opened from a Lemon Studio clip, writes a separate cleaned WAV and updates that exact Playlist clip automatically. Other occurrences of the same sample are unchanged. Playlist Undo restores the original clip in one step; the original audio file is never overwritten. The cleaned WAV stays in the project's Rendered/Cleaned folder (or the normal user render folder for projects without a data folder) and is referenced when saving the project. Keep these files with the project when transferring it.
+**Apply cleanup** commits the result inside Tesla with one undo step. If you continue editing afterward, the yellow **Apply to track** button at the bottom of Tesla (also in its File menu) returns the edited sample without running denoise again. **Apply to track**, available only when opened from a ML Studio clip, writes a separate cleaned WAV and updates that exact Playlist clip automatically. Other occurrences of the same sample are unchanged. Playlist Undo restores the original clip in one step; the original audio file is never overwritten. The cleaned WAV stays in the project's Rendered/Cleaned folder (or the normal user render folder for projects without a data folder) and is referenced when saving the project. Keep these files with the project when transferring it.
 
 Cleanup uses the current source file. Previously rendered vocal tuning or audio timing is already in that file and stays baked into the cleaned copy; the copied clip does not keep a live link to those earlier editing sessions. Mixer effects are not baked. ARA clips must first be rendered to ordinary audio. If you change the Playlist, source file or source channel while cleanup is open, Apply refuses to replace anything: reopen Cleanup from the intended clip. Changing Tesla's sample length or sample rate also prevents returning it to that clip, because doing so would invalidate its timing. Return links end when the project closes or the operation succeeds.
 
-Tesla also works separately as a **VST3** plugin in FL Studio and other VST3 hosts. Load or drag an audio file into Tesla, use the same cleanup controls, then **Apply cleanup** and **File > Save sample as**. Saved plugin state includes the edited audio. Automatic **Apply to track** is a Lemon Studio connection; external hosts use Tesla's normal save or drag-out workflow. This is an audio editor that processes the loaded sample, not a live noise gate or an automatic multitrack editor.
+Tesla also works separately as a **VST3** plugin in FL Studio and other VST3 hosts. Load or drag an audio file into Tesla, use the same cleanup controls, then **Apply cleanup** and **File > Save sample as**. Saved plugin state includes the edited audio. Automatic **Apply to track** is a ML Studio connection; external hosts use Tesla's normal save or drag-out workflow. This is an audio editor that processes the loaded sample, not a live noise gate or an automatic multitrack editor.
 
 This spectral tool targets steady noise such as hiss, fans and hum. It does not separate competing voices or reliably remove individual clicks. Strong settings can damage wanted audio, so compare before applying. Supports mono/stereo, 8–384 kHz, up to 20 minutes and 120 million samples. Noise profiles are not saved across editor sessions. Hide its toolbar tool and Playlist menu action through **Settings > General > Workspace Visibility > Choose what to show > Toolbar extras > Tesla audio cleanup / Playlist cleanup action**; hiding does not change existing audio.

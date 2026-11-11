@@ -492,7 +492,7 @@ mod tests {
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         set_check(&CLICK_AND_HOLD, true);
         let (mut app, (x, y)) = playlist_app(&mut c);
-        let orig = pl::clips(&app.state)[0];
+        let orig = pl::clips(&app.state)[0].clone();
         let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
         let unit = pl::grid_snap(&app.state).ticks(g.ppq, g.bar_w);
         let steps = app.state.history.len();

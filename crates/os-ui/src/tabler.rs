@@ -109,9 +109,9 @@ pub const FILE_ZIP: TablerIcon = TablerIcon { filled: false, d: "M 6 20.735 C 5.
 /// `search` (outline)
 pub const SEARCH: TablerIcon = TablerIcon { filled: false, d: "M 10 10 M 3 10 C 3 13.866 6.134 17 10 17 C 13.866 17 17 13.866 17 10 C 17 6.134 13.866 3 10 3 C 6.134 3 3 6.134 3 10 M 21 21 L 15 15" };
 /// `pencil` (outline)
-pub const PENCIL: TablerIcon = TablerIcon { filled: false, d: "M 4 20 L 8 20 L 18.5 9.5 C 19.605 8.395 19.605 6.605 18.5 5.5 C 17.395 4.395 15.605 4.395 14.5 5.5 L 4 16 L 4 20 M 13.5 6.5 L 17.5 10.5" };
+pub const PENCIL: TablerIcon = TablerIcon { filled: false, d: "M 4 20 L 5 15 L 16 4 L 20 8 L 9 19 Z M 13.5 6.5 L 17.5 10.5 M 5 15 L 9 19" };
 /// `brush` (outline)
-pub const BRUSH: TablerIcon = TablerIcon { filled: false, d: "M 3 21 L 3 17 C 3 14.791 4.791 13 7 13 C 9.209 13 11 14.791 11 17 C 11 19.209 9.209 21 7 21 L 3 21 M 21 3 C 15.186 3.795 10.273 7.71 8.2 13.2 M 21 3 C 20.205 8.814 16.29 13.727 10.8 15.8 M 10.6 9 C 12.543 9.897 14.103 11.457 15 13.4" };
+pub const BRUSH: TablerIcon = TablerIcon { filled: false, d: "M 10 14 L 17 5 L 20 3 L 21 4 L 19 8 L 13 17 M 10 14 C 5 13 5 18 3 21 C 9 21 13 20 13 17 Z" };
 /// `eraser` (outline)
 pub const ERASER: TablerIcon = TablerIcon { filled: false, d: "M 19 20 L 8.5 20 L 4.29 15.7 C 3.902 15.31 3.902 14.68 4.29 14.29 L 14.29 4.29 C 14.68 3.902 15.31 3.902 15.7 4.29 L 20.7 9.29 C 21.088 9.68 21.088 10.31 20.7 10.7 L 11.5 20 M 18 13.3 L 11.7 7" };
 /// `volume-off` (outline)
@@ -119,7 +119,7 @@ pub const VOLUME_OFF: TablerIcon = TablerIcon { filled: false, d: "M 15 8 C 16.5
 /// `arrows-horizontal` (outline)
 pub const ARROWS_HORIZONTAL: TablerIcon = TablerIcon { filled: false, d: "M 7 8 L 3 12 L 7 16 M 17 8 L 21 12 L 17 16 M 3 12 L 21 12" };
 /// `slice` (outline)
-pub const SLICE: TablerIcon = TablerIcon { filled: false, d: "M 3 19 L 18 4 L 21 7 L 15 13 L 17 15 C 13.448 18.846 8.047 20.389 3 19" };
+pub const SLICE: TablerIcon = TablerIcon { filled: false, d: "M 3 18 L 16 5 L 19 4 L 21 6 L 15 12 L 17 14 C 13 18 8 20 3 18 Z M 12 9 L 15 12" };
 /// `marquee-2` (outline)
 pub const MARQUEE_2: TablerIcon = TablerIcon { filled: false, d: "M 4 6 L 4 5 C 4 4.448 4.448 4 5 4 L 6 4 M 11 4 L 13 4 M 18 4 L 19 4 C 19.552 4 20 4.448 20 5 L 20 6 M 20 11 L 20 13 M 20 18 L 20 19 C 20 19.552 19.552 20 19 20 L 18 20 M 13 20 L 11 20 M 6 20 L 5 20 C 4.448 20 4 19.552 4 19 L 4 18 M 4 13 L 4 11" };
 /// `zoom-in` (outline)

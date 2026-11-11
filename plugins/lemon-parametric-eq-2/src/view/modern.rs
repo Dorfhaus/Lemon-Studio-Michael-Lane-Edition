@@ -47,14 +47,14 @@ impl Layout {
         } else {
             1.
         };
-        let s = s.min(w / 620.);
+        let s = s.min(w / 620.).min(((h - 100.) / 300.).max(0.8));
         Self {
             size: (w, h),
             plot: Rect::new(
                 20. * s,
-                44. * s,
+                128. * s,
                 (w - 72. * s).max(100.),
-                (h - 100. * s).max(100.),
+                (h - 184. * s).max(100.),
             ),
             scale: s,
             range: 18.,
@@ -62,6 +62,7 @@ impl Layout {
     }
     pub fn of(v: &ViewState) -> Self {
         let mut l = Self::new(v.size, v.ui_scale);
+        if v.hide_band_overview { l.plot.y -= 84. * l.scale; l.plot.h += 84. * l.scale; }
         if v.details_open || v.harsh_open {
             l.plot.h = (l.plot.h - 116. * l.scale).max(100.);
         }
@@ -159,7 +160,7 @@ pub fn visible(s: &Settings, v: &ViewState, k: usize) -> bool {
             || (v.show_dynamics && v.selected == k))
 }
 fn font(n: f32, s: f32) -> Font {
-    Font::new((n * s).round() as u16)
+    Font::light((n.max(11.) * s).round() as u16, 0).natural()
 }
 fn txt(c: &mut Canvas, r: Rect, n: f32, s: f32, color: Color, text: &str) {
     c.text_center(font(n, s), r, color, text);
@@ -172,15 +173,15 @@ fn button(c: &mut Canvas, h: &mut Vec<Hit>, r: Rect, t: Target, text: &str, on: 
     );
     c.fill_rect_gradient(
         r,
-        Color::rgb(if on { 0xf4e486 } else { 0x3b454a }),
-        Color::rgb(if on { 0xc6af37 } else { 0x272f33 }),
+        Color::rgb(if on { 0x4ba9ff } else { 0x3c4551 }),
+        Color::rgb(if on { 0x238be4 } else { 0x303842 }),
         4. * s,
     );
     c.stroke_rrect(
         r.inset(0.5 * s),
         4. * s,
         0.8 * s,
-        Color::rgb(if on { 0xfff0a5 } else { 0x8e9da3 }).with_alpha(if on { 125 } else { 45 }),
+        Color::rgb(if on { 0x96cfff } else { 0x8e9da3 }).with_alpha(if on { 125 } else { 45 }),
     );
     c.line(
         r.x + 5. * s,
@@ -342,24 +343,21 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     c.begin_frame(None);
     c.fill_rect_gradient(
         Rect::new(0., 0., w, h),
-        Color::rgb(0x252a2f),
-        Color::rgb(0x171a1e),
+        Color::rgb(0x30343b),
+        Color::rgb(0x20242b),
         0.,
     );
-    c.fill_rect(Rect::new(0., 0., w, 34. * s), Color::rgb(0x252a2d));
-    lemon::wordmark(
-        c,
-        13. * s,
-        5. * s,
-        true,
-        if w < 950. * s { "EQ" } else { "PARAMETRIC EQ" },
-        font(17., s),
-        font(8., s).bold(),
-    );
+    c.fill_rect(Rect::new(0., 0., w, 42. * s), Color::rgb(0x292e35));
+    c.fill_rrect(Rect::new(15.*s, 8.*s, 27.*s, 27.*s), 5.*s, Color::rgb(0x2796f5));
+    txt(c, Rect::new(15.*s,8.*s,27.*s,27.*s), 12.,s,Color::rgb(0x0c2034),"ML");
+    c.text(font(23.,s).bold(), 51.*s, 6.*s, Color::rgb(0xe7f0f8), "EQ");
+    if w > 850.*s {
+        c.text(font(11.,s), 93.*s, 15.*s, Color::rgb(0x93a6ba), "DYNAMIC EQUALIZER");
+    }
     button(
         c,
         &mut hits,
-        Rect::new(w - 350. * s, 6. * s, 44. * s, 22. * s),
+        Rect::new(w - 350. * s, 10. * s, 44. * s, 24. * s),
         Target::Undo,
         "Undo",
         false,
@@ -368,7 +366,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     button(
         c,
         &mut hits,
-        Rect::new(w - 300. * s, 6. * s, 44. * s, 22. * s),
+        Rect::new(w - 300. * s, 10. * s, 44. * s, 24. * s),
         Target::Redo,
         "Redo",
         false,
@@ -377,7 +375,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     button(
         c,
         &mut hits,
-        Rect::new(w - 244. * s, 6. * s, 47. * s, 22. * s),
+        Rect::new(w - 244. * s, 10. * s, 47. * s, 24. * s),
         Target::Store,
         "A > B",
         false,
@@ -386,7 +384,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     button(
         c,
         &mut hits,
-        Rect::new(w - 189. * s, 6. * s, 47. * s, 22. * s),
+        Rect::new(w - 189. * s, 10. * s, 47. * s, 24. * s),
         Target::Flip,
         if v.compare_b { "B / A" } else { "A / B" },
         v.compare_b,
@@ -395,7 +393,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     button(
         c,
         &mut hits,
-        Rect::new(w - 134. * s, 6. * s, 55. * s, 22. * s),
+        Rect::new(w - 134. * s, 10. * s, 55. * s, 24. * s),
         Target::Options,
         "Options",
         false,
@@ -404,7 +402,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     button(
         c,
         &mut hits,
-        Rect::new(w - 71. * s, 6. * s, 54. * s, 22. * s),
+        Rect::new(w - 71. * s, 10. * s, 54. * s, 24. * s),
         Target::UiScale,
         &format!(
             "{}%",
@@ -414,21 +412,12 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         s,
     );
     button(
-        c, &mut hits, Rect::new(w - 449. * s, 6. * s, 89. * s, 22. * s),
+        c, &mut hits, Rect::new(w - 449. * s, 10. * s, 89. * s, 24. * s),
         Target::Details, "Band controls", v.details_open, s,
     );
     c.fill_rrect(l.plot.outset(1. * s), 5. * s, Color::rgb(0x070d10));
-    c.fill_rect_gradient(l.plot, Color::rgb(0x253137), Color::rgb(0x141b1f), 4. * s);
+    c.fill_rect_gradient(l.plot, Color::rgb(0x252d38), Color::rgb(0x171e28), 4. * s);
     c.push_clip(l.plot.inset(1. * s));
-    c.fill_polygon(
-        &[
-            (l.plot.x, l.plot.y),
-            (l.plot.right(), l.plot.y),
-            (l.plot.right(), l.plot.y + l.plot.h * 0.1),
-            (l.plot.x, l.plot.y + l.plot.h * 0.32),
-        ],
-        Color::rgb(0xc7e0e7).with_alpha(5),
-    );
     c.pop_clip();
     c.stroke_rrect(
         l.plot.inset(0.5 * s),
@@ -486,7 +475,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
             Rect::new(l.plot.right() + 3. * s, y - 7. * s, 32. * s, 14. * s),
             9.,
             s,
-            Color::rgb(0xdac66f),
+            Color::rgb(0xb8d8ee),
             &format!("{db:+.0}"),
         );
     }
@@ -614,8 +603,8 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         }
         points.push((l.x(n), l.y(db)));
     }
-    c.polyline(&points, 4.8 * s, Color::rgb(0xf3d967).with_alpha(20));
-    c.polyline(&points, 1.8 * s, Color::rgb(0xf5dc73));
+    c.polyline(&points, 4.8 * s, Color::rgb(0x3b9eff).with_alpha(20));
+    c.polyline(&points, 1.8 * s, Color::rgb(0x74c7ff));
     for k in 0..BANDS {
         if !visible(settings, &v, k) {
             continue;
@@ -623,7 +612,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         let (x, y) = l.node(settings, k);
         let col = band_color(k);
         let selected = v.selection & (1 << k) != 0 || (v.show_dynamics && v.selected == k);
-        let radius = if selected { 6. } else { 4.5 } * s;
+        let radius = if selected { 8. } else { 7. } * s;
         c.fill_circle(x, y, radius + 2. * s, Color::rgb(0x171c21));
         c.fill_circle(
             x,
@@ -635,6 +624,7 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
                 Color::rgb(0x59616b)
             },
         );
+        txt(c, Rect::new(x-7.*s,y-7.*s,14.*s,14.*s),10.,s,Color::rgb(0x142331),&(k+1).to_string());
         if selected {
             c.stroke_circle(x, y, radius + 3. * s, 1.2 * s, col.with_alpha(170));
         }
@@ -663,8 +653,8 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         }
     }
     if let Some(r) = v.marquee {
-        c.fill_rect(r, Color::rgb(0xf0d465).with_alpha(22));
-        c.stroke_rrect(r, 0., 1., Color::rgb(0xf0d465));
+        c.fill_rect(r, Color::rgb(0x3c9dff).with_alpha(22));
+        c.stroke_rrect(r, 0., 1., Color::rgb(0x3c9dff));
     }
     c.pop_clip();
     if v.harsh_open || (v.show_dynamics && v.details_open) {
@@ -675,6 +665,9 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
         if settings.bands[k].kind != 0 {
             band_card(c, &mut hits, &v, &l, settings, k);
         }
+    }
+    if !v.hide_band_overview {
+        band_overview(c, &mut hits, look, &v, &l);
     }
     // Familiar Lemon footer, kept slim so the graph remains the main editing surface.
     let fy = h - 26. * s;
@@ -724,10 +717,44 @@ pub fn paint(c: &mut Canvas, look: &Look, v: &ViewState) -> Vec<Hit> {
     }
     hits
 }
+/// All bands remain directly accessible, including muted and deleted bands.
+fn band_overview(c: &mut Canvas, hits: &mut Vec<Hit>, look: &Look, v: &ViewState, l: &Layout) {
+    let s=l.scale;
+    let gap=6.*s;
+    let width=(l.size.0-40.*s-6.*gap)/7.;
+    for k in 0..BANDS {
+        let r=Rect::new(20.*s+k as f32*(width+gap),48.*s,width,67.*s);
+        let selected=v.selection&(1<<k)!=0;
+        let color=band_color(k);
+        let on=look.s.audible(k) && look.s.bands[k].kind!=0;
+        c.fill_rrect(r,4.*s,Color::rgb(if selected {0x354557}else{0x2b333e}));
+        c.stroke_rrect(r.inset(0.5*s),4.*s,s,if selected{color.with_alpha(190)}else{Color::rgb(0x435060)});
+        c.fill_rrect(Rect::new(r.x+8.*s,r.y+8.*s,3.*s,12.*s),s,color.with_alpha(if on{255}else{65}));
+        hits.push(Hit {r,t:Target::SelectBand(k)});
+        let title=Rect::new(r.x+16.*s,r.y+3.*s,(width-41.*s).max(20.*s),21.*s);
+        txt(c,title,11.,s,if on{Color::rgb(0xd8e4f1)}else{Color::rgb(0x8291a3)},&format!("B{}",k+1));
+        let power=Rect::new(r.right()-24.*s,r.y+4.*s,20.*s,20.*s);
+        c.arc(power.cx(),power.cy()+s,4.*s,-PI/3.,5.*PI/3.,1.2*s,if on{color}else{Color::rgb(0x788798)});
+        c.line(power.cx(),power.cy()-5.*s,power.cx(),power.cy()-s,1.2*s,if on{color}else{Color::rgb(0x788798)});
+        hits.push(Hit{r:power,t:Target::Switch(k)});
+        let freq=Rect::new(r.x+4.*s,r.y+25.*s,width-8.*s,21.*s);
+        txt(c,freq,12.,s,Color::rgb(0xe4edf7),&params::hz_text(look.s.bands[k].hz()));
+        hits.push(Hit{r:freq,t:Target::Freq(k)});
+        let gain=Rect::new(r.x+4.*s,r.y+46.*s,width-8.*s,18.*s);
+        let band=look.s.bands[k];
+        txt(c,gain,11.,s,if on{color}else{Color::rgb(0x8291a3)},&if band.kind==0{"Off".into()}else if has_level(band.kind){params::db_text(band.db)}else{"Cut filter".into()});
+        if band.kind!=0 && has_level(band.kind) {hits.push(Hit{r:gain,t:Target::Fader(k)});}
+    }
+    // Actions occupy the graph's upper edge, clear of the band cards and de-harsh.
+    for (x,width,target,label) in [(112.,62.,Target::FitRange,"Auto fit"),(180.,58.,Target::ResetSelected,"Reset"),(244.,74.,Target::InvertGain,"Invert gain")] {
+        button(c,hits,Rect::new(l.plot.x+x*s,l.plot.y+7.*s,width*s,22.*s),target,label,false,s);
+    }
+}
+
 fn card_control(c: &mut Canvas, hits: &mut Vec<Hit>, v: &ViewState, r: Rect, target: Target, on: bool) -> Color {
     let hovered = v.mouse.is_some_and(|(x, y)| r.contains(x, y));
     if on || hovered {
-        c.fill_rrect(r, 4., Color::rgb(if on { 0xefd065 } else { 0x38444e }));
+        c.fill_rrect(r, 4., Color::rgb(if on { 0x369bfa } else { 0x38444e }));
     }
     hits.push(Hit { r, t: target });
     Color::rgb(if on { 0x222323 } else { 0xd0d9e0 })
@@ -827,7 +854,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
         9. * s,
     );
     let color = if v.harsh_open {
-        Color::rgb(0xe6d267)
+        Color::rgb(0x72c8f8)
     } else {
         band_color(k)
     };
@@ -998,7 +1025,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
         ring,
         if dynamic_on { 1.6 * s } else { 0.8 * s },
         if dynamic_on {
-            Color::rgb(0xf0d768).with_alpha(175)
+            Color::rgb(0x3fa5ff).with_alpha(175)
         } else {
             Color::rgb(0x59606a).with_alpha(85)
         },
@@ -1009,7 +1036,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
             cy,
             ring + 1.5 * s,
             3. * s,
-            Color::rgb(0xf0d768).with_alpha(20),
+            Color::rgb(0x3fa5ff).with_alpha(20),
         );
     }
     if range.abs() > 0.001 {
@@ -1020,7 +1047,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
             -PI * 0.5 + range.min(0.) * PI,
             range.abs() * PI,
             4. * s,
-            Color::rgb(0xf5da65),
+            Color::rgb(0x7fcaff),
         );
         let actual = v.reduction[k] / 18.;
         c.arc(
@@ -1030,7 +1057,7 @@ fn panel(c: &mut Canvas, look: &Look, v: &ViewState, l: &Layout, hits: &mut Vec<
             -PI * 0.5 + actual.min(0.) * PI,
             actual.abs() * PI,
             2. * s,
-            Color::rgb(0xf0d768),
+            Color::rgb(0x3fa5ff),
         );
     }
     button(

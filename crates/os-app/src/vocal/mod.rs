@@ -80,7 +80,7 @@ pub fn toggle(app:&mut App,row:u16){
 }
 fn ask_download(app:&mut App,row:u16){
  use crate::dialog::{Msg,Kind,Answer,Then,spans};
- app.show_msg(Msg::new(Kind::Question,"Enable vocal tuning?",spans(&["Download the optional vocal-tuning engine?\n\nThis small, one-time download is under 8 MB and installs only for Lemon Studio. No large AI models are required.\n\nVocal analysis and rendering stay on your computer. The original recording is preserved."]),&[Answer::Yes,Answer::No],Then::VocalDownload(row)));
+ app.show_msg(Msg::new(Kind::Question,"Enable vocal tuning?",spans(&["Download the optional vocal-tuning engine?\n\nThis small, one-time download is under 8 MB and installs only for ML Studio. No large AI models are required.\n\nVocal analysis and rendering stay on your computer. The original recording is preserved."]),&[Answer::Yes,Answer::No],Then::VocalDownload(row)));
  app.invalidate();
 }
 pub fn download(app:&mut App,row:u16){
@@ -280,7 +280,7 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   crate::history::undo(&mut app.state).unwrap();command(&mut app,Command::Tool(Tool::Time));paint(&mut app,&mut canvas);let note=hit(&app,Action::Vocal(Command::Note(ci,1)));
   app.alt=true;app.mouse_move(note.cx(),note.cy());app.mouse_down();app.mouse_move(note.cx()+12.,note.cy());app.mouse_up();app.alt=false;
   assert!(app.state.project.vocal_edits[0].timing.len()>2);assert!(app.state.project.vocal_edits[0].valid());crate::history::undo(&mut app.state).unwrap();
-  let before=app.state.project.vocal_edits.clone();pl::snapshot(&mut app.state);let c=pl::clips(&app.state)[ci];let split=pl::split(&mut app.state,ci,c.position+c.length/2).unwrap();
+  let before=app.state.project.vocal_edits.clone();pl::snapshot(&mut app.state);let c=pl::clips(&app.state)[ci].clone();let split=pl::split(&mut app.state,ci,c.position+c.length/2).unwrap();
   pl::arr_mut(&mut app.state).clips[split].position+=192;
   assert_eq!(doc(&app.state,ci),doc(&app.state,split));assert_eq!(app.state.project.vocal_edits,before);
   let file=os_flp::project::create(&app.state.project).unwrap();let loaded=os_flp::project::load(&file).unwrap();assert_eq!(loaded.vocal_edits,app.state.project.vocal_edits);assert_eq!(loaded.arrangement().unwrap().clips.len(),pl::clips(&app.state).len());for(a,b)in loaded.arrangement().unwrap().clips.iter().zip(pl::clips(&app.state)){assert_eq!((a.position,a.length,a.track,a.source,a.window),(b.position,b.length,b.track,b.source,b.window));}
@@ -308,7 +308,7 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   if std::env::var("LEMON_VOCAL_DOWNLOAD_TEST").as_deref()!=Ok("1"){return;}
   let(mut app,dir,ci)=fixture();let root=engine::root().unwrap();assert!(!root.exists(),"Provide a fresh LEMON_VOCAL_TEST_ROOT for the optional download test");
   app.state.project.vocal_edits.clear();app.state.playlist.vocal=Default::default();
-  let shared=pl::clips(&app.state)[ci].source;let mut other=pl::clips(&app.state)[ci];other.track=5;pl::arr_mut(&mut app.state).clips.push(other);
+  let shared=pl::clips(&app.state)[ci].source;let mut other=pl::clips(&app.state)[ci].clone();other.track=5;pl::arr_mut(&mut app.state).clips.push(other);
   let original=std::fs::read(dir.join("Vocal.wav")).unwrap();
   let mut canvas=Canvas::new(1280,900,1.).unwrap();paint(&mut app,&mut canvas);
   let h=hit(&app,Action::Vocal(Command::Toggle(2)));app.mouse_move(h.cx(),h.cy());app.mouse_down();app.mouse_up();

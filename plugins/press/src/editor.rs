@@ -769,7 +769,7 @@ mod win32 {
                 tracking: false,
                 slot: slot.clone(),
             });
-            let title = pw::wide("Press");
+            let title = pw::wide("ML Press");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),

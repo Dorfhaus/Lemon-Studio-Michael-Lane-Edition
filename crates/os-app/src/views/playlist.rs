@@ -173,12 +173,18 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
 
     // Track-header strip: add button and the NOTE / CHAN / PAT filters.
-    let pick_w=picker_width(s,r);
+    let pick_w=crate::clip_picker::width(s,r);
     if pick_w>0. {
         let pane=Rect::new(r.x+4.,client.y+2.,pick_w-6.,(r.bottom()-client.y-4.).max(0.));
         ui.c.fill_rect(pane,t.track_header);
         // One inset frame; content cannot paint over its edges.
         ui.c.stroke_rrect(pane.inset(0.5),0.,1.,t.text_dim.with_alpha(130));
+        if crate::workspace_visibility::shown(crate::clip_picker::RESIZE_VISIBILITY) {
+            let splitter = Rect::new(pane.right() - 1.0, pane.y, 6.0, pane.h);
+            let hot = ui.hit(splitter, Action::PlPickResize, "Drag to resize the Clip Picker");
+            ui.c.fill_rect(Rect::new(splitter.cx(), splitter.cy() - 12.0, 2.0, 24.0),
+                if hot { t.accent } else { t.text_dim.with_alpha(130) });
+        }
         for (i,kind) in [PickKind::Pattern,PickKind::Audio,PickKind::Automation].into_iter().enumerate(){
             let b=Rect::new(pane.x+4.+i as f32*((pane.w-8.)/3.),pane.y+4.,(pane.w-8.)/3.-2.,24.);
             let hot=ui.hit(b,Action::PlPickTab(kind),format!("{kind:?} clips"));
@@ -189,6 +195,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let filtered = s.playlist.picker != PickKind::Automation
             && crate::workspace_visibility::shown(crate::clip_picker::FILTER_VISIBILITY);
         let mut list_top = pane.y + 32.0;
+        let preview = crate::workspace_visibility::shown("visible_playlist-picker-preview")
+            && s.playlist.picker != PickKind::Automation;
+        let looping = crate::clip_picker::looping();
+        if preview && crate::workspace_visibility::shown(crate::clip_picker::LOOP_VISIBILITY) {
+            let button = Rect::new(pane.x + 4.0, list_top, pane.w - 8.0, 19.0);
+            let hover = ui.hit(button, Action::PlPickLoop, "Toggle looping for Clip Picker previews");
+            let ink = tool_face(ui, button, looping, hover);
+            ui.c.text_center(Font::new(11), button, ink, if looping { "Loop: On" } else { "Loop: Off" });
+            list_top += 23.0;
+        }
         if filtered && pane.bottom() >= list_top + 24.0 {
             let width = (pane.w - 8.0) / 3.0;
             for (i, (usage, label)) in crate::clip_picker::Usage::OPTIONS.into_iter().enumerate() {
@@ -225,15 +241,13 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
                 let swatch = rows.color(s, src).map(rgb).unwrap_or(cc(t, TITLE_TOP));
                 ui.c.fill_rect(Rect::new(row.x + 2.0, row.y + 2.0, 4.0, row.h - 4.0), swatch);
             }
-            let preview = crate::workspace_visibility::shown("visible_playlist-picker-preview")
-                && s.playlist.picker != PickKind::Automation;
             ui.c.text_clip(Font::new(12), row.x + name_inset, row.y + 4.0,
                 row.w - name_inset - if preview { 28.0 } else { 5.0 }, ink, &name);
             if preview {
                 let button = Rect::new(row.right() - 25.0, row.y + 2.0, 22.0, (row.h - 4.0).max(8.0));
                 let playing = picker.playing(src);
                 let hot = ui.hit(button.intersect(&list), Action::PlPickPreview(src),
-                    if playing { "Stop this preview" } else { "Preview this clip (loops)" });
+                    if playing { "Stop this preview" } else if looping { "Preview this clip (loop)" } else { "Preview this clip once" });
                 let ink = tool_face(ui, button, playing, hot);
                 if playing {
                     ui.c.fill_rect(Rect::new(button.cx() - 4.0, button.cy() - 4.0, 8.0, 8.0), ink);
@@ -303,7 +317,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         if t.style.vintage_2005 {
             crate::vintage::metal(ui.c, window, Color::rgb(0x65767e));
         } else {
-            let thumb = t.text_dim.mix(Color::rgb(0xffda50), 0.32);
+            let thumb = t.text_dim.mix(Color::rgb(0x2096f3), 0.32);
             ui.c.fill_rrect(window, 2.0, thumb.with_alpha(if show_map { 140 } else { 255 }));
         }
         if show_map {
@@ -313,7 +327,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
         let edge = if t.style.vintage_2005 {
             Color::rgb(0xb0c2ca)
         } else {
-            t.text.mix(Color::rgb(0xffda50), 0.40).with_alpha(255)
+            t.text.mix(Color::rgb(0x2096f3), 0.40).with_alpha(255)
         };
         for y in [window.y, window.bottom() - 1.0] {
             ui.c.fill_rect(Rect::new(window.x, y, window.w, 1.0), edge);
@@ -327,7 +341,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             let (at,w,_)=crate::elastic_scroll::horizontal(rail.w,sx,grid_w,bars*bar_w);(at,w)
         } else {let (at,w)=os_ui::kit::thumb(rail.w,sx,grid_w,bars*bar_w);crate::elastic_scroll::thumb(&ui.elastic,crate::app::Scroll::PlaylistX,at,w)};
         let thumb = Rect::new(rail.x + offset, rail.y, width, rail.h);
-        let face = if t.style.vintage_2005 { Color::rgb(0xb8c8cf) } else { Color::rgb(0xf2ca61) };
+        let face = if t.style.vintage_2005 { Color::rgb(0xb8c8cf) } else { Color::rgb(0x7ac4ff) };
         if t.style.vintage_2005 {
             ui.c.fill_rect_gradient(thumb, face.shade(0.16), face.shade(-0.16), 0.0);
         } else {
@@ -443,9 +457,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             ui.c.stroke_rrect(m, 0.0, 1.0, Color::rgb(0xff6060));
         }
         Some(Overlay::ZoomBox(m)) => {
-            ui.c.fill_rect(m, Color::rgb(0xffca37).with_alpha(65));
+            ui.c.fill_rect(m, Color::rgb(0x2096f3).with_alpha(65));
             ui.c.stroke_rrect(m, 0.0, 4.0, Color::rgb(0x252015));
-            ui.c.stroke_rrect(m, 0.0, 2.0, Color::rgb(0xffda50));
+            ui.c.stroke_rrect(m, 0.0, 2.0, Color::rgb(0x2096f3));
         }
         Some(Overlay::Slice { tick, t0, t1 }) => {
             let x = g.x_of(tick as f32);
@@ -539,9 +553,8 @@ pub fn scroll_parts(s: &State, grid: Rect) -> ScrollParts {
 }
 
 /// The arrangement grid in a window laid out at `r` with client rect `client` (see `super::frame_rects`).
-fn picker_width(s:&State,r:Rect)->f32 { if s.playlist.picker_visible && r.w>=430. {132.} else {0.} }
 pub(crate) fn grid_rect(s: &State, r: Rect, client: Rect) -> Rect {
-    let grid_x = r.x + picker_width(s,r) + 2.0 + 98.0 + 12.0;
+    let grid_x = r.x + crate::clip_picker::width(s,r) + 2.0 + 98.0 + 12.0;
     let grid_w = (r.right() - grid_x - 4.0 - bar_sizes().1).max(1.0);
     let grid_y = client.y + 42.0 + if pl::markers(s).is_empty() { 0.0 } else { MARKER_H };
     Rect::new(grid_x, grid_y, grid_w, (r.bottom() - grid_y).max(0.0))
@@ -610,7 +623,7 @@ fn overview(ui: &mut Ui, s: &State, inner: Rect, total_ticks: f32, classic: bool
     for m in pl::markers(s) {
         let x = (inner.x + m.position as f32 * k).round();
         let col = Color::rgb(match m.kind {
-            TimeMarker::PLAIN | TimeMarker::LOOP | TimeMarker::SKIP => 0xffffa9,
+            TimeMarker::PLAIN | TimeMarker::LOOP | TimeMarker::SKIP => 0x7ac4ff,
             TimeMarker::MARKER_LOOP => 0xa9ffff,
             TimeMarker::PAUSE => 0xffa9ff,
             TimeMarker::START => 0xff0000,
@@ -851,7 +864,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
     let (r, clip_x) = g.clip_draw_rect(c);
     let full_w = g.clip_rect(c).w;
     if let ClipSource::Channel(ch)=c.source {
-        if g.automation_views.values().any(|a|*a==ch) {
+        if g.automation_overlay_row(c).is_some() {
             let col=Color::rgb(0xf2cf7d);
             ui.c.push_clip(r.intersect(&g.grid));
             ui.c.fill_rect(r,col.with_alpha(24));
@@ -869,7 +882,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
         let col = if s.playlist.sel.contains(&i) {
             cc(t, SEL_TITLE)
         } else {
-            pl::clip_tint(s, c.source)
+            c.color.or_else(|| pl::clip_tint(s, c.source))
                 .or_else(|| pl::source_color(s, c.source))
                 .or_else(|| pl::track_info(s, c.track).and_then(|t| t.color))
                 .map_or(cc(t, TITLE_TOP), rgb)
@@ -918,9 +931,9 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
         let color = rgb(hex);
         if t.style.vintage_2005 { color.mix(t.grid_alt, 0.28 * (1.0 - brightness)) } else { color }
     };
-    let color = pl::track_info(s, c.track).and_then(|t| t.color).or_else(|| pl::source_color(s, c.source)).map(ink);
+    let color = c.color.or_else(|| pl::track_info(s, c.track).and_then(|t| t.color)).or_else(|| pl::source_color(s, c.source)).map(ink);
     let darken = |c: Color| c.mix(ui.t.s(0x000000), 0.55 - 0.33 * brightness);
-    let tint = pl::clip_tint(s, c.source).map(ink);
+    let tint = c.color.or_else(|| pl::clip_tint(s, c.source)).map(ink);
 
     // Title strip: (edge rows, highlight row, gradient top, gradient bottom, text).
     let (edge, high, top, bottom, text, body) = if selected {
@@ -1011,7 +1024,7 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
         }
     }
     if r.w > 16.0 {
-        ui.c.text_clip(Font::new(12), inner.x + 14.0, inner.y - 1.0, inner.w - 16.0, ic, &pl::source_name(s, c.source));
+        ui.c.text_clip(Font::new(12), inner.x + 14.0, inner.y - 1.0, inner.w - 16.0, ic, &pl::clip_name(s, c));
     }
     // Content.
     let content = if muted { dim(text).with_alpha(90) } else { dim(cc(t, NOTE)) };
@@ -1374,7 +1387,7 @@ fn curve(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, ch: u16, edges: 
     let mut area = pts.clone();
     area.push((x1, body.bottom()));
     area.push((x0, body.bottom()));
-    ui.c.fill_polygon(&area, if g.automation_views.values().any(|a|*a==ch) {col.with_alpha(18)} else {bg.shade(0.07).with_alpha(24)});
+    ui.c.fill_polygon(&area, if g.automation_overlay_row(c).is_some() {col.with_alpha(18)} else {bg.shade(0.07).with_alpha(24)});
     ui.c.polyline(&pts, 1.5, col);
     // Points and tension handles while the mouse is over the clip (§8).
     let selection = s.playlist.selected_points.as_ref().filter(|(ch, _)| c.source == ClipSource::Channel(*ch));
@@ -1403,10 +1416,16 @@ fn curve(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, ch: u16, edges: 
 
 pub(crate) fn draw_padlock(c: &mut os_ui::Canvas, x: f32, y: f32, scale: f32, ink: Color, locked: bool) {
     c.fill_rrect(Rect::new(x - 5. * scale, y - 2. * scale, 10. * scale, 8. * scale), 1.5 * scale, ink);
-    let left = if locked { -3. } else { -1. };
-    let points = [(left, if locked { -2. } else { -4. }), (left, -5.), (-1.5, -7.),
-        (1.5, -7.), (3., -5.), (3., -2.)];
-    c.polyline(&points.map(|(dx, dy)| (x + dx * scale, y + dy * scale)), 1.6 * scale, ink);
+    let closed = [(-3., -2.), (-3., -5.), (-1.5, -7.), (1.5, -7.), (3., -5.), (3., -2.)];
+    // End the free side high enough to leave a visible gap even on narrow mixer strips.
+    let open = [(-3., -5.), (-2.7, -6.), (-1.7, -6.8), (0., -7.1),
+        (1.7, -6.8), (2.7, -6.), (3., -4.9), (3., -1.7)];
+    let point = |(dx, dy)| (x + dx * scale, y + dy * scale);
+    if locked {
+        c.polyline(&closed.map(point), 1.6 * scale, ink);
+    } else {
+        c.polyline(&open.map(point), 1.6 * scale, ink);
+    }
 }
 
 /// A track header (§6, §6a): a box in the track's colour with the name, "…" and the mute LED. A group is one block
@@ -1643,18 +1662,17 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect]) -> (Rect, Vec<Rect>) {
     let t = ui.t;
     let font = os_ui::kit::menu::app_font(t, 12);
+    let key_font = os_ui::kit::menu::app_shortcut_font(t, font);
     let mut lw: f32 = 80.0;
     let mut kw: f32 = 0.0;
     for it in items {
         lw = lw.max(ui.c.text_width(font, &it.label));
         if !it.key.is_empty() {
-            kw = kw.max(ui.c.text_width(font.italic(), it.key));
+            kw = kw.max(ui.c.text_width(key_font, it.key));
         }
     }
     let cw = 20.0 + lw + if kw > 0.0 { kw + 24.0 } else { 12.0 } + 14.0;
     let m = os_ui::kit::menu::metrics(ui.c.scale);
-    // Text sits where it does at 100 %, moved by half of what the row lost.
-    let dy = (m.row - os_ui::kit::menu::ROW) / 2.0;
     let max_h = (screen.1 - 8.0).max(m.row);
     let (mut layout, mut cols, mut body_h) = popup_layout(&m, items, max_h);
     // Wider than the screen: the columns wrap a scroll bar's height sooner, and as many as fit are shown.
@@ -1768,11 +1786,13 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
         }
         }
         let color=if let pl::Cmd::Piano(crate::piano_tools::NCmd::NoteColor(n))=it.cmd{crate::piano_note_mode::color(t,n)}else{color};
-        ui.c.text_clip(font, rr.x + 20.0, rr.y + 2.0 + dy, lw + 4.0, color, &it.label);
+        let label_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, font, 2.0);
+        ui.c.text_clip(font, rr.x + 20.0, label_y, lw + 4.0, color, &it.label);
         let right = rr.right() - if it.children.is_empty() { 8.0 } else { 16.0 };
         if !it.key.is_empty() {
             let sc = if live { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
-            ui.c.text_right(font.italic(), right, rr.y + 3.0 + dy, sc, it.key);
+            let key_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, key_font, 3.0);
+            ui.c.text_right(key_font, right, key_y, sc, it.key);
         }
         if !it.children.is_empty() {
             let ax = rr.right() - 11.0;

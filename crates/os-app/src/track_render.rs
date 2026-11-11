@@ -89,11 +89,11 @@ fn prepare(s: &State, row: u16, mode: Mode) -> Result<(Project, crate::export::J
     if mode == Mode::BounceNew {
         destination(s, row)?;
     }
-    let original: Vec<_> = pl::clips(s).iter().filter(|c| c.track == row).copied().collect();
+    let original: Vec<_> = pl::clips(s).iter().filter(|c| c.track == row).cloned().collect();
     let audible: Vec<_> = original
         .iter()
         .filter(|c| !c.muted && !automation(&s.project, c))
-        .copied()
+        .cloned()
         .collect();
     let end = audible
         .iter()
@@ -113,7 +113,7 @@ fn prepare(s: &State, row: u16, mode: Mode) -> Result<(Project, crate::export::J
     let auto: Vec<_> = pl::clips(s)
         .iter()
         .filter(|c| automation(&p, c) && pl::track_on(s, c.track))
-        .copied()
+        .cloned()
         .collect();
     let a = p.arrangement_mut().ok_or("No arrangement")?;
     let arrangement = a.number;
@@ -248,7 +248,7 @@ fn place(s: &mut State, p: &Pending, files: &[PathBuf]) -> Result<String, String
         || pl::clips(s)
             .iter()
             .filter(|c| c.track == p.row)
-            .copied()
+            .cloned()
             .collect::<Vec<_>>()
             != p.original
     {
@@ -308,7 +308,7 @@ fn place(s: &mut State, p: &Pending, files: &[PathBuf]) -> Result<String, String
         a.tracks[row as usize].name = Some(format!("{} - Bounce", p.name));
         a.tracks[row as usize].color = p.track.color;
     } else {
-        let kept = pl::clips(s).iter().copied()
+        let kept = pl::clips(s).iter().cloned()
             .filter(|c| c.track != row || automation(&s.project, c)).collect();
         let a = pl::arr_mut(s);
         a.clips = kept;
@@ -516,15 +516,15 @@ mod tests {
         let (mut app, dir) = fixture("bounce");
         let s = &mut app.state;
         pl::arr_mut(s).tracks[0].comp = Some(1);
-        let mut take = pl::clips(s)[0];
+        let mut take = pl::clips(s)[0].clone();
         take.track = 1;
         take.muted = true;
         let a = pl::arr_mut(s);
         a.tracks[1].grouped = true;
         a.tracks[1].enabled = false;
-        a.clips.push(take);
+        a.clips.push(take.clone());
         a.clips.push(Clip::new(192, 96, 2, ClipSource::Channel(0)));
-        let original = pl::clips(s)[0];
+        let original = pl::clips(s)[0].clone();
         let count = s.project.channels.len();
         app.render_track(0, Mode::BounceNew);
         finish(&mut app);
@@ -553,7 +553,7 @@ mod tests {
         let automation = Clip::new(0, 192, 0, ClipSource::Channel(1));
         let other = Clip::new(192, 96, 1, ClipSource::Channel(0));
         let a = pl::arr_mut(&mut app.state);
-        a.clips.extend([automation, other]);
+        a.clips.extend([automation.clone(), other.clone()]);
         a.tracks[0].name = Some("Voice".into());
         a.tracks[1].name = Some("Other".into());
         let tracks = a.tracks.clone();

@@ -1375,9 +1375,9 @@ pub fn edit(app: &mut App, action: Edit) {
                 "input-bindings",
                 crate::dialog::Then::InputBindings(export),
             )
-            .filter("Lemon Studio controls", &["json"])
+            .filter("ML Studio controls", &["json"])
             .name(if export {
-                "Lemon Studio Controls.json"
+                "ML Studio Controls.json"
             } else {
                 ""
             });

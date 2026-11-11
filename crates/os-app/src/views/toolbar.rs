@@ -22,6 +22,17 @@ pub const MORE_W: f32 = 18.0;
 /// The overflow arrow provides access to windows hidden by a narrow toolbar.
 pub const MORE_HINT: &str = "More windows and toolbar options";
 
+/// The Studio rack's compact corners and flat faces, using the active toolbar palette.
+const STUDIO_RADIUS: f32 = 4.0;
+
+fn studio_tile(ui: &mut Ui, rect: Rect, face: Color) {
+    if rect.w <= 2.0 || rect.h <= 2.0 {
+        return;
+    }
+    ui.c.fill_rrect(rect, STUDIO_RADIUS, face);
+    ui.c.stroke_rrect(rect, STUDIO_RADIUS, 1.0, face.mix(ui.t.glyph, 0.17));
+}
+
 /// Where the panels of a band `width` px wide must end to show, when all of them need `full` (`toolbar::natural_width`;
 /// 1440 for the classic layout, whose last utility button ends at x 1437): anywhere when all of them fit, else before
 /// the arrow. A narrower band leaves out the panels that don't fit, from the right of each row, and draws the ▶ arrow
@@ -226,6 +237,7 @@ impl ActionSizes {
 pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     let t = ui.t;
     let lemon = super::lemon(ui);
+    let studio = lemon && !s.vintage_2005;
     let editing = s.bar.editing;
     let l = display_layout(s);
     let action_font = if s.vintage_2005 {Font::vintage(11)}else{Font::new(12)};
@@ -344,7 +356,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         if sizes.ai > 0.0 {
             let ai = Rect::new(x, 8.0, sizes.ai - 6.0, 24.0);
             let hover = ui.hit(ai, Action::Ai, if !s.ai.enabled {"AI control is off — connect an assistant"} else if s.ai.client.is_empty() {"AI control enabled — waiting for an approved assistant"} else {"AI assistant connected — manage or disconnect"});
-            ui.c.fill_rrect(ai, 3.0, if hover { t.button_hi } else { t.sunken });
+            let face = if hover { t.button_hi } else { t.sunken };
+            if studio { studio_tile(ui, ai, face); } else { ui.c.fill_rrect(ai, 3.0, face); }
             let chip = Rect::new(ai.x + 6.0, ai.y + 7.0, 10.0, 10.0);
             let ink = if s.ai.enabled { t.accent } else { t.text_dim };
             ui.c.stroke_rrect(chip, 2.0, 1.0, ink);
@@ -361,29 +374,31 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         if sizes.tesla > 0.0 {
             let b = Rect::new(x, 8.0, sizes.tesla - 6.0, 24.0);
             ui.hit(b, Action::Util(crate::app::Util::AudioEditor), "Open Tesla audio editor");
-            ui.c.fill_rrect(b, 3.0, t.sunken);
+            if studio { studio_tile(ui, b, t.sunken); } else { ui.c.fill_rrect(b, 3.0, t.sunken); }
             icons::draw(ui.c, Icon::Wave, b.inset(4.0), t.accent);
             x += sizes.tesla;
         }
         if sizes.update > 0.0 {
             let r = Rect::new(x, 8.0, sizes.update - 6.0, 24.0);
             let (label, hint) = crate::updates::display();
-            ui.hit(r, Action::Updates, if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
-            ui.c.fill_rrect(r, 3.0, t.sunken);
+            let hover = ui.hit(r, Action::Updates, if hint.is_empty() { "Automatic updates: check now".to_string() } else { hint });
+            if studio { studio_tile(ui, r, if hover { t.button_hi } else { t.sunken }); }
+            else { ui.c.fill_rrect(r, 3.0, t.sunken); }
             ui.c.text_clip(action_font, r.x + 6.0, r.y + 5.0, r.w - 12.0, t.text, label);
             x += sizes.update;
         }
         if sizes.donate > 0.0 {
             let r = Rect::new(x, 8.0, sizes.donate - 6.0, 24.0);
-            ui.hit(r, Action::Donate, "Donate through Michael Lane's PayPal.me page");
-            ui.c.fill_rrect(r, 3.0, t.sunken);
+            let hover = ui.hit(r, Action::Donate, "Donate through Michael Lane's PayPal.me page");
+            if studio { studio_tile(ui, r, if hover { t.button_hi } else { t.sunken }); }
+            else { ui.c.fill_rrect(r, 3.0, t.sunken); }
             ui.c.text_clip(action_font, r.x + 6.0, r.y + 5.0, r.w - 12.0, t.text, "Donate");
             x += sizes.donate;
         }
         if sizes.feedback > 0.0 {
             let r = Rect::new(x, 8.0, sizes.feedback - 6.0, 24.0);
             ui.hit(r, Action::ReportBug, "Report a bug or send feedback: review technical details before submitting");
-            ui.c.fill_rrect(r, 3.0, t.accent);
+            if studio { studio_tile(ui, r, t.accent); } else { ui.c.fill_rrect(r, 3.0, t.accent); }
             ui.c.text_center(Font::new(11), r, t.sunken, "Report a bug");
         }
     }
@@ -393,11 +408,17 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         for (offset, icon, action, hint) in [
             (0., Icon::Minimize, Action::Minimize, "Minimize"),
             (32., Icon::Restore, Action::Maximize, "Restore / maximize"),
-            (64., Icon::Close, Action::Close, "Exit Lemon Studio"),
+            (64., Icon::Close, Action::Close, "Exit ML Studio"),
         ] {
             let r=Rect::new(width-window_w+offset,8.,30.,24.);
             let hover=ui.hit(r,action,hint);
-            super::button_face(ui,r,if hover {super::Look::Hover}else{super::Look::Off});
+            if studio {
+                if hover || !s.toolbar.flat {
+                    studio_tile(ui, r, if hover { t.button_hi } else { t.toolbar.mix(t.button, 0.45) });
+                }
+            } else {
+                super::button_face(ui,r,if hover {super::Look::Hover}else{super::Look::Off});
+            }
             icons::draw(ui.c,icon,r.inset(6.),t.glyph);
         }
     }
@@ -413,19 +434,26 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
     if !l.logo {
         return;
     }
-    // Logo spot (spans the rows): the Lemon Studio mark, just right of the last panel (x 1487 in the classic layout). It
-    // keeps to the right edge until the window is too narrow, then the edge crops it (spec ui/main-window.md §12); the
-    // toolbar never moves.
-    let end = placed.iter().map(|p| p.x + p.w).fold(0.0, f32::max);
-    let lx = (content_width - 45.0).max(end + 47.0);
-    let r = Rect::new(lx - 35.0, 0.0, 78.0, h - 1.0);
+    // The last placement is the pinned hint when present. Its width is
+    // already reserved with the fixed actions, outside the logo's lane.
+    let panel_count = placed.len() - usize::from(sizes.hint > 0.0);
+    let end = placed[..panel_count].iter().map(|p| p.x + p.w).fold(0.0, f32::max);
+    let radius = 26.0 * h / 81.0;
+    let left = radius.max(35.0);
+    let right = radius.max(43.0);
+    let limit = width - actions_w;
+    let lx = limit - right - 2.0;
+    if lx - left < end + 2.0 {
+        return;
+    }
+    let r = Rect::new(lx - left, 0.0, left + right, h - 1.0);
     if editing {
         ui.hit(r, Action::Bar(BarHit::Logo), "Logo - drag onto the palette to take it off");
         frame(ui, r.inset(2.0));
     } else {
-        ui.hit(r, Action::MenuItem(menus::HELP_MENU, menus::HELP_ABOUT), "About Lemon Studio");
+        ui.hit(r, Action::MenuItem(menus::HELP_MENU, menus::HELP_ABOUT), "About ML Studio");
     }
-    icons::logo(ui.c, lx, mid, 26.0 * h / 81.0, if lemon { t.toolbar_edge } else { t.toolbar_line });
+    icons::logo(ui.c, lx, mid, radius, if lemon { t.toolbar_edge } else { t.toolbar_line });
 }
 
 /// A group separator at band x `x` of row `row`.
@@ -473,7 +501,7 @@ fn caption(ui: &mut Ui, c: &Ctx) {
     for (x, icon, action, hint) in [
         (4.0, Icon::Minimize, Action::Minimize, "Minimize"),
         (24.0, Icon::Restore, Action::Maximize, "Restore / maximize"),
-        (44.0, Icon::Close, Action::Close, "Exit Lemon Studio"),
+        (44.0, Icon::Close, Action::Close, "Exit ML Studio"),
     ] {
         let r = a.r(Rect::new(x, 11.0, 19.0, 19.0));
         let hov = ui.hit(r, action, hint);
@@ -503,7 +531,28 @@ fn hint_panel(ui: &mut Ui, c: &Ctx) {
         }
         return;
     }
-    sunken(ui, hp, t.sunken);
+    if super::lemon(ui) && !s.vintage_2005 {
+        studio_tile(ui, hp, t.toolbar.mix(t.sunken, 0.52));
+    } else {
+        sunken(ui, hp, t.sunken);
+    }
+    let midi = !s.vintage_2005 && shown(crate::midi_play::HINT_ACTIVITY) && hp.w >= 70.0;
+    let text_width = hp.w - if midi { 37.0 } else { 10.0 };
+    if midi {
+        let bounds = Rect::new(hp.right() - 27.0, hp.y + 2.0, 24.0, hp.h - 4.0);
+        let level = s.midi_activity.input();
+        let light = Color::rgb(0x84d2ff);
+        let cx = bounds.cx();
+        let cy = bounds.cy() - 5.0;
+        ui.live(crate::app::Live::MidiHint, bounds);
+        if level > 0.0 {
+            ui.c.fill_circle(cx, cy, 9.0, light.with_alpha((52.0 * level) as u8));
+        }
+        ui.c.fill_circle(cx, cy, 6.0, t.sunken.mix(light, 0.40 * level));
+        ui.c.stroke_circle(cx, cy, 6.0, 1.0, t.text_dim.mix(light, level));
+        ui.c.line(cx, cy, cx + 2.4, cy - 2.9, 1.4, t.text_dim.mix(light, level));
+        ui.c.text_center(Font::new(8), Rect::new(bounds.x, cy + 6.0, bounds.w, 9.0), t.text_dim.mix(light, level), "MIDI");
+    }
     let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or(if t.style.vintage_2005 { "LEMON STUDIO  /  2005" } else { "" }) };
     let mut font=Font::new(11);
     for size in (9..=11).rev() {
@@ -513,9 +562,9 @@ fn hint_panel(ui: &mut Ui, c: &Ctx) {
     let line_height=ui.c.line_height(font);
     ui.c.push_clip(hp.inset(2.));
     let chars:Vec<char>=hint.chars().collect();
-    let lines=super::settings::wrap(ui,font,hint,hp.w-10.);
+    let lines=super::settings::wrap(ui,font,hint,text_width);
     for (row,(start,n)) in lines.into_iter().take(2).enumerate() {
-        ui.c.text_clip(font,hp.x+5.,hp.y+2.+row as f32*line_height,hp.w-10.,t.text,&chars[start..start+n].iter().collect::<String>());
+        ui.c.text_clip(font,hp.x+5.,hp.y+2.+row as f32*line_height,text_width,t.text,&chars[start..start+n].iter().collect::<String>());
     }
     ui.c.pop_clip();
 }
@@ -532,8 +581,10 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     if t.style.vintage_2005 {
         os_ui::kit::sunken(ui.c, t, capsule, t.sunken_dark);
     } else if lemon {
-        // Lemon: one rounded-square tray, each section a rounded square inside it.
-        os_ui::kit::lemon::outlined(ui.c, capsule, 7.0, t.toolbar_line.shade(-0.15), t.sunken);
+        studio_tile(ui, capsule, t.toolbar.mix(t.sunken, 0.6));
+        for x in [418.0, 449.0] {
+            ui.c.fill_rect(a.r(Rect::new(x, 9.0, 1.0, 22.0)), t.toolbar_edge.with_alpha(110));
+        }
     } else {
         ui.c.fill_rrect(capsule, 15.0, t.toolbar_line.shade(-0.2));
         ui.c.fill_rect_gradient(capsule.inset(1.0), t.sunken.shade(0.03), t.sunken.shade(-0.05), 14.0);
@@ -551,7 +602,7 @@ fn transport(ui: &mut Ui, c: &Ctx) {
                 if active { t.on_top } else { t.button }, t.button,
                 os_theme::appearance::Finish::Beveled);
         } else if active && lemon {
-            os_ui::kit::lemon::lit_in(ui.c, ui.t, Rect::new(r.x + 2.0, r.y + 1.0, r.w - 3.0, r.h - 1.5), 4.0, false);
+            ui.c.fill_rrect(r.inset(1.5), 3.0, t.pill);
         } else if active {
             ui.c.push_clip(r);
             ui.c.fill_rrect(capsule.inset(1.0), 14.0, t.pill);
@@ -574,11 +625,7 @@ fn transport(ui: &mut Ui, c: &Ctx) {
                 os_theme::appearance::Finish::Beveled);
         } else if (on || hov) && lemon {
             let seg = Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0);
-            if on {
-                os_ui::kit::lemon::lit_in(ui.c, ui.t, seg, 5.0, hov);
-            } else {
-                ui.c.fill_rrect(seg, 5.0, t.button_hi);
-            }
+            ui.c.fill_rrect(seg, STUDIO_RADIUS, if on { t.on_top } else { t.button_hi });
         } else if on || hov {
             ui.c.push_clip(r);
             if on {
@@ -620,7 +667,7 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     if t.style.vintage_2005 {
         crate::vintage::metal(ui.c,face,if hov {t.button_hi}else{t.button});
     } else if lemon {
-        os_ui::kit::button(ui.c, t, face, os_ui::kit::State::new(hov, down, false));
+        studio_tile(ui, face, if hov || down { t.button_hi } else { t.toolbar.mix(t.sunken, 0.6) });
     } else {
         ui.c.fill_circle(rec.cx(), rec.cy(), 14.0, t.toolbar_line.shade(-0.25));
         let bg = if hov || down { t.button_hi } else { t.button.shade(-0.12) };
@@ -649,7 +696,7 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     if t.style.vintage_2005 {
         crate::vintage::recess(ui.c,tb,Color::rgb(0x779394));
     } else if lemon {
-        os_ui::kit::lemon::well(ui.c, t, tb, t.time_panel);
+        studio_tile(ui, tb, t.time_panel);
     } else {
         ui.c.fill_rrect(tb, 5.0, ui.t.s(0x5b5f61));
         ui.c.fill_rrect(tb.inset(1.0), 4.0, ui.t.s(0x5f6466));
@@ -663,8 +710,13 @@ fn transport(ui: &mut Ui, c: &Ctx) {
 pub(super) fn tempo_readout(ui: &mut Ui, s: &State, rect: Rect, tempo: f64, ink: Color, preview: bool) {
     let tempo = if tempo.is_finite() { tempo } else { 120.0 };
     let label = format!("{tempo:.3}");
-    let (size, min) = if s.vintage_2005 { (11, 8) } else { (19, 11) };
-    let font_at = |size| if s.vintage_2005 { Font::vintage(size).bold() } else { Font::condensed(size, 6) };
+    let modern = super::lemon(ui) && !s.vintage_2005;
+    let (size, min) = if s.vintage_2005 { (11, 8) } else if modern { (18, 11) } else { (19, 11) };
+    let font_at = |size| {
+        if s.vintage_2005 { Font::vintage(size).bold() }
+        else if modern { Font::new(size) }
+        else { Font::condensed(size, 6) }
+    };
     let mut font = font_at(size);
     for size in (min..size).rev() {
         if ui.c.text_width(font, &label) <= rect.w - 10.0 { break; }
@@ -721,7 +773,7 @@ fn time(ui: &mut Ui, c: &Ctx) {
         os_ui::kit::styled_surface(ui.c, t, tp, 1.0, t.window_border, t.time_panel, t.time_panel,
             os_theme::appearance::Finish::Recessed);
     } else if lemon {
-        os_ui::kit::lemon::well(ui.c, t, tp, t.time_panel);
+        studio_tile(ui, tp, t.time_panel);
     } else {
         ui.c.fill_rect(tp, ui.t.s(0x212829));
         ui.c.fill_rect(tp.inset(1.0), t.time_panel);
@@ -864,8 +916,12 @@ fn monitor(ui: &mut Ui, c: &Ctx) {
 fn live_monitor(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
     ui.hit(r, Action::CpuPanel, s.cpu.hint());
-    ui.c.fill_rrect(r, 4., t.sunken);
-    ui.c.stroke_rrect(r, 4., 1., t.toolbar_line);
+    if super::lemon(ui) && !s.vintage_2005 {
+        studio_tile(ui, r, t.sunken);
+    } else {
+        ui.c.fill_rrect(r, 4., t.sunken);
+        ui.c.stroke_rrect(r, 4., 1., t.toolbar_line);
+    }
     let font = Font::new(11);
     let reading = &s.cpu.now;
     ui.c.text(font, r.x + 5., r.y + 2., t.text_dim, "Audio load");
@@ -902,7 +958,7 @@ fn live_monitor(ui: &mut Ui, s: &State, r: Rect) {
         let x = plot.x + i as f32 * plot.w / (crate::monitor::COLS - 1) as f32;
         let y = plot.cy() - (lo + hi).clamp(-2., 2.) * plot.h * 0.25;
         if let Some((px, py)) = last {
-            ui.c.line(px, py, x, y, 1., os_ui::Color::rgb(0xffdf44));
+            ui.c.line(px, py, x, y, 1., os_ui::Color::rgb(0x2096f3));
         }
         last = Some((x, y));
     }
@@ -1005,10 +1061,28 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
     if t.style.vintage_2005 {
         crate::vintage::recess(ui.c,mb,t.menu_panel);
     } else if lemon {
-        os_ui::kit::lemon::panel(ui.c, mb, 6.0, t.menu_panel);
+        studio_tile(ui, mb, t.toolbar.mix(t.menu_panel, 0.45));
     } else {
         ui.c.fill_rect_gradient(mb, t.menu_panel.shade(-0.04), t.menu_panel.shade(0.02), 2.5);
         ui.c.stroke_rrect(mb, 2.5, 1.0, t.toolbar_line.shade(-0.1));
+    }
+    if lemon && !s.vintage_2005 {
+        let (font, items) = menus::modern_bar(ui.c);
+        let english = crate::prefs::language::Language::current().english();
+        for (i, (title, x0, x1)) in items.into_iter().enumerate() {
+            let r = a.r(Rect::new(x0 - 3.0, 47.0, x1 - x0 + 6.0, 29.0));
+            let hovered = ui.hit(r, Action::Menu(i), title);
+            let open = s.menu_open == Some(i) && !c.preview;
+            if open || hovered {
+                ui.c.fill_rrect(r.inset(1.5), STUDIO_RADIUS, t.menu_drop_hi);
+            }
+            if open {
+                ui.c.fill_rrect(Rect::new(r.x + 5.0, r.bottom() - 4.0, r.w - 10.0, 2.0), 1.0, t.accent);
+            }
+            let label = if english && title != "…" { menus::VINTAGE_TITLES[i] } else { title };
+            ui.c.text_center(font, r, t.menu_text, label);
+        }
+        return;
     }
     let language = crate::prefs::language::Language::current();
     let layout = menus::bar_layout(ui.c,s.vintage_2005);
@@ -1025,10 +1099,8 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
         let r = a.r(Rect::new(x0 - 3.0, 47.0, x1 - x0 + 6.0, 29.0));
         let hov = ui.hit(r, Action::Menu(i), title);
         let open = s.menu_open == Some(i) && !c.preview;
-        if lemon && open {
-            os_ui::kit::lemon::lit_in(ui.c, ui.t, r.inset(1.0), 4.0, false);
-        } else if hov || open {
-            ui.c.fill_rrect(if lemon { r.inset(1.0) } else { r }, if lemon { 4.0 } else { 2.0 }, t.menu_drop_hi);
+        if hov || open {
+            ui.c.fill_rrect(r, 2.0, t.menu_drop_hi);
         }
         if language.english() && s.vintage_2005 && crate::vintage_skin::available() {
             crate::vintage_skin::lettering(ui.c,title,a.x(x0).round(),a.y(49.));
@@ -1038,7 +1110,7 @@ fn menu_bar(ui: &mut Ui, c: &Ctx) {
             } else {
                 Font::condensed(if s.vintage_2005 { 13 } else { menus::BAR_FONT.size }, width as u16)
             };
-            ui.c.text(font, if s.vintage_2005 {a.x(x0).round()}else{a.x(x0)}, a.y(if s.vintage_2005 {53.0}else{51.0}), if lemon && open { t.pill_text } else { t.menu_text }, title);
+            ui.c.text(font, if s.vintage_2005 {a.x(x0).round()}else{a.x(x0)}, a.y(if s.vintage_2005 {53.0}else{51.0}), t.menu_text, title);
         }
     }
 }
@@ -1191,7 +1263,7 @@ fn snap(ui: &mut Ui, c: &Ctx) {
     let snap = a.span(768.0, 830.0, 50.0, 72.0);
     let hov = ui.hit(snap, Action::GlobalSnap, crate::snap::HINT);
     if lemon {
-        os_ui::kit::lemon::well(ui.c, t, snap, if hov { t.sunken.mix(t.button_hi, 0.5) } else { t.sunken });
+        studio_tile(ui, snap, if hov { t.sunken.mix(t.button_hi, 0.5) } else { t.sunken });
     } else {
         ui.c.fill_rrect(snap, 2.0, t.sunken_dark);
     }
@@ -1225,7 +1297,7 @@ fn pattern(ui: &mut Ui, c: &Ctx) {
     if t.style.vintage_2005 {
         crate::vintage::recess(ui.c,pb,Color::rgb(0x344c4f));
     } else if lemon {
-        os_ui::kit::lemon::well(ui.c, t, pb, if hov { t.sunken.mix(t.button_hi, 0.5) } else { t.sunken });
+        studio_tile(ui, pb, if hov { t.sunken.mix(t.button_hi, 0.5) } else { t.sunken });
     } else {
         ui.c.fill_rrect(pb, 2.0, t.tempo_box.shade(if hov { 0.16 } else { 0.08 }));
     }
@@ -1238,14 +1310,17 @@ fn pattern(ui: &mut Ui, c: &Ctx) {
         .unwrap_or_else(|| format!("Pattern {}", s.pattern));
     // Right-aligned before the spin arrow; a name too long for that keeps its start and is cut at the arrow, as FL
     // cuts long labels (long names were not measured here: Lemon Studio's choice).
-    let pf = if t.style.vintage_2005 {Font::vintage(12).bold()}else{Font::condensed(21, 7)};
+    let pf = if t.style.vintage_2005 { Font::vintage(12).bold() }
+        else if lemon { Font::new(17) }
+        else { Font::condensed(21, 7) };
+    let y = if lemon { (pb.cy() - ui.c.line_height(pf) / 2.0).round() } else { a.y(49.0) };
     let end = pb.right() - 11.0;
     if ui.c.text_width(pf, &name) <= end - (pb.x + 2.0) {
         ui.c.push_clip(pb.inset(2.0));
-        ui.c.text_right(pf, end, a.y(49.0), t.glyph, &name);
+        ui.c.text_right(pf, end, y, t.glyph, &name);
         ui.c.pop_clip();
     } else {
-        ui.c.text_clip(pf, pb.x + 4.0, a.y(49.0), end - (pb.x + 4.0), t.glyph, &name);
+        ui.c.text_clip(pf, pb.x + 4.0, y, end - (pb.x + 4.0), t.glyph, &name);
     }
     let add = a.span(951.0, 962.0, 50.0, 72.0);
     ui.hit(add, Action::PatternAdd, "New pattern (find first / next empty)");
@@ -1292,7 +1367,14 @@ fn window_buttons(ui: &mut Ui, c: &Ctx, which: Range<usize>) -> bool {
                 continue;
             }
         }
-        let ink = super::tool_face(ui, r, if hov { super::Look::Hot } else { super::Look::Off });
+        let ink = if super::lemon(ui) && !c.s.vintage_2005 {
+            if hov || !c.s.toolbar.flat {
+                studio_tile(ui, r.inset(1.0), if hov { ui.t.button_hi } else { ui.t.toolbar.mix(ui.t.button, 0.45) });
+            }
+            if hov { ui.t.accent } else { ui.t.glyph }
+        } else {
+            super::tool_face(ui, r, if hov { super::Look::Hot } else { super::Look::Off })
+        };
         if c.s.vintage_2005 {
             ui.c.fill_rrect(r.inset(1.),12.,Color::rgb(0x23353b));
             ui.c.fill_rect_gradient(r.inset(2.),Color::rgb(0x87999e),Color::rgb(0x344d55),11.);
@@ -1667,10 +1749,36 @@ mod tests {
     }
 
     #[test]
+    fn toolbar_logo_stays_clear_of_caption_buttons_on_4k() {
+        let mut app = App::new(None);
+        app.state.toolbar.hint_bar = true;
+        app.state.bar.layout.logo = true;
+        let about = Action::MenuItem(super::menus::HELP_MENU, super::menus::HELP_ABOUT);
+        for design in os_theme::Design::ALL {
+            app.set_design(design, false);
+            for scale in [1.0, 1.5, 2.0, 2.5] {
+                let mut canvas = Canvas::new(3840, 900, scale).unwrap();
+                app.paint(&mut canvas, None);
+                let hint = app.hits.iter().find(|h| h.hint == "Hint bar").unwrap().rect;
+                let minimize = hit(&app, &Action::Minimize);
+                assert!(hint.right() <= minimize.x);
+                if scale <= 1.5 {
+                    assert!(has(&app, &about), "{design:?} at {scale}");
+                }
+                if has(&app, &about) {
+                    let logo = hit(&app, &about);
+                    assert!(logo.right() <= hint.x && logo.right() <= minimize.x);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn window_buttons_stay_clickable_after_resizing() {
         let mut app = App::new(None);
         let windows = [Win::Playlist, Win::PianoRoll, Win::ChannelRack, Win::Mixer, Win::Browser];
         app.state.toolbar.hint_bar = true;
+        app.state.bar.layout.logo = true;
         for (width, scale) in [(2400, 1.0), (2400, 2.0), (1440, 2.0), (800, 1.0), (2400, 1.0)] {
             let mut canvas = Canvas::new(width, 1000, scale).unwrap();
             app.paint(&mut canvas, None);
@@ -1680,6 +1788,11 @@ mod tests {
             if width == 800 {
                 assert!((ratio - preferred * 0.8).abs() < 0.001);
                 assert!(super::display_layout(&app.state).rows.len() > 1);
+            }
+            for action in [Action::Minimize, Action::Maximize, Action::Close] {
+                let rect = hit(&app, &action);
+                assert_eq!(app.top_hit(rect.cx(), rect.cy()).map(|h| &h.action), Some(&action),
+                    "window control covered at width {width}, scale {scale}");
             }
             let hint = app.hits.iter().find(|h| h.hint == "Hint bar").unwrap().rect;
             let report = hit(&app, &Action::ReportBug);

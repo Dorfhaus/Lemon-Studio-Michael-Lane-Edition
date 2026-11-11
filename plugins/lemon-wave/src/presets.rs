@@ -85,7 +85,7 @@ pub fn users(root: &Path, category: &str) -> Result<Vec<String>, String> {
 fn decode(bytes: &[u8]) -> Result<PluginState, String> {
     let body = bytes
         .strip_prefix(HEADER)
-        .ok_or("Choose a Lemon Wave preset.")?;
+        .ok_or("Choose an ML Wave preset.")?;
     let size = u64::from_le_bytes(
         body.get(..8)
             .ok_or("Incomplete preset.")?

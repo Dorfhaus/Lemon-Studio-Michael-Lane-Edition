@@ -52,7 +52,7 @@ pub fn chosen(app:&mut App,path:&Path,mode:u8) {
     #[test]fn batch2_pattern_stretch_roundtrip_reset_split_and_undo(){
         use os_model::{Clip,ClipSource};
         let mut a=App::new(None);a.state.project=crate::app::test_project();a.state.playlist.stretch=true;
-        let orig=Clip::new(0,192,0,ClipSource::Pattern(1));pl::arr_mut(&mut a.state).clips=vec![orig,Clip::new(768,192,0,ClipSource::Pattern(1))];
+        let orig=Clip::new(0,192,0,ClipSource::Pattern(1));pl::arr_mut(&mut a.state).clips=vec![orig.clone(),Clip::new(768,192,0,ClipSource::Pattern(1))];
         let patterns=a.state.project.patterns.clone();pl::snapshot(&mut a.state);assert!(pl::stretch_clip(&mut a.state,0,&orig,0,384));
         assert_eq!(pl::clips(&a.state)[0].pattern_speed,0.5);assert_eq!(pl::clips(&a.state)[1].pattern_speed,1.);assert_eq!(a.state.project.patterns,patterns);
         let file=os_flp::project::create(&a.state.project).unwrap();let loaded=os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();

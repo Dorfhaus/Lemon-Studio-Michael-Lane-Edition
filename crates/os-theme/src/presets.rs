@@ -5,7 +5,7 @@
 //! Built-in themes, `.flstheme` files in `themes/` (parsed by `FlTheme::parse`). They colour either skin.
 // spec: ui/theme-presets.md
 //
-// Settings > Theme > Themes lists the Lemon and Citrus themes (the skins' own colours), these, then the user's own
+// Settings > Theme > Themes lists the Studio and Console themes (the skins' own colours), these, then the user's own
 // `.flstheme` files from the `themes` folder in Lemon Studio's user folder (`os_paths::user_dir`).
 
 macro_rules! presets {
@@ -18,12 +18,12 @@ macro_rules! presets {
 presets!(
     "Graphite",
     "Frost",
-    "Persimmon",
-    "Mango",
-    "Spearmint",
+    "Copper",
+    "Amber",
+    "Sea Glass",
     "Moss",
-    "Cinnamon",
-    "Dragonfruit",
+    "Umber",
+    "Neon Magenta",
     "Afterlight",
     "Blueshift",
     "Low Profile",
@@ -35,10 +35,10 @@ presets!(
     "Orchid",
     "Jade",
     "Moss Light",
-    "Cinnamon Light",
-    "Raspberry",
-    "Kiwi",
-    "Apricot",
+    "Umber Light",
+    "Rose Quartz",
+    "Peridot",
+    "Sandstone",
 );
 
 #[cfg(test)]

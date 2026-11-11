@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 #[path = "update_retention.rs"]
 mod retention;
 
-pub const VERSION: u64 = 2026111001;
+pub const VERSION: u64 = 2026111101;
 #[cfg(windows)]
 pub const FEED: &str = "https://michaellanemusic.de/lemon-studio/updates/stable.json";
 #[cfg(windows)]
@@ -98,11 +98,11 @@ fn get(url: &str, max: u64) -> Result<Vec<u8>> {
 }
 #[cfg(target_os="macos")]
 fn writable_bundle(exe:&Path) -> Result<()> {
-    let bundle=exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("Run Lemon Studio from Applications")?;
-    if bundle.extension().and_then(|s|s.to_str())!=Some("app") {return Err("Run the installed Lemon Studio app from Applications to update".into());}
+    let bundle=exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("Run ML Studio from Applications")?;
+    if bundle.extension().and_then(|s|s.to_str())!=Some("app") {return Err("Run the installed ML Studio app from Applications to update".into());}
     let parent=bundle.parent().ok_or("No Applications folder")?;
     let probe=parent.join(format!(".lemon-write-check-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
-    let file=fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|_|"Move Lemon Studio out of the DMG into a writable Applications folder, reopen it there, then retry Update")?;
+    let file=fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|_|"Move ML Studio out of the DMG into a writable Applications folder, reopen it there, then retry Update")?;
     drop(file);fs::remove_file(probe)?;Ok(())
 }
 fn check() -> Result<Option<PathBuf>> {
@@ -143,8 +143,8 @@ pub fn request() {
     std::thread::spawn(|| {
         let result=check(); let mut s=status().lock().unwrap(); s.busy=false;
         match result {
-            Ok(Some(dir)) => {s.ready=Some(dir);s.message="Update ready. Click to restart, or it will install when you close Lemon Studio.".into();}
-            Ok(None) => s.message="Lemon Studio is up to date.".into(),
+            Ok(Some(dir)) => {s.ready=Some(dir);s.message="Update ready. Click to restart, or it will install when you close ML Studio.".into();}
+            Ok(None) => s.message="ML Studio is up to date.".into(),
             Err(e) => s.message=format!("Update check failed: {e}. Click Update to retry."),
         }
     });
@@ -236,14 +236,14 @@ fn install(stage:&Path,target:&Path,manifest:&Manifest)->Result<()> {
 fn install_bundle(stage:&Path,target:&Path,manifest:&Manifest)->Result<()> {
     let bundle=target.parent().and_then(Path::parent).and_then(Path::parent).ok_or("Not an installed app bundle")?;
     if bundle.extension().and_then(|x|x.to_str())!=Some("app") || target!=bundle.join("Contents/MacOS/lemonstudio") {
-        return Err("Run the installed Lemon Studio app to update it".into());
+        return Err("Run the installed ML Studio app to update it".into());
     }
     if fs::symlink_metadata(bundle)?.file_type().is_symlink() {return Err("App bundle cannot be a symbolic link".into());}
     let parent=bundle.parent().ok_or("No app installation folder")?;
     let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
     let next=parent.join(format!(".lemon-update-{stamp}.app"));
     let backup=parent.join(format!(".lemon-backup-{}-{stamp}.app",manifest.version));
-    fs::create_dir(&next).map_err(|e|format!("Cannot update this location ({e}). Move Lemon Studio to a writable Applications folder first."))?;
+    fs::create_dir(&next).map_err(|e|format!("Cannot update this location ({e}). Move ML Studio to a writable Applications folder first."))?;
     for file in &manifest.files {
         if !MAC_FILES.contains(&file.name.as_str()) {return Err("Unexpected bundle file".into());}
         checked_file(&stage.join(&file.name),file)?;
@@ -268,7 +268,7 @@ fn wait_parent(pid:u32,stage:&Path)->Result<()> {
     if !alive()? {return Err("Closing process no longer exists".into());}
     fs::write(stage.join("helper-ready"),b"ready")?;
     let until=Instant::now()+Duration::from_secs(120);
-    while alive()? {if Instant::now()>=until {return Err("Lemon Studio is still running; update deferred".into());}std::thread::sleep(Duration::from_millis(100));}
+    while alive()? {if Instant::now()>=until {return Err("ML Studio is still running; update deferred".into());}std::thread::sleep(Duration::from_millis(100));}
     Ok(())
 }
 
@@ -277,7 +277,7 @@ fn wait_parent(pid: u32, stage: &Path) -> Result<()> {
     use windows_sys::Win32::{Foundation::{CloseHandle,WAIT_OBJECT_0},System::Threading::{OpenProcess,WaitForSingleObject,PROCESS_SYNCHRONIZE}};
     unsafe {let handle=OpenProcess(PROCESS_SYNCHRONIZE,0,pid); if handle.is_null(){return Err("Cannot identify the closing process".into())}
         fs::write(stage.join("helper-ready"),b"ready")?;
-        let result=WaitForSingleObject(handle,120000);CloseHandle(handle);if result!=WAIT_OBJECT_0{return Err("Lemon Studio is still running; update deferred".into())}}
+        let result=WaitForSingleObject(handle,120000);CloseHandle(handle);if result!=WAIT_OBJECT_0{return Err("ML Studio is still running; update deferred".into())}}
     Ok(())
 }
 pub fn helper(args: &[String]) -> i32 {
@@ -291,7 +291,7 @@ pub fn helper(args: &[String]) -> i32 {
         install(&stage,&target,&manifest)?;
         let _=retention::run(&target,manifest.version,Some(&stage));
         fs::write(stage.join("result.txt"),format!("Installed {}",manifest.label))?;
-        report_result(&format!("Lemon Studio updated to {}.",manifest.label));
+        report_result(&format!("ML Studio updated to {}.",manifest.label));
         if args[3]=="restart" {let mut cmd=std::process::Command::new(&target);if let Some(p)=args.get(4){cmd.arg(p);}cmd.current_dir(target.parent().ok_or("No parent")?).spawn()?;}
         Ok(())
     })();

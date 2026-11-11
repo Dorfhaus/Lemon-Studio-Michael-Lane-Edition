@@ -237,15 +237,13 @@ pub fn draw_with_default(
     }
 }
 
-/// Lemon Studio logo (greyscale mark, `logo.rs`) in one tint, fitted into a circle of radius `r`.
+/// The ML emblem in a single tint for toolbar and workspace chrome.
 pub fn logo(cv: &mut Canvas, cx: f32, cy: f32, r: f32, c: Color) {
-    use crate::logo::{PATHS, VIEW_H, VIEW_W};
-    let k = 2.0 * r / VIEW_W.max(VIEW_H);
-    let (ox, oy) = (cx - VIEW_W * k / 2.0, cy - VIEW_H * k / 2.0);
     let mut g = Glyph::new();
-    for d in PATHS {
-        g.commands(d, ox, oy, k, None);
-    }
+    let scale = 2.0 * r / 880.0;
+    let (x, y) = (cx - r, cy - r);
+    g.commands("M 0 438 L 153 288 L 254 393 L 428 201 L 428 650 L 668 650 L 439 878 L 209 650 L 350 650 L 350 408 L 254 523 L 153 408 L 153 591 Z", x, y, scale, None);
+    g.commands("M 180 262 L 442 0 L 878 438 L 823 495 L 542 202 L 542 505 L 813 505 L 715 603 L 464 603 L 464 139 L 447 123 L 251 329 Z", x, y, scale, None);
     cv.glyph(c, &g);
 }
 

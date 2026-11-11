@@ -329,9 +329,9 @@ pub fn paint(
         0.,
     );
     u.c.fill_rect(Rect::new(0., 65., 1584., 1.), crate::design::color(0x6b796f));
-    u.c.text(font(27),28.,15.,theme_ink(),"LEMON");
-    u.c.text(font(30),149.,12.,theme_a(),"/");u.c.text(font(27),170.,15.,theme_ink(),"WAVE");
-    u.c.fill_rect(Rect::new(277.,18.,1.,26.),theme_line());u.c.text(font(12),297.,23.,theme_dim(),"LEMON STUDIO");
+    u.c.text(font(27),28.,15.,theme_ink(),"ML");
+    u.c.text(font(30),79.,12.,theme_a(),"/");u.c.text(font(27),100.,15.,theme_ink(),"WAVE");
+    u.c.fill_rect(Rect::new(207.,18.,1.,26.),theme_line());u.c.text(font(12),227.,23.,theme_dim(),"ML STUDIO");
     let page = params.page.load(std::sync::atomic::Ordering::Relaxed);
     for (i, label) in ["SYNTH", "MOD", "TABLE EDIT"].iter().enumerate() {
         let r = page_button(i);

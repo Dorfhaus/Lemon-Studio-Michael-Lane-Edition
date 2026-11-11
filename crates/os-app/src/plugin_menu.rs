@@ -428,11 +428,10 @@ pub fn add_generator(app: &mut App, index: usize, after: Option<usize>) -> Optio
     crate::rack::added_instrument(s,ch);
     if after.is_none() {
         // Keep the new row in view.
-        let r = crate::views::rack::rect(s);
-        let view_h = crate::views::rack::panel(r).h;
+        let view_h = crate::views::rack::panel(s).h;
         s.rack_scroll = (crate::views::rack::content_h(s) - view_h).max(0.0);
     }
-    sampler.then(|| "Added a sampler channel (Lemon Sampler)".into())
+    sampler.then(|| "Added a sampler channel (ML Sampler)".into())
 }
 
 /// Generator `index` in place of rack row `row`'s (channel menu and plugin window menu > Replace ▸; FL: "the plugin list
@@ -534,7 +533,7 @@ mod tests {
             let dir=root.join(if effect{"Effects"}else{"Instruments"});sync_folder(&dir,list,effect).unwrap();sync_folder(&dir,list,effect).unwrap();let groups=folder_groups(&dir).unwrap();
             assert!(!groups.contains_key("Unsorted"),"Every factory plugin needs a folder: {groups:?}");
             for entry in list{let uid=format!("@{}",entry.uid);assert_eq!(groups.values().flatten().filter(|x|**x==uid).count(),1,"{}",entry.name);}
-            if !effect {let wave=list.iter().find(|e|e.name=="Lemon Wave").unwrap();assert!(groups["Synths"].contains(&format!("@{}",wave.uid)));}
+            if !effect {let wave=list.iter().find(|e|e.name=="ML Wave").unwrap();assert!(groups["Synths"].contains(&format!("@{}",wave.uid)));}
         }
         std::fs::remove_dir_all(root).unwrap();
     }

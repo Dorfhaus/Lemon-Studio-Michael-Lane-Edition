@@ -152,7 +152,7 @@ pub fn open(app: &mut App, anchor: usize) -> Result<(), String> {
     };
     let mut sources = Vec::new();
     for index in indices {
-        let Some(&clip) = pl::clips(s).get(index) else {
+        let Some(clip) = pl::clips(s).get(index).cloned() else {
             continue;
         };
         let ClipSource::Channel(id) = clip.source else {
@@ -195,7 +195,7 @@ pub fn open(app: &mut App, anchor: usize) -> Result<(), String> {
             let mut output = Vec::new();
             for source in work {
                 let (mut engine, rate) = crate::clip_normalize::analysis_engine(
-                    source.clip,
+                    source.clip.clone(),
                     &source.channel,
                     &source.path,
                     tempo,
@@ -427,10 +427,10 @@ fn apply(app: &mut App) {
                 continue;
             }
             if start == 0 && end == source.clip.length {
-                pieces.push(source.clip);
+                pieces.push(source.clip.clone());
                 continue;
             }
-            let mut clip = source.clip;
+            let mut clip = source.clip.clone();
             clip.position += start;
             clip.length = end - start;
             let ms = |ticks| pl::to_src(&app.state, source.clip.source, f64::from(ticks));
@@ -485,7 +485,7 @@ fn apply(app: &mut App) {
     app.invalidate();
 }
 pub fn paint(ui: &mut Ui, r: Rect, f: &Form) {
-    let yellow = Color::rgb(0xe8cf62);
+    let yellow = Color::rgb(0x2096f3);
     let button = |ui: &mut Ui, rect: Rect, label: &str, c: Command, on: bool| {
         ui.c.fill_rrect(rect, 4., if on { yellow } else { ui.t.button });
         ui.c.text_center(
@@ -625,7 +625,7 @@ mod tests {
         let mut app = App::new(None);
         app.state.project = crate::app::default_project();
         let i = pl::add_audio_clip(&mut app.state, file.to_str().unwrap(), 2, 0).unwrap();
-        let mut other = pl::clips(&app.state)[i];
+        let mut other = pl::clips(&app.state)[i].clone();
         other.track = 3;
         pl::arr_mut(&mut app.state).clips.push(other);
         let wait = |app: &mut App| {

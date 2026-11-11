@@ -54,9 +54,9 @@ pub fn request(app: &mut App, index: usize) {
         if !crate::workspace_visibility::shown(tesla::cleanup::VISIBILITY) {
             return Err("Enable Tesla audio cleanup in Workspace Visibility.".into());
         }
-        let clip = *pl::clips(&app.state)
+        let clip = pl::clips(&app.state)
             .get(index)
-            .ok_or("Choose an audio clip first")?;
+            .ok_or("Choose an audio clip first")?.clone();
         let ClipSource::Channel(id) = clip.source else {
             return Err("Choose an audio clip first".into());
         };
@@ -303,11 +303,11 @@ mod tests {
         let mut a = App::new(None);
         a.state.project = crate::app::default_project();
         let i = pl::add_audio_clip(&mut a.state, original.to_str().unwrap(), 2, 384).unwrap();
-        let mut clip = pl::clips(&a.state)[i];
+        let mut clip = pl::clips(&a.state)[i].clone();
         clip.window = Some((125., 750.));
         clip.length = 100;
         clip.set_gain(0.7);
-        pl::arr_mut(&mut a.state).clips = vec![clip, clip];
+        pl::arr_mut(&mut a.state).clips = vec![clip.clone(), clip.clone()];
         let ClipSource::Channel(id) = clip.source else {
             panic!()
         };

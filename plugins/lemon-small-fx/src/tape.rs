@@ -67,7 +67,7 @@ fn reels(c:&mut Canvas,r:Rect,v:&[i32]){
     c.text_center(os_ui::Font::new(16),Rect::new(r.cx()-100.,y-23.,200.,22.),gold,"TAPE COLOR");
     c.text_center(os_ui::Font::new(10),Rect::new(r.cx()-105.,y+1.,210.,18.),rim,"AIRWINDOWS TOTAPE6 ENGINE");
 }
-pub const SPEC:&Spec=&Spec{name:"Lemon Tape",word:"TAPE",about:"Tape color powered by Airwindows ToTape6 — Chris Johnson, MIT licence",settings:&SETTINGS,version:Some(1),any_version:false,fields:&[],tail:&[],size:(640,270),cards:&[Card{x0:8.,x1:632.,y0:22.,y1:128.,heading:"TAPE MACHINE"},Card{x0:8.,x1:632.,y0:148.,y1:230.,heading:"CHARACTER & LEVEL"}],controls:&CONTROLS,display:Some(Display{r:Rect::new(16.,30.,608.,90.),draw:reels}),mark:Mark{x:622.,y:251.,anchor:1.,stacked:false},hint:Some(Rect::new(12.,242.,470.,20.)),labels:&[],text,parse,sound,rings:true};
+pub const SPEC:&Spec=&Spec{name:"ML Tape",word:"TAPE",about:"Tape color powered by Airwindows ToTape6 — Chris Johnson, MIT licence",settings:&SETTINGS,version:Some(1),any_version:false,fields:&[],tail:&[],size:(640,270),cards:&[Card{x0:8.,x1:632.,y0:22.,y1:128.,heading:"TAPE MACHINE"},Card{x0:8.,x1:632.,y0:148.,y1:230.,heading:"CHARACTER & LEVEL"}],controls:&CONTROLS,display:Some(Display{r:Rect::new(16.,30.,608.,90.),draw:reels}),mark:Mark{x:622.,y:251.,anchor:1.,stacked:false},hint:Some(Rect::new(12.,242.,470.,20.)),labels:&[],text,parse,sound,rings:true};
 pub struct TapeKind;
 impl Kind for TapeKind{
     const SPEC:&'static Spec=SPEC;

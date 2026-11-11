@@ -102,7 +102,7 @@ const LOOK_EVERY: Duration = Duration::from_millis(250);
 impl Hosted {
     /// A newly hosted instance, without a window.
     pub fn new(plugin: SharedPlugin) -> Hosted {
-        let (meter, attention, name) = plugin.lock().map(|p| (p.meter(), p.attention(), p.desc().name.clone())).unwrap_or_default();
+        let (meter, attention, name) = plugin.lock().map(|p| (p.meter(), p.attention(), if crate::master_assistant::is_bundled(p.desc()){crate::master_assistant::NAME.into()}else{p.desc().name.clone()})).unwrap_or_default();
         Hosted {
             ara_saved: None,
             ara_dirty: false,
@@ -195,6 +195,7 @@ pub enum Request {
     Audio(String, bool),
     /// The window was clicked (or docked / detached): it goes to the front of the app's window stack.
     Raise(usize),
+    Detach(usize, bool),
     /// The menu arrow was clicked: open the window menu at this screen point.
     Menu(usize, i32, i32),
     SidechainMenu(usize,i32,i32),
@@ -242,7 +243,7 @@ pub(crate) fn wave_zoom()->f32 {crate::prefs::text("wave_editor_percent").and_th
 #[cfg(windows)]
 impl Plugins {
     pub(crate) fn wave_size(&mut self,row:usize,pct:u16){
-        if self.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){
+        if self.hosted.get(&row).is_some_and(|h|h.name=="ML Wave"){
             crate::prefs::set_text("wave_editor_percent",&pct.to_string());
             self.pending_scales.insert(row,self.scale);
         }
@@ -303,8 +304,12 @@ pub fn builtin() -> Vec<Available> {
     static CITRUS: OnceLock<Option<Arc<os_clap::Library>>> = OnceLock::new();
     let mut v = linked(&LIB, &lemon_sampler::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, LEMON_SAMPLER);
     v.extend(linked(&OSC3, &lemon_3x_osc::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, crate::osc3::LEMON_TRIO));
-    v.extend(linked(&WAVE, &lemon_wave::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, "Lemon Wave"));
-    v.extend(linked(&CHOP, &lemon_chop::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, "Lemon Chop"));
+    v.extend(linked(&WAVE, &lemon_wave::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, "ML Wave"));
+    match ml_plasma::library() {
+        Ok(lib) => v.extend(lib.plugins.iter().cloned().map(|desc| Available { lib: lib.clone(), desc })),
+        Err(error) => eprintln!("ML Plasma stock instrument: {error}"),
+    }
+    v.extend(linked(&CHOP, &lemon_chop::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, "ML Chop"));
     v.extend(linked(&CITRUS, &citrus::LINKED_CLAP_ENTRY as *const _ as *const std::ffi::c_void, crate::citrus::CITRUS));
     v
 }
@@ -566,7 +571,7 @@ impl Plugins {
         if self.rate==0 {self.rate=crate::transport::Transport::device_rate().unwrap_or(48000);}
         if !p.activate(self.rate){return Err("ARA audio renderer could not start".into());}
         if !p.has_editor(){return Err("This ARA plugin has no compatible editor window".into());}
-        let name=p.desc().name.clone();
+        let name=if crate::master_assistant::is_bundled(p.desc()){crate::master_assistant::NAME.into()}else{p.desc().name.clone()};
         let blob=match state {Some(st)=>st.to_vec(),None=>p.save_state().ok_or("ARA editor could not create its initial archive")?};
         drop(p);
         self.drop_key(row);
@@ -694,12 +699,12 @@ impl Plugins {
 
     /// Index of the available plugin called `name` (the built-in plugins come first).
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.available.iter().position(|a| a.desc.name == name)
+        self.available.iter().position(|a| a.desc.name == canonical_name(name))
     }
 
     /// Index of the effect plugin called `name`.
     pub fn effect_index(&self, name: &str) -> Option<usize> {
-        self.effects.iter().position(|a| a.desc.name == name)
+        self.effects.iter().position(|a| a.desc.name == canonical_name(name))
     }
 
     /// Index of the available instrument with identity `uid` (`Descriptor::uid`, e.g. `vst3:<class id>`).
@@ -714,7 +719,9 @@ impl Plugins {
 
     /// What the instance under `key` (rack row or `fx_key`) is: format, id, name, file (for project files).
     pub fn descriptor(&self, key: usize) -> Option<Descriptor> {
-        Some(self.hosted.get(&key)?.plugin.lock().ok()?.desc().clone())
+        let mut d = self.hosted.get(&key)?.plugin.lock().ok()?.desc().clone();
+        if crate::master_assistant::is_bundled(&d) {d.name=crate::master_assistant::NAME.into();}
+        Some(d)
     }
 
     /// The saved state of the instance under `key`, in its format's own bytes.
@@ -866,7 +873,7 @@ impl Plugins {
         let Some(h) = self.hosted.get(&row) else { return false };
         let Ok(mut plugin) = h.plugin.lock() else { return false };
         let desc = plugin.desc();
-        if desc.name != "Lemon Chop" || !crate::project_plugins::is_builtin(&desc) { return false; }
+        if desc.name != "ML Chop" || !crate::project_plugins::is_builtin(&desc) { return false; }
         let Some(state) = plugin.save_state() else { return false };
         let Some(state) = with_chop_sample(&state, path) else { return false };
         plugin.load_state(&state)
@@ -1042,18 +1049,18 @@ impl Plugins {
             (false, _) => crate::plugin_window::default_position(owner, scale),
         };
         #[cfg(windows)]
-        let scale=if h.name=="Lemon Wave" {scale*wave_zoom()} else {scale};
+        let scale=if h.name=="ML Wave" {scale*wave_zoom()} else {scale};
         // Create the frame at a provisional size, embed the editor, then fit the frame to the editor's real size.
         #[cfg(windows)]
-        let (scale,pos)=if h.plugin.lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+        let (scale,pos)=if h.plugin.lock().is_ok_and(|p|p.desc().name=="ML Chop" && crate::project_plugins::is_builtin(p.desc())){
             crate::plugin_window::chop_placement(owner,pos,scale,h.detached,self.chop_workspace)
         }else{(scale,pos)};
         #[cfg(target_os="linux")]
-        let w=FrameWindow::with_zoom(owner,info,(560.,437.),pos,h.detached,if h.name=="Lemon Wave"{wave_zoom()}else{1.})?;
+        let w=FrameWindow::with_zoom(owner,info,(560.,437.),pos,h.detached,if h.name=="ML Wave"{wave_zoom()}else{1.})?;
         #[cfg(not(target_os="linux"))]
         let w = FrameWindow::new(owner, info, (560.0, 437.0), scale, pos, h.detached)?;
         #[cfg(target_os="macos")]
-        if h.name=="Lemon Wave" {w.set_editor_zoom(wave_zoom());}
+        if h.name=="ML Wave" {w.set_editor_zoom(wave_zoom());}
         // Keep the mixer routing target visible when opening a sample.
         w.set_strip(row < FX_KEY && h.name == LEMON_SAMPLER);
         // The editor takes the frame's scale (on Linux the X server's, not the main window's).
@@ -1066,7 +1073,7 @@ impl Plugins {
         let size = result?;
         crate::rack_mixer::observe_editor(&descriptor, size, k);
         h.link = fit_editor(&w, size, k);
-        if h.name=="Lemon Wave" {w.enable_wave_zoom();}
+        if h.name=="ML Wave" {w.enable_wave_zoom();}
         // On top: the app stacks it above its other windows (`State::raise`), and a new child window starts below
         // the open ones.
         w.raise();
@@ -1084,7 +1091,7 @@ impl Plugins {
     pub(crate) fn update_chop_workspace(&mut self,work:[i32;4]){
         if self.chop_workspace.replace(work)==Some(work){return;}
         for (&row,h) in &self.hosted {
-            if !h.detached && h.window.is_some() && h.plugin.try_lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+            if !h.detached && h.window.is_some() && h.plugin.try_lock().is_ok_and(|p|p.desc().name=="ML Chop" && crate::project_plugins::is_builtin(p.desc())){
                 self.pending_scales.insert(row,self.scale);
             }
         }
@@ -1109,10 +1116,10 @@ impl Plugins {
     fn rescale_window(&mut self, row: usize, scale: f32) {
         let requested_scale=scale;
         #[cfg(windows)]
-        let scale=if self.hosted.get(&row).is_some_and(|h|h.name=="Lemon Wave"){scale*wave_zoom()}else{scale};
+        let scale=if self.hosted.get(&row).is_some_and(|h|h.name=="ML Wave"){scale*wave_zoom()}else{scale};
         let Some(Hosted { plugin, window: Some(w), link, .. }) = self.hosted.get_mut(&row) else { return };
         #[cfg(windows)]
-        let scale=if plugin.try_lock().is_ok_and(|p|p.desc().name=="Lemon Chop" && crate::project_plugins::is_builtin(p.desc())){
+        let scale=if plugin.try_lock().is_ok_and(|p|p.desc().name=="ML Chop" && crate::project_plugins::is_builtin(p.desc())){
             crate::plugin_window::chop_placement(self.owner,w.position().unwrap_or_default(),scale,w.detached(),self.chop_workspace).0
         }else{scale};
         if w.scale() == scale {
@@ -1132,7 +1139,7 @@ impl Plugins {
             }
         };
         #[cfg(windows)]
-        if descriptor.name=="Lemon Chop" && crate::project_plugins::is_builtin(&descriptor){w.move_into_workspace();}
+        if descriptor.name=="ML Chop" && crate::project_plugins::is_builtin(&descriptor){w.move_into_workspace();}
         if let (Some(l), Some(page)) = (link.as_mut(), page) {
             l.set_page(page);
             w.set_page(l.page_now());
@@ -1334,7 +1341,7 @@ impl Plugins {
                     // A resizable Lemon plugin (Tesla): the frame's edges resize it.
                     w.set_resizable(l.resizable().map(|(mw, mh)| (mw as f32, mh as f32)));
                 }
-                let wave=h.name=="Lemon Wave";
+                let wave=h.name=="ML Wave";
                 for e in w.take_events() {
                     if let FrameEvent::ResizeFinished(ratio)=e {
                         if wave {out.push(Request::WaveZoom(row,(wave_zoom()*ratio*100.).round().clamp(40.,125.) as u16));}
@@ -1376,6 +1383,7 @@ impl Plugins {
                         #[cfg(target_os="linux")] FrameEvent::Undo(redo)=>Request::Undo(redo),
                         FrameEvent::PickTrack => Request::PickTrack(row),
                         FrameEvent::Raise => Request::Raise(row),
+                        FrameEvent::Detach(on) => Request::Detach(row, on),
                         FrameEvent::SidechainMenu(x,y)=>Request::SidechainMenu(row,x,y),
                         FrameEvent::Menu(x, y) => Request::Menu(row, x, y),
                         FrameEvent::Presets(x, y) => Request::Presets(row, x, y),
@@ -1435,7 +1443,7 @@ impl Plugins {
 /// What the user is told when instance `name` stopped after exception `code`.
 fn stopped_message(name: &str, code: u32, effect: bool) -> String {
     let now = if effect { "its slot passes the sound through" } else { "its channel is silent" };
-    format!("{}: {now}. Save your project and restart Lemon Studio to use it again", os_host::guard::stopped_text(name, code))
+    format!("{}: {now}. Save your project and restart ML Studio to use it again", os_host::guard::stopped_text(name, code))
 }
 
 /// Sizes window `w` to its freshly opened editor (`size` in device px at `scale`). A Lemon plugin answers the host
@@ -1513,39 +1521,39 @@ pub fn retired_count() -> usize {
 }
 
 /// Name of Lemon Studio's sampler plugin: it plays and edits every sampler channel (spec: plugins/lemon-sampler.md §7).
-pub const LEMON_SAMPLER: &str = "Lemon Sampler";
+pub const LEMON_SAMPLER: &str = "ML Sampler";
 /// Name of Lemon Studio's parametric EQ plugin.
-pub const LEMON_EQ: &str = "Lemon Parametric EQ";
+pub const LEMON_EQ: &str = "ML EQ";
 /// Lemon Studio's effects compiled in besides the EQ (`builtin_effects`, in this order). They have no file plugin of
 /// their own to be stored as, so a project stores them wrapped, as it stored their plugin files
 /// (`project_plugins::is_wrapped`).
 pub const LINKED_EFFECTS: [&str; 13] = [
-    "Lemon Limiter",
-    "Lemon Reverb",
-    "Lemon Delay",
-    "Lemon Soft Clipper",
-    "Lemon Fast Distortion",
-    "Lemon Balance",
-    "Lemon Stereo Enhancer",
-    "Lemon Transient Processor",
-    "Lemon Chorus",
-    "Lemon Stereo Shaper",
+    "ML Limiter",
+    "ML Reverb",
+    "ML Delay",
+    "ML Soft Clipper",
+    "ML Fast Distortion",
+    "ML Balance",
+    "ML Stereo Enhancer",
+    "ML Transient Processor",
+    "ML Chorus",
+    "ML Stereo Shaper",
     TESLA,
-    "Lemon Tape",
-    "Lemon Hall",
+    "ML Tape",
+    "ML Hall",
 ];
 /// Lemon Studio's effects compiled in that a project stores under the FL plugin they recreate, with that plugin's
 /// state (`new_slot`, `store_builtin_states`), so they are never saved wrapped.
 pub const FILE_MAPPED: [&str; 3] = [LEMON_EQ, PULP_FILTER, PRESS];
 /// Name of Tesla, Lemon Studio's audio editor and recorder (spec: plugins/tesla/README.md).
-pub const TESLA: &str = "Tesla";
+pub const TESLA: &str = "ML Tesla";
 /// Name of Pulp Filter, Lemon Studio's pattern-controlled multi-filter (spec: plugins/lemon-pulp-filter.md).
-pub const PULP_FILTER: &str = "Pulp Filter";
+pub const PULP_FILTER: &str = "ML Pulp Filter";
 /// The plugin name a project file stores for Love Philter (file-format identifier, kept for interop): slots with it
 /// are played and edited by Pulp Filter (spec: plugins/lemon-pulp-filter.md §6).
 pub const LOVE_PHILTER_FILE_NAME: &str = "Fruity Love Philter";
 /// Name of Press, Lemon Studio's multiband maximiser (spec: plugins/lemon-press.md).
-pub const PRESS: &str = "Press";
+pub const PRESS: &str = "ML Press";
 /// The plugin name a project file stores for Maximus (file-format identifier, kept for interop): slots with it are
 /// played and edited by Press (spec: plugins/lemon-press.md §6).
 pub const MAXIMUS_FILE_NAME: &str = "Maximus";
@@ -1558,13 +1566,41 @@ pub const EQ_FILE_NAME: &str = "Fruity Parametric EQ 2";
 /// The built-in plugins' earlier names, newest first, with their names now: "Lemon Parametric EQ 2" and "Lemon 3x Osc"
 /// (2026-10-13 to 2026-10-14), and the "Open" names before the line was renamed "Lemon". Plugin files and preset
 /// folders made earlier still carry them (spec: plugins/plugin-formats.md, identity).
-pub const OLD_NAMES: [(&str, &str); 5] = [
+pub const OLD_NAMES: [(&str, &str); 27] = [
+    ("Lemon Master Assistant", "ML Master Assistant"),
+    ("Lemon Sampler", "ML Sampler"),
+    ("Lemon Trio", "ML Trio"),
+    ("Lemon Reverb", "ML Reverb"),
+    ("Lemon Delay", "ML Delay"),
+    ("Lemon Limiter", "ML Limiter"),
+    ("Lemon Soft Clipper", "ML Soft Clipper"),
+    ("Lemon Fast Distortion", "ML Fast Distortion"),
+    ("Lemon Balance", "ML Balance"),
+    ("Lemon Stereo Enhancer", "ML Stereo Enhancer"),
+    ("Lemon Transient Processor", "ML Transient Processor"),
+    ("Lemon Chorus", "ML Chorus"),
+    ("Lemon Stereo Shaper", "ML Stereo Shaper"),
+    ("Lemon Tape", "ML Tape"),
+    ("Lemon Hall", "ML Hall"),
+    ("Lemon Chop", "ML Chop"),
+    ("Lemon Wave", "ML Wave"),
+    ("Lemon Parametric EQ", "ML EQ"),
+    ("Citrus", "ML Citrus"),
+    ("Tesla", "ML Tesla"),
+    ("Pulp Filter", "ML Pulp Filter"),
+    ("Press", "ML Press"),
+
     ("Lemon Parametric EQ 2", LEMON_EQ),
     ("Lemon 3x Osc", crate::osc3::LEMON_TRIO),
     ("Open Sampler", LEMON_SAMPLER),
     ("Open Parametric EQ 2", LEMON_EQ),
     ("Open 3x Osc", crate::osc3::LEMON_TRIO),
 ];
+
+/// Display-name aliases only; never changes plugin IDs or saved parameter IDs.
+pub fn canonical_name(name: &str) -> &str {
+    OLD_NAMES.iter().find(|(old, _)| *old == name).map_or(name, |(_, now)| *now)
+}
 
 /// The Lemon effects compiled in (`LINKED_EFFECTS`) that recreate an FL mixer effect, by the plugin name a project file
 /// stores for it (file-format identifiers, kept for interop): an opened project's slot holding one is played and edited
@@ -1573,15 +1609,15 @@ pub const OLD_NAMES: [(&str, &str); 5] = [
 /// Not Lemon Stereo Shaper: the difference output is the mixer slot's alone (spec: plugins/lemon-stereo-shaper.md §5),
 /// so the engine's own Stereo Shaper keeps playing those slots.
 pub const FL_RECREATIONS: [(&str, &str); 9] = [
-    ("Fruity Limiter", "Lemon Limiter"),
-    ("Fruity Reeverb 2", "Lemon Reverb"),
-    ("Fruity Delay 3", "Lemon Delay"),
-    ("Fruity Soft Clipper", "Lemon Soft Clipper"),
-    ("Fruity Fast Dist", "Lemon Fast Distortion"),
-    ("Fruity Balance", "Lemon Balance"),
-    ("Fruity Stereo Enhancer", "Lemon Stereo Enhancer"),
-    ("Transient Processor", "Lemon Transient Processor"),
-    ("Fruity Chorus", "Lemon Chorus"),
+    ("Fruity Limiter", "ML Limiter"),
+    ("Fruity Reeverb 2", "ML Reverb"),
+    ("Fruity Delay 3", "ML Delay"),
+    ("Fruity Soft Clipper", "ML Soft Clipper"),
+    ("Fruity Fast Dist", "ML Fast Distortion"),
+    ("Fruity Balance", "ML Balance"),
+    ("Fruity Stereo Enhancer", "ML Stereo Enhancer"),
+    ("Transient Processor", "ML Transient Processor"),
+    ("Fruity Chorus", "ML Chorus"),
 ];
 
 /// The Lemon effect of `FL_RECREATIONS` that plays slots stored as `file` (any case: files may spell the id
@@ -1594,15 +1630,15 @@ pub fn recreation_of(file: &str) -> Option<&'static str> {
 pub fn recreation_state_from_fl(lemon: &str, fl: &[u8]) -> Option<Vec<u8>> {
     use lemon_small_fx::params::plugin_state_from_fl as small;
     Some(match lemon {
-        "Lemon Limiter" => lemon_limiter::params::plugin_state_from_fl(fl),
-        "Lemon Reverb" => lemon_reverb::params::plugin_state_from_fl(fl),
-        "Lemon Delay" => lemon_delay::params::plugin_state_from_fl(fl),
-        "Lemon Soft Clipper" => small(lemon_small_fx::soft_clipper::SPEC, fl),
-        "Lemon Fast Distortion" => small(lemon_small_fx::fast_distortion::SPEC, fl),
-        "Lemon Balance" => small(lemon_small_fx::balance::SPEC, fl),
-        "Lemon Stereo Enhancer" => small(lemon_small_fx::stereo_enhancer::SPEC, fl),
-        "Lemon Transient Processor" => small(lemon_small_fx::transient_processor::SPEC, fl),
-        "Lemon Chorus" => small(lemon_small_fx::chorus::SPEC, fl),
+        "ML Limiter" => lemon_limiter::params::plugin_state_from_fl(fl),
+        "ML Reverb" => lemon_reverb::params::plugin_state_from_fl(fl),
+        "ML Delay" => lemon_delay::params::plugin_state_from_fl(fl),
+        "ML Soft Clipper" => small(lemon_small_fx::soft_clipper::SPEC, fl),
+        "ML Fast Distortion" => small(lemon_small_fx::fast_distortion::SPEC, fl),
+        "ML Balance" => small(lemon_small_fx::balance::SPEC, fl),
+        "ML Stereo Enhancer" => small(lemon_small_fx::stereo_enhancer::SPEC, fl),
+        "ML Transient Processor" => small(lemon_small_fx::transient_processor::SPEC, fl),
+        "ML Chorus" => small(lemon_small_fx::chorus::SPEC, fl),
         _ => return None,
     })
 }
@@ -1612,27 +1648,27 @@ pub fn recreation_state_from_fl(lemon: &str, fl: &[u8]) -> Option<Vec<u8>> {
 pub fn fl_from_recreation_state(lemon: &str, blob: &[u8]) -> Option<Vec<u8>> {
     use lemon_small_fx::params::fl_from_plugin_state as small;
     match lemon {
-        "Lemon Limiter" => lemon_limiter::params::fl_from_plugin_state(blob),
-        "Lemon Reverb" => lemon_reverb::params::fl_from_plugin_state(blob),
-        "Lemon Delay" => lemon_delay::params::fl_from_plugin_state(blob),
-        "Lemon Soft Clipper" => small(lemon_small_fx::soft_clipper::SPEC, blob),
-        "Lemon Fast Distortion" => small(lemon_small_fx::fast_distortion::SPEC, blob),
-        "Lemon Balance" => small(lemon_small_fx::balance::SPEC, blob),
-        "Lemon Stereo Enhancer" => small(lemon_small_fx::stereo_enhancer::SPEC, blob),
-        "Lemon Transient Processor" => small(lemon_small_fx::transient_processor::SPEC, blob),
-        "Lemon Chorus" => small(lemon_small_fx::chorus::SPEC, blob),
+        "ML Limiter" => lemon_limiter::params::fl_from_plugin_state(blob),
+        "ML Reverb" => lemon_reverb::params::fl_from_plugin_state(blob),
+        "ML Delay" => lemon_delay::params::fl_from_plugin_state(blob),
+        "ML Soft Clipper" => small(lemon_small_fx::soft_clipper::SPEC, blob),
+        "ML Fast Distortion" => small(lemon_small_fx::fast_distortion::SPEC, blob),
+        "ML Balance" => small(lemon_small_fx::balance::SPEC, blob),
+        "ML Stereo Enhancer" => small(lemon_small_fx::stereo_enhancer::SPEC, blob),
+        "ML Transient Processor" => small(lemon_small_fx::transient_processor::SPEC, blob),
+        "ML Chorus" => small(lemon_small_fx::chorus::SPEC, blob),
         _ => None,
     }
 }
 
 /// What the mixer shows for a slot's stored plugin name.
 pub fn slot_label(name: &str) -> &str {
-    match name {
+    match canonical_name(name) {
         EQ_FILE_NAME => LEMON_EQ,
         EDISON_FILE_NAME => TESLA,
         LOVE_PHILTER_FILE_NAME => PULP_FILTER,
         MAXIMUS_FILE_NAME => PRESS,
-        _ => recreation_of(name).unwrap_or(name),
+        _ => recreation_of(name).unwrap_or(canonical_name(name)),
     }
 }
 
@@ -2302,7 +2338,7 @@ mod tests {
         let desc = lib.plugins[0].clone();
         let mut pl = Plugins { available: vec![Available { lib, desc }], scale: 1.0, ..Plugins::default() };
         pl.create(0, 0).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 400);
         let hwnd = pl.hosted[&0].window.as_ref().unwrap().hwnd();
@@ -2450,7 +2486,7 @@ mod tests {
         let desc = lib.plugins[0].clone();
         let mut pl = Plugins { available: vec![Available { lib, desc }], scale: 1.0, ..Plugins::default() };
         pl.create(0, 0).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 300);
         let frame = pl.hosted[&0].window.as_ref().unwrap().hwnd();
@@ -2541,7 +2577,7 @@ mod tests {
         let desc = lib.plugins[0].clone();
         let mut pl = Plugins { available: vec![Available { lib, desc }], scale: 1.0, ..Plugins::default() };
         pl.create(0, 0).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 300);
         let frame = pl.hosted[&0].window.as_ref().unwrap().hwnd();
@@ -2615,7 +2651,7 @@ mod tests {
         let desc = lib.plugins[0].clone();
         let mut pl = Plugins { available: vec![Available { lib, desc }], scale: 1.0, ..Plugins::default() };
         pl.create(0, 0).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 300);
         // A bright 2 s saw so a low-pass is audible.
@@ -2698,7 +2734,7 @@ mod tests {
         let desc = lib.plugins[0].clone();
         let mut pl = Plugins { available: vec![Available { lib, desc }], scale: 1.0, ..Plugins::default() };
         pl.create(0, 0).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 300);
         // A bright 2 s saw so a low-pass is audible.
@@ -2714,7 +2750,7 @@ mod tests {
         pump(&mut pl, 300);
         let mut project = crate::app::test_project();
         project.channels.clear();
-        let row = crate::app::add_plugin_channel(&mut project, "Lemon Sampler");
+        let row = crate::app::add_plugin_channel(&mut project, "ML Sampler");
         assert_eq!(row, 0);
         let transport = crate::transport::Transport::new(None);
         transport.update(&project);
@@ -3433,7 +3469,7 @@ mod tests {
         use windows_sys::Win32::Foundation::RECT;
         let mut pl = Plugins { available: builtin(), scale: 1.0, rate: 48000, ..Plugins::default() };
         pl.create(0, pl.index_of(LEMON_SAMPLER).unwrap()).unwrap();
-        let info = ChannelInfo { name: "Lemon Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
+        let info = ChannelInfo { name: "ML Sampler".into(), target: "Insert 1".into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 1, max_track: 125, misc: None };
         pl.open_window(0, info).unwrap();
         pump(&mut pl, 300);
         let frame = pl.hosted[&0].window.as_ref().unwrap().hwnd();
@@ -3482,7 +3518,7 @@ mod tests {
             rate: 48000,
             ..Plugins::default()
         };
-        assert_eq!(pl.index_of("Lemon Sampler"), Some(0), "a name finds the first");
+        assert_eq!(pl.index_of("ML Sampler"), Some(0), "a name finds the first");
         pl.create(0, 1).unwrap();
         let d = pl.descriptor(0).unwrap();
         assert_eq!(d.format, os_host::Format::Vst3);
@@ -3522,12 +3558,12 @@ mod tests {
         a.state.path = None;
         a.plugins.available = vec![load(&smp)];
         a.plugins.effects = vec![load(&eq)];
-        let row = crate::app::add_plugin_channel(&mut a.state.project, "Lemon Sampler");
+        let row = crate::app::add_plugin_channel(&mut a.state.project, "ML Sampler");
         a.plugins.create(row, 0).unwrap();
         a.state.hosted_rows.push(row);
         let json = format!("{{\"version\":\"0.0.1\",\"params\":{{}},\"fields\":{{\"sample-path\":{}}}}}", json_string(&json_string(&wav.to_string_lossy())));
         assert!(a.plugins.set_state(row, json.as_bytes()));
-        a.state.project.mixer[3].slots[2] = Some(os_model::SlotPlugin { name: "Lemon Parametric EQ".into(), state: Vec::new() });
+        a.state.project.mixer[3].slots[2] = Some(os_model::SlotPlugin { name: "ML EQ".into(), state: Vec::new() });
         a.plugins.create_effect(3, 2, 0, None).unwrap();
         // An edit of the effect, through the hosting layer, flushed into its processor.
         {
@@ -3548,7 +3584,7 @@ mod tests {
         // The file names each class by its id.
         let saved = os_flp::project::load(&os_flp::FlpFile::parse(&std::fs::read(&path).unwrap()).unwrap()).unwrap();
         let r = crate::project_plugins::wrapped_channel(&saved.channels[row]).unwrap();
-        assert_eq!((r.format.as_str(), r.id.as_str(), r.name.as_str()), ("vst3", a.plugins.available[0].desc.id.as_str(), "Lemon Sampler"));
+        assert_eq!((r.format.as_str(), r.id.as_str(), r.name.as_str()), ("vst3", a.plugins.available[0].desc.id.as_str(), "ML Sampler"));
         assert_eq!(r.state, ch_state);
         let s = crate::project_plugins::wrapped_slot(saved.mixer[3].slots[2].as_ref().unwrap()).unwrap();
         assert_eq!((s.format.as_str(), s.id.as_str()), ("vst3", a.plugins.effects[0].desc.id.as_str()));
@@ -3568,7 +3604,7 @@ mod tests {
         assert_eq!(b.plugins.descriptor(row).unwrap().format, os_host::Format::Vst3);
         assert_eq!(b.plugins.state(row).as_deref(), Some(&ch_state[..]));
         assert_eq!(b.plugins.state(fx_key(3, 2)).as_deref(), Some(&fx_state[..]));
-        assert_eq!(crate::mixer::slot_name(&b.state, 3, 2).as_deref(), Some("Lemon Parametric EQ"));
+        assert_eq!(crate::mixer::slot_name(&b.state, 3, 2).as_deref(), Some("ML EQ"));
     }
 
     /// VST3 editors inside Lemon Studio's plugin frame, moved off every screen and captured with PrintWindow:
@@ -4129,7 +4165,7 @@ mod tests {
         let engine = fx.clone();
         std::thread::spawn(move || engine.lock().unwrap().process_fx(48000, &mut [0.5; 8], &mut [0.5; 8])).join().unwrap();
         let told: Vec<String> = pl.idle(|_| None).into_iter().filter_map(|r| if let Request::Stopped(k, t) = r { Some(format!("{k}: {t}")) } else { None }).collect();
-        assert_eq!(told, [format!("{key}: Faulty stopped after a memory error: its slot passes the sound through. Save your project and restart Lemon Studio to use it again")]);
+        assert_eq!(told, [format!("{key}: Faulty stopped after a memory error: its slot passes the sound through. Save your project and restart ML Studio to use it again")]);
         assert!(!pl.idle(|_| None).iter().any(|r| matches!(r, Request::Stopped(..))), "told once");
         let (mut l, mut r) = ([0.5f32; 8], [0.5f32; 8]);
         fx.lock().unwrap().process_fx(48000, &mut l, &mut r);
@@ -4263,7 +4299,7 @@ mod chop_integration_tests {
         let file=std::env::temp_dir().join(format!("lemon-chop-host-{}.wav",std::process::id()));
         let mut bytes=Vec::new();os_engine::wav::write_f32_stereo_header(&mut bytes,48000,48000).unwrap();
         for i in 0..48000 {let v=(std::f32::consts::TAU*220.*i as f32/48000.).sin()*0.2;bytes.extend_from_slice(&v.to_le_bytes());bytes.extend_from_slice(&v.to_le_bytes());}std::fs::write(&file,bytes).unwrap();
-        let mut p=Plugins::builtins();let index=p.index_of("Lemon Chop").expect("instrument offered");p.create(0,index).unwrap();
+        let mut p=Plugins::builtins();let index=p.index_of("ML Chop").expect("instrument offered");p.create(0,index).unwrap();
         let state=p.state(0).unwrap();let mut json:serde_json::Value=serde_json::from_slice(&state[8..]).unwrap();
         let mut doc=Document{path:file.to_string_lossy().into_owned(),..Default::default()};doc.cues[0]=Cue{start:0.,end:0.25,enabled:true,name:"Test cue".into(),..Default::default()};
         json["fields"]["chop-document"]=serde_json::json!(serde_json::to_string(&doc).unwrap());
@@ -4306,8 +4342,8 @@ mod chop_drop_tests {
         std::fs::write(&file,&wav).unwrap();std::fs::write(&second,&wav).unwrap();
         let mut app=crate::app::App::new(None);
         app.plugins=Plugins::builtins();
-        let row=crate::app::add_plugin_channel(&mut app.state.project,"Lemon Chop");
-        app.plugins.create(row,app.plugins.index_of("Lemon Chop").unwrap()).unwrap();
+        let row=crate::app::add_plugin_channel(&mut app.state.project,"ML Chop");
+        app.plugins.create(row,app.plugins.index_of("ML Chop").unwrap()).unwrap();
         app.state.hosted_rows.push(row);
         assert!(!app.state.project.channels[row].kind.is_sampler());
         // The browser handler uses this exact entry point; no native window or mouse access needed.
@@ -4340,7 +4376,7 @@ mod chop_drop_tests {
         let payload = serde_json::to_vec(&state).unwrap();
         let mut bytes = (payload.len() as u64).to_le_bytes().to_vec();
         bytes.extend(payload);
-        app.plugins.create_with(row, app.plugins.index_of("Lemon Chop").unwrap(), Some(&bytes)).unwrap();
+        app.plugins.create_with(row, app.plugins.index_of("ML Chop").unwrap(), Some(&bytes)).unwrap();
         let instrument=app.plugins.hosted[&row].plugin.clone();let until=std::time::Instant::now()+std::time::Duration::from_secs(5);let mut peak=0f32;
         while std::time::Instant::now()<until {std::thread::sleep(std::time::Duration::from_millis(40));let mut i=instrument.lock().unwrap();i.note_on(0,36,1.);let(mut l,mut r)=([0.;512],[0.;512]);i.process(48000,&mut l,&mut r);peak=l.iter().fold(peak,|a,b|a.max(b.abs()));if peak>0.01{break;}}
         assert!(peak>0.01,"dropped source is decoded and audible, not just saved as a path");

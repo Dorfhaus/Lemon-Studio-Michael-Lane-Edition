@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import argparse, datetime, hashlib, json, mmap, os, platform, re, shutil, subprocess, sys, time, urllib.request, urllib.error, urllib.parse, zipfile
 import release as r
 import builders as b
+import storage
 from checkpoints import Journal, atomic_json, digest, exclusive, plan_files, stage_plan
 
 CONFIG=r.PRIVATE/'pipeline.json'
@@ -132,7 +133,7 @@ def identity():
     return {'version':r.version(),'commit':r.git('rev-parse','HEAD'),'engine_source':engine_id(),'configuration':hashlib.sha256(json.dumps(c,sort_keys=True).encode()).hexdigest()}
 
 
-def output_root():return Path.home()/'Desktop/Lemon Studio/Lemon Studio Public Download'/str(r.version())/'Pipeline'
+def output_root():return storage.app_root()/'Lemon Studio Public Download'/str(r.version())/'Pipeline'
 
 
 def privacy(plan):
@@ -156,7 +157,7 @@ def stage(path,name):
 def worker(arch):
     if platform.system()!='Darwin':raise RuntimeError('Mac worker requires macOS')
     root=output_root()/('mac-'+arch);root.mkdir(parents=True,exist_ok=True)
-    with exclusive(r.PRIVATE/('pipeline-mac-'+arch+'.lock')):
+    with exclusive(r.PRIVATE/('pipeline-mac-'+arch+'.lock')), storage.active_release(root.parent.parent):
         j=Journal(root/'state.json',identity())
         def build(attempt):
             plan=b.mac(config(),arch,root/f'build-{attempt}',root/'build.log');return str(plan),plan_files(plan)
@@ -301,7 +302,7 @@ def coordinator(notes=None,check=False,no_changelog=False):
             def action(_):
                 remote(['worker',arch],out/('mac-'+arch+'.log'));p=shared_run()/('mac-'+arch)/'publish-plan.json';return str(p),plan_files(p)
             return j.step('Build mac-'+arch,action)
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with storage.active_release(out.parent), ThreadPoolExecutor(max_workers=4) as pool:
             winjob=pool.submit(j.step,'Build Windows',win);linjob=pool.submit(j.step,'Build Linux',lin)
             macjobs=[pool.submit(mac,a) for a in ('arm64','x86_64')]
             wp=winjob.result();binary=linjob.result();macplans=[job.result() for job in macjobs]

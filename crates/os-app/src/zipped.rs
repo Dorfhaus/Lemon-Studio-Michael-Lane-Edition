@@ -102,7 +102,7 @@ pub fn unzip(zip: &Path, fallback: Option<&Path>, done: &AtomicU64, total: &Atom
         .filter(|e| is_project(&e.1))
         .min_by_key(|e| (e.1.components().count(), e.1.to_string_lossy().to_lowercase()))
         .map(|e| e.1.clone())
-        .ok_or_else(|| "it holds no Lemon Studio or legacy FLP project".to_string())?;
+        .ok_or_else(|| "it holds no ML Studio or legacy FLP project".to_string())?;
     total.store(entries.iter().map(|e| e.2).sum(), Ordering::Relaxed);
     let stem = zip.file_stem().map_or_else(|| "Project".to_string(), |s| s.to_string_lossy().into_owned());
     let beside = zip.parent().map(|d| if d.as_os_str().is_empty() { Path::new(".") } else { d });
@@ -275,6 +275,39 @@ fn prepare(app: &mut App, zip: &Path) -> Result<(Vec<u8>, Pack), String> {
         Some(Err(e)) => Err(e),
         Some(Ok(())) => Ok((bytes.map_err(|e| e.to_string())?, pack)),
     }
+}
+
+/// Prepare on the control thread; compression and file reads run on the session worker.
+pub(crate) fn collaboration_pack(app:&mut App,zip:&Path)->Result<impl FnOnce()->Result<(),String>+Send+'static,String>{
+    let (bytes,pack)=prepare(app,zip)?;
+    if !pack.missing.is_empty(){return Err(format!("Find missing samples before hosting: {}",pack.missing.join(", ")));}
+    let zip=zip.to_path_buf();
+    Ok(move||write_zip(&zip,&bytes,&pack,&AtomicU64::new(0),&AtomicU64::new(0)))
+}
+
+/// Invitations are untrusted input: accept only flat project/audio packages, with bounded expansion.
+pub(crate) fn collaboration_unpack(zip:&Path)->Result<PathBuf,String>{
+    let mut a=zip::ZipArchive::new(File::open(zip).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    if a.len()>8192{return Err("Too many shared files".into());}
+    let mut total=0u64;
+    let mut names=std::collections::BTreeSet::new();
+    for i in 0..a.len(){
+        let f=a.by_index(i).map_err(|e|e.to_string())?;
+        let name=f.name().map_err(|e|e.to_string())?;
+        let ext=Path::new(name.as_ref()).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if name.contains(['/', '\\', ':'])||name.len()>240||!names.insert(name.to_ascii_lowercase())||
+            !["lmn","flp","wav","aif","aiff","flac","mp3","ogg","m4a","aac","opus"].contains(&ext.as_str())||
+            f.unix_mode().is_some_and(|m|m & 0o170000==0o120000){
+            return Err("Unsupported or unsafe file in shared project".into());
+        }
+        total=total.checked_add(f.size()).ok_or("Shared package is too large")?;
+        if total>1024*1024*1024{return Err("Shared project expands beyond 1 GB".into());}
+        let limit=f.size();
+        let actual=std::io::copy(&mut f.take(limit+1),&mut std::io::sink()).map_err(|e|e.to_string())?;
+        if actual!=limit{return Err("Invalid shared file size".into());}
+    }
+    drop(a);
+    unzip(zip,None,&AtomicU64::new(0),&AtomicU64::new(0))
 }
 
 /// Writes the zip: the project file, then the samples, side by side at its top. Written beside `zip`, then moved in.

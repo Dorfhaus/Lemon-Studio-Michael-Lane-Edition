@@ -302,17 +302,20 @@ fn band_switch(ui: &mut Ui, r: Rect, t: Target, on: bool, label: &str) {
     ui.hit(hr, t);
 }
 
-/// The lemon mark and "PULP FILTER" in the wordmark's grey condensed caps (the citrus line's emblem, as Citrus and
+/// The lemon mark and "ML PULP FILTER" in the wordmark's grey condensed caps (the citrus line's emblem, as Citrus and
 /// Tesla have it), from `x` or centred on it, on the line `cy`; `s` = the lemon's half length. Returns its rect.
 fn emblem(ui: &mut Ui, x: f32, cy: f32, centred: bool, f: Font, s: f32) -> Rect {
-    let wn = lemon::spaced_width(ui.c, f, "PULP FILTER", 3.0);
+    let mut f = f;
+    let track = if centred { 3. } else { 1. };
+    while !centred && f.size > 10 && lemon::spaced_width(ui.c, f, "ML PULP FILTER", track) + 3.5*s > LOGO.w - 8. { f.size -= 1; }
+    let wn = lemon::spaced_width(ui.c, f, "ML PULP FILTER", track);
     // The tilted lemon's width with its nubs, and the space before the name.
     let (wl, gap) = (2.2 * s, (s * 1.3).round());
     let w = wl + gap + wn;
     let x = if centred { (x - w / 2.0).round() } else { x };
     let lh = ui.c.line_height(f);
     lemon::lemon_mark(ui.c, x + wl / 2.0, cy, s, brand::MAIN);
-    lemon::spaced(ui.c, f, x + wl + gap, (cy - lh / 2.0).round(), plug::WORDMARK, "PULP FILTER", 3.0);
+    lemon::spaced(ui.c, f, x + wl + gap, (cy - lh / 2.0).round(), plug::WORDMARK, "ML PULP FILTER", track);
     Rect::new(x, cy - lh / 2.0, w, lh)
 }
 
@@ -970,7 +973,7 @@ fn info(ui: &mut Ui) {
     let mid = emblem(ui, w / 2.0, h / 2.0 - 45.0, true, Font::condensed(32, 0).bold(), 9.0);
     let v = format!("Version {}", ui.m.version);
     ui.c.text_center(LABEL, Rect::new(0.0, mid.bottom() + 8.0, w, 16.0), DIM, &v);
-    ui.c.text_center(LABEL, Rect::new(0.0, mid.bottom() + 26.0, w, 16.0), DIM, "Lemon Studio's pattern-controlled multi-filter");
+    ui.c.text_center(LABEL, Rect::new(0.0, mid.bottom() + 26.0, w, 16.0), DIM, "ML Studio's pattern-controlled multi-filter");
     ui.c.text_center(SMALL, Rect::new(0.0, h - 30.0, w, 16.0), FAINT, "Click to return");
     ui.hit(Rect::new(0.0, 0.0, w, h), Target::Cover);
 }

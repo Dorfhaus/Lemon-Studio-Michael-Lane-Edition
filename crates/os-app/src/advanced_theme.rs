@@ -802,7 +802,7 @@ fn paint_identity(ui: &mut Ui, s: &State, row: IdentityRow, r: Rect) {
                 box_.y + 87.0,
                 box_.w - 28.0,
                 theme.text,
-                "Lemon Studio   01:23   Mixer",
+                "ML Studio   01:23   Mixer",
             );
             ui.c.text_clip(
                 Font::new(13),
@@ -1407,7 +1407,7 @@ impl App {
                 Then::ExportTheme,
             )
             .name("My Theme.flstheme")
-            .filter("Lemon Studio theme", &["flstheme"])
+            .filter("ML Studio theme", &["flstheme"])
         } else {
             FileDlg::new(
                 Mode::Open,
@@ -1446,7 +1446,7 @@ impl App {
         let path = path.with_extension("flstheme");
         let text = self.editor_source_text();
         let text = fl::set_key(&text, VERSION_KEY, "1");
-        let text = fl::set_key(&text, EXPORT_SKIN, self.design().name());
+        let text = fl::set_key(&text, EXPORT_SKIN, self.design().key());
         let image = self.theme.colors.wallpaper.as_deref();
         self.state.message = Some(match write_export(&path, &text, image) {
             Ok(true) => format!(

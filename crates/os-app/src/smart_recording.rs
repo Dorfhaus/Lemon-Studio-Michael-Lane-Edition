@@ -168,7 +168,7 @@ mod tests {
         use crate::{playlist as pl,record::{Opt,Extra},step_edit::Src};
         let mut app=App::new(None);app.state.project=crate::app::test_project();
         app.state.project.channels[0].kind=os_model::ChannelKind::Plugin;
-        app.state.project.channels[0].name=Some("Citrus".into());
+        app.state.project.channels[0].name=Some("ML Citrus".into());
         app.state.project.channels[0].plugin=Some("Sytrus".into());
         pl::arr_mut(&mut app.state).clips.clear();
         pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(0,384,0,ClipSource::Pattern(99)));

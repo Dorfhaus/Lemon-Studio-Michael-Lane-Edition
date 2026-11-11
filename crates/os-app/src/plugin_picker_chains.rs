@@ -7,13 +7,14 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::path::Path;
 
 pub const FILTER: u8 = 6;
+pub const BATCH_VISIBILITY: &str = "visible_effect-chain-batch";
 const GROUPS: [&str; 8] = ["All Chains", "Vocals", "Drums", "Bass", "Guitar", "Mix Bus", "Mastering", "My Chains"];
 const MAX_CHAIN_BYTES: usize = 32 * 1024 * 1024;
 
 fn wet() -> f64 { 1. }
 fn enabled() -> bool { true }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stage {
     name: String,
     uid: Option<String>,
@@ -28,7 +29,7 @@ pub struct Stage {
     mix: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Chain {
     name: String,
     group: usize,
@@ -43,6 +44,8 @@ pub struct View {
     factory_count: usize,
     pub group: usize,
     pub selected: usize,
+    selection: Option<Vec<usize>>,
+    anchor: Option<usize>,
     pub first: usize,
     draft: Option<(Option<usize>, Chain)>,
     pub rect: Option<Rect>,
@@ -54,12 +57,12 @@ impl View {
     pub fn load() -> Self {
         use plugins::{LEMON_EQ as EQ, PRESS};
         let factory = [
-            ("Vocal Chain – Modern", 1, &[(EQ, "Instruments/Vocal presence"), ("Lemon Limiter", ""), ("Lemon Reverb", "Small studio")][..]),
+            ("Vocal Chain – Modern", 1, &[(EQ, "Instruments/Vocal presence"), ("ML Limiter", ""), ("ML Reverb", "Small studio")][..]),
             ("Vocal Chain – Clean", 1, &[(EQ, "Clean-up/Quick low roll-off"), (PRESS, "Mastering/Transparent")]),
-            ("Drum Bus – Punchy", 2, &[(EQ, "Instruments/Tight drum sizzle"), ("Lemon Transient Processor", "Subtle attack"), ("Lemon Limiter", "Drums/Drum compression")]),
-            ("Bass Chain – Warm", 3, &[(EQ, "Clean-up/Cut below 20 Hz and above 18 kHz"), ("Lemon Fast Distortion", "Warmth")]),
-            ("Guitar Chain – Clean", 4, &[("Lemon Chorus", "Fat clean"), ("Lemon Reverb", "Small studio")]),
-            ("Mix Bus – Glue", 5, &[(PRESS, "Mastering/Slight warmness"), ("Lemon Soft Clipper", "Default")]),
+            ("Drum Bus – Punchy", 2, &[(EQ, "Instruments/Tight drum sizzle"), ("ML Transient Processor", "Subtle attack"), ("ML Limiter", "Drums/Drum compression")]),
+            ("Bass Chain – Warm", 3, &[(EQ, "Clean-up/Cut below 20 Hz and above 18 kHz"), ("ML Fast Distortion", "Warmth")]),
+            ("Guitar Chain – Clean", 4, &[("ML Chorus", "Fat clean"), ("ML Reverb", "Small studio")]),
+            ("Mix Bus – Glue", 5, &[(PRESS, "Mastering/Slight warmness"), ("ML Soft Clipper", "Default")]),
             ("Mastering Chain – Balanced", 6, &[(EQ, "Clean-up/Cut below 20 Hz and above 18 kHz"), (PRESS, "Mastering/Clear master")]),
         ];
         let favorites: Vec<usize> = crate::prefs::text("effect_chain_favorites")
@@ -101,6 +104,43 @@ impl View {
             (match sort { 1 => usize::from(!c.favorite), 2 => c.group, _ => 0 }, c.name.to_lowercase())
         });
         rows
+    }
+
+    pub fn reset_selection(&mut self) {
+        self.selected = 0;
+        self.selection = None;
+        self.anchor = None;
+    }
+
+    fn picked(&self, matches: &[usize]) -> Vec<usize> {
+        match &self.selection {
+            Some(selection) if crate::workspace_visibility::shown(BATCH_VISIBILITY) =>
+                matches.iter().copied().filter(|id| selection.contains(id)).collect(),
+            _ => matches.get(self.selected).copied().into_iter().collect(),
+        }
+    }
+
+    fn select(&mut self, matches: &[usize], row: usize, ctrl: bool, shift: bool) {
+        let Some(&id) = matches.get(row) else { return };
+        let enabled = crate::workspace_visibility::shown(BATCH_VISIBILITY);
+        if shift && enabled {
+            let anchor = self.anchor.unwrap_or(self.selected).min(matches.len() - 1);
+            self.anchor = Some(anchor);
+            let range = &matches[anchor.min(row)..=anchor.max(row)];
+            let mut selected = if ctrl { self.picked(matches) } else { Vec::new() };
+            for &id in range { if !selected.contains(&id) { selected.push(id); } }
+            self.selection = Some(selected);
+        } else if ctrl && enabled {
+            let mut selected = self.picked(matches);
+            if let Some(i) = selected.iter().position(|&i| i == id) { selected.remove(i); }
+            else { selected.push(id); }
+            self.selection = Some(selected);
+            self.anchor = Some(row);
+        } else {
+            self.selection = None;
+            self.anchor = Some(row);
+        }
+        self.selected = row;
     }
 
     fn in_group(&self, i: usize, group: usize) -> bool {
@@ -146,6 +186,7 @@ pub fn import(app: &mut App, path: &Path) -> String {
             v.chains.save();
             v.chains.group = 7;
             v.query.clear();
+            v.chains.reset_selection();
             v.chains.selected = v.chains.matches("", v.sort).iter().position(|&i| i == index).unwrap_or(0);
             v.chains.first = 0;
             format!("Imported {name}")
@@ -168,7 +209,7 @@ pub fn delete(app: &mut App, index: usize) {
     if (chains.factory_count..chains.chains.len()).contains(&index) {
         chains.chains.remove(index);
         chains.save();
-        chains.selected = 0;
+        chains.reset_selection();
         chains.first = 0;
     }
 }
@@ -185,21 +226,21 @@ fn resolve(app: &App, stage: &Stage) -> Option<usize> {
     (!app.state.plugdb.prefs.is_hidden(&app.plugins.effects[index].desc.uid())).then_some(index)
 }
 
-fn insert(app: &mut App, chain: &Chain, requested: Option<u8>) -> Result<(), String> {
-    if crate::mixer::locked(&app.state, app.state.selected_mixer) { return Err(crate::mixer::LOCK_MESSAGE.into()); }
-    if chain.stages.is_empty() { return Err("The chain is empty".into()); }
+fn insert(app: &mut App, chains: &[Chain], track: u16, requested: Option<u8>) -> Result<(), String> {
+    if mixer::locked(&app.state, track) { return Err(mixer::LOCK_MESSAGE.into()); }
+    let stages: Vec<_> = chains.iter().flat_map(|chain| &chain.stages).collect();
+    if stages.is_empty() { return Err("The chain is empty".into()); }
     app.mixer_tick();
-    let track = app.state.selected_mixer;
     let mixer_track = mixer::track(&app.state, track).ok_or("Select a mixer insert")?;
     let order: Vec<_> = (0..mixer::user_slot_capacity(&app.state, track))
         .map(|i| mixer::visible_user_slot(&app.state, track, i))
         .filter(|&slot| slot >= requested.unwrap_or(0))
         .collect();
-    let slots = order.windows(chain.stages.len())
+    let slots = order.windows(stages.len())
         .find(|slots| slots.iter().all(|&slot| mixer_track.slots[usize::from(slot)].is_none()))
-        .ok_or_else(|| format!("Need {} consecutive free effect slots at or after the selected slot", chain.stages.len()))?;
+        .ok_or_else(|| format!("Need {} consecutive free effect slots at or after the selected slot", stages.len()))?;
     let mut prepared = Vec::with_capacity(slots.len());
-    for stage in &chain.stages {
+    for &stage in &stages {
         let index = resolve(app, stage).ok_or_else(|| format!("{} is unavailable", stage.name))?;
         let desc = app.plugins.effects[index].desc.clone();
         let preset = stage.preset.as_ref().map(|name| {
@@ -234,8 +275,9 @@ fn insert(app: &mut App, chain: &Chain, requested: Option<u8>) -> Result<(), Str
     app.store_builtin_states();
     crate::project_plugins::store_hosted(&mut app.state.project, &app.plugins)?;
     let before = mixer::channel_copy(&app.state, track).ok_or("Mixer insert is unavailable")?;
-    crate::history::record(&mut app.state, "Insert effect chain", crate::history::Snap::MixerChannel(Box::new(before)));
-    for ((&slot, (hosted, effect)), stage) in slots.iter().zip(prepared).zip(&chain.stages) {
+    let action = if chains.len() == 1 { "Insert effect chain" } else { "Insert effect chains" };
+    crate::history::record(&mut app.state, action, crate::history::Snap::MixerChannel(Box::new(before)));
+    for ((&slot, (hosted, effect)), stage) in slots.iter().zip(prepared).zip(stages) {
         let key = plugins::fx_key(track, slot);
         app.plugins.hosted.insert(key, hosted);
         app.plugins.added(key);
@@ -255,17 +297,40 @@ fn insert(app: &mut App, chain: &Chain, requested: Option<u8>) -> Result<(), Str
     Ok(())
 }
 
-pub fn choose(app: &mut App) {
-    let v = &app.state.plugin_picker;
-    let Some(&index) = v.chains.matches(&v.query, v.sort).get(v.chains.selected) else { return };
-    let chain = v.chains.chains[index].clone();
-    let target = match v.target { Target::Fx(slot) => slot, Target::All => None, _ => return };
-    app.state.message = Some(match insert(app, &chain, target) {
-        Ok(()) => {
-            format!("Added {}", chain.name)
-        }
+pub fn load_into(app: &mut App, chains: &[Chain], track: u16, slot: Option<u8>) {
+    app.state.message = Some(match insert(app, chains, track, slot) {
+        Ok(()) if chains.len() == 1 => format!("Added {}", chains[0].name),
+        Ok(()) => format!("Added {} effect chains", chains.len()),
         Err(error) => error,
     });
+}
+
+pub fn choose(app: &mut App) {
+    let v = &app.state.plugin_picker;
+    let matches = v.chains.matches(&v.query, v.sort);
+    let chains: Vec<_> = v.chains.picked(&matches).into_iter().map(|i| v.chains.chains[i].clone()).collect();
+    if chains.is_empty() { return; }
+    let track = app.state.selected_mixer;
+    let target = match v.target { Target::Fx(slot) => slot, Target::All => None, _ => return };
+    load_into(app, &chains, track, target);
+}
+
+pub fn dragged(v: &super::View, row: usize) -> Vec<Chain> {
+    let matches = v.chains.matches(&v.query, v.sort);
+    let Some(&id) = matches.get(row) else { return Vec::new() };
+    let picked = v.chains.picked(&matches);
+    let ids = if picked.contains(&id) { picked } else { vec![id] };
+    ids.into_iter().map(|i| v.chains.chains[i].clone()).collect()
+}
+
+pub fn drag_label(chains: &[Chain]) -> String {
+    if let [chain] = chains { chain.name.clone() } else { format!("{} effect chains", chains.len()) }
+}
+
+pub fn select_all(v: &mut super::View) {
+    if crate::workspace_visibility::shown(BATCH_VISIBILITY) {
+        v.chains.selection = Some(v.chains.matches(&v.query, v.sort));
+    }
 }
 
 pub fn create(app: &mut App, indices: Vec<usize>) {
@@ -342,11 +407,14 @@ pub fn capture(app: &mut App, track: u16) -> Option<String> {
 pub fn act(app: &mut App, hit: Hit) {
     let v = &mut app.state.plugin_picker;
     let c = &mut v.chains;
-    let current = c.matches(&v.query, v.sort).get(c.selected).copied();
+    let matches = c.matches(&v.query, v.sort);
+    let picked = c.picked(&matches);
+    let current = (picked.len() == 1).then(|| picked[0]);
     match hit {
-        Hit::ChainGroup(group) => { c.group = group; c.selected = 0; c.first = 0; }
-        Hit::ChainTile(row) => c.selected = row,
+        Hit::ChainGroup(group) => { c.group = group; c.reset_selection(); c.first = 0; }
+        Hit::ChainTile(row) => c.select(&matches, row, app.ctrl, app.shift),
         Hit::ChainStar(i) => {
+            c.reset_selection();
             c.chains[i].favorite = !c.chains[i].favorite;
             c.save();
             c.selected = c.matches(&v.query, v.sort).iter().position(|&id| id == i).unwrap_or(0);
@@ -390,7 +458,7 @@ pub fn act(app: &mut App, hit: Hit) {
                 FileDlg::new(Mode::Save, "Export effect chain", "effect chain export", Then::ExportEffectChain(i))
                     .name("Effect Chain.lemonchain")
             };
-            app.file_dialog(dlg.filter("Lemon Studio effect chain", &["lemonchain"]));
+            app.file_dialog(dlg.filter("ML Studio effect chain", &["lemonchain"]));
         }
         Hit::ChainCancel => { c.draft = None; }
         Hit::ChainSave => {
@@ -405,6 +473,7 @@ pub fn act(app: &mut App, hit: Hit) {
             c.save();
             c.group = 7;
             v.query.clear();
+            c.reset_selection();
             c.selected = c.matches("", v.sort).iter().position(|&id| id == i).unwrap_or(0);
             c.first = 0;
         }
@@ -441,7 +510,8 @@ pub fn scroll(v: &mut super::View, delta: isize, cols: usize, rows: usize) {
 
 pub fn navigate(v: &mut super::View, delta: isize, cols: usize, rows: usize) {
     let c = &mut v.chains;
-    c.selected = c.selected.saturating_add_signed(delta).min(c.matches(&v.query, v.sort).len().saturating_sub(1));
+    let matches = c.matches(&v.query, v.sort);
+    c.select(&matches, c.selected.saturating_add_signed(delta).min(matches.len().saturating_sub(1)), false, false);
     let row = c.selected / cols;
     c.first = c.first.clamp(row.saturating_sub(rows - 1), row);
 }
@@ -457,7 +527,7 @@ pub fn name_input(v: &mut super::View, text: Option<&str>) {
     }
 }
 
-const ACCENT: Color = Color::rgb(0xf2d451);
+const ACCENT: Color = Color::rgb(0x2096f3);
 
 fn button(ui: &mut Ui, r: Rect, label: &str, hit: Hit, active: bool) {
     let hover = ui.hit(r, Action::PluginPicker(hit), label.to_owned());
@@ -491,7 +561,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let y = r.y + 105.;
     let bottom = r.bottom() - 83.;
     let matches = c.matches(&v.query, v.sort);
-    let selected = matches.get(c.selected).copied();
+    let picked = c.picked(&matches);
+    let selected = (picked.len() == 1).then(|| picked[0]);
     ui.c.push_clip(Rect::new(r.x + 16., y, r.w - 32., (bottom - y).max(0.)));
     for (group, label) in GROUPS.into_iter().enumerate() {
         if y + group as f32 * 32. + 28. > bottom { break; }
@@ -524,14 +595,19 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.text_clip(Font::new(16).bold(), x, y, w, ui.t.text, &format!("Effect Chains  ·  {}", matches.len()));
         if matches.is_empty() { ui.c.text_clip(Font::new(13), x, y + 47., w, ui.t.text_dim, "No matching chains"); }
         let width = (w - (cols - 1) as f32 * 12.) / cols as f32;
-        for (n, &index) in matches.iter().skip(c.first * cols).take(rows * cols).enumerate() {
+        let first = c.first.min(matches.len().div_ceil(cols).saturating_sub(rows));
+        for (n, &index) in matches.iter().skip(first * cols).take(rows * cols).enumerate() {
             let chain = &c.chains[index];
             let card = Rect::new(x + (n % cols) as f32 * (width + 12.), y + 29. + (n / cols) as f32 * 138., width, 126.);
             if card.bottom() > bottom { break; }
-            let row = c.first * cols + n;
-            let hover = ui.hit(card, Action::PluginPicker(Hit::ChainTile(row)), chain.name.clone());
+            let row = first * cols + n;
+            let chosen = picked.contains(&index);
+            let hover = ui.hit(card, Action::PluginPicker(Hit::ChainTile(row)),
+                if crate::workspace_visibility::shown(BATCH_VISIBILITY) {
+                    format!("{} · Ctrl/Cmd-click to toggle, Shift-click for a range, drag to Mixer", chain.name)
+                } else { chain.name.clone() });
             ui.c.fill_rect_gradient(card, Color::rgb(0x252629), Color::rgb(0x1b1c1e), 9.);
-            if hover || selected == Some(index) { ui.c.stroke_rrect(card, 9., 1.5, ACCENT); }
+            if hover || chosen { ui.c.stroke_rrect(card, 9., if chosen { 2. } else { 1. }, ACCENT); }
             ui.c.text_clip(Font::light(16, 0).natural().bold(), card.x + 12., card.y + 10., width - 58., ui.t.text, &chain.name);
             button(ui, Rect::new(card.right() - 38., card.y + 5., 28., 26.),
                 if chain.favorite { "★" } else { "☆" }, Hit::ChainStar(index), chain.favorite);
@@ -570,6 +646,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         if selected.is_some() {
             button(ui, Rect::new(r.x + 18., footer.y + 36., sidebar, 27.), "Export Selected…", Hit::ChainExport, false);
         }
+        if picked.len() > 1 {
+            let effects: usize = picked.iter().map(|&i| c.chains[i].stages.len()).sum();
+            ui.c.text_clip(Font::new(14).bold(), x + 10., footer.y + 8., (w - 100.).max(0.), ui.t.text,
+                &format!("{} chains selected", picked.len()));
+            ui.c.text_clip(Font::new(12), x + 10., footer.y + 31., (w - 100.).max(0.), ui.t.text_dim,
+                &format!("{effects} effects · {}", mixer::name(s, s.selected_mixer)));
+            button(ui, Rect::new(footer.right() - 80., footer.y + 15., 72., 30.), "Choose", Hit::Choose, true);
+        }
         if let Some(index) = selected {
             let chain = &c.chains[index];
             let personal = index >= c.factory_count;
@@ -593,6 +677,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effect_chains_picker_batch_choose_and_drop() {
+        use super::super as picker;
+        use crate::app::{Drag, Win};
+        use crate::views::browser::Item;
+
+        let mut app = App::new(None);
+        app.state.project = crate::app::test_project();
+        app.plugins = Plugins::builtins();
+        app.state.plugdb.rebuild(&app.plugins);
+        app.state.z = vec![Win::Mixer];
+        app.state.mixer.layout = mixer::WIDE;
+        app.state.selected_mixer = 2;
+        let mut canvas = os_ui::Canvas::new(1500, 910, 1.).unwrap();
+        let hit = |app: &App, action| app.hits.iter().find(|h| h.action == action).unwrap().rect;
+        let click = |app: &mut App, which| {
+            let r = hit(app, Action::PluginPicker(which));
+            app.mouse_move(r.cx(), r.cy());
+            app.mouse_down();
+            app.mouse_up();
+        };
+        let slot_names = |app: &App, track| {
+            mixer::track(&app.state, track).unwrap().slots.iter().flatten()
+                .filter_map(crate::project_plugins::wrapped_slot).map(|p| p.name).collect::<Vec<_>>()
+        };
+
+        picker::open(&mut app, Target::Fx(None));
+        picker::act(&mut app, Hit::Filter(FILTER));
+        app.paint(&mut canvas, None);
+        click(&mut app, Hit::ChainTile(0));
+        app.shift = true;
+        click(&mut app, Hit::ChainTile(2));
+        app.shift = false;
+        app.ctrl = true;
+        click(&mut app, Hit::ChainTile(1));
+        app.ctrl = false;
+        let v = &app.state.plugin_picker;
+        let matches = v.chains.matches(&v.query, v.sort);
+        assert_eq!(v.chains.picked(&matches), vec![matches[0], matches[2]]);
+        let names: Vec<_> = [matches[0], matches[2]].into_iter()
+            .flat_map(|i| v.chains.chains[i].stages.iter().map(|s| s.name.clone())).collect();
+        app.paint(&mut canvas, None);
+        click(&mut app, Hit::Choose);
+        assert_eq!(slot_names(&app, 2), names);
+        assert_eq!(crate::history::undo(&mut app.state), Some("Insert effect chains"));
+
+        // Grabbing either selected card carries the whole batch in the displayed order.
+        let card = hit(&app, Action::PluginPicker(Hit::ChainTile(2)));
+        app.mouse_move(card.cx(), card.cy());
+        app.mouse_down();
+        app.mouse_move(card.cx() + 12., card.cy());
+        assert!(matches!(&app.drag, Some(Drag::Browser { item: Item::EffectChains(chains), .. }) if chains.len() == 2));
+        app.paint(&mut canvas, None);
+        let strip = hit(&app, Action::Mix(mixer::MHit::Strip(4)));
+        app.mouse_move(strip.cx(), strip.cy());
+        app.mouse_up();
+        assert_eq!(slot_names(&app, 4), names);
+        assert!(slot_names(&app, 2).is_empty());
+
+        picker::open(&mut app, Target::All);
+        picker::act(&mut app, Hit::Filter(FILTER));
+        app.paint(&mut canvas, None);
+        let card = hit(&app, Action::PluginPicker(Hit::ChainTile(1)));
+        app.mouse_move(card.cx(), card.cy());
+        app.mouse_down();
+        app.mouse_move(card.cx() + 12., card.cy());
+        assert!(matches!(&app.drag, Some(Drag::Browser { item: Item::EffectChains(chains), .. }) if chains.len() == 1));
+        app.paint(&mut canvas, None);
+        let strip = hit(&app, Action::Mix(mixer::MHit::Strip(3)));
+        app.mouse_move(strip.cx(), strip.cy());
+        app.mouse_up();
+        assert!(!slot_names(&app, 3).is_empty());
+    }
+
+    #[test]
     fn effect_chains_picker_inserts_factory_recipes_and_undoes_the_whole_chain() {
         let mut app = App::new(None);
         app.state.project = crate::app::test_project();
@@ -611,7 +769,7 @@ mod tests {
         }
         let chains = View::load();
         for chain in &chains.chains[..chains.factory_count] {
-            insert(&mut app, chain, Some(0)).unwrap_or_else(|e| panic!("{}: {e}", chain.name));
+            insert(&mut app, std::slice::from_ref(chain), 2, Some(0)).unwrap_or_else(|e| panic!("{}: {e}", chain.name));
             let slots = &app.state.project.mixer[2].slots;
             assert_eq!(slots[1].as_ref(), Some(&existing));
             assert!(slots[0].is_none());
@@ -625,7 +783,7 @@ mod tests {
         }
         let mut unavailable = chains.chains[0].clone();
         unavailable.stages[1].name = "Missing effect".into();
-        assert!(insert(&mut app, &unavailable, Some(0)).is_err());
+        assert!(insert(&mut app, &[unavailable], 2, Some(0)).is_err());
         assert_eq!(app.state.project.mixer[2].slots.iter().flatten().count(), 1);
     }
 
@@ -638,7 +796,7 @@ mod tests {
         app.state.plugdb.rebuild(&app.plugins);
         app.state.selected_mixer = 2;
         let factory = View::load();
-        insert(&mut app, &factory.chains[0], None).unwrap();
+        insert(&mut app, &factory.chains[..1], 2, None).unwrap();
         let source = plugins::fx_key(2, 0);
         let original = app.plugins.state(source).unwrap();
         app.state.project.mixer[2].slot_on[0] = false;

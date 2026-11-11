@@ -3,7 +3,7 @@ use crate::app::App;
  let dir=std::env::temp_dir().join(format!("audit-plugin-save-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();
  crate::backup::TEST_DIR.with(|d|*d.borrow_mut()=Some(dir.join("Backup")));
  let mut app=App::new(None);app.plugins=crate::plugins::Plugins::builtins();
- let row=crate::app::add_plugin_channel(&mut app.state.project,"Lemon Wave");let i=app.plugins.index_of("Lemon Wave").unwrap();app.plugins.create(row,i).unwrap();app.state.hosted_rows.push(row);
+ let row=crate::app::add_plugin_channel(&mut app.state.project,"ML Wave");let i=app.plugins.index_of("ML Wave").unwrap();app.plugins.create(row,i).unwrap();app.state.hosted_rows.push(row);
  let file=dir.join("song.lmn");app.save_to(file.clone());assert!(file.exists(),"{:?}",app.state.message);assert!(!app.unsaved());
  app.plugins.mark_edited(row);assert!(app.unsaved());assert!(app.changed_since_backup());
  let at=chrono::NaiveDate::from_ymd_opt(2026,11,3).unwrap().and_hms_opt(12,0,0).unwrap();assert!(app.write_backup(at).unwrap().is_ok());assert!(app.unsaved());assert!(!app.changed_since_backup());app.plugins.mark_edited(row);assert!(app.changed_since_backup());

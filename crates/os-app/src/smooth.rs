@@ -10,8 +10,8 @@
 //! them instead of repainting: 1 px at 100 %, 2 at 150 %).
 //!
 //! The state's scroll is always what is drawn: painting, hit-testing and every handler see the view as it is on
-//! screen, and only the target (where the wheel is taking the view) lives in the ease. Zooms, drags and jumps
-//! (following playback, a scroll bar drag) set the scroll directly: an ease whose axis moved under it ends. A press
+//! screen, and only the target lives in the ease. Mixer scrollbar drags set that target directly, while wheel
+//! steps accumulate. Zooms, other scrollbar drags and playback jumps set the scroll directly. A press
 //! of any mouse button stops every ease where it is, but on a scroll bar's arrow, which steps on from the target.
 // spec: ui/settings-choices.md "Display: Smoothing, Animation refresh rate, Transparent menus and windows (2026-10-16)"
 
@@ -74,25 +74,49 @@ pub struct Ease {
     origin: f64,
     /// What it showed last: anything else moving the axis ends the ease.
     shown: f32,
+    mixer_drag: bool,
 }
 
 impl Ease {
     pub fn new(axis: Axis, from: f32, target: f64) -> Ease {
         let f = f64::from(from);
-        Ease { axis, target, first: f, second: f, origin: f, shown: from }
+        // Give the mixer glide a little starting velocity so small wheel steps respond sooner.
+        let first = if axis == Axis::Bar(Scroll::MixerX) { f + 0.35 * (target - f) } else { f };
+        Ease { axis, target, first, second: f, origin: f, shown: from, mixer_drag: false }
     }
 
     /// One frame of `dt_ms` at Smoothing `value`: the first stage moves `share` of the way to the target, the second
     /// as much of the way to the first. Returns where the view is now (whole steps of `q` px from where the ease
     /// began; the target once within half a pixel) and whether it is there.
     pub fn step(&mut self, dt_ms: f64, value: f64, q: f64) -> (f64, bool) {
-        let k = share(dt_ms, value);
-        self.first += (self.target - self.first) * k;
-        self.second += (self.first - self.second) * k;
-        if (self.second - self.target).abs() < 0.5 {
+        let mixer = self.axis == Axis::Bar(Scroll::MixerX);
+        if mixer && value > 0.0 {
+            // Exact critically damped response: identical motion at different frame rates.
+            // Give the wide mixer strips more weight. Repeated wheel steps retain the current
+            // velocity, and the longer decay lets the bank coast after the last step.
+            // A grabbed thumb follows the pointer with 30% less glide time.
+            let decay_time = 0.36 * if self.mixer_drag { 0.7 } else { 1.0 };
+            let u = dt_ms.max(0.0) * std::f64::consts::LN_2 / (value * decay_time);
+            let decay = (-u).exp();
+            let first = self.first - self.target;
+            self.second = self.target + (self.second - self.target + first * u) * decay;
+            self.first = self.target + first * decay;
+        } else {
+            let k = share(dt_ms, value);
+            self.first += (self.target - self.first) * k;
+            self.second += (self.first - self.second) * k;
+        }
+        let snap = if mixer { q * 0.5 } else { 0.5 };
+        if (self.second - self.target).abs() < snap {
             return (self.target, true);
         }
-        (self.origin + ((self.second - self.origin) / q).round() * q, false)
+        let position = self.origin + ((self.second - self.origin) / q).round() * q;
+        let position = if mixer {
+            position.clamp(self.origin.min(self.target), self.origin.max(self.target))
+        } else {
+            position
+        };
+        (position, false)
     }
 }
 
@@ -174,14 +198,23 @@ impl App {
             if v1 == v0 {
                 continue;
             }
-            let target = self.smooth.list.iter().find(|e| e.axis == a).map_or(f64::from(v1), |e| e.target + f64::from(v1 - v0));
+            let delta = f64::from(v1 - v0);
+            let reverse = a == Axis::Bar(Scroll::MixerX) && self.smooth.list.iter()
+                .any(|e| e.axis == a && (e.target - f64::from(v0)) * delta < 0.0);
+            // Reversing the wheel discards pending travel in the old direction.
+            // Start from the visible strip so hit-testing and the new motion agree.
+            if reverse { self.smooth.list.retain(|e| e.axis != a); }
+            let target = self.smooth.list.iter().find(|e| e.axis == a).map_or(f64::from(v1), |e| e.target + delta);
             // As far as the axis can go.
             self.axis_set(a, target as f32);
             let target = f64::from(self.axis_get(a));
             self.axis_set(a, v0);
             let shown = self.axis_get(a);
             match self.smooth.list.iter_mut().find(|e| e.axis == a) {
-                Some(e) => e.target = target,
+                Some(e) => {
+                    e.target = target;
+                    e.mixer_drag = false;
+                }
                 None => self.smooth.list.push(Ease::new(a, shown, target)),
             }
         }
@@ -189,6 +222,44 @@ impl App {
             self.smooth.at = Some(Instant::now());
         }
         r
+    }
+
+    /// Follow an absolute scrollbar position, returning its clamped value for the drag anchor.
+    pub(crate) fn ease_mixer_drag_to(&mut self, offset: f32) -> f32 {
+        let axis = Axis::Bar(Scroll::MixerX);
+        let shown = self.scroll_get(Scroll::MixerX);
+        self.scroll_set(Scroll::MixerX, offset);
+        let target = self.scroll_get(Scroll::MixerX);
+        if smoothing() == 0.0 || target == shown {
+            self.smooth.list.retain(|e| e.axis != axis);
+            if !self.smooth.running() {
+                self.smooth.at = None;
+            }
+            if target != shown {
+                self.damage_scroll(Scroll::MixerX);
+            }
+            return target;
+        }
+
+        self.scroll_set(Scroll::MixerX, shown);
+        let target64 = f64::from(target);
+        let new_drag = || Ease { mixer_drag: true, ..Ease::new(axis, shown, target64) };
+        if let Some(ease) = self.smooth.list.iter_mut().find(|e| e.axis == axis) {
+            // Keep the glide when the pointer moves farther in the same direction.
+            // If the pointer comes back, don't coast past its new target.
+            let remaining = target64 - ease.second;
+            if ease.shown != shown || remaining * (ease.target - ease.second) <= 0.0 {
+                *ease = new_drag();
+            } else {
+                ease.first = ease.first.clamp(ease.second.min(target64), ease.second.max(target64));
+                ease.target = target64;
+                ease.mixer_drag = true;
+            }
+        } else {
+            self.smooth.list.push(new_drag());
+        }
+        self.smooth.at.get_or_insert_with(Instant::now);
+        target
     }
 
     /// The tick: every ease moves on by the time since it last moved.
@@ -204,6 +275,7 @@ impl App {
         let value = f64::from(smoothing());
         let pl = self.state.playlist_scroll;
         let blit = f64::from(self.playlist_blit_step().unwrap_or(1.0).max(1.0));
+        let mixer_pixel = 1.0 / f64::from(self.state.ui_scale.max(1.0));
         let mut list = std::mem::take(&mut self.smooth.list);
         let mut moved = Vec::new();
         list.retain_mut(|e| {
@@ -211,7 +283,11 @@ impl App {
             if (self.axis_get(e.axis) - e.shown).abs() > 0.01 {
                 return false;
             }
-            let q = if matches!(e.axis, Axis::Bar(Scroll::PlaylistX | Scroll::PlaylistY)) { blit } else { 1.0 };
+            let q = match e.axis {
+                Axis::Bar(Scroll::PlaylistX | Scroll::PlaylistY) => blit,
+                Axis::Bar(Scroll::MixerX) => mixer_pixel,
+                _ => 1.0,
+            };
             let (v, done) = e.step(dt_ms, value, q);
             self.axis_set(e.axis, v as f32);
             let shown = self.axis_get(e.axis);
@@ -257,6 +333,58 @@ mod tests {
     use crate::playlist::PGeom;
     use crate::prefs::{set_slider, SMOOTHING};
     use os_ui::Canvas;
+
+    #[test]
+    fn mixer_easing_is_frame_rate_independent_and_settles_without_overshoot() {
+        let axis = Axis::Bar(Scroll::MixerX);
+        for dt in [1000.0 / 30.0, 1000.0 / 60.0, 1000.0 / 144.0] {
+            let mut e = Ease::new(axis, 0.0, 200.0);
+            let mut previous = 0.0;
+            let mut finished = false;
+            for _ in 0..120 {
+                let (v, done) = e.step(dt, 128.0, 1.0);
+                assert!(v >= previous && v <= 200.0);
+                previous = v;
+                if done { finished = true; break; }
+            }
+            assert!(finished);
+        }
+        let mut coarse = Ease::new(axis, 0.0, 200.0);
+        let mut fine = coarse.clone();
+        let (early, done) = coarse.step(100.0, 128.0, 1.0);
+        assert!(!done && (85.0..=120.0).contains(&early), "default glide should have a soft start");
+        for _ in 0..10 { fine.step(10.0, 128.0, 1.0); }
+        assert!((coarse.second - fine.second).abs() < 1e-10);
+        let (coasting, done) = coarse.step(150.0, 128.0, 1.0);
+        assert!(!done && (175.0..=190.0).contains(&coasting), "default glide should still be coasting at 250 ms");
+        assert_eq!(coarse.step(10.0, 0.0, 1.0), (200.0, true));
+    }
+
+    #[test]
+    fn mixer_scroll_reversal_and_click_stop_at_visible_position() {
+        set_slider(&SMOOTHING, 128);
+        let mut app = App::new(None);
+        let mut c = Canvas::new(1280, 800, 1.0).unwrap();
+        app.state.z = vec![Win::Mixer];
+        app.paint(&mut c, None);
+        let axis = Axis::Bar(Scroll::MixerX);
+        app.eased(|app| app.scroll_set(Scroll::MixerX, 200.0));
+        app.ease_step(50.0);
+        let shown = app.state.mixer_scroll;
+        assert!(shown > 0.0 && shown < 200.0);
+        app.eased(|app| app.scroll_set(Scroll::MixerX, app.state.mixer_scroll - 20.0));
+        assert_eq!(app.smooth.of(axis).unwrap().target, f64::from(shown - 20.0));
+        app.ease_step(16.0);
+        assert!(app.state.mixer_scroll < shown);
+        app.smooth.stop();
+        let stopped = app.state.mixer_scroll;
+        app.ease_step(100.0);
+        assert_eq!(app.state.mixer_scroll, stopped);
+        assert!(!app.smooth.running());
+        app.eased(|app| app.scroll_set(Scroll::MixerX, -100.0));
+        app.ease_to_end();
+        assert_eq!(app.state.mixer_scroll, 0.0);
+    }
 
     /// What a 48 px notch at 128 showed, one value per frame (repeats dropped): the spec's measured sequence.
     const NOTCH_48: [f64; 22] =

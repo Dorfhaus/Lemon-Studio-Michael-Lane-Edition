@@ -197,7 +197,7 @@ fn near(a: f32, b: f32) -> bool { (a-b).abs() <= JOIN_EPS }
 fn overlap(a: f32, b: f32, c: f32, d: f32) -> bool { b.min(d)-a.max(c) > JOIN_EPS }
 fn minimum(s: &State, w: Win) -> (f32,f32) {
     if w==Win::Mixer&&crate::mixer::view(s)==crate::rack_mixer::VIEW {let (width,height)=w.min_size();(width,height.max(crate::rack_mixer::minimum_height(s).min(s.work_rect().h)))}
-    else if w == Win::ChannelRack { (views::rack::min_w(s), views::rack::MIN_H) } else { w.min_size() }
+    else if w == Win::ChannelRack { (views::rack::min_w(s), views::rack::min_h(s)) } else { w.min_size() }
 }
 pub fn layout(s: &State) -> Layout {
     s.z.iter().filter_map(|&w| {
@@ -360,7 +360,7 @@ impl App {
         }
         // The rack's side that doesn't fit, in whole steps or rows (`snap_size` rounds to the nearest: half one less).
         let r = views::rack::rect(s);
-        let fit = views::rack::snap_size(s, work.w - views::rack::STEP_W / 2.0, work.h - views::rack::ROW_H / 2.0);
+        let fit = views::rack::snap_size(s, work.w - views::rack::step_width(s) / 2.0, work.h - views::rack::row_pitch(s) / 2.0);
         if r.w > work.w {
             s.rack_size.0 = fit.0;
         }

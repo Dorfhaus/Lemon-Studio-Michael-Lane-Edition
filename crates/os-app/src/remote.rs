@@ -24,10 +24,16 @@ pub enum Mode {
     Latch,
     Inc,
     Stay,
+    RelativeCentered,
+    RelativeTwosComplement,
+    RelativeSignMagnitude,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 5] = [Mode::Default, Mode::Hold, Mode::Latch, Mode::Inc, Mode::Stay];
+    pub const ALL: [Mode; 8] = [
+        Mode::Default, Mode::Hold, Mode::Latch, Mode::Inc, Mode::Stay,
+        Mode::RelativeCentered, Mode::RelativeTwosComplement, Mode::RelativeSignMagnitude,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -36,6 +42,9 @@ impl Mode {
             Mode::Latch => "Latch",
             Mode::Inc => "Inc",
             Mode::Stay => "Stay",
+            Mode::RelativeCentered => "Relative (64 center)",
+            Mode::RelativeTwosComplement => "Relative (2's complement)",
+            Mode::RelativeSignMagnitude => "Relative (sign bit)",
         }
     }
 }
@@ -480,6 +489,17 @@ impl App {
         let pressed = v > 0;
         let val = match l.mode {
             Mode::Default | Mode::Hold => x,
+            Mode::RelativeCentered | Mode::RelativeTwosComplement | Mode::RelativeSignMagnitude => {
+                let steps = match l.mode {
+                    Mode::RelativeCentered => i16::from(v) - 64,
+                    Mode::RelativeTwosComplement if v >= 64 => i16::from(v) - 128,
+                    Mode::RelativeSignMagnitude if v >= 64 => -i16::from(v & 63),
+                    _ => i16::from(v),
+                };
+                if steps == 0 { return; }
+                let direction = if l.formula == Formula::Inverted { -1.0 } else { 1.0 };
+                (now + direction * f32::from(steps) / 127.0).clamp(0.0, 1.0)
+            }
             Mode::Stay if !pressed => return,
             Mode::Stay => x,
             Mode::Latch if !pressed => return,
@@ -668,6 +688,26 @@ pub fn is_open(s: &State) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controller_relative_encoders_move_from_the_current_parameter() {
+        let mut app = App::new(None);
+        let target = Target::Knob(KnobId::MasterVol);
+        let start = crate::typein::get(&app.state, target).unwrap();
+        for (mode, increment, decrement) in [
+            (Mode::RelativeCentered, 65, 63),
+            (Mode::RelativeTwosComplement, 1, 127),
+            (Mode::RelativeSignMagnitude, 1, 65),
+        ] {
+            let mut link = Link::new(0, 21, target);
+            link.mode = mode;
+            add(link, true);
+            assert!(app.remote_cc("Relative encoder", 0, 21, decrement));
+            assert!(crate::typein::get(&app.state, target).unwrap() < start);
+            assert!(app.remote_cc("Relative encoder", 0, 21, increment));
+            assert!((crate::typein::get(&app.state, target).unwrap() - start).abs() < 0.0001);
+        }
+    }
 
     #[test]
     fn links_are_kept() {

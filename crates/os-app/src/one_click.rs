@@ -460,7 +460,7 @@ mod tests {
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),48000,&vec![0.25;96000]).unwrap();
         let d=crate::mixer_recording::Destination{mixer:1,row:0,start:0,length:1,name:"Vocal".into(),color:None};
         app.place_take(&path,48000,48000,0,Some(&d),None);
-        let first=crate::playlist::clips(&app.state)[0];let row=first.track;
+        let first=crate::playlist::clips(&app.state)[0].clone();let row=first.track;
         app.place_take(&path,48000,48000,first.end(),Some(&d),None);
         let clips=crate::playlist::clips(&app.state);
         assert_eq!(clips.len(),2);assert!(clips.iter().all(|c|c.track==row&&!c.muted));

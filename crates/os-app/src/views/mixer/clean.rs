@@ -7,13 +7,13 @@ use std::f32::consts::PI;
 const LINE: Color = Color::rgb(0x191919);
 const FACE: Color = Color::rgb(0x292929);
 const INK: Color = Color::rgb(0xe2e2df);
-const YELLOW: Color = Color::rgb(0xe6ce65);
+const ACCENT: Color = Color::rgb(0x2096f3);
 
 pub(super) fn panel(ui: &mut Ui, r: Rect, base: Color, selected: bool) {
     ui.c.fill_rect(r, LINE);
     ui.c.fill_rect(r.inset(1.), FACE.mix(base, 0.18));
     if selected {
-        ui.c.stroke_rrect(r.inset(1.), 0., 1., YELLOW);
+        ui.c.stroke_rrect(r.inset(1.), 0., 1., ACCENT);
     }
 }
 pub(super) fn well(ui: &mut Ui, r: Rect) {
@@ -72,7 +72,7 @@ pub(super) fn button(ui: &mut Ui, r: Rect, on: bool, hover: bool, col: Color) ->
     }
 }
 pub(super) fn signal_switch(ui: &mut Ui, r: Rect, on: bool, hover: bool, swap: bool) {
-    let ink = button(ui, r, on, hover, YELLOW);
+    let ink = button(ui, r, on, hover, ACCENT);
     let (x, y) = (r.cx(), r.cy());
     if swap {
         for s in [-1., 1.] {
@@ -85,14 +85,14 @@ pub(super) fn signal_switch(ui: &mut Ui, r: Rect, on: bool, hover: bool, swap: b
     }
 }
 pub(super) fn rocker(ui: &mut Ui, r: Rect, on: bool, hover: bool) {
-    button(ui, r, false, hover, YELLOW);
+    button(ui, r, false, hover, ACCENT);
     let half = Rect::new(
         r.x + 2.,
         if on { r.y + 2. } else { r.cy() },
         r.w - 4.,
         r.h * 0.5 - 2.,
     );
-    ui.c.fill_rect(half, if on { YELLOW } else { Color::rgb(0x888888) });
+    ui.c.fill_rect(half, if on { ACCENT } else { Color::rgb(0x888888) });
 }
 pub(super) fn vu(ui: &mut Ui, r: Rect, levels: [f32; 2], clipped: bool, _selected: bool) {
     if !ui.c.visible(r.outset(1.)) {

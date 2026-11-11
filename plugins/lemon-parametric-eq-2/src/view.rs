@@ -13,13 +13,12 @@ use std::f32::consts::PI;
 use os_engine::effects::eq::{self, BANDS, Options, Settings, has_level};
 use os_theme::Color;
 use os_ui::kit;
-use os_ui::kit::lemon;
 use os_ui::{Canvas, Font, Rect};
 
 use crate::params::{self, Opt, byte, flag};
 
-pub const W: u32 = 1000;
-pub const H: u32 = 620;
+pub const W: u32 = 1120;
+pub const H: u32 = 700;
 pub const MIN_W: u32 = 640;
 pub const MIN_H: u32 = 420;
 mod modern;
@@ -45,7 +44,7 @@ pub const COLS: usize = 500;
 
 /// The band colours: the original's hues as light pastels on the dark greys.
 pub const BAND_COLORS: [u32; BANDS] = [
-    0xc6a6f2, 0xf2a6d4, 0xf5b29a, 0xe9d27e, 0xacdd90, 0x92d9c7, 0xa1c0f2,
+    0xab9df2, 0xeb9ec8, 0xf0ac91, 0x72c8f8, 0xadd88c, 0x77d5c4, 0x8baef6,
 ];
 
 pub fn band_color(k: usize) -> Color {
@@ -56,6 +55,10 @@ pub fn band_color(k: usize) -> Color {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Graph,
+    SelectBand(usize),
+    FitRange,
+    ResetSelected,
+    InvertGain,
     Q(usize),
     Undo,
     Redo,
@@ -122,6 +125,7 @@ pub struct ViewState {
     pub show_dynamics: bool,
     pub details_open: bool,
     pub hide_band_card: bool,
+    pub hide_band_overview: bool,
     pub audition: Option<usize>,
     pub harsh_open: bool,
     pub reduction: [f32; 8],

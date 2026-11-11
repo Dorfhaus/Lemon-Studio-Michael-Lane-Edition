@@ -52,25 +52,25 @@ fn route(s: &State,c: &Clip)->u16 {
 pub fn enable(s: &mut State,row:u16)->String {
     if pl::track_info(s,row).is_some_and(|t|t.comp.is_some()) {return "This track already has take lanes".into();}
     if pl::track_info(s,row).is_some_and(|t|t.locked||t.grouped||t.frozen.is_some()) || pl::is_group_track(s,row) {return "Choose an unlocked, ungrouped audio track".into();}
-    let clips:Vec<_>=pl::clips(s).iter().filter(|c|c.track==row && pl::source_kind(s,c.source)!=PickKind::Automation).copied().collect();
+    let clips:Vec<_>=pl::clips(s).iter().filter(|c|c.track==row && pl::source_kind(s,c.source)!=PickKind::Automation).cloned().collect();
     if clips.is_empty() || clips.iter().any(|c|pl::source_kind(s,c.source)!=PickKind::Audio) {return "Choose a track containing audio clips".into();}
     let mixer=route(s,&clips[0]);
     if clips.iter().any(|c|route(s,c)!=mixer) {return "The takes must use the same mixer insert".into();}
     if !capacity(s,clips.len()) || row as usize+clips.len()>=pl::TRACKS as usize {return "Not enough empty tracks at the bottom for take lanes".into();}
     pl::snapshot_as(s,"Create take lanes");ensure(s);
     pl::arr_mut(s).tracks[row as usize].comp=Some(mixer);
-    let kept=pl::clips(s).iter().filter(|c|c.track!=row || pl::source_kind(s,c.source)!=PickKind::Audio).copied().collect();
+    let kept=pl::clips(s).iter().filter(|c|c.track!=row || pl::source_kind(s,c.source)!=PickKind::Audio).cloned().collect();
     pl::arr_mut(s).clips=kept;
     for mut c in clips {
         c.track=child(s,row);c.muted=true;c.set_id(0);
-        pl::arr_mut(s).clips.push(c);
-        replace(s,row,c,c.position,c.end());
+        pl::arr_mut(s).clips.push(c.clone());
+        replace(s,row,c.clone(),c.position,c.end());
     }
     s.piano.dirty=true;
     "Take lanes created. Select a time range, then right-click a take to use it in the comp".into()
 }
 fn crop(s:&State,c:Clip,a:u32,b:u32)->Clip {
-    let mut out=c;
+    let mut out=c.clone();
     let w=pl::window(s,&c).0;
     out.window=Some((w+pl::to_src(s,c.source,(a-c.position) as f64),w+pl::to_src(s,c.source,(b-c.position) as f64)));
     out.position=a;out.length=b-a;out.set_id(0);out
@@ -78,18 +78,18 @@ fn crop(s:&State,c:Clip,a:u32,b:u32)->Clip {
 fn replace(s:&mut State,p:u16,c:Clip,a:u32,b:u32) {
     // Remove previously generated overlaps before making another edit, then rebuild
     // joins once. This prevents successive choices accumulating tiny old fragments.
-    let mut leader:Vec<_>=pl::clips(s).iter().filter(|c|c.track==p && pl::source_kind(s,c.source)==PickKind::Audio).copied().collect();
+    let mut leader:Vec<_>=pl::clips(s).iter().filter(|c|c.track==p && pl::source_kind(s,c.source)==PickKind::Audio).cloned().collect();
     leader.sort_by_key(|c|c.position);
     let mut prior_end=0;
     for old in &mut leader {
-        if old.position<prior_end && prior_end<old.end() {*old=crop(s,*old,prior_end,old.end());}
+        if old.position<prior_end && prior_end<old.end() {*old=crop(s,old.clone(),prior_end,old.end());}
         old.set_fade_in(None);old.set_fade_out(None);prior_end=old.end();
     }
-    let mut result:Vec<_>=pl::clips(s).iter().filter(|c|c.track!=p || pl::source_kind(s,c.source)!=PickKind::Audio).copied().collect();
+    let mut result:Vec<_>=pl::clips(s).iter().filter(|c|c.track!=p || pl::source_kind(s,c.source)!=PickKind::Audio).cloned().collect();
     for old in leader {
         if old.track!=p || old.end()<=a || old.position>=b {result.push(old);continue;}
-        if old.position<a {result.push(crop(s,old,old.position,a));}
-        if old.end()>b {result.push(crop(s,old,b,old.end()));}
+        if old.position<a {result.push(crop(s,old.clone(),old.position,a));}
+        if old.end()>b {result.push(crop(s,old.clone(),b,old.end()));}
     }
     let mut new=crop(s,c,a,b);new.track=p;new.muted=false;new.set_fade_in(None);new.set_fade_out(None);result.push(new);
     // A short overlap at adjacent source changes, using audio before the incoming edit.
@@ -114,10 +114,10 @@ fn replace(s:&mut State,p:u16,c:Clip,a:u32,b:u32) {
 }
 /// Nominal comp sections, excluding the incoming overlap used for fades.
 pub fn sections(s:&State,p:u16)->Vec<Clip> {
-    let mut v:Vec<_>=pl::clips(s).iter().filter(|c|c.track==p && pl::source_kind(s,c.source)==PickKind::Audio).copied().collect();
+    let mut v:Vec<_>=pl::clips(s).iter().filter(|c|c.track==p && pl::source_kind(s,c.source)==PickKind::Audio).cloned().collect();
     v.sort_by_key(|c|c.position);
     let mut end=0;
-    for c in &mut v {if c.position<end && end<c.end(){*c=crop(s,*c,end,c.end());}end=c.end();}
+    for c in &mut v {if c.position<end && end<c.end(){*c=crop(s,c.clone(),end,c.end());}end=c.end();}
     v
 }
 pub fn section_at(s:&State,i:usize,tick:u32)->Option<(u32,u32)> {
@@ -138,12 +138,12 @@ pub fn used(s:&State,c:&Clip)->Vec<(u32,u32)> {
     }).collect()
 }
 pub fn choose(s:&mut State,i:usize,selection:bool)->String {
-    let Some(c)=pl::clips(s).get(i).copied() else{return "Take no longer exists".into();};
+    let Some(c)=pl::clips(s).get(i).cloned() else{return "Take no longer exists".into();};
     let range=if selection {let Some(r)=s.playlist.range else{return "Select a time range in the Playlist ruler first".into();};r}else{(c.position,c.end())};
     choose_range(s,i,range)
 }
 pub fn choose_range(s:&mut State,i:usize,(a,b):(u32,u32))->String {
-    let Some(c)=pl::clips(s).get(i).copied() else{return "Take no longer exists".into();};
+    let Some(c)=pl::clips(s).get(i).cloned() else{return "Take no longer exists".into();};
     if pl::source_kind(s,c.source)!=PickKind::Audio {return "Choose an audio take, not automation".into();}
     let Some(p)=parent(s,c.track) else{return "Choose a clip in a take lane".into();};
     if pl::track_info(s,p).is_some_and(|t|t.locked || t.frozen.is_some()) {return "Unlock or unfreeze the comp track before choosing another take".into();}
@@ -156,17 +156,17 @@ pub fn choose_range(s:&mut State,i:usize,(a,b):(u32,u32))->String {
 /// Turn the newly recorded clip into source lanes, optionally unwrapping a fixed-tempo loop.
 /// The recorder retains one complete WAV; each lane addresses its own source window.
 pub fn recorded(s:&mut State,i:usize,mixer:u16,loop_span:Option<(u32,u32)>)->Result<(),String> {
-    let c=pl::clips(s)[i];
+    let c=pl::clips(s)[i].clone();
     let mut takes=Vec::new();
     if let Some((a,b))=loop_span.filter(|&(a,b)|b>a&&c.position>=a&&c.position<b) {
         let mut used=0;
         while used<c.length {
             let start=if used==0 {c.position}else{a};
             let n=(b-start).min(c.length-used);
-            let mut take=crop(s,c,c.position+used,c.position+used+n);take.position=start;takes.push(take);used+=n;
+            let mut take=crop(s,c.clone(),c.position+used,c.position+used+n);take.position=start;takes.push(take);used+=n;
             if takes.len()>=pl::TRACKS as usize {return Err("Recording retained as one clip: too many loop takes for the Playlist".into());}
         }
-    }else{takes.push(c);}
+    }else{takes.push(c.clone());}
     let p=c.track;
     let overlaps=pl::clips(s).iter().enumerate().any(|(j,old)|j!=i && old.track==p && pl::source_kind(s,old.source)==PickKind::Audio && takes.iter().any(|t|old.position<t.end()&&old.end()>t.position));
     // A first pass is the ordinary audible clip, not a comp plus a duplicate source lane.
@@ -209,22 +209,22 @@ mod tests {
         let ch=pl::create_automation(s,os_model::target::mixer(1,os_model::target::MIXER_VOLUME),"Volume",0.8);
         {let c=pl::arr_mut(s).clips.iter_mut().find(|c|c.source==ClipSource::Channel(ch)).unwrap();c.track=0;c.position=0;c.length=384;}
         s.playlist.automation_views.clear();s.playlist.automation_owners.insert(ch,0);s.playlist.automation_views.insert(0,ch);
-        let auto=pl::clips(s).iter().find(|c|c.source==ClipSource::Channel(ch)).copied().unwrap();
+        let auto=pl::clips(s).iter().find(|c|c.source==ClipSource::Channel(ch)).cloned().unwrap();
         let curves=s.project.automations.clone();
         let i=pl::clips(s).iter().position(|c|c.track==1&&pl::source_kind(s,c.source)==PickKind::Audio).unwrap();
         assert!(choose_range(s,i,(96,192)).starts_with("Comp updated"));
-        assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).copied().collect::<Vec<_>>(),vec![auto],"comp must leave automation intact");
+        assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).cloned().collect::<Vec<_>>(),vec![auto.clone()],"comp must leave automation intact");
         assert_eq!(s.project.automations,curves);
-        let audio:Vec<_>=pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).copied().collect();
+        let audio:Vec<_>=pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).cloned().collect();
         s.playlist.automation_views.insert(0,ch);
         pl::snapshot(s);assert_eq!(pl::slice(s,48,0,0),1);
-        assert_eq!(pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).copied().collect::<Vec<_>>(),audio,"automation cut must leave audio intact");
-        let cut_auto:Vec<_>=pl::clips(s).iter().filter(|c|c.source==auto.source).copied().collect();assert_eq!(cut_auto.len(),2);
+        assert_eq!(pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).cloned().collect::<Vec<_>>(),audio,"automation cut must leave audio intact");
+        let cut_auto:Vec<_>=pl::clips(s).iter().filter(|c|c.source==auto.source).cloned().collect();assert_eq!(cut_auto.len(),2);
         s.playlist.automation_views.remove(&0);
         pl::snapshot(s);assert_eq!(pl::slice(s,24,0,0),1);
-        assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).copied().collect::<Vec<_>>(),cut_auto,"hidden automation must not be cut");
-        crate::history::undo(s);assert_eq!(pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).copied().collect::<Vec<_>>(),audio);
-        crate::history::undo(s);assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).copied().collect::<Vec<_>>(),vec![auto]);
+        assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).cloned().collect::<Vec<_>>(),cut_auto,"hidden automation must not be cut");
+        crate::history::undo(s);assert_eq!(pl::clips(s).iter().filter(|c|pl::source_kind(s,c.source)==PickKind::Audio).cloned().collect::<Vec<_>>(),audio);
+        crate::history::undo(s);assert_eq!(pl::clips(s).iter().filter(|c|c.source==auto.source).cloned().collect::<Vec<_>>(),vec![auto]);
     }
     #[test]
     fn takes_comp_selection_undo_and_save_preserve_sources() {
@@ -233,7 +233,7 @@ mod tests {
         assert!(enable(s,0).starts_with("Take lanes created"));
         assert_eq!(parent(s,1),Some(0));assert_eq!(parent(s,2),Some(0));
         assert!(!pl::track_on(s,1)&&!pl::track_on(s,2));
-        let originals:Vec<_>=pl::clips(s).iter().filter(|c|c.track>0).copied().collect();
+        let originals:Vec<_>=pl::clips(s).iter().filter(|c|c.track>0).cloned().collect();
         assert!(originals.iter().all(|c|c.muted&&c.length==384));
         let i=pl::clips(s).iter().position(|c|c.track==1).unwrap();
         s.playlist.range=Some((96,192));
@@ -250,7 +250,7 @@ mod tests {
         let picked=comp.iter().find(|c|c.source==ClipSource::Channel(0)).unwrap();
         assert!(picked.position<=96&&picked.end()==192);
         assert!(picked.fade_in().is_some()&&picked.fade_out().is_some());
-        assert_eq!(pl::clips(s).iter().filter(|c|c.track>0).copied().collect::<Vec<_>>(),originals);
+        assert_eq!(pl::clips(s).iter().filter(|c|c.track>0).cloned().collect::<Vec<_>>(),originals);
         for _ in 0..4 {assert!(crate::history::undo(s).is_some());}assert_eq!(pl::clips(s).iter().filter(|c|c.track==0).count(),1);
         for _ in 0..4 {crate::history::redo(s);}assert_eq!(pl::clips(s),edited);
         let mut file=os_flp::project::create(&s.project).unwrap();
@@ -312,14 +312,14 @@ mod tests {
     fn first_take_stays_normal_and_only_overlaps_create_extra_lanes() {
         let mut app=app();let s=&mut app.state;
         s.project.channels[0].mixer_track=1;
-        let first=clip(0,384);pl::arr_mut(s).clips=vec![first];
+        let first=clip(0,384);pl::arr_mut(s).clips=vec![first.clone()];
         recorded(s,0,1,None).unwrap();
-        assert_eq!(pl::clips(s),&[first]);assert_eq!(for_mixer(s,1),None);
+        assert_eq!(pl::clips(s),&[first.clone()]);assert_eq!(for_mixer(s,1),None);
         assert_eq!(recording_target(s,1,384,500),Some(0),"continue on the same row");
         assert_eq!(recording_target(s,2,0,192),None,"other mixer stays separate");
         assert_eq!(recording_target(s,1,96,192),Some(0));
         let mut second=clip(1,96);second.position=96;
-        pl::arr_mut(s).clips.push(second);recorded(s,1,1,None).unwrap();
+        pl::arr_mut(s).clips.push(second.clone());recorded(s,1,1,None).unwrap();
         assert_eq!(pl::clips(s).len(),2);assert_eq!(pl::clips(s)[0],first);
         assert_eq!(pl::clips(s)[1].track,1);assert!(pl::clips(s)[1].muted);
         assert_eq!(pl::track_info(s,1).unwrap().name.as_deref(),Some("Take 2"));

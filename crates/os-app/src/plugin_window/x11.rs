@@ -201,7 +201,8 @@ impl FrameWindow {
         let owner = owner as xproto::Window;
         set_owner(&conn, owner);
         let docked = owner != 0 && !detached;
-        let state = State::new(info, editor, !docked);
+        let mut state = State::new(info, editor, !docked);
+        state.can_attach = owner != 0;
         let (parent, at) = if docked { (owner, from_root(&conn, owner, pos)) } else { (conn.root, (0, 0)) };
         let (w, h) = state.size();
         let ay = state.area_y();
@@ -312,9 +313,7 @@ impl FrameWindow {
         }
         {
             let mut st = f.state.borrow_mut();
-            st.detached = on;
-            st.clip = None;
-            st.clip_key = None;
+            st.change_dock_mode(on);
         }
         let (c, root) = (&f.conn.c, f.conn.root);
         let screen = f.to_screen(0.0, 0.0);
@@ -353,8 +352,25 @@ impl FrameWindow {
         if self.detached() {
             return;
         }
-        let changed = self.f.state.borrow().clip.as_ref().is_none_or(|c| c.0 != work);
-        self.f.state.borrow_mut().clip = Some((work, covers.to_vec()));
+        let mut state = self.f.state.borrow_mut();
+        let changed = state.clip.as_ref().is_none_or(|c| c.0 != work);
+        let fit = std::mem::take(&mut state.fit_on_attach);
+        state.clip = Some((work, covers.to_vec()));
+        drop(state);
+        if fit {
+            let (x, y) = self.f.pos.get();
+            let (w, h) = {
+                let canvas = self.f.canvas.borrow();
+                (canvas.pixmap.width() as i32, canvas.pixmap.height() as i32)
+            };
+            let at = crate::win_clamp::inside_px([x, y, x + w, y + h], work);
+            if at != (x, y) {
+                self.f.pos.set(at);
+                let _ = self.f.conn.c.configure_window(self.f.win, &ConfigureWindowAux::new().x(at.0).y(at.1));
+                let _ = self.f.conn.c.flush();
+                expose();
+            }
+        }
         if changed {
             self.f.refit();
         }
@@ -390,8 +406,7 @@ impl FrameWindow {
 
     pub fn set_info(&self, info: ChannelInfo) {
         let mut st = self.f.state.borrow_mut();
-        if st.info != info && st.drag.is_none() && st.misc_ui.drag.is_none() {
-            st.info = info;
+        if st.set_info(info) {
             self.f.dirty.set(true);
         }
     }

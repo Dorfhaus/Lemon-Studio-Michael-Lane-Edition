@@ -120,11 +120,25 @@ pub fn clock(canvas: &mut Canvas, area: Rect, bar: u32, step: u32, tick: u32) {
 
 /// Metal surfaces drawn at the destination scale, shared across the vintage workspace.
 pub fn metal(c:&mut Canvas,r:Rect,face:Color) {
-    c.fill_rect(r,Color::rgb(0x202b31));
-    c.fill_rect_gradient(r.inset(1.),face.shade(0.13),face.shade(-0.12),0.);
-    c.fill_rect(Rect::new(r.x+1.,r.y+1.,r.w-2.,1.),face.shade(0.36));
-    c.fill_rect(Rect::new(r.x+1.,r.y+2.,1.,r.h-3.),face.shade(0.22));
-    c.fill_rect(Rect::new(r.right()-2.,r.y+2.,1.,r.h-3.),face.shade(-0.35));
+    metal_face(c, r, face, 1.0);
+}
+
+/// Compact Mixer strips share snapped device edges and use a fixed bevel width at those edges.
+pub(crate) fn mixer_strip_face(c: &mut Canvas, r: Rect, face: Color) {
+    let scale = c.scale;
+    let (left, right) = os_ui::snap_span(r.x, r.w, scale);
+    let (_, border) = os_ui::snap_span(0.0, 1.0, scale);
+    let snapped = Rect::new(left as f32 / scale, r.y, (right - left) as f32 / scale, r.h);
+    metal_face(c, snapped, face, border as f32 / scale);
+}
+
+fn metal_face(c: &mut Canvas, r: Rect, face: Color, edge: f32) {
+    c.fill_rect(r, Color::rgb(0x202b31));
+    let inner = Rect::new(r.x + edge, r.y + 1.0, r.w - 2.0 * edge, r.h - 2.0);
+    c.fill_rect_gradient(inner, face.shade(0.13), face.shade(-0.12), 0.0);
+    c.fill_rect(Rect::new(inner.x, inner.y, inner.w, 1.0), face.shade(0.36));
+    c.fill_rect(Rect::new(inner.x, r.y + 2.0, edge, r.h - 3.0), face.shade(0.22));
+    c.fill_rect(Rect::new(r.right() - 2.0 * edge, r.y + 2.0, edge, r.h - 3.0), face.shade(-0.35));
 }
 pub fn recess(c:&mut Canvas,r:Rect,face:Color) {
     c.fill_rect(r,Color::rgb(0x96a3a6));

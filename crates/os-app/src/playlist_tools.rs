@@ -233,7 +233,7 @@ pub fn cursor(app: &App) -> Option<Cursor> {
         }
         if app.drag.is_none() && !matches!(tool,PlTool::Select|PlTool::Comp)
             && let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1) {
-            let clip=pl::clips(&app.state)[i];let r=g.clip_rect(&clip);
+            let clip=pl::clips(&app.state)[i].clone();let r=g.clip_rect(&clip);
             let menu=app.mouse.0<r.x+14. && app.mouse.1<r.y+pl::TITLE_H && r.w>20.;
             if menu && pl::source_kind(&app.state,clip.source)==PickKind::Audio
                 && !(app.resize_cursor && matches!(tool,PlTool::Draw|PlTool::Paint)) {
@@ -262,7 +262,7 @@ pub fn cursor(app: &App) -> Option<Cursor> {
         if let Some(grid)=app.pl_grid() {
             let g=pl::PGeom::new(&app.state,grid);
             if let Some(i)=pl::clip_at(&app.state,&g,app.mouse.0,app.mouse.1) {
-                let clip=pl::clips(&app.state)[i];
+                let clip=pl::clips(&app.state)[i].clone();
                 let automation=matches!(clip.source,ClipSource::Channel(id) if app.state.project.automation(id).is_some());
                 let rect=g.clip_rect(&clip);
                 let menu=app.mouse.0<rect.x+14. && app.mouse.1<rect.y+pl::TITLE_H && rect.w>20.;
@@ -543,6 +543,10 @@ mod tests {
             for scale in [0.85,1.0,1.5,2.0,4.0] {
                 for phase in [0,1,2,3,4,GRAB,GRABBING,RESIZE,COPYING,STRETCH,GAIN] {
                     let c=cursor_canvas(tool,phase,scale).unwrap();
+                    assert!(c.pixmap.pixels().iter().any(|p| {
+                        let p = p.demultiply();
+                        p.alpha() > 100 && p.blue() > 180 && p.red() < 45
+                    }), "{tool:?} phase {phase} scale {scale}: blue cursor ink");
                     let opaque=c.pixmap.pixels().iter().filter(|p| p.alpha()>100).count();
                     assert!(opaque as f32>40.*scale*scale,"{tool:?} phase {phase} scale {scale}: visible tool artwork, not just a hotspot");
                     assert!(c.pixmap.pixels().iter().all(|p| p.red()<=p.alpha() && p.green()<=p.alpha() && p.blue()<=p.alpha()),"valid premultiplied pixels");

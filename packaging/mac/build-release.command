@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 [[ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" != 1 ]] || { echo 'Use a native terminal, not Rosetta.'; exit 1; }
 export PATH="$HOME/.cargo/bin:$PATH"
 export OPENSTUDIO_NO_PLUGIN_BUILD=1
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/lemon-studio-remote-target}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/lemon-public-builds/mac-${LEMON_MAC_ARCH:-$(uname -m)}}"
+python3 "$ROOT/packaging/workflow/storage.py" --prepare-build "$CARGO_TARGET_DIR"
 unset CARGO_BUILD_TARGET
 xcode-select -p >/dev/null
 cd "$ROOT"

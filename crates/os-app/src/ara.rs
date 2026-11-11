@@ -270,7 +270,7 @@ pub fn playback_request(app:&mut App,row:usize,request:os_host::PlaybackRequest)
     let all=pl::clips(&app.state);
     let at=if app.transport.playing()&&app.transport.song(){app.transport.tick().max(0.) as u32}else{app.state.playlist.pos};
     let selected=app.state.playlist.sel.iter().filter_map(|&i|all.get(i)).find(matches);
-    let Some(clip)=selected.or_else(||all.iter().filter(matches).find(|c|c.position<=at&&at<c.end())).or_else(||all.iter().find(matches)).copied() else {return};
+    let Some(clip)=selected.or_else(||all.iter().filter(matches).find(|c|c.position<=at&&at<c.end())).or_else(||all.iter().find(matches)).cloned() else {return};
     let tempo=app.state.project.tick_tempo(app.state.tempo);
     let tick=|seconds| source_tick(&clip,seconds,app.state.project.ppq,tempo);
     // Resolve before mutating app to avoid holding references across a restart.

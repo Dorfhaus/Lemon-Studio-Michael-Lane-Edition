@@ -13,7 +13,7 @@ pub(super) fn panel(ui: &mut Ui, r: Rect, base: Color, selected: bool) {
     let _=base;
     super::material::surface(ui,face,super::material::Finish::Graphite);
     ui.c.stroke_rrect(face,3.,0.7,Color::rgb(0x77828a).with_alpha(110));
-    if selected {ui.c.stroke_rrect(face,3.,1.,Color::rgb(0xe4c74f));}
+    if selected {ui.c.stroke_rrect(face,3.,1.,Color::rgb(0x2096f3));}
 }
 
 pub(super) fn well(ui: &mut Ui, r: Rect) {

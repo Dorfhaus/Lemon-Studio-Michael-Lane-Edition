@@ -14,7 +14,7 @@ struct Pane {
     motion:Option<(f32,f32)>, hover:Option<Action>, refresh_editors:bool, frame:MainWin, mouse:(f32,f32), mods:ModifiersState, last:Instant, painted:Instant,
 }
 fn key(w:Win)-> &'static str {match w {Win::Browser=>"native_browser",Win::Mixer=>"native_mixer",Win::PianoRoll=>"native_piano",_=>"native_playlist"}}
-fn title(w:Win)-> &'static str {match w {Win::Browser=>"Lemon Studio - Browser",Win::Mixer=>"Lemon Studio - Mixer",Win::PianoRoll=>"Lemon Studio - Piano roll",_=>"Lemon Studio - Playlist"}}
+fn title(w:Win)-> &'static str {match w {Win::Browser=>"ML Studio - Browser",Win::Mixer=>"ML Studio - Mixer",Win::PianoRoll=>"ML Studio - Piano roll",_=>"ML Studio - Playlist"}}
 impl Windows {
     pub fn flush_stems(&mut self,app:&mut App){
         if let Some((track,tick,files))=self.stems.take(){app.import_stems(files,track,tick);self.changed=true;}

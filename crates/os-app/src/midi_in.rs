@@ -36,11 +36,16 @@ pub enum Msg {
     Stop,
     /// Song Position Pointer, in 16ths.
     Spp(u16),
+    /// A single command from Universal Real-Time MIDI Machine Control.
+    Machine(u8),
 }
 
 /// The message in `bytes` (one whole short message), if it is one Lemon Studio uses. Note on with velocity 0 is a note
-/// off; clock, active sensing, SysEx and MTC are not messages here (the clock is `ExtClock`'s).
+/// off. Clock is handled separately. Only short MIDI Machine Control commands are accepted from SysEx.
 pub fn parse(bytes: &[u8]) -> Option<Msg> {
+    if let [0xf0, 0x7f, 0..=127, 0x06, cmd @ 0x01..=0x07, 0xf7] = bytes {
+        return Some(Msg::Machine(*cmd));
+    }
     let (&status, rest) = bytes.split_first()?;
     let d1 = rest.first().map_or(0, |b| b & 0x7f);
     let d2 = rest.get(1).map_or(0, |b| b & 0x7f);
@@ -204,7 +209,7 @@ pub struct MidiIn {
 }
 
 /// The name Lemon Studio's connections show in the system's MIDI routing (ALSA / JACK clients).
-pub const CLIENT: &str = "Lemon Studio";
+pub const CLIENT: &str = "ML Studio";
 
 /// How often the watcher lists the devices.
 const WATCH: Duration = Duration::from_secs(2);
@@ -300,15 +305,15 @@ impl MidiIn {
     /// Opens the `i`-th input (named `name` in `unique`'s list).
     fn connect(&self, i: usize, name: &str) -> Option<midir::MidiInputConnection<()>> {
         let mut input = midir::MidiInput::new(CLIENT).ok()?;
-        // SysEx and active sensing never reach the UI; the clock does (External clock sync).
-        input.ignore(midir::Ignore::SysexAndActiveSense);
+        // Only parsed MMC commands reach the UI. Other SysEx is ignored.
+        input.ignore(midir::Ignore::ActiveSense);
         let port = input.ports().into_iter().nth(i)?;
         let (tx, wake, clock): (Sender<Ev>, fn(), Arc<ExtClock>) = (self.tx.clone(), self.wake, self.clock.clone());
         let dev: Arc<str> = Arc::from(name);
         // Runs on the driver's thread: only queues the message and wakes the UI.
         let take = move |_stamp: u64, bytes: &[u8], _: &mut ()| {
             let Some(&status) = bytes.first() else { return };
-            if status >= 0xf0 && !clock.feed(&dev, status, bytes, wake) {
+            if status >= 0xf0 && status != 0xf0 && !clock.feed(&dev, status, bytes, wake) {
                 // Real-time and system messages of other devices are not used.
                 return;
             }
@@ -399,7 +404,7 @@ mod tests {
         }
         let midi = MidiIn::open(wake);
         let names = midi.open_names();
-        let out = midir::MidiOutput::new("Lemon Studio test").expect("MIDI output");
+        let out = midir::MidiOutput::new("ML Studio test").expect("MIDI output");
         let port = out.ports().into_iter().find(|p| out.port_name(p).is_ok_and(|n| names.contains(&n)));
         let Some(port) = port else { panic!("no loopback port among the inputs {names:?}") };
         let mut conn = out.connect(&port, "loopback").expect("open the loopback output");

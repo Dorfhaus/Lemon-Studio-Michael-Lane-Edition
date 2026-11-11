@@ -92,6 +92,7 @@ pub enum Item {
     /// An effect (index into `Plugins::effects`).
     Effect(usize),
     Effects(Vec<usize>),
+    EffectChains(std::sync::Arc<[crate::plugin_picker::chains::Chain]>),
     /// A non-audio file in a dropped folder; MIDI files can be dragged to import.
     File(String),
     /// A parameter of a hosted plugin: hosted key, parameter index (spec: plugins/plugin-parameters.md §6).

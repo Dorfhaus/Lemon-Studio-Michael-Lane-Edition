@@ -88,8 +88,14 @@ pub fn grid_rect(s: &State) -> Rect {
     layout(r, s.piano.split).grid
 }
 
+const TOOL_ROW_END: f32 = 432.0;
+// The Detach button begins 87 px from the right edge.
+const TITLE_BUTTON_SPACE: f32 = 92.0;
+const CHANNEL_SPACE: f32 = 88.0;
+
 fn harmony_width(r: Rect) -> f32 {
-    if r.w>=740. {196.} else if r.w>=585. {132.} else {0.}
+    let room = r.w - TOOL_ROW_END - TITLE_BUTTON_SPACE - CHANNEL_SPACE;
+    if room >= 196.0 { 196.0 } else if room >= 132.0 { 132.0 } else { 0.0 }
 }
 
 fn harmony_boxes(ui:&mut Ui,s:&State,x:f32,y:f32,w:f32,h:f32) {
@@ -109,32 +115,10 @@ fn harmony_boxes(ui:&mut Ui,s:&State,x:f32,y:f32,w:f32,h:f32) {
 pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let t = ui.t;
     let channel = s.project.channels.get(s.selected_channel);
-    let name = channel.and_then(|c| c.name.clone()).unwrap_or_else(|| "(none)".into());
-    let title = "";
     window_body(ui, r);
     let outer = r;
     let floating = !s.wins[Win::PianoRoll.slot().unwrap_or(0)].maxed && r.h >= 2.0 * crate::app::TITLE_H;
-    let (r, _) = super::framed(ui, s, Win::PianoRoll, r, title, 408.0, true);
-    // The target channel: name and arrow, orange with a ▾ while hovered (spec: ui/piano-target-channel.md §1).
-    let name=format!("{}: {name}", crate::prefs::language::Language::current().text("Piano roll"));
-    let font=Font::new(12);
-    let nx=r.x+harmony_width(r)+if r.w>=572. {459.}else{415.};
-    if r.w>=572. {
-        for (label,cmd,on,x) in [("M",crate::piano_tools::NCmd::ChannelMute,channel.is_some_and(|c|!c.enabled),409.),("S",crate::piano_tools::NCmd::ChannelSolo,s.rack.soloed==Some(s.selected_channel),433.)] {
-            let b=Rect::new(r.x+harmony_width(r)+x,r.y+2.,20.,18.);
-            let hint=format!("{} channel: {}",if label=="M"{"Mute"}else{"Solo"},name);
-            let hover=ui.hit(b,Action::PianoCommand(cmd),hint);
-            ui.c.fill_rrect(b,3.,if on{t.accent}else if hover{t.button_hi}else{t.sunken});
-            ui.c.text_center(Font::new(10),b,if on{t.sunken}else{t.text},label);
-        }
-    }
-    let nw=(ui.c.text_width(font,&name)+22.).min((r.right()-68.-nx).max(0.));
-    if nw>24. {
-        let b=Rect::new(nx,r.y+2.,nw,18.);
-        let hot=ui.hit(b,Action::PianoTarget,"Target channel (wheel: channels with notes; right-click: settings)");
-        ui.c.text_clip(font,b.x+4.,b.y+1.,b.w-18.,if hot {t.accent}else{t.text},&name);
-        os_ui::kit::triangle(ui.c,b.right()-7.,b.cy(),3.,os_ui::kit::Dir::Down,t.text_dim);
-    }
+    let (r, _) = super::framed(ui, s, Win::PianoRoll, r, "", 408.0, true);
     let shift = if floating { -4.0 } else { 0.0 };
     toolbar(ui, s, r, shift);
     if r.h < 2.0 * crate::app::TITLE_H {
@@ -160,14 +144,14 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     crate::piano_note_mode::paint(ui,s,l.tab);
 
     let active_clip=piano::active_clip(s);
-    let song_grid=active_clip.map(|_|Geom::timeline(s,l.grid));
+    let song_grid=active_clip.as_ref().map(|_|Geom::timeline(s,l.grid));
     let timeline=song_grid.as_ref().unwrap_or(&g);
     overview(ui, s, &l, timeline, notes, ch);
     // A time-signature marker shows its signature (spec: ui/pattern-time-signature.md §2).
     let markers: Vec<(u32, String)> =
         s.project.pattern(s.pattern).map_or(&[][..], |p| &p.markers).iter().map(|m| (m.position, super::playlist::marker_label(m))).collect();
-    if let Some(c)=active_clip{
-        let marker=(f64::from(c.position)+(f64::from(s.piano.marker)-crate::playlist::window(s,&c).0)/c.pattern_rate()).max(0.) as u32;
+    if let Some(c)=active_clip.as_ref(){
+        let marker=(f64::from(c.position)+(f64::from(s.piano.marker)-crate::playlist::window(s,c).0)/c.pattern_rate()).max(0.) as u32;
         ruler(ui,&l,timeline,range,marker,&[]);
     }else{ruler(ui,&l,&g,range,s.piano.marker,&markers);}
     // Lit keys: the one held with the mouse and this channel's notes playing now (§4).
@@ -400,11 +384,56 @@ fn corner_button(ui: &mut Ui, b: Rect) {
     ui.c.fill_rect(Rect::new(cx - 2.0, cy - 2.0, 3.0, 3.0), ui.t.s(0x000000));
 }
 
+/// Place the target controls after the last tool and leave room for the window buttons.
+fn target_controls(ui: &mut Ui, s: &State, r: Rect, mut x: f32) {
+    use crate::piano_tools::NCmd;
+    let t = ui.t;
+    let channel = s.project.channels.get(s.selected_channel);
+    let channel_name = channel.and_then(|c| c.name.as_deref()).unwrap_or("(none)");
+    let title = crate::prefs::language::Language::current().text("Piano roll");
+    let name = format!("{title}: {channel_name}");
+    let right = r.right() - TITLE_BUTTON_SPACE;
+    if right - x >= 78.0 {
+        for (label, cmd, on, verb) in [
+            ("M", NCmd::ChannelMute, channel.is_some_and(|c| !c.enabled), "Mute"),
+            ("S", NCmd::ChannelSolo, s.rack.soloed == Some(s.selected_channel), "Solo"),
+        ] {
+            let button = Rect::new(x, r.y + 2.0, 20.0, 18.0);
+            let hover = ui.hit(button, Action::PianoCommand(cmd), format!("{verb} channel: {name}"));
+            ui.c.fill_rrect(button, 3.0, if on { t.accent } else if hover { t.button_hi } else { t.sunken });
+            ui.c.text_center(Font::new(10), button, if on { t.sunken } else { t.text }, label);
+            x += 25.0;
+        }
+        x += 2.0;
+    }
+    let font = Font::new(12);
+    let width = (ui.c.text_width(font, &name) + 22.0).min(right - x);
+    if width >= 22.0 {
+        let compact = width < 50.0;
+        let button = Rect::new(x, r.y + 2.0, if compact { 22.0 } else { width }, 18.0);
+        let hover = ui.hit(button, Action::PianoTarget, "Target channel (wheel: channels with notes; right-click: settings)");
+        if !compact {
+            ui.c.text_clip(font, button.x + 4.0, button.y + 1.0, button.w - 18.0,
+                if hover { t.accent } else { t.text }, &name);
+        }
+        let arrow = if compact { button.cx() } else { button.right() - 7.0 };
+        os_ui::kit::triangle(ui.c, arrow, button.cy(), 3.0, os_ui::kit::Dir::Down, if hover { t.accent } else { t.text_dim });
+    }
+}
+
 /// Toolbar icons in the title bar: menus and helpers, undo, then editing tools. `shift` moves the icons (the floating window draws them 4 px further left, §1a).
 fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
     let t = ui.t;
     let active = s.piano.tool;
     let ox = r.x - 209.0 + shift;
+    let harmony = harmony_width(r);
+    let compact = r.w < 640.0;
+    let center = |x: f32| {
+        let offset = if x > 263.0 { 43.0 + harmony } else { 0.0 };
+        let tighten = if compact { (x - 362.0).max(0.0) * 0.115 } else { 0.0 };
+        ox + x + offset - tighten
+    };
+    const PLACE_X: f32 = 589.0;
     let items: [(f32, Icon, &'static str, Option<Action>); 16] = [
         (222.0, Icon::ArrowRight, "Piano roll options", Some(Action::PianoOptions)),
         (242.0, Icon::MidiControl, "Piano roll tools: quantize, chop, glue, strum, arpeggiate, randomize...", Some(Action::PianoToolsMenu)),
@@ -413,15 +442,15 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         (305.0, Icon::Blend, "Chord workspace (Alt+P)", Some(Action::Harmony(crate::harmony::HCmd::Open))),
         (327.0, Icon::Undo, "Undo (Ctrl+Z)", Some(Action::PianoUndo)),
         (362.0, Icon::Pencil, "Draw (P)", Some(Action::PianoTool(Tool::Draw))),
-        (384.0, Icon::Brush, "Paint (B): drag to paint notes along the row", Some(Action::PianoTool(Tool::Paint))),
-        (406.0, Icon::Slice, "Slice (C): drag a line to cut notes", Some(Action::PianoTool(Tool::Slice))),
-        (428.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
-        (450.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
-        (472.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
-        (494.0, Icon::StretchBand, "Stretch toggle: drag note ends to scale selected timing and lengths; drag note bodies to move; right-click empty grid to turn off", Some(Action::PianoTool(Tool::Stretch))),
-        (515.0, Icon::Playlist, "Place Pattern to Playlist (Ctrl+Shift+Enter)", Some(Action::PianoCommand(crate::piano_tools::NCmd::PlacePattern))),
-        (536.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
+        (386.0, Icon::Brush, "Paint (B): drag to paint notes along the row", Some(Action::PianoTool(Tool::Paint))),
+        (410.0, Icon::Slice, "Slice (C): drag a line to cut notes", Some(Action::PianoTool(Tool::Slice))),
+        (434.0, Icon::Delete, "Delete (D): click or swipe to delete notes", Some(Action::PianoTool(Tool::Delete))),
+        (458.0, Icon::Mute, "Mute (T): click or swipe to mute / unmute notes", Some(Action::PianoTool(Tool::Mute))),
+        (482.0, Icon::Select, "Select (E): drag a box to select notes, Ctrl adds", Some(Action::PianoTool(Tool::Select))),
+        (506.0, Icon::StretchBand, "Stretch toggle: drag note ends to scale selected timing and lengths; drag note bodies to move; right-click empty grid to turn off", Some(Action::PianoTool(Tool::Stretch))),
+        (534.0, Icon::Zoom, "Zoom (Z): drag a box to zoom, right-click zooms out / back", Some(Action::PianoTool(Tool::Zoom))),
         (558.0, Icon::Speaker, "Playback (Y): drag to hear the notes under the line", Some(Action::PianoTool(Tool::Playback))),
+        (PLACE_X, Icon::Playlist, "Place Pattern to Playlist (Ctrl+Shift+Enter)", Some(Action::PianoCommand(crate::piano_tools::NCmd::PlacePattern))),
     ];
     for (x, icon, hint, action) in items {
         let visible = match &action {
@@ -434,8 +463,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         };
         if !visible { continue; }
         let snap = action == Some(Action::PianoSnapMenu);
-        let offset = if x > 263.0 { 43.0+harmony_width(r) } else { 0.0 };
-        let b = Rect::new(ox + x + offset - 9.0, r.y + 2.0, if snap { 61.0 } else { 18.0 }, 18.0);
+        let b = Rect::new(center(x) - 9.0, r.y + 2.0, if snap { 61.0 } else { 18.0 }, 18.0);
         if snap {
             ui.hit(b, Action::PianoSnapMenu, crate::piano_snap::hint(s));
             super::sunken(ui, b, t.sunken);
@@ -448,8 +476,7 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
                 ui.c.text_center(font, label, t.text, s.piano.snap.label());
             }
             os_ui::kit::triangle(ui.c,b.right()-5.0,b.cy(),2.5,os_ui::kit::Dir::Down,t.text_dim);
-            let width=harmony_width(r);
-            if width>0. {harmony_boxes(ui,s,b.right()+3.,b.y,width,b.h);}
+            if harmony > 0.0 { harmony_boxes(ui, s, b.right() + 3.0, b.y, harmony, b.h); }
             continue;
         }
         let Some(action) = action else {
@@ -482,10 +509,10 @@ fn toolbar(ui: &mut Ui, s: &State, r: Rect, shift: f32) {
         };
         icons::draw(ui.c, icon, b, c);
     }
-    for x in [348.,519.] {
-        let x=ox+x+43.+harmony_width(r);
-        ui.c.line(x,r.y+3.,x,r.y+20.,1.5,t.text_dim);
-    }
+    let divider = center(348.0);
+    ui.c.line(divider, r.y + 4.0, divider, r.y + 18.0, 1.0, t.toolbar_edge);
+    let last = if crate::workspace_visibility::shown("visible_piano-place-pattern") { PLACE_X } else { 558.0 };
+    target_controls(ui, s, r, center(last) + 19.0);
 }
 
 fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Option<u16>) {
@@ -519,11 +546,11 @@ fn overview(ui: &mut Ui, s: &State, l: &Layout, g: &Geom, notes: &[Note], ch: Op
     let clip = piano::active_clip(s);
     ui.c.push_clip(Rect::new(track.x,track.y+1.,track.w,(track.h-2.).max(0.)));
     for n in channel_notes {
-        let position = clip.map_or(f64::from(n.position), |c| {
+        let position = clip.clone().map_or(f64::from(n.position), |c| {
             f64::from(c.position) + (f64::from(n.position) - crate::playlist::window(s, &c).0) / c.pattern_rate()
         });
         let x = track.x + position as f32 / span * track.w;
-        let length = clip.map_or(piano::shown_len(s, n) as f64, |c| piano::shown_len(s, n) as f64 / c.pattern_rate());
+        let length = clip.clone().map_or(piano::shown_len(s, n) as f64, |c| piano::shown_len(s, n) as f64 / c.pattern_rate());
         let w = (length as f32 / span * track.w).max(2.0);
         let h = if o.h >= 18.0 { 3.0 } else { 2.0 };
         let y = o.cy() - h / 2.0 - (f32::from(n.key) - center) / pitch_span * (o.h - h - 4.0);

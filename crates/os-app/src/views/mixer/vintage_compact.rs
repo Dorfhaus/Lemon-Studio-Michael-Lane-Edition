@@ -20,7 +20,8 @@ pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
     title_tools(ui,s,r);
     ui.c.text_clip(Font::vintage(12),r.x+108.,r.y+4.,(r.w-178.).max(0.),ui.t.text,&title);
     window_buttons(ui,Win::Mixer,r.right()-64.,r.y,ui.t.text_dim,ui.t.glyph);
-    inspector(ui, s, Rect::new(r.x, r.y, 221.0, r.h));
+    let panel = Rect::new(r.x, r.y, 221.0, r.h);
+    ui.part(crate::app::Seg::MixerInspector, panel, |ui| inspector(ui, s, panel));
     let bank=Rect::new(r.x+230.,r.y+24.,r.w-233.,r.h-72.);
     ui.c.fill_rect(bank,Color::rgb(0x3d4c54));
     ui.hit(bank,Action::MixerArea,"Mixer");
@@ -47,7 +48,12 @@ pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
         for n in 0..=mx::inserts(s) {
             if n==cur {continue;}
             if let Some(level)=mx::send(s,cur,n) {
-                let bounds=if n==0 || cur==0 {clip}else{Rect::new(area.x,clip.y,area.w,clip.h)};
+                let master = n == 0 || cur == 0;
+                if master {
+                    let top = bank.bottom() - 4.0;
+                    ui.live(Live::MixerScroll, Rect::new(bank.x, top, area.x - bank.x, clip.bottom() - top));
+                }
+                let bounds=if master {clip}else{Rect::new(area.x,clip.y,area.w,clip.h)};
                 ui.c.push_clip(bounds);
                 skin::cable(ui.c,(socket(cur),bank.bottom()-2.),(socket(n),bank.bottom()-2.),r.bottom()-14.0,if level>0. {ui.t.accent}else{ui.t.text_dim});
                 ui.c.pop_clip();
@@ -57,6 +63,7 @@ pub(super) fn paint(ui:&mut Ui,s:&State,outer:Rect) {
     let footer=Rect::new(bank.x,bank.bottom()+8.,bank.w,r.bottom()-bank.bottom()-8.);
     ui.hit(footer,Action::Swallow,"Mixer scroll area");
     let scroll=Rect::new(area.x,footer.y,area.w,footer.h);
+    ui.live(Live::MixerScroll, area.union(&scroll));
     super::super::scrollbar(ui,scroll,false,s.mixer_scroll,area.w,f32::from(mx::inserts(s))*width,crate::app::Scroll::MixerX);
     resize_zones(ui,s,Win::Mixer,outer);
 }
@@ -67,7 +74,7 @@ fn strip(ui:&mut Ui,s:&State,n:u16,r:Rect,window:Rect) {
     let selection = Rect::new(r.x, r.y, r.w, r.h - 19.);
     ui.hit(selection, Action::Mix(MHit::Strip(n)), name.clone());
     let base=track.and_then(|m|m.color).map(super::super::rgb).map_or(Color::rgb(0x5f686d),|c|c.mix(Color::rgb(0x5f686d),0.75));
-    skin::metal(ui.c,r,base);
+    skin::mixer_strip_face(ui.c, r, base);
     let header = Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, 54.0);
     let shade = Color::rgb(0x222c32);
     ui.c.fill_rect_gradient(header, shade.with_alpha(164), shade.with_alpha(0), 0.0);
@@ -122,7 +129,7 @@ fn strip(ui:&mut Ui,s:&State,n:u16,r:Rect,window:Rect) {
     ui.hit(knob,Action::Knob(pan),s.knob_text(pan));art::knob(ui.c,knob,s.knob(pan));
     let (top,bottom)=travel(window);
     let separator = mx::has_separator(s, n);
-    let x = r.cx() + if separator { 2.5 } else { 0.0 };
+    let x = r.cx();
     skin::fader_guide(ui.c, x, top, bottom);
     let v=track.and_then(|m|m.volume).unwrap_or(0.8) as f32;
     let position = |value: f32| bottom - value.clamp(0.0, 1.0) * (bottom - top);
@@ -205,10 +212,17 @@ fn effects(ui:&mut Ui,s:&State,r:Rect) {
         ui.hit(led,Action::Mix(MHit::SlotLed(k)),"Enable / bypass slot");
         if mx::track(s,n).is_none_or(|m|m.slot_on[k as usize]) {art::led_on(ui.c,led);}else{art::led_off(ui.c,led);}
     }
-    let add=Rect::new(r.x,r.bottom()-20.,r.w,20.);
+    let mut add=Rect::new(r.x,r.bottom()-20.,r.w,20.);
+    if crate::workspace_visibility::shown(mx::DELETE_EXTRA_SLOT_VISIBILITY) && mx::has_extra_slot(s, n) {
+        add.w -= 25.0;
+        let delete = Rect::new(add.right() + 2.0, add.y, 23.0, add.h);
+        ui.hit(delete, Action::Mix(MHit::DeleteExtraSlot), mx::DELETE_EXTRA_SLOT_HINT);
+        skin::metal(ui.c, delete, Color::rgb(0x63767c));
+        ui.c.text_center(Font::vintage(11), delete, ui.t.text, "−");
+    }
     ui.hit(add,Action::Mix(MHit::AddSlot),"Add another effect slot");
     skin::metal(ui.c,add,Color::rgb(0x63767c));
-    ui.c.text(Font::vintage(11),add.x+6.,add.y+3.,ui.t.text,&format!("+ Add slot     {}–{} / {}",first+1,(first+10).min(count),count));
+    ui.c.text_clip(Font::vintage(11),add.x+6.,add.y+3.,add.w-12.,ui.t.text,&format!("+ Add slot     {}–{} / {}",first+1,(first+10).min(count),count));
 }
 fn selected(ui:&mut Ui,s:&State,r:Rect) {
     let n=s.selected_mixer;

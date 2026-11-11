@@ -855,6 +855,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
     read_marker_colors(file,&mut p);
+    read_clip_appearance(file, &mut p);
     read_clip_picker_order(file, &mut p);
     read_clip_fx_owners(file,&mut p);
     read_note_drive(file,&mut p);read_mpe(file,&mut p);
@@ -1456,7 +1457,10 @@ fn decode_clip(r: &[u8]) -> Clip {
     let n = r.len().min(CLIP_RECORD_LEN);
     raw[..n].copy_from_slice(&r[..n]);
     Clip {
+        name: None,
+        color: None,
         pattern_speed:1.0,
+        independent_automation: false,
         position: u32_at(0),
         length: u32_at(8),
         track: 499u16.saturating_sub(u16_at(12)),
@@ -3294,6 +3298,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
     write_marker_colors(project,file);
+    write_clip_appearance(project, file);
     write_clip_picker_order(project, file);
     write_clip_fx_owners(project,file);
     write_note_drive(project,file);write_mpe(project,file);
@@ -3835,6 +3840,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
     write_marker_colors(project,&mut file);
+    write_clip_appearance(project, &mut file);
     write_clip_picker_order(project, &mut file);
     write_clip_fx_owners(project,&mut file);
     write_note_drive(project,&mut file);write_mpe(project,&mut file);
@@ -6796,6 +6802,80 @@ fn read_clip_picker_order(file: &FlpFile, project: &mut Project) {
             };
             if seen.insert(source) {
                 project.clip_picker_order.push(source);
+            }
+        }
+    }
+}
+
+// Per-clip presentation is Lemon metadata. FL's clip and channel records stay intact.
+const CLIP_APPEARANCE: Tag = Tag(*b"LSCA");
+const INDEPENDENT_AUTOMATION: Tag = Tag(*b"LSAI");
+type ClipAppearance<T> = (u16, Option<u32>, usize, Option<T>, Option<[u8; 3]>);
+
+fn write_clip_appearance(project: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|chunk| !matches!(chunk.tag, CLIP_APPEARANCE | INDEPENDENT_AUTOMATION));
+    let mut records: Vec<ClipAppearance<&str>> = Vec::new();
+    let mut independent = Vec::new();
+    for arrangement in &project.arrangements {
+        let mut ordered: Vec<_> = arrangement.clips.iter().collect();
+        // Match encode_clips, including the stable order for clips at the same position.
+        ordered.sort_by_key(|clip| clip.position);
+        let frozen = arrangement.tracks.iter().filter_map(|track| {
+            track.frozen.as_ref().map(|clips| (Some(track.number), clips.iter().collect()))
+        });
+        for (track, clips) in std::iter::once((None, ordered)).chain(frozen) {
+            for (index, clip) in clips.into_iter().enumerate() {
+                if clip.independent_automation {
+                    independent.push((arrangement.number, track, index));
+                }
+                if clip.name.is_some() || clip.color.is_some() {
+                    records.push((arrangement.number, track, index, clip.name.as_deref(),
+                        clip.color.map(|c| [c.r, c.g, c.b])));
+                }
+            }
+        }
+    }
+    if !records.is_empty() {
+        let data = serde_json::to_vec(&records).expect("clip appearance is serializable");
+        file.chunks.push(Chunk { tag: CLIP_APPEARANCE, body: ChunkBody::Raw(data) });
+    }
+    if !independent.is_empty() {
+        let data = serde_json::to_vec(&independent).expect("clip placements are serializable");
+        file.chunks.push(Chunk { tag: INDEPENDENT_AUTOMATION, body: ChunkBody::Raw(data) });
+    }
+}
+
+fn read_clip_appearance(file: &FlpFile, project: &mut Project) {
+    for chunk in file.chunks.iter().filter(|chunk| chunk.tag == CLIP_APPEARANCE) {
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        let Ok(records) = serde_json::from_slice::<Vec<ClipAppearance<String>>>(data) else { continue };
+        for (number, track, index, name, color) in records {
+            let Some(arrangement) = project.arrangements.iter_mut().find(|a| a.number == number) else { continue };
+            let clips = match track {
+                None => Some(&mut arrangement.clips),
+                Some(number) => arrangement.tracks.iter_mut().find(|t| t.number == number)
+                    .and_then(|t| t.frozen.as_mut()),
+            };
+            if let Some(clip) = clips.and_then(|clips| clips.get_mut(index)) {
+                clip.name = name.map(Into::into);
+                clip.color = color.map(|[r, g, b]| Rgb::new(r, g, b));
+            }
+        }
+    }
+    for chunk in file.chunks.iter().filter(|chunk| chunk.tag == INDEPENDENT_AUTOMATION) {
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        let Ok(records) = serde_json::from_slice::<Vec<(u16, Option<u32>, usize)>>(data) else { continue };
+        for (number, track, index) in records {
+            let Some(arrangement) = project.arrangements.iter_mut().find(|a| a.number == number) else { continue };
+            let clips = match track {
+                None => Some(&mut arrangement.clips),
+                Some(number) => arrangement.tracks.iter_mut().find(|t| t.number == number)
+                    .and_then(|t| t.frozen.as_mut()),
+            };
+            if let Some(clip) = clips.and_then(|clips| clips.get_mut(index))
+                && matches!(clip.source, ClipSource::Channel(_))
+            {
+                clip.independent_automation = true;
             }
         }
     }

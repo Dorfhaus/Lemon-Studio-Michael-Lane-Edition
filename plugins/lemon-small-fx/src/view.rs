@@ -289,11 +289,11 @@ fn tile(ui: &mut Ui, id: &str, r: Rect, caption: &str) {
     ui.hit(hr, target);
 }
 
-/// The wordmark (as Lemon Delay's): the lemon mark and "LEMON" in lemon beside the effect's name in large grey
+/// The wordmark (as Lemon Delay's): the lemon mark and "ML" in lemon beside the effect's name in large grey
 /// capitals, or LEMON over the name (`stacked`), placed by the spec's [`Mark`]; returns where it is.
 fn logo(ui: &mut Ui, spec: &Spec) -> Rect {
     let Mark { x, y, anchor, stacked } = spec.mark;
-    let ws = lemon::spaced_width(ui.c, MARK_SMALL, "LEMON", 2.5);
+    let ws = lemon::spaced_width(ui.c, MARK_SMALL, "ML", 2.5);
     let (lh_b, lh_s) = (ui.c.line_height(MARK_BIG), ui.c.line_height(MARK_SMALL));
     if stacked {
         // The mark and LEMON centred over the name.
@@ -302,7 +302,7 @@ fn logo(ui: &mut Ui, spec: &Spec) -> Rect {
         let left = (x - w * anchor).round();
         let lx = (left + (w - wl) / 2.0).round();
         lemon::lemon_mark(ui.c, lx + 5.0, y + lh_s / 2.0, 4.0, brand::MAIN);
-        lemon::spaced(ui.c, MARK_SMALL, lx + 14.0, y, brand::MAIN, "LEMON", 2.5);
+        lemon::spaced(ui.c, MARK_SMALL, lx + 14.0, y, brand::MAIN, "ML", 2.5);
         lemon::spaced(ui.c, MARK_BIG, (left + (w - wn) / 2.0).round(), y + lh_s - 2.0, plug::WORDMARK, spec.word, 2.0);
         let r = Rect::span(left - 2.0, left + w + 2.0, y - 2.0, y + lh_s + lh_b - 2.0);
         ui.hit(r, Target::Logo);
@@ -315,7 +315,7 @@ fn logo(ui: &mut Ui, spec: &Spec) -> Rect {
     let bx = (right - wb).round();
     lemon::spaced(ui.c, MARK_BIG, bx, (y - lh_b / 2.0).round(), plug::WORDMARK, spec.word, 2.0);
     let sx = (bx - 8.0 - ws).round();
-    lemon::spaced(ui.c, MARK_SMALL, sx, (y - lh_s / 2.0).round() + 1.0, brand::MAIN, "LEMON", 2.5);
+    lemon::spaced(ui.c, MARK_SMALL, sx, (y - lh_s / 2.0).round() + 1.0, brand::MAIN, "ML", 2.5);
     lemon::lemon_mark(ui.c, left + 5.0, y, 4.0, brand::MAIN);
     let r = Rect::span(left - 2.0, right, y - 12.0, y + 12.0);
     ui.hit(r, Target::Logo);

@@ -11,6 +11,7 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod app;
+mod collaboration;
 mod marker_profiles;
 mod instrument_stack;
 mod clip_effects;
@@ -72,7 +73,6 @@ mod import_report;
 mod drop_preview;
 mod playlist_motion;
 mod zipped;
-mod logo;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -800,7 +800,7 @@ impl ApplicationHandler for Shell {
         }
         splash::step(&self.splash, splash::WINDOW, "Opening the main window");
         let attrs = Window::default_attributes()
-            .with_title("Lemon Studio — Michael Lane Edition")
+            .with_title("ML Studio")
             .with_decorations(false)
             .with_inner_size(LogicalSize::new(1920.0, 1080.0))
             // Layouts are measured at 1920x1080 and are not responsive yet; below this they break.
@@ -931,6 +931,7 @@ impl ApplicationHandler for Shell {
     /// (`macos::answer_quit`) ends the process from AppKit, after this: the plugin windows close and the instances go as
     /// they do when `run_app` returns.
     fn exiting(&mut self, _el: &ActiveEventLoop) {
+        if !os_host::guard::tripped() { self.app.transport.shutdown(); }
         self.detached.save();
         if let Some(window) = self.window.clone() {
             self.follow_frame(&window);
@@ -1156,7 +1157,7 @@ impl ApplicationHandler for Shell {
                     let at = (f64::from(x) * k + f64::from(self.inset.0), f64::from(y) * k + f64::from(self.inset.1));
                     let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(at.0, at.1));
                 }
-                self.pending = true;
+                self.pending |= self.app.has_damage();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
@@ -1398,7 +1399,7 @@ impl ApplicationHandler for Shell {
                 // Retire the splash only after the visible window received its full frame.
                 if presented && !self.shown && self.app.project_loading().is_none() {
                     self.shown = true;
-                    startup_sound::play_launch(self.app.state.vintage_2005);
+                    startup_sound::play_launch();
                 }
                 if !presented {self.app.invalidate();self.pending=true;}
                 if let Some(log) = &mut self.frames {
@@ -1738,7 +1739,7 @@ fn screenshot(args: &[String]) {
         app.state.rack.filter = rack::Filter::All;
     }
     if let Some(r) = rack_scroll {
-        app.state.rack_scroll = r * views::rack::ROW_H;
+        app.state.rack_scroll = r * views::rack::row_pitch(&app.state);
     }
     // The reference views fill the workspace unless `--win` floats the window.
     if let Some(w) = app.state.z.first().copied().filter(|w| w.slot().is_some()) {

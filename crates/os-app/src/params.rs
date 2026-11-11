@@ -59,6 +59,7 @@ pub enum Tweak {
 /// What the app knows about plugin parameters.
 #[derive(Debug, Default)]
 pub struct ParamUi {
+    pub collaboration: std::cell::RefCell<BTreeMap<(usize,u32),f64>>,
     pub generic_editor:Option<usize>,
     pub capture_armed: bool,
     capture_pending: std::collections::BTreeSet<usize>,
@@ -166,7 +167,7 @@ pub(crate) fn param_value(s: &State, key: usize, index: usize) -> Option<f64> {
 pub(crate) fn set_param_value(s: &State, key: usize, index: usize, v: f64) -> bool {
     let Some(id) = s.params.lists.get(&key).and_then(|l| l.params.get(index)).map(|e| e.id) else { return false };
     let ok=s.params.plugin(key).is_some_and(|p| p.lock().is_ok_and(|mut p| p.set_param(id, v)));
-    if ok {if let Some(l)=s.params.lists.get(&key){l.values.borrow_mut().insert(id,v);}}
+    if ok {if let Some(l)=s.params.lists.get(&key){l.values.borrow_mut().insert(id,v);}if s.collaborating{s.params.collaboration.borrow_mut().insert((key,id),v);}}
     ok
 }
 
@@ -454,6 +455,7 @@ impl App {
             self.invalidate();
         }
         for (key,index,v,fresh) in recorded {
+            if self.state.collaborating {if let Some(id)=self.state.params.lists.get(&key).and_then(|l|l.params.get(index)).map(|p|p.id){self.state.params.collaboration.borrow_mut().insert((key,id),v);}}
             if let Some(target)=target_of(&self.state,key,index) {
                 let name=clip_name(&self.state,key,index);
                 if fresh && self.capture_control(target,&name,v) {continue;}
@@ -876,7 +878,7 @@ mod tests {
         assert_eq!((edit.enabled, &edit.cmd), (true, &Cmd::Param(PCmd::EditClip(ch))));
         // Picked: the clip is the current source, selected and in view, the playlist in front.
         let clip = crate::playlist::clips(&a.state).iter().position(|c| c.source == os_model::ClipSource::Channel(ch)).unwrap();
-        let first = crate::playlist::clips(&a.state)[clip];
+        let first = crate::playlist::clips(&a.state)[clip].clone();
         a.state.playlist.sel.clear();
         a.state.playlist_scroll = (5000.0, 900.0);
         a.state.raise(crate::app::Win::Mixer);
@@ -1032,7 +1034,7 @@ mod tests {
         app.toggle_automation_capture();
         app.smart_record_host(&Action::Fader(2));
         assert!(!app.state.params.capture_armed);
-        let overlay = *pl::clips(&app.state).last().unwrap();
+        let overlay = pl::clips(&app.state).last().unwrap().clone();
         assert_eq!(overlay.track, 2);
         let os_model::ClipSource::Channel(ch) = overlay.source else { panic!("expected automation"); };
         let curve = app.state.project.automation(ch).unwrap().clone();

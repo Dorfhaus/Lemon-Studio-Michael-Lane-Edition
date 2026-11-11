@@ -474,9 +474,7 @@ impl FrameWindow {
         }
         {
             let mut st = f.state.borrow_mut();
-            st.detached = on;
-            st.clip = None;
-            st.clip_key = None;
+            st.change_dock_mode(on);
         }
         let (w, h) = f.state.borrow().size();
         if on {
@@ -505,8 +503,21 @@ impl FrameWindow {
         if self.detached() {
             return;
         }
-        let changed = self.f.state.borrow().clip.as_ref().is_none_or(|c| c.0 != work);
-        self.f.state.borrow_mut().clip = Some((work, covers.to_vec()));
+        let mut state = self.f.state.borrow_mut();
+        let changed = state.clip.as_ref().is_none_or(|c| c.0 != work);
+        let fit = std::mem::take(&mut state.fit_on_attach);
+        state.clip = Some((work, covers.to_vec()));
+        drop(state);
+        if fit {
+            let scale = self.f.main_scale();
+            let fr = self.f.view.frame();
+            let frame = [fr.origin.x, fr.origin.y, fr.origin.x + fr.size.width, fr.origin.y + fr.size.height]
+                .map(|point| (point * scale).round() as i32);
+            let (x, y) = crate::win_clamp::inside_px(frame, work);
+            if (x, y) != (frame[0], frame[1]) {
+                self.f.view.setFrameOrigin(NSPoint::new(f64::from(x) / scale, f64::from(y) / scale));
+            }
+        }
         if changed {
             self.f.refit();
         }
@@ -536,8 +547,7 @@ impl FrameWindow {
 
     pub fn set_info(&self, info: ChannelInfo) {
         let mut st = self.f.state.borrow_mut();
-        if st.info != info && st.drag.is_none() && st.misc_ui.drag.is_none() {
-            st.info = info;
+        if st.set_info(info) {
             self.f.view.setNeedsDisplay(true);
         }
     }

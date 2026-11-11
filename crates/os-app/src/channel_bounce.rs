@@ -177,8 +177,10 @@ mod tests {
         let find=|a:&App,action:Action|a.hits.iter().find(|h|h.action==action).unwrap().rect;
         let pitch=find(&a,Action::Knob(KnobId::ChanPitch(0)));
         let follow=find(&a,Action::RackPitchFollow(0));let name=find(&a,Action::ChannelSelect(0));
-        assert!(pitch.w<=22. && pitch.right()<=follow.x && follow.right()<=name.x);
-        assert!(find(&a,Action::Knob(KnobId::MasterPitch)).w<=24.);
+        let mute = find(&a, Action::ChannelEnable(0));
+        assert!(pitch.w <= 26.0 && name.right() < follow.x && follow.right() < pitch.x && pitch.right() < mute.x);
+        let master = find(&a, Action::Knob(KnobId::MasterPitch));
+        assert!(master.right() < find(&a, Action::RackFilter).x);
         assert!(find(&a,Action::Knob(KnobId::Varispeed)).w<=40.);
         a.state.set_knob(KnobId::ChanPitch(0),0.9);
         a.mouse_move(pitch.cx(),pitch.cy());a.mouse_down();a.mouse_up();a.mouse_down();a.mouse_up();

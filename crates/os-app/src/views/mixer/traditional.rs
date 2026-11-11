@@ -132,7 +132,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let strips = Rect::new(r.x, client.y, r.w - panel_w - 7.0, client.h);
     ui.c.fill_rect(Rect::new(r.x, client.y, r.w - panel_w, client.h), ui.t.s(0x232527));
     ui.hit(strips, Action::MixerArea, "Mixer");
-    let inserts = mx::inserts(s);
+    let bank = InsertBank::new(s);
     let bottom = r.bottom();
 
     // Header row: "C" (scale) and "M" (master) on a lighter band.
@@ -205,21 +205,28 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // Inserts scroll; the master strip and the scale stay put.
     let area = Rect::new(r.x + 53.0+width, client.y, strips.w - 53.0-width, client.h);
     ui.c.fill_rect(Rect::new(r.x + 44.0+width, client.y, 9.0, client.h), ui.t.s(0x1a1e20));
-    for k in 0..3 {
-        ui.c.fill_rect(Rect::new(r.x + 48.0+width, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
+    if bank.master_separator {
+        let top = ly.y(HEAD_Y0);
+        ui.c.fill_rect(Rect::new(r.x + 45.0 + width, top, SEPARATOR_WIDTH, bottom - top - 16.0), ui.t.text_dim);
+    } else {
+        for k in 0..3 {
+            ui.c.fill_rect(Rect::new(r.x + 48.0 + width, ly.y(497.0 + 3.0 * k as f32), 1.0, 1.0), ui.t.s(0x3a3e41));
+        }
     }
     ui.c.push_clip(area);
-    let first = (s.mixer_scroll / width) as usize;
-    let count = (area.w / width).ceil() as usize + 2;
-    for n in (first + 1..first + 1 + count).filter(|n| *n <= usize::from(inserts)) {
-        let left = area.x + width * (n - 1) as f32 - s.mixer_scroll;
-        strip(ui, s, n as u16, left, bottom, f, &ly);
+    let origin = area.x - s.mixer_scroll;
+    for (n, slot) in bank.visible(s.mixer_scroll, area.w) {
+        if slot.gutter > 0.0 {
+            let top = ly.y(HEAD_Y0);
+            ui.c.fill_rect(Rect::new(origin + slot.offset, top, SEPARATOR_WIDTH, bottom - top - 16.0), ui.t.text_dim);
+        }
+        strip(ui, s, n, origin + slot.left(), bottom, f, &ly);
     }
-    for n in (first+1..first+1+count).filter(|n|*n<=usize::from(inserts)){
-        insertion_button(ui,s,area,bottom-ROUTING_DECK_H,n as u16,area.x+width*(n-1) as f32-s.mixer_scroll);
+    for (n, slot) in bank.visible(s.mixer_scroll, area.w) {
+        insertion_button(ui, s, area, bottom - ROUTING_DECK_H, n, origin + slot.offset);
     }
     // "+" after the last strip, at the fader handle's height (spec: ui/mixer.md §1).
-    let px = area.x + width * f32::from(inserts) - s.mixer_scroll + 14.0;
+    let px = origin + bank.end + 14.0;
     let pb = Rect::new(px - 9.0, ly.y(HANDLE_0DB) - 9.0, 18.0, 18.0);
     if px < area.right() + 10.0 {
         let hov = ui.hit(pb, Action::Mix(MHit::Add), "Add more tracks");
@@ -233,15 +240,16 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     ui.c.pop_clip();
     strip(ui, s, 0, r.x + 44.0, bottom, f, &ly);
 
-    cables(ui, s, strips, area, bottom);
+    cables(ui, s, strips, area, bottom, &bank);
 
     // Catch every footer click after strip and cable hits, including below the handle.
     let footer = Rect::new(strips.x, bottom - 26.0, strips.w, 26.0);
     ui.hit(footer, Action::Swallow, "Mixer scroll area");
     let sb = Rect::new(area.x, footer.y, area.w, footer.h);
-    crate::views::scrollbar(ui, sb, false, s.mixer_scroll, area.w, (f32::from(inserts) + 1.0) * width, crate::app::Scroll::MixerX);
+    ui.live(Live::MixerScroll, area.union(&sb));
+    crate::views::scrollbar(ui, sb, false, s.mixer_scroll, area.w, bank.end + width, crate::app::Scroll::MixerX);
 
-    slot_panel(ui, s, inspector);
+    ui.part(crate::app::Seg::MixerInspector, inspector, |ui| slot_panel(ui, s, inspector));
         layout_picker(ui,s,full_title);
         window_buttons(ui, Win::Mixer, full_title.right()-58.,full_title.y,ui.t.tx(0xd4dade),ui.t.tx(0xffffff));
     resize_zones(ui, s, Win::Mixer, outer);
@@ -249,17 +257,20 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
 
 /// The routing cables (spec: ui/mixer.md §5): one from the current track's ⬇ into each of its send knobs, sagging
 /// and swinging (crate::cable). Sockets on strips scrolled out of view still hold their cable's end.
-fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32) {
+fn cables(ui: &mut Ui, s: &State, strips: Rect, area: Rect, bottom: f32, bank: &InsertBank) {
     let width=width(s);
     let socket_x = |n: u16| match n {
         0 => strips.x + 44.0 + width/2.0,
-        n => area.x + width * f32::from(n - 1) - s.mixer_scroll + width/2.0,
+        n => area.x - s.mixer_scroll + bank.get(n).map_or(0.0, InsertSlot::center),
     };
     // Each cable is plugged in under the middle of its ⬇ and its knob, which are drawn again over the cables' ends.
     let (ay, ky) = (bottom - 38.0, bottom - 40.0);
     let cur = s.selected_mixer;
     let from = (socket_x(cur), ay);
     let sends: Vec<(u16, f64)> = (0..=mx::inserts(s)).filter(|&n| n != cur).filter_map(|n| Some((n, mx::send(s, cur, n)?))).collect();
+    if sends.iter().any(|&(n, _)| cur == 0 || n == 0) {
+        super::master_cable_scroll_region(ui, s, strips, area, bottom);
+    }
     if s.vintage_2005 {
         s.cables.borrow_mut().clear();
         if crate::workspace_visibility::shown("visible_mixer-cables") {
@@ -437,12 +448,19 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     if extra {plugin_list(ui,s,n,Rect::new(left+57.,ly.y(PANEL_Y0)+4.,width-61.,bottom-ly.y(PANEL_Y0)-175.));}
     let kx=left+cx;
     let enabled = track.is_none_or(|m| m.enabled);
-    ui.hit(Rect::new(kx - 7.0, ly.y(LED_Y) - 7.0, 14.0, 14.0), Action::Mix(MHit::Led(n)), "Mute / solo");
-    led(ui, kx, ly.y(LED_Y), enabled);
-    let lock = if kx + 22. <= left + width {
-        Rect::new(kx + 8., ly.y(LED_Y) - 7., 14., 14.)
+    let led_y = ly.y(LED_Y);
+    // In the narrow modern layouts, share the control row below the name.
+    let shared_row = !s.vintage_2005 && matches!(layout_index(s), 0 | 2)
+        && track.is_some() && crate::workspace_visibility::shown("visible_mixer-channel-lock");
+    let led_x = if shared_row { kx - 8. } else { kx };
+    ui.hit(Rect::new(led_x - 7., led_y - 7., 14., 14.), Action::Mix(MHit::Led(n)), "Mute / solo");
+    led(ui, led_x, led_y, enabled);
+    let lock = if shared_row {
+        Rect::new(kx + 1., led_y - 7., 14., 14.)
+    } else if kx + 22. <= left + width {
+        Rect::new(kx + 8., led_y - 7., 14., 14.)
     } else {
-        Rect::new(kx - 7., ly.y(LED_Y) - 23., 14., 14.)
+        Rect::new(kx - 7., led_y - 23., 14., 14.)
     };
     channel_lock(ui, s, n, lock);
     let pan = KnobId::MixPan(n);
@@ -558,10 +576,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         }
     }
     if selected||also {ui.c.stroke_rrect(Rect::new(left+0.75,ly.y(HEAD_Y0)+0.75,width-1.5,bottom-ly.y(HEAD_Y0)-17.5),0.,1.,ui.t.accent);}
-    if mx::has_separator(s,n) {
+    if s.vintage_2005 && mx::has_separator(s, n) {
         let r = Rect::new(left, ly.y(HEAD_Y0), 4.0, bottom - ly.y(HEAD_Y0) - 16.0);
-        if t.style.vintage_2005 { crate::vintage::mixer_divider(ui.c, r); }
-        else { ui.c.fill_rect(r, ui.t.text_dim); }
+        crate::vintage::mixer_divider(ui.c, r);
     }
 }
 

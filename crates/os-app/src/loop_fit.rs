@@ -231,9 +231,91 @@ pub(crate) fn set_fitted_time(sound:&mut os_model::ChannelSound,beats:f64) {
     sound.stretch[3]=os_model::stretch_mode::STRETCH_PRO as u32;
 }
 
+/// Fit each selected placement to the bar length at its start, preserving the original sample window.
+fn fit_selected_bars(app: &mut App, indices: &[usize]) -> Result<String, String> {
+    let s = &mut app.state;
+    let regions = s.project.marker_bars(pl::markers(s));
+    let ppq = f64::from(s.project.ppq.max(4));
+    let mut fits = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let clip = &pl::clips(s)[index];
+        if pl::track_info(s, clip.track).is_some_and(|track| track.locked || track.frozen.is_some()) {
+            return Err("Unlock or unfreeze the selected tracks before fitting their clips.".into());
+        }
+        let ClipSource::Channel(id) = clip.source else { continue };
+        let row = s.project.channels.iter().position(|channel| channel.index == id)
+            .ok_or("A selected clip has no audio source.")?;
+        let channel = &s.project.channels[row];
+        if crate::ara::is(channel) {
+            return Err("Change timing in the ARA editor before fitting that clip.".into());
+        }
+        let path = crate::plugins::resolve_sample(channel.sample_path.as_deref().ok_or("A selected clip has no sample file.")?);
+        if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 256 * 1024 * 1024) {
+            return Err("A selected sample is too large for quick fitting.".into());
+        }
+        let sample = os_engine::sample::load_shared(std::path::Path::new(&path))
+            .map_err(|_| "Could not read one of the selected samples. Check its file path.")?;
+        let whole_ms = sample.frames() as f64 * 1000.0 / f64::from(sample.rate.max(1));
+        let (start, end) = clip.window.unwrap_or((0.0, whole_ms));
+        let duration = end - start;
+        if !whole_ms.is_finite() || whole_ms <= 0.0 || !duration.is_finite() || duration <= 0.0 {
+            return Err("A selected clip has an empty audio window.".into());
+        }
+        let (_, length, _) = regions[regions.partition_point(|(start, _, _)| *start <= clip.position) - 1];
+        let beats = f64::from(length) * whole_ms / (duration * ppq);
+        if !beats.is_finite() || !(1.0 / 192.0..=4096.0).contains(&beats)
+            || clip.position.checked_add(length).is_none() {
+            return Err("A selected clip cannot be fitted to one bar at its current position.".into());
+        }
+        let shared = s.project.arrangements.iter().flat_map(|a|
+            a.clips.iter().chain(a.tracks.iter().filter_map(|t| t.frozen.as_ref()).flatten())
+        ).filter(|c| c.source == clip.source).nth(1).is_some()
+            || s.project.patterns.iter().any(|p| p.notes.iter().any(|n| n.channel == id));
+        fits.push((index, row, length, beats, shared));
+    }
+    let copies = fits.iter().filter(|fit| fit.4).count();
+    let last_id = s.project.channels.iter().map(|ch| ch.index).max().unwrap_or(0);
+    if copies > usize::from(u16::MAX - last_id) {
+        return Err("There are too many channels to fit these clips independently.".into());
+    }
+    use crate::history::{Snap, Tail};
+    let extra = Snap::Several(vec![
+        Snap::Tail(Box::new(Tail::now(s, s.project.channels.len()))),
+        Snap::Vocals(s.project.vocal_edits.clone()),
+    ]);
+    pl::snapshot_with(s, "Fit selected clips to one bar", extra);
+    for &(index, row, length, beats, shared) in &fits {
+        let row = if shared {
+            pl::make_unique(s, index).expect("validated audio placement and spare channel ID");
+            s.project.channels.len() - 1
+        } else {
+            row
+        };
+        let sound = &mut s.project.channels[row].sound;
+        set_fitted_time(sound, beats);
+        app.plugins.set_sampler_stretch(row, sound);
+        pl::arr_mut(s).clips[index].length = length;
+    }
+    s.playlist.audio_template = None;
+    s.piano.dirty = true;
+    app.invalidate();
+    Ok(format!("Fitted {} clips to one bar each.", fits.len()))
+}
+
 pub fn run(app: &mut App, i: usize, cmd: Fit) -> Option<String> {
-    let clip = *pl::clips(&app.state).get(i)?;
+    let clip = pl::clips(&app.state).get(i)?.clone();
     if pl::source_kind(&app.state, clip.source) != pl::PickKind::Audio { return None; }
+    if cmd == Fit::Auto && app.state.playlist.sel.contains(&i) {
+        let mut audio: Vec<_> = app.state.playlist.sel.iter().copied().filter(|&index|
+            pl::clips(&app.state).get(index).is_some_and(|c|
+                matches!(c.source, ClipSource::Channel(_)) && pl::source_kind(&app.state, c.source) == pl::PickKind::Audio)
+        ).collect();
+        audio.sort_unstable();
+        audio.dedup();
+        if audio.len() > 1 {
+            return Some(fit_selected_bars(app, &audio).unwrap_or_else(|error| error));
+        }
+    }
     if let ClipSource::Channel(id)=clip.source {if app.state.project.channels.iter().any(|c|c.index==id && crate::ara::is(c)) && cmd!=Fit::Trim {
         return Some("Change timing in the ARA editor, or remove ARA before using sampler stretch".into());
     }}
@@ -274,33 +356,16 @@ pub fn run(app: &mut App, i: usize, cmd: Fit) -> Option<String> {
         _ => return None,
     };
     pl::snapshot_as(&mut app.state,"Fit audio loop");
-    let mut targets=vec![i];
-    if cmd==Fit::Auto && app.state.playlist.sel.contains(&i){
-        targets.extend(app.state.playlist.sel.iter().copied().filter(|&j|j!=i && pl::clips(&app.state).get(j).is_some_and(|c|pl::source_kind(&app.state,c.source)==pl::PickKind::Audio)));
-    }
     let ratio=visible_beats*ppq/f64::from(clip.length.max(1));
-    let mut channels=std::collections::HashSet::new();
-    for index in &targets{
-        let Some(target)=pl::clips(&app.state).get(*index).copied()else{continue;};
-        let ClipSource::Channel(id)=target.source else{continue;};
-        let Some(channel)=app.state.project.channels.iter().position(|c|c.index==id)else{continue;};
-        if channels.insert(channel){
-            if cmd==Fit::Reset{let sound=&mut app.state.project.channels[channel].sound;sound.stretch[0]=0;sound.stretch[2]=0;}
-            else {
-                let beats=if *index==i {visible_beats/fraction}else{
-                    let window=pl::window(&app.state,&target);
-                    let duration=(window.1-window.0).max(1.)/1000.;
-                    let source=app.state.project.channels[channel].sample_path.as_deref().and_then(|p|os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(p))).ok());
-                    let fraction=source.as_ref().map_or(1.,|s|duration/(s.frames() as f64/f64::from(s.rate.max(1))));
-                    f64::from(target.length)*ratio/ppq/fraction
-                };
-                set_fitted_time(&mut app.state.project.channels[channel].sound,beats.clamp(1./192.,4096.));
-            }
-            let sound=app.state.project.channels[channel].sound;
-            app.plugins.set_sampler_stretch(channel,&sound);
-        }
-        if let Some(c)=pl::arr_mut(&mut app.state).clips.get_mut(*index){c.length=(f64::from(target.length)*ratio).round().max(1.) as u32;}
+    let sound = &mut app.state.project.channels[row].sound;
+    if cmd == Fit::Reset {
+        sound.stretch[0] = 0;
+        sound.stretch[2] = 0;
+    } else {
+        set_fitted_time(sound, (visible_beats / fraction).clamp(1.0 / 192.0, 4096.0));
     }
+    app.plugins.set_sampler_stretch(row, sound);
+    pl::arr_mut(&mut app.state).clips[i].length = (f64::from(clip.length) * ratio).round().max(1.0) as u32;
     if let Some(fits) = pl::audio_fits(&app.state) { pl::fit_clips(&mut app.state.project.arrangements, &fits); }
     app.state.piano.dirty=true;
     app.invalidate();
@@ -346,19 +411,29 @@ mod tests {
  }
 
  #[test]
- fn fitting_selected_stems_uses_one_ratio_and_undo(){
+ fn playlist_release_checks_fitting_selected_audio_preserves_positions_and_undo(){
     let mut app=App::new(None);app.state.project=crate::app::test_project();app.state.tempo=120.;
     let dir=std::env::temp_dir().join(format!("lemon-minibpm-fit-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();
     let a=dir.join("drum-90bpm.wav");let b=dir.join("vocal.wav");
     for path in [&a,&b]{os_engine::wav::write_f32_stereo(&mut std::fs::File::create(path).unwrap(),8000,&vec![0.2;128000]).unwrap();}
     let x=pl::add_audio_clip(&mut app.state,&a.to_string_lossy(),0,384).unwrap();
-    let y=pl::add_audio_clip(&mut app.state,&b.to_string_lossy(),1,384).unwrap();
+    let y=pl::add_audio_clip(&mut app.state,&b.to_string_lossy(),1,807).unwrap();
+    let shared = pl::clips(&app.state)[x].source;
+    let mut extra = pl::clips(&app.state)[x].clone();
+    extra.position = 1536;
+    let saved_extra = extra.clone();
+    pl::arr_mut(&mut app.state).clips.push(extra);
+    pl::arr_mut(&mut app.state).clips[x].window = Some((500.0, 3500.0));
     app.state.playlist.sel=vec![x,y];
     let before=pl::capture(&app.state);
-    run(&mut app,x,Fit::Auto);
+    assert!(run(&mut app,x,Fit::Auto).unwrap().contains("one bar each"));
+    pl::fit_audio(&mut app.state);
     let clips=pl::clips(&app.state);
-    assert_eq!(clips[x].position,384);assert_eq!(clips[y].position,384);
-    assert_eq!(clips[x].length,clips[y].length);assert_eq!(clips[x].length,12*u32::from(app.state.project.ppq));
+    assert_eq!(clips[x].position,384);assert_eq!(clips[y].position,807);
+    assert_eq!(clips[x].length,clips[y].length);assert_eq!(clips[x].length,app.state.project.bar_ticks());
+    assert_eq!(clips[x].window, Some((500.0, 3500.0)));
+    assert_ne!(clips[x].source, shared);
+    assert_eq!(clips[2], saved_extra);
     crate::history::undo(&mut app.state);assert_eq!(pl::capture(&app.state),before);
     for path in [a,b]{std::fs::remove_file(path).unwrap();}std::fs::remove_dir(dir).unwrap();
  }

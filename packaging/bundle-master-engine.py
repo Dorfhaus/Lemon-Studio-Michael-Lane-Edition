@@ -7,9 +7,11 @@ p.add_argument('--output', type=Path, required=True)
 p.add_argument('--os', choices=['windows','linux','macos'], required=True)
 p.add_argument('--arch', choices=['x86_64','aarch64'], required=True)
 a=p.parse_args()
-if a.bundle.name != 'Lemon Master Assistant.vst3' or not a.bundle.is_dir(): p.error('Expected the built VST3 bundle directory')
+if a.bundle.name not in ('ML Master Assistant.vst3', 'Lemon Master Assistant.vst3') or not a.bundle.is_dir():
+    p.error('Expected the built Master Assistant VST3 bundle directory')
 files=sorted(x for x in a.bundle.rglob('*') if x.is_file())
-expected={'windows':'Contents/x86_64-win/Lemon Master Assistant.vst3','linux':'Contents/x86_64-linux/Lemon Master Assistant.so','macos':'Contents/MacOS/Lemon Master Assistant'}[a.os]
+name=a.bundle.stem
+expected={'windows':f'Contents/x86_64-win/{name}.vst3','linux':f'Contents/x86_64-linux/{name}.so','macos':f'Contents/MacOS/{name}'}[a.os]
 if not (a.bundle/expected).is_file(): p.error('Platform engine binary is missing')
 manifest=dict(os=a.os, arch=a.arch, files=[])
 a.output.parent.mkdir(parents=True, exist_ok=True)

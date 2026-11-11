@@ -304,6 +304,7 @@ impl Logic {
 
     fn read_visibility(&mut self) {
         self.view.hide_band_card = !crate::visibility::band_card();
+        self.view.hide_band_overview = !crate::visibility::band_overview();
     }
 
     pub fn dragging(&self) -> bool {
@@ -380,6 +381,10 @@ impl Logic {
             }
             Some(Target::Graph) => format!("{}Hz {:.1}dB - click to create, drag curve to shape, drag empty space to select",eq::freq_hz(self.layout().n(x)).round(),self.layout().db(y)),
             Some(Target::Q(k))=>format!("Q {:.2} - wheel to adjust; double-click for a precise value",view::q_of(self.shown().bands[k].width)),
+            Some(Target::SelectBand(_))=>"Select band; Ctrl-click adds to selection; right-click opens band actions".into(),
+            Some(Target::FitRange)=>"Fit the display to the current EQ curve; audio stays unchanged".into(),
+            Some(Target::ResetSelected)=>"Reset selected bands; Undo restores their previous settings".into(),
+            Some(Target::InvertGain)=>"Turn selected boosts into cuts and cuts into boosts".into(),
             Some(Target::Undo)=>"Undo last EQ edit".into(),
             Some(Target::Redo)=>"Redo EQ edit".into(),
             Some(Target::PrevBand|Target::NextBand)=>"Select previous / next band".into(),
@@ -504,6 +509,35 @@ impl Logic {
         if btn==Btn::Left && m.ctrl && !matches!(t,Target::Token(_)|Target::Graph){let id=match t{Target::Freq(k)=>Some(freq_id(k)),Target::Fader(k)=>Some(if k==MAIN_FADER{MAIN_ID.into()}else{level_id(k)}),Target::Q(k)=>Some(width_id(k)),Target::Dynamic(i)=>Some(params::dynamic_id(i)),_=>None};if let Some(id)=id{self.reset_param(&id);return acts;}}
 
         match (t, btn) {
+            (Target::SelectBand(k), Btn::Left) => {
+                if m.ctrl {
+                    self.audition(None);
+                    self.view.selection ^= 1 << k;
+                    self.view.selected=if self.view.selection&(1<<k)!=0{k}else{self.view.selection.trailing_zeros().min(6) as usize};
+                    self.view.show_dynamics=self.view.selection!=0;
+                }
+                else {self.select(k);}
+            },
+            (Target::SelectBand(k), Btn::Right) => {self.select(k); acts.push(Act::Menu(MenuReq::Token(k),x,y));},
+            (Target::FitRange, Btn::Left) => {
+                let settings=self.shown(); let design=eq::Options::from_image(&extra).design(f64::from(self.shared.rate.load(Ordering::Relaxed)).max(1.));
+                let peak=(0..512).map(|i| {
+                    let hz=eq::freq_hz(i as f64/511.);
+                    settings.main_db+(0..BANDS).filter(|&k|settings.audible(k)).map(|k|eq::sections_db(&settings.bands[k].coefs(design),hz,design.rate())).sum::<f64>()
+                }).filter(|x|x.is_finite()).map(f64::abs).fold(0.,f64::max);
+                self.view.range_db=[3.,6.,12.,18.,30.].into_iter().find(|&r|r>=peak*1.15).unwrap_or(30.) as f32;
+            },
+            (Target::ResetSelected, Btn::Left) => {
+                self.audition(None);
+                let mask=if self.view.selection!=0{self.view.selection}else{1<<self.view.selected};
+                for k in 0..BANDS {if mask&(1<<k)!=0 {self.reset_band(k);}}
+            },
+            (Target::InvertGain, Btn::Left) => {
+                let mask=if self.view.selection!=0{self.view.selection}else{1<<self.view.selected};
+                let settings=self.shown();
+                for k in 0..BANDS {if mask&(1<<k)!=0 && has_level(settings.bands[k].kind) {self.vals.edit_plain(&level_id(k),-settings.bands[k].db as f32);}}
+            },
+
             (Target::BandMenu(k),Btn::Left|Btn::Right)=>acts.push(Act::Menu(MenuReq::Token(k),x,y)),
             (Target::HarshPanel,Btn::Left)=>{self.audition(None);self.view.harsh_open=!self.view.harsh_open;},
             (Target::Details, Btn::Left) => {
@@ -590,8 +624,11 @@ impl Logic {
             (Target::TypeTab(k), Btn::Right) => acts.push(Act::Menu(MenuReq::Param(type_id(k)), x, y)),
             (Target::OrderMark(k), Btn::Right) => acts.push(Act::Menu(MenuReq::Param(order_id(k)), x, y)),
             (Target::Switch(k), Btn::Left) => {
-                let m = self.mask() ^ (1 << k);
-                self.set_mask(m);
+                if self.shown().bands[k].kind == 0 {
+                    self.vals.edit_plain(&type_id(k), eq::DEFAULT_KINDS[k] as f32);
+                    self.set_mask(self.mask() | (1 << k));
+                    self.view.created |= 1 << k;
+                } else { self.set_mask(self.mask() ^ (1 << k)); }
             }
             (Target::Switch(k), Btn::Right) => {
                 let m = if self.mask() == 1 << k { 0x7f } else { 1 << k };
@@ -816,8 +853,8 @@ impl Logic {
                 m.submenu("Heatmap position", opt_menu(&extra, Opt::HeatmapPosition, &["Top", "Bottom", "Full"], 0), Cmd::None);
                 m.sep(Cmd::None);
                 let mut about = MenuDef::new(MenuStyle::Context);
-                about.add(MenuItem::item("Lemon Parametric EQ").enabled(false), Cmd::None);
-                about.add(MenuItem::item(&format!("Lemon Studio {} - GPLv3", env!("CARGO_PKG_VERSION"))).enabled(false), Cmd::None);
+                about.add(MenuItem::item("ML EQ").enabled(false), Cmd::None);
+                about.add(MenuItem::item(&format!("ML Studio {} - GPLv3", env!("CARGO_PKG_VERSION"))).enabled(false), Cmd::None);
                 about.add(MenuItem::item("Filters after the RBJ Audio EQ Cookbook").enabled(false), Cmd::None);
                 m.submenu("About", about, Cmd::None);
             }
@@ -1040,7 +1077,7 @@ mod win32 {
                 slot: slot.clone(),
                 resize_drag:None,
             });
-            let title = pw::wide("Lemon Parametric EQ");
+            let title = pw::wide("ML EQ");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),
@@ -1604,6 +1641,38 @@ mod tests {
         (h.r.cx(), h.r.cy())
     }
 
+    #[test]
+    fn ml_band_overview_edits_history_and_visibility() {
+        let mut l=logic();
+        let press=|l:&mut Logic,t|{paint(l);let(x,y)=centre(l,t);l.down(x,y,Btn::Left,Mods::default(),false);l.up(Btn::Left);};
+        let original=l.shown();
+        press(&mut l,Target::SelectBand(2));
+        assert_eq!(l.shown(),original);assert_eq!(l.view.selection,1<<2);
+        l.vals.edit_plain(&level_id(2),6.);
+        l.vals.edit_plain(&level_id(4),-3.);
+        l.view.selection=(1<<2)|(1<<4);
+        press(&mut l,Target::InvertGain);
+        assert_eq!(l.vals.plain(&level_id(2)),-6.);assert_eq!(l.vals.plain(&level_id(4)),3.);
+        l.undo_redo(false);assert_eq!(l.vals.plain(&level_id(2)),6.);
+        l.undo_redo(true);assert_eq!(l.vals.plain(&level_id(2)),-6.);
+        let before=l.shown();
+        press(&mut l,Target::ResetSelected);
+        assert_eq!(l.vals.plain(&level_id(2)),0.);
+        l.undo_redo(false);assert_eq!(l.shown(),before);
+        press(&mut l,Target::DeleteBand);assert_eq!(l.shown().bands[2].kind,0);
+        press(&mut l,Target::Switch(2));assert_eq!(l.shown().bands[2].kind,eq::DEFAULT_KINDS[2]);assert!(l.shown().audible(2));
+        l.undo_redo(false);assert_eq!(l.shown().bands[2].kind,0);
+        l.undo_redo(false);assert_eq!(l.shown(),before);
+        let state=l.snapshot();
+        press(&mut l,Target::FitRange);assert_eq!(l.shown(),state.settings);assert!(l.view.range_db>=6.);
+        paint(&mut l);let(x,y)=centre(&l,Target::Freq(2));
+        assert!(l.down(x,y,Btn::Left,Mods::default(),true).iter().any(|a|matches!(a,Act::TypeIn(..))));
+        l.typed(&freq_id(2),"1000");assert!((l.shown().bands[2].hz()-1000.).abs()<1.);
+        let shown=l.shown();l.view.hide_band_overview=true;paint(&mut l);
+        assert!(!l.hits.iter().any(|h|matches!(h.t,Target::SelectBand(_)|Target::InvertGain|Target::FitRange)));
+        assert_eq!(l.shown(),shown);
+    }
+
     /// A knob's "Create automation clip" works only inside Lemon Studio (host link) and asks for the parameter's list
     /// position: band 1 frequency is parameter 7 (spec: plugins/plugin-parameters.md §3, plugins/host-link.md).
     #[test]
@@ -1770,7 +1839,7 @@ mod tests {
 
     #[test]
     fn free_resize_and_independent_ui_scale_keep_inputs_aligned(){
-        for dpi in [1.,1.5,2.] {for wanted in [(640,420),(1400,460),(740,1000)] {let size=view::resized((1000,620),wanted);assert_eq!(size,wanted);let mut l=logic();l.select(3);l.vals.edit_plain(&params::dynamic_id(12),-6.);
+        for dpi in [1.,1.5,2.] {for wanted in [(640,420),(1400,460),(740,1000)] {let size=view::resized((1000,620),wanted);assert_eq!(size,wanted);let mut l=logic();l.select(3);l.view.details_open=true;l.vals.edit_plain(&params::dynamic_id(12),-6.);
             let mut c=os_ui::Canvas::new((size.0 as f32*dpi)as u32,(size.1 as f32*dpi)as u32,dpi).unwrap();l.view.size=c.size();let extra=l.shown_extra();l.hits=view::paint(&mut c,&view::Look{s:l.shown(),extra:&extra,spectrum:None,rate:48000.},&l.view);let h=l.hits.iter().find(|h|h.t==Target::Dynamic(13)).unwrap();let p=(h.r.cx()*dpi,h.r.cy()*dpi);l.down(p.0/dpi,p.1/dpi,Btn::Left,Mods::default(),false);l.delta(0.,-20.,Mods::default());l.up(Btn::Left);assert!(l.dynamic_values().bands[3][1]>-30.);let before=l.layout().plot;l.view.ui_scale=1.25;assert_eq!(l.view.size,(size.0 as f32,size.1 as f32));assert!(l.layout().plot.w<before.w);
         }}
     }
@@ -1784,7 +1853,7 @@ mod tests {
         paint(&mut l);let before=l.shown();let p=centre(&l,Target::Token(1));l.down(p.0,p.1,Btn::Left,Mods::default(),false);l.delta(layout.plot.w*0.04,-10.,Mods::default());l.up(Btn::Left);let moved=l.shown();for i in 0..2{assert!((moved.bands[i].freq-before.bands[i].freq-0.04).abs()<1e-5);}l.undo_redo(false);assert_eq!(l.shown(),before);l.undo_redo(true);assert_eq!(l.shown(),moved);
         paint(&mut l);let p=centre(&l,Target::DeleteBand);l.down(p.0,p.1,Btn::Left,Mods::default(),false);l.up(Btn::Left);assert_eq!((l.shown().bands[0].kind,l.shown().bands[1].kind),(0,0));l.undo_redo(false);assert_eq!(l.shown(),moved);
         l.typed("q2","2.0");assert!((view::q_of(l.shown().bands[1].width)-2.).abs()<0.01);
-        let mask=l.view.selection;let b=l.shown();paint(&mut l);let p=centre(&l,Target::Fader(1));l.down(p.0,p.1,Btn::Left,Mods::default(),false);l.delta(0.,-20.,Mods::default());l.up(Btn::Left);assert_eq!(l.view.selection,mask);assert!((l.shown().bands[0].db-b.bands[0].db-l.shown().bands[1].db+b.bands[1].db).abs()<0.01);
+        let mask=l.view.selection;let b=l.shown();paint(&mut l);let p=centre(&l,Target::Fader(1));l.down(p.0,p.1,Btn::Left,Mods::default(),false);l.delta(0.,-20.,Mods::default());l.up(Btn::Left);assert_eq!(l.view.selection,mask);assert!((l.shown().bands[0].db-b.bands[0].db-l.shown().bands[1].db+b.bands[1].db).abs()<0.011,"Linked gains agree within their 0.01 dB parameter quantization");
     }
 
     #[test]
@@ -1796,7 +1865,7 @@ mod tests {
         let (x, y) = centre(&l, Target::Fader(MAIN_FADER));
         l.moved(x, y, Mods::default());
         assert_eq!(l.hint, "Main level: 0.0dB");
-        l.select(0);paint(&mut l);
+        l.select(0);l.view.details_open=true;paint(&mut l);
         let (x, y) = centre(&l, Target::OrderMark(0));
         l.moved(x, y, Mods::default());
         assert_eq!(l.hint, "Band 1 order: 2");

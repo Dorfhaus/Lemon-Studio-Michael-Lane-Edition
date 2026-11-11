@@ -972,7 +972,7 @@ mod win32 {
                 tracking: false,
                 slot: slot.clone(),
             });
-            let title = pw::wide("Pulp Filter");
+            let title = pw::wide("ML Pulp Filter");
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),

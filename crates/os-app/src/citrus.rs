@@ -16,7 +16,7 @@ use os_model::{Channel, ChannelKind, Project};
 use crate::plugins::{Plugins, FX_KEY};
 
 /// The built-in plugin's name (picker, window title).
-pub const CITRUS: &str = "Citrus";
+pub const CITRUS: &str = "ML Citrus";
 /// The plugin id project files store for it (event 201).
 pub const FILE_NAME: &str = "Sytrus";
 

@@ -1773,9 +1773,9 @@ const CARDS: [Card; 9] = [
     },
 ];
 pub const SPEC: &Spec = &Spec {
-    name: "Lemon Wave",
+    name: "ML Wave",
     word: "WAVE",
-    about: "Lemon Wave — wavetable synthesis / verified reference oscillator / embedded WAV tables",
+    about: "ML Wave — wavetable synthesis / verified reference oscillator / embedded WAV tables",
     settings: &SETTINGS,
     version: Some(1),
     any_version: false,

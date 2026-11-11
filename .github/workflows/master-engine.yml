@@ -20,7 +20,7 @@ jobs:
         run: |
           cmake -S plugins/lemon-master-assistant -B build-master -G Ninja -DCMAKE_BUILD_TYPE=Release -DOXYGEN_ENABLE_NATIVE_OPTIMIZATIONS=OFF
           cmake --build build-master --target oXygen_VST3 --parallel 2
-          python3 packaging/bundle-master-engine.py --bundle 'build-master/oXygen_artefacts/Release/VST3/Lemon Master Assistant.vst3' --os linux --arch x86_64 --output master-engine-linux.zip
+          python3 packaging/bundle-master-engine.py --bundle 'build-master/oXygen_artefacts/Release/VST3/ML Master Assistant.vst3' --os linux --arch x86_64 --output master-engine-linux.zip
       - uses: actions/upload-artifact@v4
         with:
           name: master-engine-linux
