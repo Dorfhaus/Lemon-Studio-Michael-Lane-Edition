@@ -53,7 +53,7 @@ pub fn child_main(args: &[String]) -> ! {
         _ => serde_json::json!({ "ok": false, "error": format!("usage: {ARG} clap|vst3|vst2|native <path>") }),
     };
     let mut stdout = std::io::stdout().lock();
-    let _ = writeln!(stdout, "{TAG}{out}");
+    let _ = writeln!(stdout, "\n{TAG}{out}");
     let _ = stdout.flush();
     end_now(0)
 }
@@ -98,9 +98,9 @@ pub fn scan_in_child(path: &Path, format: Format) -> Scanned {
     if let Some(out) = child.stdout.take() {
         // Plugins may print anything while they load: only the tagged line counts.
         std::thread::spawn(move || {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(rest) = line.strip_prefix(TAG) {
-                    let _ = tx.send(rest.to_string());
+            for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                if let Some(rest) = line.strip_prefix(TAG.as_bytes()).and_then(|bytes|std::str::from_utf8(bytes).ok()) {
+                    let _ = tx.send(rest.trim_end_matches('\r').to_string());
                     break;
                 }
             }
@@ -214,29 +214,27 @@ pub fn start(prefs: &db::Prefs, old: Cache, mode: Mode) -> Sweep {
 }
 
 impl App {
-    /// Startup (spec: ui/plugin-manager.md §4 "When"): the built-in plugins and the cached plugins are listed at once
-    /// (no plugin file is loaded), then a background scan starts when "Scan for new plugins at startup" is on (always
-    /// when there is no cache yet).
+    /// Startup lists the built-in plugins and the last scan's cache. Discovery is manual.
     pub fn start_plugins(&mut self) {
-        let first = !self.load_plugins();
-        if first || self.state.plugdb.prefs.startup_scan {
-            self.start_scan(Mode::Changed);
+        #[cfg(all(windows,target_arch="x86_64"))]
+        if std::env::var_os("OPENSTUDIO_NATIVE").is_none() && crate::prefs::text("host_installed_fl_plugins").as_deref()==Some("1") {
+            os_native::set_enabled(true);
         }
+        self.load_plugins();
     }
 
-    /// The built-in plugins plus the last scan's, and the user's choices. False when there is no scan cache yet.
-    pub fn load_plugins(&mut self) -> bool {
+    /// The built-in plugins plus the last scan's, and the user's choices.
+    pub fn load_plugins(&mut self) {
+        crate::plugin_menu::import_installed_database();
         let (owner, scale) = (self.plugins.owner, self.plugins.scale);
         self.plugins = crate::plugins::Plugins::builtins();
         (self.plugins.owner, self.plugins.scale) = (owner, scale);
         let db = &mut self.state.plugdb;
         db.prefs = db::Prefs::load();
-        let cached = db::Cache::load();
-        let found = cached.is_some();
-        db.cache = cached.unwrap_or_default();
+        db.cache = db::Cache::load().unwrap_or_default();
         self.plugins.merge(&self.state.plugdb.cache);
         self.state.plugdb.rebuild(&self.plugins);
-        found
+        crate::plugin_menu::sync_user_folders(&self.state);
     }
 
     /// Starts a scan, or queues it after the running one (one at a time).
@@ -286,14 +284,16 @@ impl App {
     }
 
     /// A scan ended: its results are kept, the lists updated in place, the hint bar says what changed.
-    fn apply_scan(&mut self, cache: Cache) {
+    pub(crate) fn apply_scan(&mut self, cache: Cache) {
         let report = db::compare(&self.state.plugdb.cache, &cache);
         cache.save();
         self.plugins.merge(&cache);
+        self.retry_scanned_wrappers();
         let db = &mut self.state.plugdb;
         db.cache = cache;
         db.progress = None;
         db.rebuild(&self.plugins);
+        crate::plugin_menu::sync_user_folders(&self.state);
         self.state.message = Some(report.message());
         self.invalidate();
     }
@@ -302,6 +302,7 @@ impl App {
     pub(crate) fn prefs_changed(&mut self) {
         self.state.plugdb.prefs.save();
         self.state.plugdb.rebuild(&self.plugins);
+        crate::plugin_menu::sync_user_folders(&self.state);
         self.invalidate();
     }
 }

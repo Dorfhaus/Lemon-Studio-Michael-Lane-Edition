@@ -1,5 +1,4 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// Copyright (C) 2026 Samrat Dutta
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
@@ -15,11 +14,13 @@ use std::cell::UnsafeCell;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// One producer, one consumer ring of samples: the device's callback pushes, the writer thread pops; neither locks.
 pub struct Ring {
     buf: Box<[UnsafeCell<f32>]>,
+    writing: AtomicBool,
     /// Samples written and read so far (the slot is the count modulo the length).
     head: AtomicUsize,
     tail: AtomicUsize,
@@ -31,11 +32,16 @@ unsafe impl Sync for Ring {}
 
 impl Ring {
     pub fn new(len: usize) -> Ring {
-        Ring { buf: (0..len.max(1)).map(|_| UnsafeCell::new(0.0)).collect(), head: AtomicUsize::new(0), tail: AtomicUsize::new(0) }
+        Ring { buf: (0..len.max(1)).map(|_| UnsafeCell::new(0.0)).collect(), writing: AtomicBool::new(false), head: AtomicUsize::new(0), tail: AtomicUsize::new(0) }
     }
 
     /// Pushes `n` samples, the `k`-th being `at(k)`, as far as there is room; returns how many went in. Producer only.
     pub fn push_with(&self, n: usize, mut at: impl FnMut(usize) -> f32) -> usize {
+        // Input-device transitions can briefly overlap callbacks. Keep one writer without waiting.
+        if self.writing.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { return 0; }
+        struct Writer<'a>(&'a AtomicBool);
+        impl Drop for Writer<'_> { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
+        let _writer = Writer(&self.writing);
         let head = self.head.load(Ordering::Relaxed);
         let free = self.buf.len() - (head - self.tail.load(Ordering::Acquire));
         let n = n.min(free);
@@ -56,41 +62,142 @@ impl Ring {
         self.tail.store(head, Ordering::Release);
     }
 
+    /// Consumer only, one interleaved stereo frame without allocation.
+    pub fn pop_frame(&self) -> Option<[f32; 2]> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        if self.head.load(Ordering::Acquire) - tail < 2 { return None; }
+        // Safety: the producer published both samples and cannot reuse them until tail advances.
+        let frame = unsafe { [*self.buf[tail % self.buf.len()].get(), *self.buf[(tail + 1) % self.buf.len()].get()] };
+        self.tail.store(tail + 2, Ordering::Release);
+        Some(frame)
+    }
+
+    pub fn waiting_frames(&self) -> usize {
+        (self.head.load(Ordering::Acquire) - self.tail.load(Ordering::Relaxed)) / 2
+    }
+
     /// Empties it. Consumer only.
     pub fn clear(&self) {
         self.tail.store(self.head.load(Ordering::Acquire), Ordering::Release);
     }
 }
 
+// Timestamped stereo frames preserve the input timeline even when the queue fills.
+struct FrameRing {
+ buf: Box<[UnsafeCell<(u64,[f32;2])>]>, head:AtomicUsize, tail:AtomicUsize,
+ writing:AtomicBool, next:AtomicU64, read:AtomicU64,
+}
+unsafe impl Sync for FrameRing {}
+impl FrameRing {
+ fn new(samples:usize)->Self {Self{buf:(0..(samples/2).max(1)).map(|_|UnsafeCell::new((0,[0.;2]))).collect(),head:AtomicUsize::new(0),tail:AtomicUsize::new(0),writing:AtomicBool::new(false),next:AtomicU64::new(0),read:AtomicU64::new(0)}}
+ fn clear(&self){self.tail.store(self.head.load(Ordering::Acquire),Ordering::Release);self.next.store(0,Ordering::Release);self.read.store(0,Ordering::Release);}
+ fn push(&self,frames:usize,at:impl Fn(usize)->[f32;2])->usize {
+  // Normally serialized by the device dispatcher. Overlapping callbacks are dropped without waiting.
+  if self.writing.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){self.next.fetch_add(frames as u64,Ordering::AcqRel);return 0;}
+  let start=self.next.fetch_add(frames as u64,Ordering::AcqRel);
+  let head=self.head.load(Ordering::Relaxed);let n=frames.min(self.buf.len()-(head-self.tail.load(Ordering::Acquire)));
+  for k in 0..n {unsafe{*self.buf[(head+k)%self.buf.len()].get()=(start+k as u64,at(k));}}
+  self.head.store(head+n,Ordering::Release);self.writing.store(false,Ordering::Release);n
+ }
+ fn drain(&self,out:&mut Vec<f32>,finished:bool){
+  let tail=self.tail.load(Ordering::Relaxed);let head=self.head.load(Ordering::Acquire);let mut next=self.read.load(Ordering::Relaxed);
+  for i in tail..head {let (pos,frame)=unsafe{*self.buf[i%self.buf.len()].get()};if pos>next{out.resize(out.len()+((pos-next)*2) as usize,0.);}out.extend_from_slice(&frame);next=pos+1;}
+  self.tail.store(head,Ordering::Release);
+  if finished {let end=self.next.load(Ordering::Acquire);if end>next{out.resize(out.len()+((end-next)*2) as usize,0.);next=end;}}
+  self.read.store(next,Ordering::Relaxed);
+ }
+}
+
 /// The capture the device's callbacks feed: whether a recording is on, which inputs it takes, and what came in.
 pub struct Capture {
-    ring: Ring,
+    ring: FrameRing,
     on: AtomicBool,
+    asio: AtomicBool,
     /// The first input (0-based) and whether its next one makes a stereo pair (`set_source`).
     first: AtomicU32,
     stereo: AtomicBool,
     /// Stereo frames that came in since `start` (the ones the ring had no room for included), and those lost.
     frames: AtomicU64,
     dropped: AtomicU64,
+    /// File frame index and physical capture time of the latest timestamped input block.
+    clock: Mutex<Option<(u64, Instant)>>,
 }
 
 /// About 20 s of stereo at 48 kHz: the writer drains it every few milliseconds.
 const RING: usize = 1 << 21;
+#[cfg(test)]
+pub(crate) static TEST_RECORDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The one capture.
 pub fn capture() -> &'static Capture {
     static C: OnceLock<Capture> = OnceLock::new();
     C.get_or_init(|| Capture {
-        ring: Ring::new(RING),
+        ring: FrameRing::new(RING),
         on: AtomicBool::new(false),
+        asio: AtomicBool::new(true),
         first: AtomicU32::new(0),
         stereo: AtomicBool::new(true),
         frames: AtomicU64::new(0),
         dropped: AtomicU64::new(0),
+        clock: Mutex::new(None),
     })
 }
 
+// Extra queues are allocated only for channels actually recorded. One physical callback
+// feeds the complete group, so files have an identical frame timeline.
+static EXTRA: [OnceLock<Capture>; 63] = [const { OnceLock::new() }; 63];
+static INPUT_GATE: AtomicBool = AtomicBool::new(true);
+static DISPATCHING: AtomicBool = AtomicBool::new(false);
+pub fn extra_capture(index: usize) -> &'static Capture {
+    EXTRA[index].get_or_init(|| Capture { ring: FrameRing::new(RING), on: AtomicBool::new(false),
+        asio: AtomicBool::new(true), first: AtomicU32::new(0), stereo: AtomicBool::new(false),
+        frames: AtomicU64::new(0), dropped: AtomicU64::new(0), clock: Mutex::new(None) })
+}
+pub fn start_group() { INPUT_GATE.store(true, Ordering::Release); }
+
+#[cfg(test)]
+pub(crate) fn push_test_timed(frames: usize, captured_at: Instant, at: impl Fn(usize, usize) -> f32) {
+    push_inputs_at(false, frames, Some(captured_at), at);
+}
+pub fn stop_group() {
+    INPUT_GATE.store(false, Ordering::Release);
+    while DISPATCHING.load(Ordering::Acquire) { std::thread::yield_now(); }
+    capture().stop();
+    for c in EXTRA.iter().filter_map(OnceLock::get) { c.stop(); }
+}
+#[cfg(any(windows, test))]
+pub fn push_inputs(asio: bool, frames: usize, at: impl Fn(usize, usize) -> f32) {
+    push_inputs_at(asio, frames, None, at);
+}
+
+fn push_inputs_at(asio: bool, frames: usize, captured_at: Option<Instant>, at: impl Fn(usize, usize) -> f32) {
+    if !INPUT_GATE.load(Ordering::Acquire) || DISPATCHING.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err() { return; }
+    if INPUT_GATE.load(Ordering::Acquire) && capture().on() {
+        let primary = capture();
+        let first = primary.frames();
+        primary.push_source(asio, frames, &at);
+        if !asio && primary.frames() != first {
+            if let Ok(mut clock) = primary.clock.try_lock() {
+                *clock = captured_at.map(|time| (first, time));
+            }
+        }
+        for c in EXTRA.iter().filter_map(OnceLock::get) { c.push_source(asio,frames,&at); }
+    }
+    DISPATCHING.store(false,Ordering::Release);
+}
+
 impl Capture {
+    pub fn start_input(&self, input: &Input) {
+        self.asio.store(input.asio, Ordering::Relaxed);
+        self.start(input.first, input.stereo);
+    }
+
+    /// Only the selected physical source writes the disk queue. An ASIO output may also
+    /// provide input callbacks while recording a separate system microphone.
+    pub fn push_source(&self, asio: bool, frames: usize, at: impl Fn(usize, usize) -> f32) {
+        if self.asio.load(Ordering::Relaxed) == asio { self.push(frames, at); }
+    }
+
     /// Starts taking inputs `first` (and `first + 1` when `stereo`) from the next block.
     pub fn start(&self, first: u16, stereo: bool) {
         self.on.store(false, Ordering::Release);
@@ -99,6 +206,7 @@ impl Capture {
         self.stereo.store(stereo, Ordering::Relaxed);
         self.frames.store(0, Ordering::Relaxed);
         self.dropped.store(0, Ordering::Relaxed);
+        *self.clock.lock().unwrap_or_else(|error| error.into_inner()) = None;
         self.on.store(true, Ordering::Release);
     }
 
@@ -120,6 +228,10 @@ impl Capture {
         self.frames.load(Ordering::Acquire)
     }
 
+    pub(crate) fn recording_clock(&self) -> Option<(u64, Instant)> {
+        *self.clock.lock().ok()?
+    }
+
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -132,13 +244,13 @@ impl Capture {
         }
         let (first, stereo) = self.source();
         let second = if stereo { first + 1 } else { first };
-        let went = self.ring.push_with(2 * frames, |k| at(if k % 2 == 0 { first } else { second }, k / 2));
-        self.dropped.fetch_add(((2 * frames - went) / 2) as u64, Ordering::Relaxed);
+        let went = self.ring.push(frames, |k| [at(first,k),at(second,k)]);
+        self.dropped.fetch_add((frames - went) as u64, Ordering::Relaxed);
         self.frames.fetch_add(frames as u64, Ordering::AcqRel);
     }
 
     fn drain(&self, out: &mut Vec<f32>) {
-        self.ring.pop_into(out);
+        self.ring.drain(out,!self.on());
     }
 }
 
@@ -201,27 +313,21 @@ pub fn devices() -> Vec<(String, bool, u16)> {
 }
 
 /// The system's input devices and their channels (on Linux the sound server's, or ALSA's in exclusive mode, as the
-/// output): the one Settings > Audio records from (else the system's default) first, asked for on its own so that it
-/// is there even when the list leaves it out, then the others. A device that reports no format is listed with none.
+/// output).
 fn system_inputs() -> Vec<(String, bool, u16)> {
-    use cpal::traits::HostTrait;
-    use crate::device::system_input::input_config;
-    let cfg = crate::audio_cfg::AudioCfg::current();
-    let channels = |d: &cpal::Device| input_config(d).inspect_err(|e| eprintln!("audio input {e}")).map_or(0, |c| c.channels());
-    let mut v: Vec<(String, bool, u16)> =
-        crate::audio_cfg::input_device(&cfg).map(|d| (crate::audio_cfg::device_name(&d), false, channels(&d))).into_iter().collect();
-    let host = crate::audio_cfg::host(&cfg);
-    for d in host.input_devices().into_iter().flatten().filter(crate::audio_cfg::listed) {
-        let name = crate::audio_cfg::device_name(&d);
-        if !v.iter().any(|(n, ..)| *n == name) {
-            v.push((name, false, channels(&d)));
-        }
-    }
-    v
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = crate::audio_cfg::host(&crate::audio_cfg::AudioCfg::current());
+    let Ok(list) = host.input_devices() else { return Vec::new() };
+    list.filter(crate::audio_cfg::listed).filter_map(|d| {
+        let c = d.default_input_config().ok()?;
+        Some((crate::audio_cfg::device_name(&d), false, c.channels()))
+    })
+    .collect()
 }
 
 /// A system input device's stream, recording while it is held.
 pub struct InputStream {
+    pub channels: u16,
     /// Taken when dropped: an ALSA device is let go of before the sound server is given it back.
     stream: Option<cpal::Stream>,
     alsa: bool,
@@ -239,11 +345,11 @@ impl Drop for InputStream {
 
 /// Opens system input device `name` in shared mode at its own rate, pushing into `capture`.
 pub fn open_input(name: &str) -> Result<InputStream, String> {
-    use cpal::traits::{HostTrait, StreamTrait};
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::SampleFormat;
     let host = crate::audio_cfg::host(&crate::audio_cfg::AudioCfg::current());
     let device = crate::audio_cfg::find(host.input_devices().map_err(|e| e.to_string())?, name).ok_or_else(|| format!("{name} is not there"))?;
-    let supported = crate::device::system_input::input_config(&device)?;
+    let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
     let stream = match format {
@@ -257,7 +363,7 @@ pub fn open_input(name: &str) -> Result<InputStream, String> {
     }?;
     stream.play().map_err(|e| e.to_string())?;
     let alsa = host.id().name() == "ALSA";
-    Ok(InputStream { stream: Some(stream), alsa, rate: config.sample_rate })
+    Ok(InputStream { stream: Some(stream), alsa, rate: config.sample_rate, channels: config.channels })
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<cpal::Stream, String>
@@ -267,12 +373,19 @@ where
 {
     use cpal::traits::DeviceTrait;
     let channels = usize::from(config.channels).max(1);
+    let rate = config.sample_rate;
     device
         .build_input_stream::<T, _, _>(
             config.clone(),
-            move |data: &[T], _| {
+            move |data: &[T], info| {
+                let now = Instant::now();
+                let stamp = info.timestamp();
+                let captured_at = stamp.callback.checked_duration_since(stamp.capture)
+                    .filter(|&delay| delay <= Duration::from_secs(1))
+                    .and_then(|delay| now.checked_sub(delay));
                 // An input past the device's channels is its last one.
-                capture().push(data.len() / channels, |c, f| data[f * channels + c.min(channels - 1)].to_sample::<f32>());
+                push_inputs_at(false, data.len() / channels, captured_at, |c, f| data[f * channels + c.min(channels - 1)].to_sample::<f32>());
+                crate::input_monitor::push_all(false, rate, data.len() / channels, |c, f| data[f * channels + c.min(channels - 1)].to_sample::<f32>());
             },
             |e| eprintln!("audio input stream: {e}"),
             None,
@@ -287,6 +400,7 @@ pub fn file_name(project: &str, now: chrono::NaiveDateTime) -> String {
 
 /// The writer: drains the capture into `<file>.part` until finished, then makes the WAV.
 pub struct Recorder {
+    source: &'static Capture,
     stop: Arc<AtomicBool>,
     /// The first frame of the take (frames before it are left out), set before `finish`.
     head: Arc<AtomicI64>,
@@ -297,17 +411,26 @@ pub struct Recorder {
 
 impl Recorder {
     /// Starts writing what the capture takes in into `file` (a WAV at `rate` once finished).
-    pub fn start(file: PathBuf, rate: u32) -> Result<Recorder, String> {
-        Recorder::start_from(file, rate, |out| capture().drain(out))
-    }
-
-    /// Starts writing what `drain` hands over (stereo frames, appended to its argument) into `file`.
-    pub fn start_from(file: PathBuf, rate: u32, mut drain: impl FnMut(&mut Vec<f32>) + Send + 'static) -> Result<Recorder, String> {
+    pub fn start(file: PathBuf, rate: u32) -> Result<Recorder, String> { Self::start_from(file, rate, capture()) }
+    pub fn start_from(mut file: PathBuf, rate: u32, source: &'static Capture) -> Result<Recorder, String> {
         if let Some(d) = file.parent() {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
-        let part = file.with_extension("wav.part");
-        let raw = std::fs::File::create(&part).map_err(|e| format!("{}: {e}", part.display()))?;
+        let original=file.clone();
+        let mut suffix=1;
+        let (part,raw)=loop {
+            let part=file.with_extension("wav.part");
+            if !file.exists() {
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+                    Ok(raw)=>break (part,raw),
+                    Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
+                    Err(e)=>return Err(format!("{}: {e}",part.display())),
+                }
+            }
+            suffix+=1;
+            let stem=original.file_stem().unwrap_or_default().to_string_lossy();
+            file=original.with_file_name(format!("{}_{suffix}_REC.wav",stem.trim_end_matches("_REC")));
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let head = Arc::new(AtomicI64::new(0));
         let rate = Arc::new(AtomicU32::new(rate));
@@ -321,7 +444,7 @@ impl Recorder {
                 loop {
                     let last = s.load(Ordering::Acquire);
                     buf.clear();
-                    drain(&mut buf);
+                    source.drain(&mut buf);
                     for x in &buf {
                         w.write_all(&x.to_le_bytes()).map_err(|e| e.to_string())?;
                     }
@@ -335,12 +458,12 @@ impl Recorder {
                 drop(raw);
                 let frames = samples / 2;
                 let head = h.load(Ordering::Acquire);
-                let n = to_wav(&part, &file, r.load(Ordering::Acquire), head, frames).map_err(|e| e.to_string());
+                let n = to_wav(&part, &file, r.load(Ordering::Acquire), head, frames).map_err(|e| format!("{e}; captured audio kept at {}",part.display()))?;
                 let _ = std::fs::remove_file(&part);
-                Ok((file, n?))
+                Ok((file, n))
             })
             .map_err(|e| e.to_string())?;
-        Ok(Recorder { stop, head, rate, thread: Some(thread) })
+        Ok(Recorder { source, stop, head, rate, thread: Some(thread) })
     }
 
     /// The take starts at frame `head` of what came in (negative: that much silence first).
@@ -367,12 +490,18 @@ impl Recorder {
     }
 }
 
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        if let Some(thread)=self.thread.take(){self.source.stop();self.stop.store(true,Ordering::Release);let _=thread.join();}
+    }
+}
+
 /// Makes WAV `wav` (32-bit float stereo at `rate`) of the raw frames in `part` from frame `head` on; returns its frames.
 fn to_wav(part: &Path, wav: &Path, rate: u32, head: i64, frames: u64) -> std::io::Result<u64> {
     let skip = head.max(0) as u64;
     let pad = (-head).max(0) as u64;
     let n = frames.saturating_sub(skip) + pad;
-    let mut out = BufWriter::new(std::fs::File::create(wav)?);
+    let mut out = BufWriter::new(std::fs::OpenOptions::new().write(true).create_new(true).open(wav)?);
     os_engine::wav::write_f32_stereo_header(&mut out, rate, n)?;
     out.write_all(&vec![0u8; (pad * 8) as usize])?;
     let mut r = std::fs::File::open(part)?;
@@ -385,6 +514,19 @@ fn to_wav(part: &Path, wav: &Path, rate: u32, head: i64, frames: u64) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recording_file_names_never_overwrite_an_existing_take() {
+        let _lock=TEST_RECORDING.lock().unwrap_or_else(|e|e.into_inner());
+        let dir=std::env::temp_dir().join(format!("lemon-unique-take-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("vocal_REC.wav");std::fs::write(&path,b"existing take").unwrap();
+        capture().start(0,false);
+        let writer=Recorder::start(path.clone(),48000).unwrap();
+        capture().push(64,|_,_|0.2);capture().stop();writer.finish();
+        let (new,frames)=writer.join().unwrap();
+        assert_ne!(path,new);assert_eq!(frames,64);assert_eq!(std::fs::read(path).unwrap(),b"existing take");
+        let _=std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn the_ring_keeps_order_and_drops_what_has_no_room() {
@@ -423,6 +565,7 @@ mod tests {
         let b = std::fs::read(&wav).unwrap();
         let data: Vec<f32> = b[44..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
         assert_eq!(data, [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        let wav=dir.join("padded.wav");
         assert_eq!(to_wav(&part, &wav, 48000, -1, 4).unwrap(), 5);
         let b = std::fs::read(&wav).unwrap();
         assert_eq!(b.len(), 44 + 5 * 8);
@@ -449,7 +592,7 @@ mod tests {
     /// Stereo takes a pair; one input goes to both sides.
     #[test]
     fn a_block_goes_in_as_stereo() {
-        let c = Capture { ring: Ring::new(64), on: AtomicBool::new(false), first: AtomicU32::new(0), stereo: AtomicBool::new(true), frames: AtomicU64::new(0), dropped: AtomicU64::new(0) };
+        let c = Capture { ring: FrameRing::new(64), on: AtomicBool::new(false), asio: AtomicBool::new(true), first: AtomicU32::new(0), stereo: AtomicBool::new(true), frames: AtomicU64::new(0), dropped: AtomicU64::new(0), clock: Mutex::new(None) };
         c.push(2, |ch, f| (ch * 10 + f) as f32);
         assert_eq!(c.frames(), 0, "off");
         c.start(1, true);
@@ -460,5 +603,18 @@ mod tests {
         c.drain(&mut out);
         assert_eq!(out, [20.0, 20.0], "start empties what came before");
         assert_eq!(c.frames(), 1);
+        let mut input = Input { device: "System mic".into(), asio: false, first: 0, stereo: false };
+        c.start_input(&input);
+        c.push_source(true, 3, |_, _| 0.9);
+        assert_eq!(c.frames(), 0, "the ASIO output's inputs must not enter a system microphone take");
+        c.push_source(false, 3, |_, _| 0.25);
+        out.clear(); c.drain(&mut out); assert_eq!(out, vec![0.25; 6]);
+        input.asio = true; c.start_input(&input);
+        c.push_source(false, 3, |_, _| 0.9);
+        assert_eq!(c.frames(), 0, "a system callback must not enter an ASIO take");
     }
+}
+
+#[cfg(test)]mod audit_tests {use super::*;
+ #[test]fn audit_overflow_keeps_stereo_positions_and_trailing_gap(){let r=FrameRing::new(4);assert_eq!(r.push(4,|i|[i as f32,10.+i as f32]),2);let mut out=vec![];r.drain(&mut out,false);assert_eq!(r.push(1,|_|[4.,14.]),1);r.drain(&mut out,false);assert_eq!(out,vec![0.,10.,1.,11.,0.,0.,0.,0.,4.,14.]);assert_eq!(r.push(4,|_|[5.,15.]),2);r.drain(&mut out,true);assert_eq!(&out[10..],&[5.,15.,5.,15.,0.,0.,0.,0.]);assert_eq!(out.len(),18);}
 }

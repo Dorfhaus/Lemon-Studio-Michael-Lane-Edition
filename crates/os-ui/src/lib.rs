@@ -21,7 +21,55 @@ use cache::{Fx, Lru};
 pub use os_theme::Color;
 pub use glyph::{path_data, Glyph};
 pub use text::{font_count, Face, Font};
+pub mod icon_packs;
 use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
+
+/// Transparent control art with a bounded device-size cache.
+pub struct Sprite {
+    source: Pixmap,
+    sizes: std::cell::RefCell<Vec<(Option<Color>, Pixmap)>>,
+}
+
+impl Sprite {
+    const PIXELS: usize = 1_048_576;
+
+    pub fn png(bytes: &[u8]) -> Option<Self> {
+        let header = bytes.get(..24)?;
+        if !header.starts_with(b"\x89PNG\r\n\x1a\n") || &header[12..16] != b"IHDR" { return None; }
+        let w = u32::from_be_bytes(header[16..20].try_into().ok()?);
+        let h = u32::from_be_bytes(header[20..24].try_into().ok()?);
+        if !(1..=512).contains(&w) || !(1..=512).contains(&h) { return None; }
+        let source = Pixmap::decode_png(bytes).ok()?;
+        Some(Self { source, sizes: Default::default() })
+    }
+
+    fn with_size(&self, w: u32, h: u32, matte: Option<Color>, paint: impl FnOnce(&Pixmap)) {
+        if matte.is_none() && (w, h) == (self.source.width(), self.source.height()) {
+            paint(&self.source);
+            return;
+        }
+        let mut sizes = self.sizes.borrow_mut();
+        if let Some(i) = sizes.iter().position(|(base, p)| *base == matte && (p.width(), p.height()) == (w, h)) {
+            let entry = sizes.remove(i);
+            paint(&entry.1);
+            sizes.push(entry);
+            return;
+        }
+        let Some(mut pixmap) = Pixmap::new(w, h) else { return };
+        if let Some(color) = matte {
+            pixmap.fill(tiny_skia::Color::from_rgba8(color.r, color.g, color.b, 255));
+        }
+        let filter = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+        pixmap.draw_pixmap(0, 0, self.source.as_ref(), &filter,
+            Transform::from_scale(w as f32 / self.source.width() as f32, h as f32 / self.source.height() as f32), None);
+        while sizes.len() >= 8 || sizes.iter().map(|(_, p)| p.data().len() / 4).sum::<usize>() + w as usize * h as usize > Self::PIXELS {
+            sizes.remove(0);
+        }
+        paint(&pixmap);
+        sizes.push((matte, pixmap));
+    }
+}
+
 
 /// An axis-aligned rectangle in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -77,10 +125,22 @@ impl Rect {
 }
 
 /// The frame being painted.
+#[derive(Clone, Copy)]
+pub enum ChromeIcon { Left, Right, Up, Down, Check, Close }
+
+type ChromeArt = fn(&mut Canvas, ChromeIcon, Rect, Color) -> bool;
+
 pub struct Canvas {
     pub pixmap: Pixmap,
     pub scale: f32,
     text: text::TextEngine,
+    icon_pack: u8,
+    icon_color: Option<Color>,
+    icon_variants: [[u8; 16]; 5],
+    icon_mixing: bool,
+    icon_colors: [[Option<Color>; 16]; 5],
+    cursor_glyphs: bool,
+    chrome_art: Option<ChromeArt>,
     clips: Vec<Rect>,
     /// The frame's damage region as disjoint device rects (x0, y0, x1, y1); empty = the whole canvas.
     region: Vec<(i32, i32, i32, i32)>,
@@ -151,6 +211,13 @@ impl Canvas {
             pixmap: Pixmap::new(width.max(1), height.max(1)).ok_or("bad canvas size")?,
             scale,
             text: text::TextEngine::new()?,
+            icon_pack: 0,
+            icon_color: None,
+            icon_variants: [[0; 16]; 5],
+            icon_mixing: false,
+            icon_colors: [[None; 16]; 5],
+            cursor_glyphs: false,
+            chrome_art: None,
             clips: Vec::new(),
             region: Vec::new(),
             cover: None,
@@ -191,11 +258,6 @@ impl Canvas {
     pub fn unscale(&mut self, old: Rescaled) {
         self.scale = old.scale;
         self.clips = old.clips;
-    }
-
-    /// Device pixels per logical pixel (1.5 at 150 %).
-    pub fn scale(&self) -> f32 {
-        self.scale
     }
 
     /// Logical size.
@@ -891,21 +953,6 @@ impl Canvas {
         self.text(f, (r.cx() - w / 2.0).round(), (r.cy() - h / 2.0).round(), c, s);
     }
 
-    /// Distance from a text cell's top to the middle of its capitals, in logical pixels: the label's visual centre.
-    /// Cuprum's win ascent puts the baseline at 0.91 em and its capitals are 0.70 em tall (the other faces are scaled to
-    /// match), so the middle is the ascent less half the cap height, which is also the middle of the cell.
-    pub fn cap_mid(&mut self, f: Font) -> f32 {
-        self.ascent(f) - 0.35 * f32::from(f.size)
-    }
-
-    /// `text` with the middle of its capitals on `cy`: a label sits level with the icon or control it is beside when
-    /// `cy` is that thing's centre. `text` takes the cell's top, so a hand-picked top (a spec's y) leaves the label a
-    /// pixel or two off the icon's middle; centring the cell (as `text_center` does) or using this does not.
-    pub fn text_mid(&mut self, f: Font, x: f32, cy: f32, c: Color, s: &str) -> f32 {
-        let y = cy - self.cap_mid(f);
-        self.text(f, x, y, c, s)
-    }
-
     /// `f`, horizontally condensed step by step (then shrunk) until `s` fits in `max_w`.
     pub fn fit_font(&mut self, f: Font, s: &str, max_w: f32) -> Font {
         if self.text_width(f, s) <= max_w {
@@ -955,16 +1002,113 @@ impl Canvas {
         w as f32 / k
     }
 
+    pub fn icon_styling(&self, color: Color, width: f32) -> (Color, f32) {
+        (icon_packs::ink(self.icon_pack, color), width * icon_packs::get(self.icon_pack).weight)
+    }
+
+    pub fn icon_pack(&self) -> u8 { self.icon_pack }
+
+    pub fn set_chrome_art(&mut self, art: ChromeArt) {
+        self.chrome_art = Some(art);
+    }
+
+    pub fn chrome_icon(&mut self, icon: ChromeIcon, r: Rect, color: Color) -> bool {
+        let Some(lookup) = self.chrome_art else { return false };
+        lookup(self, icon, r, color)
+    }
+
+    /// Draw a pack's authored artwork using the same cache as other icons.
+    pub fn art_icon(&mut self, icon: &tabler::TablerIcon, r: Rect, color: Color) {
+        let weight = icon_packs::get(self.icon_pack).weight;
+        let stroke = (!icon.filled).then_some(((r.w.min(r.h) / 24.0) * 1.75 * weight).max(0.9));
+        let ink = if self.cursor_glyphs { color } else {
+            self.icon_color.map(|ink| ink.with_alpha(color.a)).unwrap_or_else(|| icon_packs::ink(self.icon_pack, color))
+        };
+        self.tabler(icon, r, ink, stroke);
+    }
+
+    pub fn set_icon_color(&mut self, color: Option<Color>) { self.icon_color = color; }
+    pub fn icon_color(&self) -> Option<Color> { self.icon_color }
+    pub fn set_icon_overrides(&mut self, appearance: os_theme::appearance::Appearance) {
+        self.icon_variants = appearance.icon_variants;
+        self.icon_mixing = appearance.icon_mixing;
+        self.icon_colors = appearance.icon_colors;
+    }
+    pub fn icon_override(&self, role: usize) -> (u8, Option<Color>) {
+        // Legacy themes sometimes retained hidden overrides when set to Default.
+        // Only a new explicit individual edit enables those on the Default base.
+        if self.icon_pack == 0 && !self.icon_mixing { return (0, None); }
+        (self.icon_variants[role / 16][role % 16], self.icon_colors[role / 16][role % 16])
+    }
+
+    pub fn set_icon_pack(&mut self, id: u8, cursor: bool) {
+        self.icon_pack = if usize::from(id) < icon_packs::PACKS.len() { id } else { 0 };
+        self.cursor_glyphs = cursor;
+    }
+
+    pub fn mute_theme_font(&mut self, muted: bool) { self.text.mute_theme_font(muted); }
+
+    pub fn set_theme_font(&mut self, id: u8, data: Option<std::sync::Arc<[u8]>>) {
+        self.text.set_theme_font(id, data);
+    }
+
+    pub fn valid_theme_font(bytes: &[u8]) -> bool { text::TextEngine::valid_theme_font(bytes) }
+
     /// Draw a Tabler icon (24-unit grid) centred in `r`, scaled to the shorter side, in color `c`.
     pub fn icon(&mut self, icon: &tabler::TablerIcon, r: Rect, c: Color) {
         let k = r.w.min(r.h) / 24.0;
         let stroke = if icon.filled { None } else { Some((2.0 * k).max(1.1)) };
-        self.tabler(icon, r, c, stroke);
+        self.packed_icon(icon, r, c, stroke);
     }
 
     /// An outline Tabler icon like `icon`, stroked `width` logical px wide whatever its size (small, bold glyphs).
     pub fn icon_stroke(&mut self, icon: &tabler::TablerIcon, r: Rect, c: Color, width: f32) {
-        self.tabler(icon, r, c, (!icon.filled).then_some(width));
+        self.packed_icon(icon, r, c, (!icon.filled).then_some(width));
+    }
+
+    fn packed_icon(&mut self, icon: &tabler::TablerIcon, r: Rect, c: Color, stroke: Option<f32>) {
+        if self.icon_pack == 0 {
+            return self.tabler(icon, r, c, stroke);
+        }
+        if !self.visible(r.outset(2.0)) { return; }
+        let pack = icon_packs::get(self.icon_pack);
+        let stroke = stroke.map(|w| w * pack.weight);
+        if self.cursor_glyphs {
+            return self.tabler(icon, r, c, stroke);
+        }
+        let side = r.w.min(r.h);
+        let box_ = Rect::new(r.cx() - side*0.5, r.cy() - side*0.5, side, side);
+        let ink = icon_packs::ink(self.icon_pack, c);
+        if side >= 10.0 {
+            let dim = ink.with_alpha((f32::from(c.a) * 0.28) as u8);
+            match pack.badge {
+                1 => self.stroke_rrect(box_.inset(1.0), 0.0, 0.7, dim),
+                2 => {
+                    self.fill_rrect(box_.inset(0.5), 2.0, dim.with_alpha(c.a / 8));
+                    self.stroke_rrect(box_.inset(0.5), 2.0, 1.0, dim);
+                }
+                3 => self.stroke_circle(r.cx(), r.cy(), side*0.46, 0.8, dim),
+                4 => self.fill_rect(Rect::new(box_.x + 2.0, box_.bottom() - 1.5, side - 4.0, 1.0), dim),
+                5 => {
+                    for (x,y,dx,dy) in [
+                        (box_.x,box_.y,1.0,1.0),(box_.right(),box_.y,-1.0,1.0),
+                        (box_.x,box_.bottom(),1.0,-1.0),(box_.right(),box_.bottom(),-1.0,-1.0),
+                    ] {
+                        self.line(x,y,x+dx*side*0.21,y,0.7,dim);
+                        self.line(x,y,x,y+dy*side*0.21,0.7,dim);
+                    }
+                }
+                6 => self.fill_circle(r.cx(), r.cy(), side*0.47, dim.with_alpha(c.a / 7)),
+                _ => {}
+            }
+        }
+        let size = side * pack.scale;
+        let glyph = Rect::new(r.cx()-size*0.5, r.cy()-size*0.5, size, size);
+        if pack.shadow && side >= 10.0 {
+            let shadow = Rect::new(glyph.x, glyph.y+0.85, glyph.w, glyph.h);
+            self.tabler(icon, shadow, Color::rgb(0).with_alpha(c.a/2), stroke);
+        }
+        self.tabler(icon, glyph, ink, stroke);
     }
 
     /// A Tabler icon fitted into `r`; its coverage is cached by icon, box, stroke and scale (parsing and
@@ -972,6 +1116,7 @@ impl Canvas {
     fn tabler(&mut self, icon: &tabler::TablerIcon, r: Rect, c: Color, stroke: Option<f32>) {
         let mut h = Fx::default();
         h.write_u8(4);
+        h.write_u8(self.icon_pack);
         h.write_usize(icon.d.as_ptr() as usize);
         h.write_usize(icon.d.len());
         for v in [r.x, r.y, r.w, r.h, self.scale, stroke.unwrap_or(-1.0)] {
@@ -989,7 +1134,7 @@ impl Canvas {
         let k = r.w.min(r.h) / 24.0;
         let (ox, oy) = (r.cx() - 12.0 * k, r.cy() - 12.0 * k);
         let mut g = Glyph::new();
-        g.round_caps = true;
+        g.round_caps = icon_packs::get(self.icon_pack).round;
         g.commands(icon.d, ox, oy, k, stroke);
         if let Some(cov) = self.glyph_coverage(&g) {
             self.glyphs.insert(key, cov.clone(), cov.cov.len() * 3 + 64);
@@ -999,6 +1144,7 @@ impl Canvas {
 
     /// Draw an icon glyph with subpixel (ClearType-style) coverage in color `c`.
     pub fn glyph(&mut self, c: Color, g: &Glyph) {
+        let c = if self.cursor_glyphs { c } else { icon_packs::ink(self.icon_pack, c) };
         let mut h = Fx::default();
         h.write_u8(3);
         h.f32(self.scale);
@@ -1081,6 +1227,57 @@ impl Canvas {
         Some((pm.width() as usize, pm.height() as usize, px.collect()))
     }
 
+    /// Paint a cached PNG sprite using the canvas' damage and viewport clips.
+    pub fn sprite(&mut self, r: Rect, sprite: &Sprite) -> bool {
+        self.blit_sprite(r, sprite, None)
+    }
+
+    /// Composite transparent art against a fixed opaque color once per size and color.
+    pub fn sprite_on_solid(&mut self, r: Rect, sprite: &Sprite, fill: Color) -> bool {
+        self.blit_sprite(r, sprite, Some(fill))
+    }
+
+    fn blit_sprite(&mut self, r: Rect, sprite: &Sprite, matte: Option<Color>) -> bool {
+        if !self.visible(r) { return true; }
+        let (x, y) = ((r.x * self.scale).round() as i32, (r.y * self.scale).round() as i32);
+        let w = (r.right() * self.scale).round() as i32 - x;
+        let h = (r.bottom() * self.scale).round() as i32 - y;
+        if w <= 0 || h <= 0 || i64::from(w) * i64::from(h) > Sprite::PIXELS as i64 {
+            return false;
+        }
+        sprite.with_size(w as u32, h as u32, matte, |pixmap| {
+            let src = pixmap.data();
+            let stride = self.pixmap.width() as usize * 4;
+            for i in 0..self.clip_count() {
+                let (x0, y0, x1, y1) = self.clip_at(i);
+                let (x0, y0, x1, y1) = (x0.max(x), y0.max(y), x1.min(x + w), y1.min(y + h));
+                if x0 >= x1 || y0 >= y1 { continue; }
+                self.mark(x0, y0, x1, y1);
+                let width = (x1 - x0) as usize * 4;
+                let dst = self.pixmap.data_mut();
+                for row in y0..y1 {
+                    let si = ((row - y) as usize * w as usize + (x0 - x) as usize) * 4;
+                    let di = row as usize * stride + x0 as usize * 4;
+                    if matte.is_some() {
+                        dst[di..di + width].copy_from_slice(&src[si..si + width]);
+                        continue;
+                    }
+                    for (from, to) in src[si..si + width].chunks_exact(4).zip(dst[di..di + width].chunks_exact_mut(4)) {
+                        let a = u16::from(from[3]);
+                        if a == 255 {
+                            to.copy_from_slice(from);
+                        } else if a != 0 {
+                            for k in 0..4 {
+                                to[k] = (u16::from(from[k]) + (u16::from(to[k]) * (255 - a) + 127) / 255).min(255) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        true
+    }
+
     /// Draws a `w` x `h` image of `0x00RRGGBB` pixels stretched over `r` (clipped). Filtered, so a picture stays smooth
     /// at any display scale: each device pixel averages the source pixels it covers when shrinking, and blends the
     /// nearest four when enlarging. Pixel for pixel, the image is copied as it is. Spec: ui/ui-scaling.md §5.
@@ -1091,6 +1288,38 @@ impl Canvas {
         for i in 0..self.clip_count() {
             let clip = self.clip_at(i);
             self.image_in(clip, r, w, h, px);
+        }
+    }
+
+    /// Filter a straight-alpha material sprite over the current clipped surface.
+    /// Used for cached mixer materials; does not bypass damage or viewport clipping.
+    pub fn image_rgba(&mut self, r: Rect, w: usize, h: usize, px: &[u8]) {
+        if w==0 || h==0 || px.len()<w*h*4 {return;}
+        let k=self.scale;
+        for ci in 0..self.clip_count() {
+            let (cx0,cy0,cx1,cy1)=self.clip_at(ci);
+            let x0=((r.x*k).round() as i32).max(cx0);
+            let x1=((r.right()*k).round() as i32).min(cx1);
+            let y0=((r.y*k).round() as i32).max(cy0);
+            let y1=((r.bottom()*k).round() as i32).min(cy1);
+            if x0>=x1 || y0>=y1 {continue;}
+            self.mark(x0,y0,x1,y1);
+            let fx=w as f32/(r.w*k).max(1.);let fy=h as f32/(r.h*k).max(1.);
+            let xs:Vec<_>=(x0..x1).map(|x|taps(x as f32+0.5-r.x*k,fx,w)).collect();
+            let ys:Vec<_>=(y0..y1).map(|y|taps(y as f32+0.5-r.y*k,fy,h)).collect();
+            let pw=self.pixmap.width() as usize;
+            let data=self.pixmap.data_mut();
+            for (iy,ty) in ys.iter().enumerate() {for (ix,tx) in xs.iter().enumerate() {
+                let mut rgba=[0f32;4];
+                for &(sy,wy) in ty {for &(sx,wx) in tx {
+                    let off=(sy*w+sx)*4;let a=px[off+3] as f32/255.;let weight=wx*wy;
+                    for j in 0..3 {rgba[j]+=px[off+j] as f32*a*weight;}
+                    rgba[3]+=a*weight;
+                }}
+                let dest=((y0 as usize+iy)*pw+x0 as usize+ix)*4;
+                for j in 0..3 {data[dest+j]=(rgba[j]+data[dest+j] as f32*(1.-rgba[3])).round().clamp(0.,255.) as u8;}
+                data[dest+3]=(255.*rgba[3]+data[dest+3] as f32*(1.-rgba[3])).round().clamp(0.,255.) as u8;
+            }}
         }
     }
 
@@ -1178,178 +1407,9 @@ impl Canvas {
             *o = (u32::from(p[0]) << 16) | (u32::from(p[1]) << 8) | u32::from(p[2]);
         }
     }
-
-    /// Starts a layer over `r` (logical): the pixels under it are kept, so what is painted over `r` next can be shown
-    /// at an opacity (`end_layer`) or taken away as a picture and drawn moved, scaled or turned (`take_layer`,
-    /// `sprite`). With `clear`, `r` is emptied (transparent) first, so the picture holds only what is painted.
-    /// Layers are how animations fade and move a part of the frame that is painted the ordinary way.
-    pub fn begin_layer(&mut self, r: Rect, clear: bool) -> Layer {
-        let (mut x, mut y, mut w, mut h) = self.device_rect(r);
-        // Shown at an opacity, only what the clip lets through changes: a big layer under a small repaint keeps no more
-        // than that.
-        if !clear {
-            let (cx0, cy0, cx1, cy1) = self.clip_bounds();
-            let (x0, y0) = ((x as i32).max(cx0), (y as i32).max(cy0));
-            let (x1, y1) = (((x + w) as i32).min(cx1), ((y + h) as i32).min(cy1));
-            (x, y, w, h) = if x0 < x1 && y0 < y1 { (x0 as usize, y0 as usize, (x1 - x0) as usize, (y1 - y0) as usize) } else { (0, 0, 0, 0) };
-        }
-        let pw = self.pixmap.width() as usize;
-        let mut px = Vec::with_capacity(w * h);
-        let data = self.pixmap.pixels_mut();
-        for row in y..y + h {
-            let line = &mut data[row * pw + x..row * pw + x + w];
-            px.extend_from_slice(line);
-            if clear {
-                line.fill(PremultipliedColorU8::TRANSPARENT);
-            }
-        }
-        Layer { x, y, w, h, px }
-    }
-
-    /// Ends a layer: within it, the frame shows what was painted since `begin_layer` at `alpha` (0 = as before it,
-    /// 1 = as painted) over what was there before. Only the frame's damage region changes.
-    pub fn end_layer(&mut self, l: Layer, alpha: f32) {
-        let a = (alpha.clamp(0.0, 1.0) * 256.0).round() as u32;
-        if a >= 256 {
-            return;
-        }
-        let pw = self.pixmap.width() as usize;
-        let lerp = |old: u8, new: u8| ((u32::from(old) * (256 - a) + u32::from(new) * a + 128) >> 8) as u8;
-        for i in 0..self.clip_count() {
-            let (cx0, cy0, cx1, cy1) = self.clip_at(i);
-            let (x0, x1) = ((l.x as i32).max(cx0), ((l.x + l.w) as i32).min(cx1));
-            let (y0, y1) = ((l.y as i32).max(cy0), ((l.y + l.h) as i32).min(cy1));
-            if x0 >= x1 || y0 >= y1 {
-                continue;
-            }
-            let data = self.pixmap.pixels_mut();
-            for y in y0 as usize..y1 as usize {
-                for x in x0 as usize..x1 as usize {
-                    let old = l.px[(y - l.y) * l.w + (x - l.x)];
-                    let d = &mut data[y * pw + x];
-                    let new = *d;
-                    let al = lerp(old.alpha(), new.alpha());
-                    let ch = |o: u8, n: u8| lerp(o, n).min(al);
-                    *d = PremultipliedColorU8::from_rgba(ch(old.red(), new.red()), ch(old.green(), new.green()), ch(old.blue(), new.blue()), al)
-                        .unwrap_or(new);
-                }
-            }
-        }
-    }
-
-    /// Ends a layer started with `clear`: what was painted over it becomes a picture (premultiplied, transparent where
-    /// nothing was painted) and the frame gets back what was under it.
-    pub fn take_layer(&mut self, l: Layer) -> Option<Sprite> {
-        let mut pm = Pixmap::new(l.w.max(1) as u32, l.h.max(1) as u32)?;
-        let pw = self.pixmap.width() as usize;
-        let data = self.pixmap.pixels_mut();
-        let out = pm.pixels_mut();
-        for row in 0..l.h {
-            let line = &mut data[(l.y + row) * pw + l.x..(l.y + row) * pw + l.x + l.w];
-            out[row * l.w..(row + 1) * l.w].copy_from_slice(line);
-            line.copy_from_slice(&l.px[row * l.w..(row + 1) * l.w]);
-        }
-        let k = self.scale;
-        Some(Sprite { x: l.x as f32 / k, y: l.y as f32 / k, pm })
-    }
-
-    /// Draws a picture taken with `take_layer`: turned by `angle` (radians, clockwise on screen) and scaled by `zoom`
-    /// about the logical point (`px`, `py`), moved by (`dx`, `dy`), at `alpha`, filtered. Clipped like any drawing.
-    /// Returns the logical bounds it can reach (for damage).
-    #[allow(clippy::too_many_arguments)]
-    pub fn sprite(&mut self, s: &Sprite, px: f32, py: f32, angle: f32, zoom: f32, dx: f32, dy: f32, alpha: f32) -> Rect {
-        let k = self.scale;
-        // Device transform: sprite pixels -> canvas pixels.
-        let (sx, sy) = (s.x * k, s.y * k);
-        let (cx, cy) = (px * k, py * k);
-        let t = Transform::from_translate(sx - cx, sy - cy)
-            .post_scale(zoom, zoom)
-            .post_rotate(angle.to_degrees())
-            .post_translate(cx + dx * k, cy + dy * k);
-        let (w, h) = (s.pm.width() as f32, s.pm.height() as f32);
-        let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| {
-            let mut p = [tiny_skia::Point::from_xy(x, y)];
-            t.map_points(&mut p);
-            (p[0].x, p[0].y)
-        });
-        let x0 = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min).floor() as i32 - 1;
-        let y0 = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min).floor() as i32 - 1;
-        let x1 = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max).ceil() as i32 + 1;
-        let y1 = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max).ceil() as i32 + 1;
-        let bounds = Rect::new(x0 as f32 / k, y0 as f32 / k, (x1 - x0) as f32 / k, (y1 - y0) as f32 / k);
-        let (cb0, cb1, cb2, cb3) = self.clip_bounds();
-        let (bx0, by0, bx1, by1) = (x0.max(cb0), y0.max(cb1), x1.min(cb2), y1.min(cb3));
-        if bx0 >= bx1 || by0 >= by1 || alpha <= 0.0 {
-            return bounds;
-        }
-        // Drawn into a picture of the reachable box first, then blended through the clips.
-        let Some(mut tmp) = Pixmap::new((bx1 - bx0) as u32, (by1 - by0) as u32) else { return bounds };
-        let paint = tiny_skia::PixmapPaint { opacity: alpha.min(1.0), blend_mode: tiny_skia::BlendMode::SourceOver, quality: tiny_skia::FilterQuality::Bilinear };
-        tmp.draw_pixmap(0, 0, s.pm.as_ref(), &paint, t.post_translate(-bx0 as f32, -by0 as f32), None);
-        let tw = tmp.width() as usize;
-        for i in 0..self.clip_count() {
-            let (cx0, cy0, cx1, cy1) = self.clip_at(i);
-            let (x0, x1) = (bx0.max(cx0), bx1.min(cx1));
-            let (y0, y1) = (by0.max(cy0), by1.min(cy1));
-            if x0 >= x1 || y0 >= y1 {
-                continue;
-            }
-            self.mark(x0, y0, x1, y1);
-            let pw = self.pixmap.width() as usize;
-            let src = tmp.pixels();
-            let data = self.pixmap.pixels_mut();
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let s = src[(y - by0) as usize * tw + (x - bx0) as usize];
-                    let sa = u32::from(s.alpha());
-                    if sa == 0 {
-                        continue;
-                    }
-                    let d = &mut data[y as usize * pw + x as usize];
-                    let inv = 255 - sa;
-                    let ch = |sv: u8, dv: u8| (u32::from(sv) + (u32::from(dv) * inv + 127) / 255).min(255) as u8;
-                    let a = ch(s.alpha(), d.alpha());
-                    *d = PremultipliedColorU8::from_rgba(ch(s.red(), d.red()).min(a), ch(s.green(), d.green()).min(a), ch(s.blue(), d.blue()).min(a), a)
-                        .unwrap_or(*d);
-                }
-            }
-        }
-        bounds
-    }
 }
 
-/// The pixels under a rect, kept by `Canvas::begin_layer` (device pixels).
-pub struct Layer {
-    x: usize,
-    y: usize,
-    w: usize,
-    h: usize,
-    px: Vec<PremultipliedColorU8>,
-}
-
-impl Layer {
-    /// The layer's logical rect at scale `k`.
-    pub fn rect(&self, k: f32) -> Rect {
-        Rect::new(self.x as f32 / k, self.y as f32 / k, self.w as f32 / k, self.h as f32 / k)
-    }
-}
-
-/// A picture taken from the frame by `Canvas::take_layer`: premultiplied pixels, and where it was (logical).
-pub struct Sprite {
-    pub x: f32,
-    pub y: f32,
-    pm: Pixmap,
-}
-
-impl Sprite {
-    /// Logical size at scale `k`.
-    pub fn size(&self, k: f32) -> (f32, f32) {
-        (self.pm.width() as f32 / k, self.pm.height() as f32 / k)
-    }
-}
-
-/// Blend `c` (straight alpha) over a row of pixels: `(c * a + d * (255 - a)) / 255` per channel, truncated, alpha
-/// included (a cleared layer isn't opaque).
+/// Blend `c` (straight alpha) over a row of opaque pixels: `(c * a + d * (255 - a)) / 255` per channel, truncated.
 /// `x / 255 == (x * 0x8081) >> 23` for every x up to 255 * 255; four pixels at a time with SSE2 (x86-64 baseline).
 fn blend_row(row: &mut [u32], c: Color) {
     let sa = u32::from(c.a);
@@ -1381,8 +1441,8 @@ fn blend_row(row: &mut [u32], c: Color) {
     };
     let div = |x: u32| (x * 0x8081) >> 23;
     for p in row {
-        let [r, g, b, a] = p.to_ne_bytes();
-        *p = u32::from_ne_bytes([div(pr + u32::from(r) * inv) as u8, div(pg + u32::from(g) * inv) as u8, div(pb + u32::from(b) * inv) as u8, div(255 * sa + u32::from(a) * inv) as u8]);
+        let [r, g, b, _] = p.to_ne_bytes();
+        *p = u32::from_ne_bytes([div(pr + u32::from(r) * inv) as u8, div(pg + u32::from(g) * inv) as u8, div(pb + u32::from(b) * inv) as u8, 255]);
     }
 }
 
@@ -1416,9 +1476,8 @@ fn rebuild_path(path: &tiny_skia::Path, pts: &[(i32, i32)]) -> Option<tiny_skia:
     pb.finish()
 }
 
-/// Blend `c` over a row of pixels through per-pixel coverage `cov`: with `al = (cov * a + 127) / 255`, each channel
-/// becomes `(c * al + d * (255 - al) + 127) / 255`, and alpha as if `c` were 255 (a cleared layer isn't opaque). Four
-/// pixels at a time with SSE2 (x86-64 baseline); the
+/// Blend `c` over a row of opaque pixels through per-pixel coverage `cov`: with `al = (cov * a + 127) / 255`, each
+/// channel becomes `(c * al + d * (255 - al) + 127) / 255`. Four pixels at a time with SSE2 (x86-64 baseline); the
 /// division is `(x * 0x8081) >> 23`, exact for every 16-bit x.
 fn blend_cov_row(row: &mut [[u8; 4]], cov: &[u8], c: Color) {
     let ca = u32::from(c.a);
@@ -1466,7 +1525,7 @@ fn blend_cov_row(row: &mut [[u8; 4]], cov: &[u8], c: Color) {
         }
         let al = div(u32::from(a) * ca + 127);
         let inv = 255 - al;
-        for (k, s) in [c.r, c.g, c.b, 255].into_iter().enumerate() {
+        for (k, s) in [c.r, c.g, c.b].into_iter().enumerate() {
             d[k] = div(u32::from(s) * al + u32::from(d[k]) * inv + 127) as u8;
         }
     }
@@ -1647,63 +1706,6 @@ fn poly_path(pts: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
 mod tests {
     use super::*;
 
-    /// The UI face's capitals are centred on its text cell, so `cap_mid` is half the line height (within the pixel
-    /// rounding of the cell): `text_mid` and a cell centred on the same line put a label in the same place.
-    #[test]
-    fn caps_are_centred_on_the_text_cell() {
-        let Ok(mut c) = Canvas::new(10, 10, 2.0) else { return };
-        for size in [10u16, 12, 13, 14, 15, 17, 21] {
-            let f = Font::new(size);
-            let (caps, cell) = (c.cap_mid(f), c.line_height(f) / 2.0);
-            assert!((caps - cell).abs() <= 1.0, "size {size}: caps' middle {caps}, cell's middle {cell}");
-        }
-    }
-
-    /// A layer at 0 shows what was there, at 1 what was painted, in between a mix; only the damage region changes.
-    #[test]
-    fn layers_fade_what_is_painted() {
-        let Ok(mut c) = Canvas::new(10, 4, 1.0) else { return };
-        let px = |c: &Canvas, x: usize| c.pixmap.data()[x * 4];
-        c.fill_rect(Rect::new(0.0, 0.0, 10.0, 4.0), Color::rgb(0x000000));
-        for (alpha, want) in [(0.0, 0), (1.0, 200), (0.5, 100)] {
-            c.fill_rect(Rect::new(0.0, 0.0, 10.0, 4.0), Color::rgb(0x000000));
-            let l = c.begin_layer(Rect::new(0.0, 0.0, 10.0, 4.0), false);
-            c.fill_rect(Rect::new(0.0, 0.0, 10.0, 4.0), Color::rgb(0xc80000));
-            c.end_layer(l, alpha);
-            assert_eq!(px(&c, 3), want, "alpha {alpha}");
-        }
-        // Only the region: a pixel outside it keeps the painted value (the layer can't reach it to fade it).
-        c.fill_rect(Rect::new(0.0, 0.0, 10.0, 4.0), Color::rgb(0x000000));
-        c.begin_region(&[Rect::new(0.0, 0.0, 5.0, 4.0)]);
-        let l = c.begin_layer(Rect::new(0.0, 0.0, 10.0, 4.0), false);
-        c.fill_rect(Rect::new(0.0, 0.0, 10.0, 4.0), Color::rgb(0xc80000));
-        c.end_layer(l, 0.5);
-        assert_eq!((px(&c, 2), px(&c, 7)), (100, 0));
-    }
-
-    /// A cleared layer becomes a picture of what was painted on it; the frame gets back what was under it; the
-    /// picture drawn turned half a turn about its centre lands mirrored, and drawn at an opacity mixes.
-    #[test]
-    fn sprites_are_taken_and_turned() {
-        let Ok(mut c) = Canvas::new(20, 10, 1.0) else { return };
-        let px = |c: &Canvas, x: usize, y: usize| -> [u8; 4] { c.pixmap.data()[(y * 20 + x) * 4..][..4].try_into().unwrap() };
-        c.fill_rect(Rect::new(0.0, 0.0, 20.0, 10.0), Color::rgb(0x102030));
-        let l = c.begin_layer(Rect::new(4.0, 2.0, 8.0, 4.0), true);
-        assert_eq!(px(&c, 5, 3), [0, 0, 0, 0], "cleared");
-        c.fill_rect(Rect::new(4.0, 2.0, 2.0, 4.0), Color::rgb(0xff0000));
-        let s = c.take_layer(l).expect("a picture");
-        assert_eq!((px(&c, 5, 3), s.size(1.0)), ([0x10, 0x20, 0x30, 255], (8.0, 4.0)), "back as it was");
-        // Half a turn about the picture's centre (8, 4): the red strip at x 4..6 lands at x 10..12.
-        let b = c.sprite(&s, 8.0, 4.0, std::f32::consts::PI, 1.0, 0.0, 0.0, 1.0);
-        assert!(b.x <= 4.0 && b.right() >= 12.0, "{b:?}");
-        assert_eq!(px(&c, 11, 3)[..3], [255, 0, 0]);
-        assert_eq!(px(&c, 5, 3)[..3], [0x10, 0x20, 0x30], "the transparent part leaves the frame alone");
-        // Moved 4 px left at half opacity: the strip lands at x 0..2, half over the background.
-        c.sprite(&s, 8.0, 4.0, 0.0, 1.0, -4.0, 0.0, 0.5);
-        let p = px(&c, 1, 3);
-        assert!((130..=140).contains(&p[0]) && p[3] == 255, "{p:?}");
-    }
-
     #[test]
     fn present_copy_is_xrgb() {
         let Ok(mut c) = Canvas::new(7, 3, 1.0) else { return };
@@ -1826,73 +1828,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// On a cleared layer both blends leave proper premultiplied pixels, in every row length: some go through SSE2 on
-    /// x86-64, and the scalar code is all there is elsewhere. Without alpha, a sprite taken from the layer loses them.
-    #[test]
-    fn blends_keep_alpha_on_a_cleared_layer() {
-        let c = Color { r: 200, g: 100, b: 50, a: 128 };
-        for n in 0..14 {
-            let mut row = vec![0u32; n];
-            blend_row(&mut row, c);
-            for p in &row {
-                let [r, g, b, a] = p.to_ne_bytes();
-                assert_eq!(a, 128, "fill, {n} pixels");
-                assert_eq!((r, g, b), (100, 50, 25), "fill, {n} pixels");
-            }
-            let cov = vec![255u8; n];
-            let mut row = vec![[0u8; 4]; n];
-            blend_cov_row(&mut row, &cov, c);
-            for p in &row {
-                assert_eq!(p[3], 128, "coverage, {n} pixels");
-                assert_eq!(&p[..3], &[100, 50, 25], "coverage, {n} pixels");
-            }
-        }
-    }
-
-    /// A small rounded card painted on a cleared layer, taken and drawn back, looks as it does painted straight on the
-    /// frame: the drag tag and the menus are drawn this way.
-    #[test]
-    fn a_small_shape_comes_back_from_a_cleared_layer() {
-        let (Ok(mut direct), Ok(mut layered)) = (Canvas::new(60, 40, 1.0), Canvas::new(60, 40, 1.0)) else { return };
-        let card = Rect::new(8.0, 8.0, 41.0, 21.0);
-        for c in [&mut direct, &mut layered] {
-            c.fill_rect(Rect::new(0.0, 0.0, 60.0, 40.0), Color::rgb(0x204060));
-        }
-        direct.fill_rrect(card, 4.0, Color::rgb(0xc0d0e0));
-        let l = layered.begin_layer(Rect::new(0.0, 0.0, 60.0, 40.0), true);
-        layered.fill_rrect(card, 4.0, Color::rgb(0xc0d0e0));
-        let sprite = layered.take_layer(l).expect("a picture");
-        layered.sprite(&sprite, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0);
-        for y in 0..40 {
-            for x in 0..60 {
-                let (a, b) = (direct.pixmap.pixel(x, y).expect("in"), layered.pixmap.pixel(x, y).expect("in"));
-                assert_eq!(b.alpha(), 255, "({x}, {y})");
-                for (p, q) in [(a.red(), b.red()), (a.green(), b.green()), (a.blue(), b.blue())] {
-                    assert!(p.abs_diff(q) <= 2, "({x}, {y}): {a:?} and {b:?}");
-                }
-            }
-        }
-    }
-
-    /// A layer shown at an opacity under a small repaint keeps only what that repaint can change, and shows it right.
-    #[test]
-    fn a_big_layer_under_a_small_repaint_keeps_little() {
-        let Ok(mut c) = Canvas::new(100, 100, 1.0) else { return };
-        c.fill_rect(Rect::new(0.0, 0.0, 100.0, 100.0), Color::rgb(0x000000));
-        c.begin_region(&[Rect::new(10.0, 10.0, 4.0, 4.0)]);
-        let l = c.begin_layer(Rect::new(0.0, 0.0, 100.0, 100.0), false);
-        assert_eq!((l.w, l.h), (4, 4));
-        c.fill_rect(Rect::new(0.0, 0.0, 100.0, 100.0), Color::rgb(0xffffff));
-        c.end_layer(l, 0.5);
-        let inside = c.pixmap.pixel(11, 11).expect("in");
-        assert!((126..=129).contains(&inside.red()), "half way: {inside:?}");
-        assert_eq!(c.pixmap.pixel(20, 20).expect("in").red(), 0, "outside the repaint");
-        // Nothing of it in the repaint: nothing kept, and nothing goes wrong.
-        let l = c.begin_layer(Rect::new(50.0, 50.0, 10.0, 10.0), false);
-        assert_eq!((l.w, l.h), (0, 0));
-        c.end_layer(l, 0.5);
     }
 
     // spec: ui/settings-choices.md "Display: Colorful waveforms (2026-10-16)"
@@ -2083,6 +2018,25 @@ mod tests {
         let Ok(mut c) = Canvas::new(24, 1, 1.5) else { return };
         c.image(Rect::new(0.0, 0.0, 16.0, 1.0), 16, 1, &px);
         assert!(c.pixmap.pixels().iter().any(|p| p.red() > 20 && p.red() < 235), "linear when enlarging");
+    }
+
+    #[test]
+    fn material_alpha_filter_preserves_background_and_damage_clip() {
+        let mut c=Canvas::new(4,2,1.).unwrap();
+        c.clear(Color::rgb(0x0000ff));
+        let rgba=[255,0,0,0, 255,255,255,255];
+        c.push_clip(Rect::new(1.,0.,2.,2.));
+        c.image_rgba(Rect::new(0.,0.,4.,2.),2,1,&rgba);
+        c.pop_clip();
+        let px=c.pixmap.pixels();
+        assert_eq!((px[0].red(),px[0].blue()),(0,255));
+        assert_eq!((px[3].red(),px[3].blue()),(0,255));
+        assert!(px[1].red()>0 && px[1].red()<255);
+        assert_eq!(px[1].blue(),255,"transparent red must not fringe the white material");
+        c.clear(Color::rgb(0x0000ff));
+        c.image_rgba(Rect::new(0.,0.,1.,1.),2,1,&rgba);
+        let p=c.pixmap.pixels()[0];
+        assert!((127..=128).contains(&p.red()) && p.blue()==255,"downsampling composites alpha before filtering");
     }
 
     /// `resample` is `image`'s filter into a buffer: the same size copies, half size averages pairs.

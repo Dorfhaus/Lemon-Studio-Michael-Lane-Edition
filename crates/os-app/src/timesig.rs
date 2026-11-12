@@ -59,15 +59,8 @@ pub fn start_marker(s: &State, n: u16) -> Option<usize> {
 
 /// Accept: pattern `n` gets `num` / `den` at its start, first among its markers (they stay sorted by position), named
 /// after the signature as FL names it ("3/8", §4-5). The pattern's bars follow it, and so do its clips that kept their
-/// natural length. One undo step.
+/// natural length.
 pub fn set_start(s: &mut State, n: u16, num: u8, den: u8) {
-    crate::control::edit(s, STEP, crate::control::command::Region::Project, |s| set_start_now(s, n, num, den));
-}
-
-/// The pattern time signature's undo step.
-const STEP: &str = "Pattern time signature";
-
-fn set_start_now(s: &mut State, n: u16, num: u8, den: u8) {
     let old = s.project.pattern_length(n);
     let markers = &mut crate::patterns::pat_mut(s, n).markers;
     markers.retain(|m| !(m.kind == TimeMarker::SIGNATURE && m.position == 0));
@@ -78,11 +71,9 @@ fn set_start_now(s: &mut State, n: u16, num: u8, den: u8) {
 /// Yes to the conflict question took the start marker away: the pattern's bars are the project's again (§3).
 pub fn remove_start(s: &mut State, n: u16) {
     let Some(i) = start_marker(s, n) else { return };
-    crate::control::edit(s, STEP, crate::control::command::Region::Project, |s| {
-        let old = s.project.pattern_length(n);
-        crate::patterns::pat_mut(s, n).markers.remove(i);
-        crate::playlist::refit_pattern_clips(s, n, old);
-    });
+    let old = s.project.pattern_length(n);
+    crate::patterns::pat_mut(s, n).markers.remove(i);
+    crate::playlist::refit_pattern_clips(s, n, old);
 }
 
 /// The time signature dialog is the top dialog.
@@ -144,7 +135,7 @@ impl App {
         let Some(r) = self.hits.iter().rev().find(|h| h.action == Action::Dlg(DHit::SigValue(den))).map(|h| h.rect) else { return };
         let (cur, values): (u8, Vec<u8>) = if den { (f.den, DENOMINATORS.to_vec()) } else { (f.num, NUMERATORS.collect()) };
         let items = values.into_iter().map(|v| PItem::new(v.to_string(), Cmd::TimeSig(den, v)).mark(Mark::Radio(v == cur))).collect();
-        self.state.playlist.popup = Some(Popup { x: r.x, y: r.bottom() + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x: r.x, y: r.bottom() + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 

@@ -50,13 +50,24 @@ pub const PROJECT_DATA_SIZE: Message = Message {
     kind: Kind::Notice,
 };
 
-/// The mixer's External input question (`mixer::ask_external`). Not listed: Remember my choice keeps its answer,
-/// either one, in `prefs::EXTERNAL_INPUT` instead (Settings ▸ Recording) (spec: audio/track-io.md §2.3).
-pub const EXT_INPUT: Message =
-    Message { check: Check { key: "msg_ext_input", label: "External input", default: true }, group: "Audio", kind: Kind::Question };
+pub const WARP_BAKES_VOCAL_TUNING: Message = Message {
+    check: Check {
+        key: "msg_warp_bakes_vocal_tuning",
+        label: "Audio timing bakes vocal tuning",
+        default: true,
+    },
+    group: "Audio",
+    kind: Kind::Question,
+};
+
+pub const RESET_MIXER_TRACKS: Message = Message {
+    check: Check { key: "msg_reset_mixer_tracks", label: "Reset Mixer tracks to default", default: true },
+    group: "Audio",
+    kind: Kind::Question,
+};
 
 /// Every message that can be skipped.
-pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE];
+pub const MESSAGES: &[&Message] = &[&DELETE_CHANNEL, &DELETE_PATTERN, &PROJECT_DATA_SIZE, &WARP_BAKES_VOCAL_TUNING, &RESET_MIXER_TRACKS];
 
 /// Whether message `m` shows (its entry is on).
 pub fn on(m: &Message) -> bool {
@@ -157,7 +168,7 @@ impl App {
     pub(crate) fn messages_menu(&mut self) {
         let button = Action::Settings(SAct::Button("Manage messages"));
         let (x, y) = self.hits.iter().rev().find(|h| h.action == button).map_or(self.mouse, |h| (h.rect.x, h.rect.bottom()));
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items: menu(), sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items: menu(), sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -215,7 +226,7 @@ mod tests {
         assert_eq!(LIMIT_MB.len(), prefs::PROJECT_DATA_SIZE_WARNING.choices.len());
     }
 
-    /// The menu: Show all, Show none, the File/Data header (not clickable), then its entries in alphabetical order;
+    /// The menu: Show all, Show none, then each section and its entries in alphabetical order;
     /// an entry that is off has a dim tick and dim text.
     #[test]
     fn the_menu_lists_the_entries_with_their_marks() {
@@ -227,13 +238,17 @@ mod tests {
             vec![
                 ("Show all", false, Mark::None, false),
                 ("Show none", false, Mark::None, false),
+                ("Audio", true, Mark::None, false),
+                ("Audio timing bakes vocal tuning", false, Mark::Check(true), false),
+                ("Reset Mixer tracks to default", false, Mark::Check(true), false),
+                ("", false, Mark::None, false),
                 ("File/Data", true, Mark::None, false),
                 ("Delete channel", false, Mark::Check(true), false),
                 ("Delete pattern", false, Mark::Check(false), true),
                 ("Project data size warning", false, Mark::Check(true), false),
             ]
         );
-        assert_eq!(items[4].cmd, Cmd::Messages(Pick::Toggle(1)));
+        assert_eq!(items[8].cmd, Cmd::Messages(Pick::Toggle(1)));
     }
 
     /// Show all turns every entry on; Show none turns the notices off and leaves the questions on.

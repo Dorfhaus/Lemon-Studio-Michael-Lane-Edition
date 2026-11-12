@@ -121,14 +121,14 @@ pub fn snap_menu(s: &State, x: f32, y: f32) -> Popup {
     let mut items = vec![radio(EditorSnap::Main), PItem::sep(), radio(EditorSnap::Grid(Snap::Line)), radio(EditorSnap::Grid(Snap::Cell)), PItem::sep()];
     items.extend(Snap::MENU.iter().filter(|sn| !matches!(sn, Snap::Line | Snap::Cell)).map(|&sn| radio(EditorSnap::Grid(sn))));
     items.extend([PItem::sep(), radio(EditorSnap::Events), radio(EditorSnap::Markers)]);
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// The right-click menu (§7): the length of the next notes drawn.
 pub fn lengths_menu(x: f32, y: f32) -> Popup {
     let mut items = vec![PItem::head("Stock note lengths")];
     items.extend(Snap::MENU.iter().filter(|sn| !matches!(sn, Snap::Line | Snap::Cell | Snap::None)).map(|&sn| PItem::new(sn.label(), Cmd::Piano(NCmd::StockLength(sn)))));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// Pick a Snap menu entry (kept in the user folder, §8).
@@ -136,6 +136,15 @@ pub fn set(s: &mut State, p: EditorSnap) -> String {
     s.piano.snap = p;
     crate::snap::save(s);
     format!("Piano roll snap: {}", p.label())
+}
+
+pub fn wheel(s: &mut State, delta: f32) -> String {
+    let choices: Vec<_> = std::iter::once(EditorSnap::Main)
+        .chain(Snap::MENU.iter().copied().map(EditorSnap::Grid))
+        .chain([EditorSnap::Events, EditorSnap::Markers]).collect();
+    let current = choices.iter().position(|v| *v == s.piano.snap).unwrap_or(0) as i32;
+    let steps = (delta.abs().round().max(1.0) * delta.signum()) as i32;
+    set(s, choices[(current + steps).clamp(0, choices.len() as i32 - 1) as usize])
 }
 
 /// Pick a stock note length: the next notes drawn get it, the snap is unchanged (§7).

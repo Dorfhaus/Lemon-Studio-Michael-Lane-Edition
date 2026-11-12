@@ -14,7 +14,7 @@
 //! A move of more than [`SLOP`] pixels first is an ordinary drag and ends the hold; short clicks work as before. The
 //! app's tick drives the timer ([`App::hold_tick`]), as the hold happens without mouse events. A gesture is one undo
 //! step: the snapshot its press already takes, which a clone renames to its history name ("Piano roll clone note",
-//! "Arranger clone clip"; spec: ui/settings-choices.md "Undo history: the four checks").
+//! "Playlist clone clip"; spec: ui/settings-choices.md "Undo history: the four checks").
 //!
 // spec: ui/settings-choices.md "Input: Click-and-hold and both mouse buttons (2026-10-16)"
 
@@ -97,6 +97,9 @@ impl App {
 
     /// The mouse moved to (`x`, `y`): further than [`SLOP`] from the press, the hold ends and the drag goes on as one.
     pub(crate) fn hold_moved(&mut self, x: f32, y: f32) {
+        if self.state.piano.properties_click.is_some_and(|(_,_,_,_,at)| (x-at.0).abs().max((y-at.1).abs())>SLOP){
+            self.state.piano.properties_click=None;
+        }
         if self.hold.is_some_and(|h| (x - h.from.0).abs().max((y - h.from.1).abs()) > SLOP) {
             self.hold = None;
         }
@@ -109,6 +112,7 @@ impl App {
         if periods == h.periods {
             return;
         }
+        self.state.piano.properties_click=None;
         match h.kind {
             Kind::NewNote => {
                 let Some(Drag::NoteMove { orig, .. }) = &self.drag else {
@@ -167,9 +171,9 @@ impl App {
     /// The moved clips are copied (`playlist::clone_clips`); the copies are dragged from here on, starting one snap
     /// step later (a step without a snap).
     fn pick_up_clips(&mut self) {
-        let Some(Drag::Pl(PlDrag::Move { x0, y0, orig, fresh: false })) = self.drag.clone() else { return };
+        let Some(Drag::Pl(PlDrag::Move { x0, y0, scroll_x, track0, orig, fresh: false })) = self.drag.clone() else { return };
         let Some(grid) = self.pl_grid() else { return };
-        crate::history::rename(&mut self.state, "Arranger clone clip");
+        crate::history::rename(&mut self.state, "Playlist clone clip");
         let copies = pl::clone_clips(&mut self.state, &orig);
         let g = pl::PGeom::new(&self.state, grid);
         let unit = match pl::grid_snap(&self.state) {
@@ -177,7 +181,7 @@ impl App {
             sn => sn.ticks(g.ppq, g.bar_w),
         };
         // `fresh`: the copies are a change even where they end up.
-        let d = PlDrag::Move { x0: x0 - unit as f32 * g.ppt, y0, orig: copies, fresh: true };
+        let d = PlDrag::Move { x0: x0 - unit as f32 * g.ppt, y0, scroll_x, track0, orig: copies, fresh: true };
         self.drag = Some(Drag::Pl(d.clone()));
         pl::drag_move(self, d, grid);
         self.invalidate();
@@ -443,7 +447,7 @@ mod tests {
     #[test]
     fn nothing_happens_with_the_check_off() {
         assert!(!prefs::check(&CLICK_AND_HOLD), "off by default");
-        assert_eq!(prefs::find_check("Click-and-hold gestures"), Some(&CLICK_AND_HOLD));
+        assert_eq!(prefs::find_check("Click-and-hold & special gesture functions"), Some(&CLICK_AND_HOLD));
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         let mut app = piano_app(&mut c);
         let (x, y) = grid_point(&app, 2, mid_key(&app));
@@ -488,7 +492,7 @@ mod tests {
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         set_check(&CLICK_AND_HOLD, true);
         let (mut app, (x, y)) = playlist_app(&mut c);
-        let orig = pl::clips(&app.state)[0];
+        let orig = pl::clips(&app.state)[0].clone();
         let g = pl::PGeom::new(&app.state, app.pl_grid().unwrap());
         let unit = pl::grid_snap(&app.state).ticks(g.ppq, g.bar_w);
         let steps = app.state.history.len();
@@ -504,7 +508,7 @@ mod tests {
         assert_eq!(cs[0], orig, "the original stays");
         assert_eq!((cs[1].position, cs[1].track, cs[1].source), (orig.position + unit, orig.track, orig.source), "one snap step later");
         assert_eq!(app.state.history.len(), steps + 1, "one step");
-        assert_eq!(app.state.history.entries().last().map(|e| e.1), Some("Arranger clone clip"));
+        assert_eq!(app.state.history.entries().last().map(|e| e.1), Some("Playlist clone clip"));
         undo(&mut app);
         assert_eq!(pl::clips(&app.state).to_vec(), vec![orig], "one undo step");
         // Empty grid: the usual new clip, and nothing more while held.

@@ -277,7 +277,7 @@ mod tests {
 
     /// The labels of the All tab's folder roots, top to bottom.
     fn roots(app: &App) -> Vec<String> {
-        view::rows(&app.state).into_iter().filter(|r| r.depth == 0 && r.path.is_some()).map(|r| r.label).collect()
+        view::rows(&app.state).into_iter().filter(|r| r.depth == 0 && r.path.as_ref().is_some_and(|p|app.state.browser_folders.contains(p))).map(|r| r.label).collect()
     }
 
     fn file_page(app: &mut App, c: &mut Canvas) {

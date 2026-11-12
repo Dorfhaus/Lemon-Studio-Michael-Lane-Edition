@@ -7,9 +7,7 @@
 //! same way during playback, so a second near 100 % here is a second that drops out live.
 //!
 //! `OS_AUDIO_BENCH=<project.flp> cargo test -p os-app --bin lemonstudio audio_load -- --ignored --nocapture`
-//! (`OS_AUDIO_BENCH_SECS=n` stops after n seconds of song; `OS_MIX_THREADS=n` renders on n mixing workers beside the
-//! rendering thread, spec: audio/multicore.md, where the time is still the rendering thread's wall clock;
-//! `OS_MIX_AUTO=1` uses them only when needed, as playing live does).
+//! (`OS_AUDIO_BENCH_SECS=n` stops after n seconds of song).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,23 +43,11 @@ impl Instrument for TimedInst {
     fn choke(&mut self, offset: u32, key: u8) {
         self.0.lock().unwrap().choke(offset, key)
     }
-    fn voice_start(
-        &mut self,
-        offset: u32,
-        key: u8,
-        velocity: f32,
-        start: f32,
-        end: f32,
-        levels: os_engine::NoteLevels,
-        voice: u32,
-    ) {
-        self.0.lock().unwrap().voice_start(offset, key, velocity, start, end, levels, voice)
+    fn voice_start(&mut self, offset: u32, key: u8, velocity: f32, start: f32, levels: os_engine::NoteLevels, voice: u32) {
+        self.0.lock().unwrap().voice_start(offset, key, velocity, start, levels, voice)
     }
     fn voice_gains(&self) -> bool {
         self.0.lock().unwrap().voice_gains()
-    }
-    fn voice_ends(&self) -> bool {
-        self.0.lock().unwrap().voice_ends()
     }
     fn voice_gain(&mut self, offset: u32, voice: u32, gain: f32) {
         self.0.lock().unwrap().voice_gain(offset, voice, gain)
@@ -118,7 +104,6 @@ fn audio_load() {
         eprintln!("set OS_AUDIO_BENCH to a project file");
         return;
     };
-    os_engine::parallel::configure_auto(std::env::var_os("OS_MIX_AUTO").is_some());
     let limit: f64 = std::env::var("OS_AUDIO_BENCH_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(f64::MAX);
     let mut app = crate::app::App::new(None);
     app.plugins = crate::plugins::Plugins::default();
@@ -158,24 +143,39 @@ fn audio_load() {
         timers.push((format!("fx {t}.{s}"), ns.clone()));
         e.set_effect(t, s, Arc::new(Mutex::new(TimedFx(f, ns))));
     }
+    if let Ok(block) = std::env::var("OS_AUDIO_BENCH_FRAMES") {
+        use std::hash::Hasher;
+        let block: usize = block.parse().expect("buffer frames");
+        assert!(block > 0 && limit > 0. && limit.is_finite());
+        let mut samples = vec![0.; block * 2];
+        let mut times = Vec::new();
+        let mut checksum = std::collections::hash_map::DefaultHasher::new();
+        let mut peak = 0.0f32;
+        for _ in 0..(limit * f64::from(rate) / block as f64) as usize {
+            if e.finished() { break; }
+            let start = Instant::now();
+            e.process(&mut samples);
+            times.push(start.elapsed().as_secs_f64() * 1e6);
+            for &v in &samples {
+                checksum.write_u32(v.to_bits());
+                peak = peak.max(v.abs());
+            }
+        }
+        assert!(!times.is_empty(), "project produced no audio buffers");
+        times.sort_by(f64::total_cmp);
+        let budget = block as f64 * 1e6 / f64::from(rate);
+        eprintln!("buffers={} frames={block} mean_us={:.3} p99_us={:.3} max_us={:.3} over_budget={} peak={peak:.5} checksum={:016x}",
+            times.len(), times.iter().sum::<f64>() / times.len() as f64, times[times.len()*99/100],
+            times.last().unwrap(), times.iter().filter(|t| **t > budget).count(), checksum.finish());
+        return;
+    }
     let mut out: Vec<f32> = Vec::new();
     let (mut spent, mut total, mut worst) = (Duration::ZERO, Duration::ZERO, 0.0f64);
     let mut second = 1u64;
     let mut peak = 0.0f32;
     loop {
         let t = Instant::now();
-        // Rendered as playing live does, not as an export, which always uses the workers.
-        let done = if os_engine::parallel::auto_on() {
-            match e.next_tick() {
-                Some((samples, ..)) => {
-                    out.extend_from_slice(samples);
-                    false
-                }
-                None => true,
-            }
-        } else {
-            e.render_ticks(1, &mut out)
-        };
+        let done = e.render_ticks(1, &mut out);
         let d = t.elapsed();
         spent += d;
         total += d;

@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! MIDI output: master sync (MIDI clock or MTC) to the output devices with Send master sync, all notes off, and what
-//! Lemon MIDI Out channels send to the devices with their port. One thread owns the open outputs; it watches the
-//! playback (`transport::Watch`) and times the clock itself, from the playback's position and tempo at each start.
+//! One thread owns MIDI output connections for master sync, all-notes-off and control-surface feedback.
 //!
-// spec: ui/midi-settings.md §2, §7; plugins/midi-out.md §6
+// spec: ui/midi-settings.md §2, §7
 
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -41,13 +39,10 @@ impl SyncKind {
 pub struct Config {
     /// Output devices that get the master sync (open), with their Send all notes off.
     pub sync: Vec<(String, bool)>,
-    /// Output devices with a port number (open): what Lemon MIDI Out sends to that port goes to them.
-    pub ports: Vec<(String, u8)>,
+    pub surfaces: Vec<SurfaceFrame>,
     pub kind: SyncKind,
     /// Master sync offset, milliseconds.
     pub offset_ms: i32,
-    /// The devices of `ports` that are not in `sync` and have Send all notes off.
-    pub ports_off: Vec<String>,
     /// The project's ticks per quarter note and tempo (until playback reports its own).
     pub ppq: u16,
     pub tempo: f64,
@@ -55,8 +50,71 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { sync: Vec::new(), ports: Vec::new(), kind: SyncKind::Clock, offset_ms: 0, ports_off: Vec::new(), ppq: 96, tempo: 120.0 }
+        Config { sync: Vec::new(), surfaces: Vec::new(), kind: SyncKind::Clock, offset_ms: 0, ppq: 96, tempo: 120.0 }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceFrame {
+    pub port: String,
+    pub launchkey: bool,
+    /// Stable positions allow only changed messages to be sent.
+    pub messages: Vec<Vec<u8>>,
+}
+
+struct Output {
+    port: String,
+    sync: Option<bool>,
+    surface: Option<SurfaceFrame>,
+    conn: midir::MidiOutputConnection,
+}
+
+impl Output {
+    fn apply_surface(&mut self, frame: Option<&SurfaceFrame>) -> bool {
+        let was_launchkey = self.surface.as_ref().is_some_and(|f| f.launchkey);
+        let is_launchkey = frame.is_some_and(|f| f.launchkey);
+        if was_launchkey != is_launchkey
+            && self.conn.send(&[0x9f, 0x0c, if is_launchkey { 127 } else { 0 }]).is_err()
+        {
+            return false;
+        }
+        if let Some(frame) = frame {
+            if is_launchkey && !was_launchkey && self.conn.send(&[0xb6, 30, 1]).is_err() {
+                return false;
+            }
+            let old = self.surface.as_ref().filter(|f| f.launchkey == frame.launchkey);
+            for (i, bytes) in frame.messages.iter().enumerate() {
+                if !bytes.is_empty() && old.and_then(|f| f.messages.get(i)) != Some(bytes)
+                    && self.conn.send(bytes).is_err()
+                {
+                    return false;
+                }
+            }
+        }
+        self.surface = frame.cloned();
+        true
+    }
+}
+
+fn reconcile(open: &mut Vec<Output>, cfg: &Config) {
+    let wanted = cfg.sync.iter().map(|(name, _)| name)
+        .chain(cfg.surfaces.iter().map(|surface| &surface.port));
+    for port in wanted {
+        if open.iter().all(|o| &o.port != port) {
+            if let Some(conn) = connect(port) {
+                open.push(Output { port: port.clone(), sync: None, surface: None, conn });
+            }
+        }
+    }
+    open.retain_mut(|out| {
+        let sync = cfg.sync.iter().find(|(port, _)| *port == out.port).map(|(_, off)| *off);
+        let surface = cfg.surfaces.iter().find(|frame| frame.port == out.port);
+        if sync == Some(true) && out.sync.is_none() {
+            all_notes_off(&mut out.conn);
+        }
+        out.sync = sync;
+        out.apply_surface(surface) && (sync.is_some() || surface.is_some())
+    });
 }
 
 enum Cmd {
@@ -67,6 +125,7 @@ enum Cmd {
 /// The output thread's handle.
 pub struct MidiOut {
     tx: Option<Sender<Cmd>>,
+    thread: Option<std::thread::JoinHandle<()>>,
     last: Config,
 }
 
@@ -74,13 +133,13 @@ impl MidiOut {
     /// Starts the output thread, which follows `watch`.
     pub fn start(watch: Watch) -> MidiOut {
         let (tx, rx) = channel();
-        let ok = std::thread::Builder::new().name("midi-out".into()).spawn(move || run(rx, watch)).is_ok();
-        MidiOut { tx: ok.then_some(tx), last: Config::default() }
+        let thread = std::thread::Builder::new().name("midi-out".into()).spawn(move || run(rx, watch)).ok();
+        MidiOut { tx: thread.is_some().then_some(tx), thread, last: Config::default() }
     }
 
     /// No thread: tests and screenshots.
     pub fn none() -> MidiOut {
-        MidiOut { tx: None, last: Config::default() }
+        MidiOut { tx: None, thread: None, last: Config::default() }
     }
 
     /// The settings changed (sent only when they differ from the last).
@@ -97,6 +156,15 @@ impl MidiOut {
     pub fn notes_off(&self) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Cmd::NotesOff);
+        }
+    }
+}
+
+impl Drop for MidiOut {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -147,70 +215,52 @@ struct Running {
     piece: u8,
 }
 
-/// An open output: its name, Send all notes off, whether it gets the master sync, its port, the connection.
-struct Dev {
-    name: String,
-    notes_off: bool,
-    sync: bool,
-    port: Option<u8>,
-    conn: midir::MidiOutputConnection,
-}
-
 fn run(rx: Receiver<Cmd>, watch: Watch) {
     let mut cfg = Config::default();
-    let mut open: Vec<Dev> = Vec::new();
-    let queue = crate::lemon_midi_out::queue();
+    let mut open = Vec::new();
+    let mut retry_at = Instant::now();
     let (mut was, mut generation) = (State::Stopped, watch.generation());
     let mut running: Option<Running> = None;
     // Messages due later (a positive offset delays them all).
     let mut due: Vec<(Instant, Vec<u8>)> = Vec::new();
     loop {
-        let wait = if open.is_empty() { Duration::from_millis(250) } else { Duration::from_millis(1) };
+        let wait = if open.iter().any(|o: &Output| o.sync.is_some()) { Duration::from_millis(1) } else { Duration::from_millis(250) };
         match rx.recv_timeout(wait) {
             Ok(Cmd::Config(c)) => {
-                let sync_of = |n: &str| c.sync.iter().find(|(m, _)| m == n).map(|s| s.1);
-                let port_of = |n: &str| c.ports.iter().find(|(m, _)| m == n).map(|p| p.1);
-                open.retain(|o| sync_of(&o.name).is_some() || port_of(&o.name).is_some());
-                let names: Vec<&String> = c.sync.iter().map(|s| &s.0).chain(c.ports.iter().map(|p| &p.0)).collect();
-                for name in names {
-                    let (sync, port) = (sync_of(name), port_of(name));
-                    // Send all notes off is per device: a port-only device has it from its settings too.
-                    let off = sync.unwrap_or_else(|| c.ports_off.iter().any(|n| n == name));
-                    match open.iter_mut().find(|o| &o.name == name) {
-                        Some(o) => (o.notes_off, o.sync, o.port) = (off, sync.is_some(), port),
-                        None => {
-                            if let Some(mut conn) = connect(name) {
-                                if off {
-                                    all_notes_off(&mut conn);
-                                }
-                                open.push(Dev { name: name.clone(), notes_off: off, sync: sync.is_some(), port, conn });
-                            }
-                        }
-                    }
+                let endpoints_changed = c.sync != cfg.sync
+                    || c.surfaces.iter().map(|f| &f.port).ne(cfg.surfaces.iter().map(|f| &f.port));
+                if endpoints_changed {
+                    reconcile(&mut open, &c);
+                    retry_at = Instant::now() + Duration::from_secs(1);
+                } else {
+                    open.retain_mut(|o| {
+                        let frame = c.surfaces.iter().find(|f| f.port == o.port);
+                        o.apply_surface(frame)
+                    });
                 }
                 if c.kind != cfg.kind || c.ppq != cfg.ppq {
                     running = None;
                     was = State::Stopped;
                 }
                 cfg = c;
-                continue;
             }
             Ok(Cmd::NotesOff) => {
-                for o in open.iter_mut().filter(|o| o.notes_off) {
+                for o in open.iter_mut().filter(|o| o.sync == Some(true)) {
                     all_notes_off(&mut o.conn);
                 }
                 continue;
             }
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                for out in &mut open { out.apply_surface(None); }
+                return;
+            }
             Err(RecvTimeoutError::Timeout) => {}
         }
-        // Lemon MIDI Out's messages go out at once, to the devices with their port (none: they are dropped).
-        while let Some(m) = queue.pop() {
-            for o in open.iter_mut().filter(|o| o.port == Some(m.port)) {
-                let _ = o.conn.send(m.data());
-            }
+        if Instant::now() >= retry_at {
+            reconcile(&mut open, &cfg);
+            retry_at = Instant::now() + Duration::from_secs(1);
         }
-        if !open.iter().any(|o| o.sync) {
+        if !open.iter().any(|out| out.sync.is_some()) {
             (was, generation, running) = (watch.state(), watch.generation(), None);
             due.clear();
             continue;
@@ -293,9 +343,7 @@ fn run(rx: Receiver<Cmd>, watch: Watch) {
         due.sort_by_key(|d| d.0);
         let ready = due.partition_point(|d| d.0 <= now + Duration::from_millis(1));
         for (_, bytes) in due.drain(..ready) {
-            for o in open.iter_mut().filter(|o| o.sync) {
-                let _ = o.conn.send(&bytes);
-            }
+            open.retain_mut(|out| out.sync.is_none() || out.conn.send(&bytes).is_ok());
         }
     }
 }

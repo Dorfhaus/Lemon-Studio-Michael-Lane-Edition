@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! The Remote control settings box ("MIDI learn..."), drawn: the target's name, the MIDI controller group,
+//! The Remote control settings box ("Link to controller..."), drawn: the target's name, the MIDI controller group,
 //! the mapping formula and its graph, smoothing, Remove conflicts, Reset and Accept. What it does: `crate::remote`.
 // spec: ui/remote-control.md §2, §3
 
@@ -33,16 +33,12 @@ pub fn paint(ui: &mut Ui, s: &State, b: &LinkBox) {
     let f = Font::new(13);
     let dim = t.text_dim;
     // Title bar.
-    let all = !b.all.is_empty();
-    ui.c.text(f.bold(), r.x + 10.0, r.y + 7.0, t.text, if all { "Link all parameters" } else { "Remote control settings" });
+    ui.c.text(f.bold(), r.x + 10.0, r.y + 7.0, t.text, "Remote control settings");
     let x = Rect::new(r.right() - 24.0, r.y + 4.0, 20.0, 20.0);
-    let hov = super::close_button(ui, x, x, Action::Remote(RAct::Close), "Close (Esc)");
-    ui.c.icon(&os_ui::tabler::X, x.inset(3.0), if hov { t.tx(0xffffff) } else { t.text });
+    let hov = hit(ui, x, RAct::Close, "Close (Esc)");
+    crate::icons::draw(ui.c, crate::icons::Icon::Close, x.inset(3.0), if hov { t.glyph } else { t.text });
     // The target's name.
-    let name = match b.target {
-        _ if all => format!("{}: {} parameters", crate::remote::group_name(s, b), b.all.len()),
-        t => crate::typein::caption(s, t),
-    };
+    let name = crate::typein::caption(s, b.target);
     let field = Rect::new(r.x + 10.0, r.y + 32.0, r.w - 20.0, 22.0);
     kit::sunken(ui.c, t, field, t.s(0x141516));
     ui.c.text_clip(f, field.x + 6.0, field.y + 3.0, field.w - 12.0, t.text, name.trim_start_matches("Value for "));
@@ -56,7 +52,7 @@ pub fn paint(ui: &mut Ui, s: &State, b: &LinkBox) {
     for (i, (label, v, a, hint)) in [
         ("Port", port, RAct::Port, "MIDI input port number (--- = any device)"),
         ("Channel", ch, RAct::Channel, "MIDI channel number"),
-        if all { ("First ctrl", cc, RAct::Ctrl, "Controller of the first parameter (the next ones follow)") } else { ("Ctrl", cc, RAct::Ctrl, "Continuous Controller number") },
+        ("Ctrl", cc, RAct::Ctrl, "Continuous Controller number"),
     ]
     .into_iter()
     .enumerate()
@@ -72,8 +68,8 @@ pub fn paint(ui: &mut Ui, s: &State, b: &LinkBox) {
     if !omni {
         super::settings::grey(ui, Rect::new(r.x + 140.0, gy + 67.0, 70.0, 18.0));
     }
-    let mode = Rect::new(r.x + 20.0, gy + 88.0, 90.0, 21.0);
-    let hov = hit(ui, mode, RAct::Mode, "How to treat a note or button link (click for the next)");
+    let mode = Rect::new(r.x + 20.0, gy + 88.0, 175.0, 21.0);
+    let hov = hit(ui, mode, RAct::Mode, "How to interpret buttons or encoders (click for the next mode)");
     combo(ui, mode, b.mode.name(), hov);
     ui.c.text(f, mode.right() + 8.0, mode.y + 3.0, t.text, "Mode");
 

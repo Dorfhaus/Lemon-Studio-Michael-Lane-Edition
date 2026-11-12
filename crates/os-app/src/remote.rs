@@ -24,10 +24,16 @@ pub enum Mode {
     Latch,
     Inc,
     Stay,
+    RelativeCentered,
+    RelativeTwosComplement,
+    RelativeSignMagnitude,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 5] = [Mode::Default, Mode::Hold, Mode::Latch, Mode::Inc, Mode::Stay];
+    pub const ALL: [Mode; 8] = [
+        Mode::Default, Mode::Hold, Mode::Latch, Mode::Inc, Mode::Stay,
+        Mode::RelativeCentered, Mode::RelativeTwosComplement, Mode::RelativeSignMagnitude,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -36,6 +42,9 @@ impl Mode {
             Mode::Latch => "Latch",
             Mode::Inc => "Inc",
             Mode::Stay => "Stay",
+            Mode::RelativeCentered => "Relative (64 center)",
+            Mode::RelativeTwosComplement => "Relative (2's complement)",
+            Mode::RelativeSignMagnitude => "Relative (sign bit)",
         }
     }
 }
@@ -121,13 +130,9 @@ impl Link {
     }
 }
 
-/// Whether `t` can be linked: the piano roll tool dialogs' knobs live only while their dialog is open. A rack row's
-/// mixer track box and LED can be (Lemon Studio's design): the controller's travel spans Master to the last insert,
-/// and turns the channel on from its middle. So can the effects inside a container, their parameters and their wet
-/// and dry levels (Lemon Studio's design: spec plugins/patcher/README.md §4.2).
+/// Whether `t` can be linked: the piano roll tool dialogs' knobs live only while their dialog is open.
 fn linkable(t: Target) -> bool {
-    // A member's level knob links as its level (`KnobId::target`).
-    !matches!(t, Target::Knob(KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_) | KnobId::AutoLfo(..) | KnobId::MidiOut(..) | KnobId::Member(..)) | Target::Latency(..))
+    !matches!(t, Target::Knob(KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_)))
 }
 
 /// A target as `settings.txt` keeps it (`none` for one that is not linkable, which reads back as nothing).
@@ -136,6 +141,8 @@ fn target_text(t: Target) -> String {
         Target::Knob(k) => match k {
             KnobId::MasterVol => "mainvol".into(),
             KnobId::MasterPitch => "mainpitch".into(),
+            KnobId::Varispeed => "varispeed".into(),
+            KnobId::ChanPitch(r) => format!("chanpitch:{r}"),
             KnobId::MixPan(m) => format!("mixpan:{m}"),
             KnobId::MixSep(m) => format!("mixsep:{m}"),
             KnobId::SlotMix(m, s) => format!("slotmix:{m}:{s}"),
@@ -143,16 +150,13 @@ fn target_text(t: Target) -> String {
             KnobId::ChanVol(r) => format!("chanvol:{r}"),
             KnobId::ChanPan(r) => format!("chanpan:{r}"),
             KnobId::Swing => "swing".into(),
+            KnobId::Strip(m,k) => format!("strip:{m}:{k}"),
             KnobId::Eq(m, b, f) => format!("eq:{m}:{b}:{f}"),
-            KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_) | KnobId::AutoLfo(..) | KnobId::MidiOut(..) | KnobId::Member(..) => "none".into(),
+            KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_) => "none".into(),
         },
+        Target::SampleTempo(_) => "none".into(),
         Target::Fader(m) => format!("fader:{m}"),
         Target::Param(key, i) => format!("param:{key}:{i}"),
-        Target::RackTrack(r) => format!("racktrack:{r}"),
-        Target::RackLed(r) => format!("rackled:{r}"),
-        Target::Member(m, k, id, wet) => format!("{}:{m}:{k}:{id}", if wet { "memberwet" } else { "memberdry" }),
-        Target::MemberParam(m, k, id, i) => format!("memberparam:{m}:{k}:{id}:{i}"),
-        Target::Latency(..) => "none".into(),
     }
 }
 
@@ -163,6 +167,8 @@ fn parse_target(s: &str) -> Option<Target> {
     Some(match kind {
         "mainvol" => Target::Knob(KnobId::MasterVol),
         "mainpitch" => Target::Knob(KnobId::MasterPitch),
+        "varispeed" => Target::Knob(KnobId::Varispeed),
+        "chanpitch" => Target::Knob(KnobId::ChanPitch(n()?)),
         "swing" => Target::Knob(KnobId::Swing),
         "mixpan" => Target::Knob(KnobId::MixPan(n()? as u16)),
         "mixsep" => Target::Knob(KnobId::MixSep(n()? as u16)),
@@ -170,13 +176,10 @@ fn parse_target(s: &str) -> Option<Target> {
         "send" => Target::Knob(KnobId::Send(n()? as u16, n()? as u16)),
         "chanvol" => Target::Knob(KnobId::ChanVol(n()?)),
         "chanpan" => Target::Knob(KnobId::ChanPan(n()?)),
+        "strip" => Target::Knob(KnobId::Strip(n()? as u16,n()? as u8)),
         "eq" => Target::Knob(KnobId::Eq(n()? as u16, n()? as u8, n()? as u8)),
         "fader" => Target::Fader(n()? as u16),
         "param" => Target::Param(n()?, n()?),
-        "racktrack" => Target::RackTrack(n()?),
-        "rackled" => Target::RackLed(n()?),
-        "memberwet" | "memberdry" => Target::Member(n()? as u16, n()? as u8, n()? as u32, kind == "memberwet"),
-        "memberparam" => Target::MemberParam(n()? as u16, n()? as u8, n()? as u32, n()?),
         _ => return None,
     })
 }
@@ -231,71 +234,10 @@ pub fn add(l: Link, remove_conflicts: bool) {
     set_links(&all);
 }
 
-/// Each link on the first target of a pair goes onto the second (an undo or redo of a wrap into a container, which
-/// moved the links of the plugins it wrapped: `crate::container`).
-pub fn retarget(pairs: &[(Target, Target)]) {
-    let mut all = links();
-    let mut moved = false;
-    for l in &mut all {
-        if let Some(&(_, to)) = pairs.iter().find(|p| p.0 == l.target) {
-            l.target = to;
-            moved = true;
-        }
-    }
-    if moved {
-        set_links(&all);
-    }
-}
-
-/// The links follow what they drive as it moves (mixer places, rack rows): `f` gives a target's new one, `None` when
-/// what it drove went, and the link with it. The moves join the edit's (`State::link_moves`), so its undo step puts
-/// them back; a link that went does not come back.
-pub fn follow(s: &mut State, f: impl Fn(Target) -> Option<Target>) {
-    let old = links();
-    let mut all = old.clone();
-    let before = std::mem::take(&mut s.link_moves);
-    let mut moves = Vec::new();
-    all.retain_mut(|l| {
-        let Some(to) = f(l.target) else { return false };
-        let from = before.iter().find(|m| m.1 == l.target).map_or(l.target, |m| m.0);
-        if from != to {
-            moves.push((from, to));
-        }
-        l.target = to;
-        true
-    });
-    if all != old {
-        set_links(&all);
-    }
-    s.link_moves = moves;
-}
-
 pub fn remove(t: Target) {
     let mut all = links();
     all.retain(|o| o.target != t);
     set_links(&all);
-}
-
-/// A link's row in the browser's Remote control section (Lemon Studio's design: spec ui/browser.md "Current project
-/// children"): what it drives, named with its owner as automation clips are ("Kick - Channel volume", "Bus 1 - To
-/// Bus 2", "Lemon Reverb - Bus 3 - Mix"), then its controller as the Remote control settings box sets it ("channel 1,
-/// ctrl 7"), and "omni" for one that drives the selected channel's knob.
-pub fn label(s: &State, l: &Link) -> String {
-    let channel = |r: usize| crate::views::browser::channel_label(s, r).unwrap_or_else(|| format!("Channel {}", r + 1));
-    let name = crate::typein::target_name(s, l.target);
-    let what = match l.target {
-        Target::Knob(KnobId::ChanVol(r) | KnobId::ChanPan(r)) if !l.omni => format!("{} - {name}", channel(r)),
-        Target::RackTrack(r) | Target::RackLed(r) => format!("{} - {name}", channel(r)),
-        Target::Knob(KnobId::Send(a, _)) => format!("{} - {name}", crate::mixer::name(s, a)),
-        Target::Param(key, index) => crate::params::clip_name(s, key, index),
-        Target::MemberParam(m, k, id, index) => match crate::container::member_key(s, crate::container::place_key(m, k), id) {
-            Some(key) => crate::params::clip_name(s, key, index),
-            None => format!("{} - {name}", crate::container::place_name(s, m, k)),
-        },
-        _ => name,
-    };
-    let omni = if l.omni { ", omni" } else { "" };
-    format!("{what}: channel {}, ctrl {}{omni}", l.ch + 1, l.cc)
 }
 
 /// The menu's Remote control part (spec §1): Link to controller..., Override global link... (greyed), and Remove link
@@ -305,10 +247,10 @@ pub fn menu_items(t: Option<Target>) -> Vec<PItem> {
     let mut v = vec![
         PItem::head("Remote control"),
         match t {
-            Some(t) => PItem::new("MIDI learn...", Cmd::Remote(RCmd::Link(t))),
-            None => PItem::not_yet("MIDI learn..."),
+            Some(t) => PItem::new("Link to controller...", Cmd::Remote(RCmd::Link(t))),
+            None => PItem::not_yet("Link to controller..."),
         },
-        PItem::new("Override global mapping...", Cmd::Nothing).off(),
+        PItem::new("Override global link...", Cmd::Nothing).off(),
     ];
     if let Some(t) = t.filter(|&t| link_of(t).is_some()) {
         v.push(PItem::new("Remove link", Cmd::Remote(RCmd::Unlink(t))));
@@ -321,10 +263,6 @@ pub fn menu_items(t: Option<Target>) -> Vec<PItem> {
 pub enum RCmd {
     Link(Target),
     Unlink(Target),
-    /// A plugin window menu's Link all parameters...: hosted instance key (spec §6).
-    LinkAll(usize),
-    /// Mixer options ▸ Link all parameters...: the mixer track's own controls (`track_targets`).
-    LinkTrack(u16),
 }
 
 /// The Remote control settings box (spec §2, §3), while open.
@@ -344,10 +282,6 @@ pub struct LinkBox {
     pub smooth: bool,
     pub time: u16,
     pub conflicts: bool,
-    /// Link all parameters... (spec §6): the instance's parameters, or a mixer track's controls (the mixer's Link all
-    /// parameters..., Lemon Studio's design), to link in order to the controller set and the ones after it (`target`
-    /// is the first); empty for a single link.
-    pub all: Vec<Target>,
 }
 
 impl LinkBox {
@@ -365,7 +299,6 @@ impl LinkBox {
             smooth: false,
             time: SMOOTH_DEFAULT,
             conflicts: true,
-            all: Vec::new(),
         };
         // An existing link opens with its settings.
         if let Some(l) = link_of(target) {
@@ -383,7 +316,7 @@ impl LinkBox {
 
     /// Reset: every field back to its default (spec §3).
     pub fn reset(&mut self) {
-        *self = LinkBox { target: self.target, at: self.at, all: std::mem::take(&mut self.all), ..LinkBox::new_blank(self.target) };
+        *self = LinkBox { target: self.target, at: self.at, ..LinkBox::new_blank(self.target) };
     }
 
     fn new_blank(target: Target) -> LinkBox {
@@ -400,29 +333,7 @@ impl LinkBox {
             smooth: false,
             time: SMOOTH_DEFAULT,
             conflicts: true,
-            all: Vec::new(),
         }
-    }
-
-    /// Link all parameters... of hosted instance `key` (spec §6): its visible parameters `params`, the box blank.
-    pub fn all(key: usize, params: Vec<usize>, at: (f32, f32)) -> LinkBox {
-        LinkBox::group(params.into_iter().map(|i| Target::Param(key, i)).collect(), at)
-    }
-
-    /// Link all parameters... over `targets` (at least one), the box blank.
-    pub fn group(targets: Vec<Target>, at: (f32, f32)) -> LinkBox {
-        let first = targets.first().copied().unwrap_or(Target::Param(0, 0));
-        LinkBox { at, all: targets, ..LinkBox::new_blank(first) }
-    }
-
-    /// The links Accept makes: the one link, or for Link all parameters... one per parameter on the controller set and
-    /// the ones after it, as far as controller 127 goes.
-    pub fn links(&self) -> Vec<Link> {
-        let Some(l) = self.link() else { return Vec::new() };
-        if self.all.is_empty() {
-            return vec![l];
-        }
-        self.all.iter().zip(l.cc..=127).map(|(&target, cc)| Link { cc, target, ..l }).collect()
     }
 
     /// The link it makes on Accept: none while Ctrl is "---".
@@ -573,13 +484,22 @@ impl App {
     fn remote_drive(&mut self, i: usize, v: u8) {
         let l = self.remote.links[i];
         let t = self.remote_target(&l);
-        // A rack box's position over its travel (its track over the last insert, the LED 0 / 1), a knob's value.
-        let now = crate::typein::position(&self.state, t).or_else(|| crate::typein::get(&self.state, t));
-        let Some(now) = now.map(|x| x as f32) else { return };
+        let Some(now) = crate::typein::get(&self.state, t).map(|x| x as f32) else { return };
         let x = l.formula.map(f32::from(v) / 127.0);
         let pressed = v > 0;
         let val = match l.mode {
             Mode::Default | Mode::Hold => x,
+            Mode::RelativeCentered | Mode::RelativeTwosComplement | Mode::RelativeSignMagnitude => {
+                let steps = match l.mode {
+                    Mode::RelativeCentered => i16::from(v) - 64,
+                    Mode::RelativeTwosComplement if v >= 64 => i16::from(v) - 128,
+                    Mode::RelativeSignMagnitude if v >= 64 => -i16::from(v & 63),
+                    _ => i16::from(v),
+                };
+                if steps == 0 { return; }
+                let direction = if l.formula == Formula::Inverted { -1.0 } else { 1.0 };
+                (now + direction * f32::from(steps) / 127.0).clamp(0.0, 1.0)
+            }
             Mode::Stay if !pressed => return,
             Mode::Stay => x,
             Mode::Latch if !pressed => return,
@@ -642,6 +562,7 @@ impl App {
     fn remote_set(&mut self, t: Target, v: f32) {
         let v = v.clamp(0.0, 1.0);
         match t {
+            Target::SampleTempo(_) => return,
             Target::Knob(k) => {
                 crate::history::knob(&mut self.state, k, true);
                 self.state.set_knob(k, v);
@@ -652,33 +573,10 @@ impl App {
                     tr.volume = Some(f64::from(v));
                     self.state.piano.dirty = true;
                 }
-                self.record_control(&crate::app::Action::Fader(m));
             }
             Target::Param(key, index) => {
-                crate::params::set_param_value(&mut self.state, key, index, f64::from(v));
-                self.record_plugin_param(key, index, f64::from(v));
+                crate::params::set_param_value(&self.state, key, index, f64::from(v));
             }
-            // An effect inside a container: its instance while it is loaded.
-            Target::MemberParam(m, k, id, index) => {
-                if let Some(key) = crate::container::member_key(&self.state, crate::container::place_key(m, k), id) {
-                    crate::params::set_param_value(&mut self.state, key, index, f64::from(v));
-                    self.record_plugin_param(key, index, f64::from(v));
-                }
-            }
-            // A container member's level: one undo step while it keeps moving; recorded as its automation target.
-            Target::Member(m, k, id, wet) => {
-                crate::container::set_level_run(&mut self.state, m, k, id, wet, v);
-                if let Some(target) = crate::container::level_target(&self.state, m, k, id, wet) {
-                    self.record_param(target, (0.0, 1.0), f64::from(v));
-                }
-            }
-            // One undo step for each track the box moves to, and each switch of the LED (`typein::set_value`).
-            Target::RackTrack(_) | Target::RackLed(_) => {
-                let to = crate::typein::at_position(&self.state, t, f64::from(v));
-                crate::typein::set_value(&mut self.state, t, to);
-            }
-            // Never linked (no remote control).
-            Target::Latency(..) => {}
         }
         self.invalidate();
     }
@@ -697,32 +595,6 @@ impl App {
                 remove(t);
                 self.state.message = Some("Link removed".into());
             }
-            RCmd::LinkAll(key) => {
-                self.params_tick();
-                let params: Vec<usize> = self.state.params.visible(key).map(|(i, _)| i).collect();
-                if params.is_empty() {
-                    self.state.message = Some("This plugin has no parameters to link".into());
-                    return self.invalidate();
-                }
-                let (w, h) = crate::views::remote_box::SIZE;
-                let (sw, sh) = self.state.screen;
-                let at = ((self.mouse.0 - 20.0).clamp(0.0, (sw - w).max(0.0)), (self.mouse.1 - 20.0).clamp(0.0, (sh - h).max(0.0)));
-                // An effect inside a container links by its place and id (`params::link_target`).
-                let targets = params.into_iter().map(|i| crate::params::link_target(&self.state, key, i)).collect();
-                self.state.link_box = Some(LinkBox::group(targets, at));
-                self.state.message = Some("Move the MIDI controller for the first parameter".into());
-            }
-            RCmd::LinkTrack(t) => {
-                let targets = track_targets(&self.state, t);
-                if targets.is_empty() {
-                    return self.invalidate();
-                }
-                let (w, h) = crate::views::remote_box::SIZE;
-                let (sw, sh) = self.state.screen;
-                let at = ((self.mouse.0 - 20.0).clamp(0.0, (sw - w).max(0.0)), (self.mouse.1 - 20.0).clamp(0.0, (sh - h).max(0.0)));
-                self.state.link_box = Some(LinkBox::group(targets, at));
-                self.state.message = Some("Move the MIDI controller for the track's volume".into());
-            }
         }
         self.invalidate();
     }
@@ -730,24 +602,6 @@ impl App {
     /// Accept: makes the link and closes the box (spec §3).
     pub(crate) fn link_accept(&mut self) {
         let Some(b) = self.state.link_box.take() else { return };
-        if !b.all.is_empty() {
-            let made = b.links();
-            for l in &made {
-                add(*l, b.conflicts);
-            }
-            self.state.message = Some(match (made.first(), made.last()) {
-                (Some(a), Some(z)) => format!(
-                    "Linked {} parameters of {} to channel {}, controllers {} to {}",
-                    made.len(),
-                    group_name(&self.state, &b),
-                    a.ch + 1,
-                    a.cc,
-                    z.cc
-                ),
-                _ => "No controller: nothing linked".into(),
-            });
-            return self.invalidate();
-        }
         match b.link() {
             Some(l) => {
                 add(l, b.conflicts);
@@ -807,9 +661,9 @@ impl App {
         m.on = !m.on;
         m.queue.clear();
         self.state.message = Some(if m.on {
-            "Multi MIDI learn: change the knobs to link, then move a controller for each, in the same order".into()
+            "Multilink to controllers: change the knobs to link, then move a controller for each, in the same order".into()
         } else {
-            "Multi MIDI learn: off".into()
+            "Multilink to controllers: off".into()
         });
         self.invalidate();
     }
@@ -821,37 +675,9 @@ impl App {
             m.queue.push_back(t);
             let name = crate::typein::caption(&self.state, t);
             let n = self.state.multilink.queue.len();
-            self.state.message = Some(format!("MIDI learn {n}: {}", name.trim_start_matches("Value for ")));
+            self.state.message = Some(format!("Multilink {n}: {}", name.trim_start_matches("Value for ")));
         }
     }
-}
-
-/// What Link all parameters... links (the box's field, its hint): the plugin's name, or the mixer track's.
-pub fn group_name(s: &State, b: &LinkBox) -> String {
-    match b.target {
-        Target::Param(key, _) => crate::params::owner_name(s, key),
-        Target::MemberParam(m, k, id, _) => match crate::container::member_key(s, crate::container::place_key(m, k), id) {
-            Some(key) => crate::params::owner_name(s, key),
-            None => crate::container::place_name(s, m, k),
-        },
-        Target::Fader(t) => crate::mixer::name(s, t),
-        t => crate::typein::caption(s, t).trim_start_matches("Value for ").to_string(),
-    }
-}
-
-/// The mixer's Link all parameters... (Lemon Studio's design): track `t`'s own controls in the strip's order: volume,
-/// pan, stereo separation, the equaliser's three bands (gain, frequency, width each), the send levels of its routes,
-/// then the mix levels of its filled slots.
-pub fn track_targets(s: &State, t: u16) -> Vec<Target> {
-    let Some(track) = crate::mixer::track(s, t) else { return Vec::new() };
-    let mut v = vec![Target::Fader(t), Target::Knob(KnobId::MixPan(t)), Target::Knob(KnobId::MixSep(t))];
-    v.extend((0..3).flat_map(|b| (0..3).map(move |f| Target::Knob(KnobId::Eq(t, b, f)))));
-    let mut routes: Vec<u16> = track.routes.iter().copied().filter(|&d| d != t).collect();
-    routes.sort_unstable();
-    routes.dedup();
-    v.extend(routes.into_iter().map(|d| Target::Knob(KnobId::Send(t, d))));
-    v.extend((0..10u8).filter(|&k| crate::mixer::slot_name(s, t, k).is_some()).map(|k| Target::Knob(KnobId::SlotMix(t, k))));
-    v
 }
 
 /// Whether the box is open (it is modal).
@@ -862,6 +688,26 @@ pub fn is_open(s: &State) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controller_relative_encoders_move_from_the_current_parameter() {
+        let mut app = App::new(None);
+        let target = Target::Knob(KnobId::MasterVol);
+        let start = crate::typein::get(&app.state, target).unwrap();
+        for (mode, increment, decrement) in [
+            (Mode::RelativeCentered, 65, 63),
+            (Mode::RelativeTwosComplement, 1, 127),
+            (Mode::RelativeSignMagnitude, 1, 65),
+        ] {
+            let mut link = Link::new(0, 21, target);
+            link.mode = mode;
+            add(link, true);
+            assert!(app.remote_cc("Relative encoder", 0, 21, decrement));
+            assert!(crate::typein::get(&app.state, target).unwrap() < start);
+            assert!(app.remote_cc("Relative encoder", 0, 21, increment));
+            assert!((crate::typein::get(&app.state, target).unwrap() - start).abs() < 0.0001);
+        }
+    }
 
     #[test]
     fn links_are_kept() {
@@ -879,39 +725,9 @@ mod tests {
         assert_eq!(links(), vec![p, m]);
         remove(Target::Param(1, 12));
         assert_eq!(links(), vec![m]);
-        for t in [Target::Knob(KnobId::Eq(1, 2, 0)), Target::Knob(KnobId::Send(1, 0)), Target::Knob(KnobId::MasterPitch), Target::RackTrack(4), Target::RackLed(2)] {
+        for t in [Target::Knob(KnobId::Eq(1, 2, 0)), Target::Knob(KnobId::Send(1, 0)), Target::Knob(KnobId::MasterPitch)] {
             assert_eq!(parse_target(&target_text(t)), Some(t));
         }
-        // The effects inside a container, by place and id (their hosted keys are the session's).
-        for t in [Target::Member(3, 9, 15, true), Target::Member(0, 0, 1, false), Target::MemberParam(2, 4, 7, 1999)] {
-            assert!(linkable(t));
-            assert_eq!(parse_target(&target_text(t)), Some(t));
-        }
-        assert_eq!(target_text(Target::MemberParam(2, 4, 7, 19)), "memberparam:2:4:7:19");
-    }
-
-    /// VIEW > Remote control works: the browser on the Current project tab with its Remote control section open and
-    /// selected, one row per link, named after what it drives and its controller.
-    #[test]
-    fn view_remote_control_lists_the_links() {
-        use crate::views::browser::{rows, section_key, REMOTE_CONTROL};
-        use crate::views::menus::{item_at, works, VIEW};
-        let mut app = App::new(None);
-        app.state.project = crate::app::test_project();
-        set_links(&[]);
-        add(Link::new(0, 7, Target::Knob(KnobId::ChanVol(1))), true);
-        add(Link { omni: true, ..Link::new(1, 10, Target::Knob(KnobId::ChanPan(0))) }, true);
-        add(Link::new(15, 74, Target::Fader(2)), true);
-        let at = (0..40).find(|&i| item_at(VIEW, i).is_some_and(|it| it.label == "Remote control")).unwrap();
-        assert!(works(VIEW, item_at(VIEW, at).unwrap()));
-        app.state.show_browser = false;
-        app.menu_item(VIEW, at);
-        let key = section_key(REMOTE_CONTROL).unwrap();
-        assert!(app.state.show_browser && app.state.browser_open.contains(&key) && app.state.browser_sel.as_ref() == Some(&key));
-        let listed: Vec<String> = rows(&app.state).into_iter().filter(|r| r.key.starts_with(&format!("{key}/"))).map(|r| r.label).collect();
-        let bus2 = crate::mixer::name(&app.state, 2);
-        assert_eq!(listed, ["Clap - Channel volume: channel 1, ctrl 7".to_string(), "Channel panning: channel 2, ctrl 10, omni".into(), format!("{bus2} - Volume: channel 16, ctrl 74")]);
-        set_links(&[]);
     }
 
     #[test]
@@ -919,60 +735,6 @@ mod tests {
         assert_eq!(Formula::Inverted.map(0.25), 0.75);
         assert_eq!(Formula::Square.map(0.5), 0.25);
         assert_eq!(Formula::Root.map(0.25), 0.5);
-    }
-
-    /// Link all parameters... (spec §6): one link per parameter, on the controller set and the ones after it, as far as
-    /// controller 127; Reset keeps the parameters.
-    #[test]
-    fn the_box_links_all_parameters() {
-        let mut b = LinkBox::all(7, vec![0, 2, 3, 5], (0.0, 0.0));
-        assert_eq!(b.target, Target::Param(7, 0));
-        assert!(b.links().is_empty(), "no controller yet");
-        b.cc = Some(20);
-        b.ch = 1;
-        let l = b.links();
-        assert_eq!(l.iter().map(|l| (l.cc, l.target)).collect::<Vec<_>>(), [(20, Target::Param(7, 0)), (21, Target::Param(7, 2)), (22, Target::Param(7, 3)), (23, Target::Param(7, 5))]);
-        assert!(l.iter().all(|l| l.ch == 1 && !l.omni));
-        b.cc = Some(126);
-        assert_eq!(b.links().len(), 2, "up to controller 127");
-        b.reset();
-        assert_eq!((b.cc, b.all.len()), (None, 4));
-    }
-
-    /// The mixer's Link all parameters... (Lemon Studio's design): the current track's volume, pan, separation, nine
-    /// equaliser knobs, its sends and its filled slots' mix levels, linked on the first controller and the ones after it.
-    #[test]
-    fn the_mixer_links_a_tracks_controls() {
-        use crate::playlist::Cmd;
-        let mut app = App::new(None);
-        app.state.project = crate::app::test_project();
-        set_links(&[]);
-        app.state.selected_mixer = 1;
-        if let Some(t) = crate::mixer::track_mut(&mut app.state, 1) {
-            t.routes = vec![2, 0];
-        }
-        let menu = crate::mixer::options_menu(&app.state, 0.0, 0.0);
-        let item = menu.items.iter().find(|i| i.label == "Link all parameters...").unwrap();
-        assert!(item.enabled);
-        assert_eq!(item.cmd, Cmd::Remote(RCmd::LinkTrack(1)));
-        crate::playlist::run(&mut app, item.cmd.clone());
-        let b = app.state.link_box.clone().expect("the box");
-        let mut want = vec![Target::Fader(1), Target::Knob(KnobId::MixPan(1)), Target::Knob(KnobId::MixSep(1))];
-        want.extend((0..3).flat_map(|b| (0..3).map(move |f| Target::Knob(KnobId::Eq(1, b, f)))));
-        want.extend([Target::Knob(KnobId::Send(1, 0)), Target::Knob(KnobId::Send(1, 2))]);
-        want.extend((0..10u8).filter(|&k| crate::mixer::slot_name(&app.state, 1, k).is_some()).map(|k| Target::Knob(KnobId::SlotMix(1, k))));
-        assert_eq!((b.target, &b.all), (Target::Fader(1), &want));
-        // The controller moved: every control linked, controllers 20 and on.
-        app.remote_cc("Test", 0, 20, 64);
-        assert!(app.state.link_box.is_none(), "auto accepted");
-        let made = links();
-        assert_eq!(made.iter().map(|l| l.target).collect::<Vec<_>>(), want);
-        assert_eq!(made.iter().map(|l| l.cc).collect::<Vec<_>>(), (20..20 + want.len() as u8).collect::<Vec<_>>());
-        assert!(app.state.message.as_deref().is_some_and(|m| m.contains(&crate::mixer::name(&app.state, 1))), "{:?}", app.state.message);
-        // The volume follows its controller.
-        assert!(app.remote_cc("Test", 0, 20, 127));
-        assert_eq!(crate::mixer::track(&app.state, 1).and_then(|t| t.volume), Some(1.0));
-        set_links(&[]);
     }
 
     #[test]

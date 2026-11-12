@@ -14,7 +14,7 @@
 //!    label keeps what users chose); then list it in [`CHECKS`] or [`COMBOS`].
 //!    ```ignore
 //!    /// General ▸ Miscellaneous (spec: ui/...): what it does.
-//!    pub const AUTO_NAME_CHANNELS: Check = Check { key: "auto_name_channels", label: "Name channels after their sample or plugin", default: true };
+//!    pub const AUTO_NAME_CHANNELS: Check = Check { key: "auto_name_channels", label: "Auto name channels", default: true };
 //!    ```
 //! 2. Read it where its behaviour lives: `prefs::check(&prefs::AUTO_NAME_CHANNELS)` is the check's state;
 //!    `prefs::choice(&prefs::MAIN_GUI_SCALING)` is the chosen entry's text (`prefs::index` its position).
@@ -118,6 +118,26 @@ pub const TOOLBARS_SCALING: Combo = Combo {
 pub const COLORFUL_WAVEFORMS: Combo =
     Combo { key: "colorful_waveforms", label: "Colorful waveforms", choices: &["Off", "Color map", "Multiband"], default: 0 };
 
+pub const MIXER_STYLE: Combo = Combo { key: "full_mixer_style", label: "Mixer style", choices: &["Original", "Clean Modern", "Analog"], default: 2 };
+pub const PLAYLIST_SCROLLBAR_STYLE: Combo = Combo {
+    key: "playlist_scrollbar_style",
+    label: "Playlist scrollbar style",
+    choices: &["Classic", "Separate thumb"],
+    default: 1,
+};
+pub const PLAYLIST_SCROLLBAR_STYLE_VISIBILITY: &str = "visible_playlist-scrollbar-style";
+
+
+#[path = "language.rs"]
+pub mod language;
+
+pub const INTERFACE_LANGUAGE: Combo = Combo {
+    key: "interface_language",
+    label: "Interface language",
+    choices: &["English", "Français", "Español", "Deutsch", "Português (Brasil)", "Italiano"],
+    default: 0,
+};
+
 /// General ▸ Language: how note names read (`crate::note_names`; FL asks for a restart, Lemon Studio renames at once).
 /// Spec: ui/settings-choices.md "Note names and Black notes".
 pub const NOTE_NAMES: Combo = Combo { key: "note_names", label: "Note names", choices: &["English", "Germanic", "Solfege (do, re, mi, ...)"], default: 0 };
@@ -166,12 +186,15 @@ pub const SELECT_FIRST_CHANNEL: Check =
 /// General ▸ Miscellaneous: opening the piano roll zooms on the pattern and the channel's notes (`crate::piano::auto_zoom`).
 pub const AUTO_ZOOM_PIANO: Check = Check { key: "auto_zoom_piano", label: "Auto zoom in piano roll", default: false };
 
-/// General ▸ Miscellaneous: thin editor scroll bars without arrow buttons (`crate::views::small_scrollbars`).
+/// Theme option for clip display only; project and source colors remain untouched.
+pub const BRIGHT_PLAYLIST_CLIPS: Check = Check { key: "bright_playlist_clips", label: "Brighter Playlist clips", default: false };
+
+/// General: thin editor scroll bars without arrow buttons.
 pub const SMALL_SCROLLBARS: Check = Check { key: "small_scrollbars", label: "Small scrollbars in editors", default: false };
 
 /// General ▸ Miscellaneous: a pattern switch zips the channels with nothing in the new pattern (`App::pattern_tick`).
 /// Spec: ui/settings-choices.md "Miscellaneous: seven more checks, Default template and Startup project".
-pub const AUTO_ZIP_EMPTY: Check = Check { key: "auto_zip_empty_channels", label: "Auto-collapse empty channels", default: false };
+pub const AUTO_ZIP_EMPTY: Check = Check { key: "auto_zip_empty_channels", label: "Auto zip empty channels", default: false };
 
 /// General ▸ Miscellaneous: a painted note deletes the notes of other keys under it (`crate::piano::paint_mono`).
 /// Spec: ui/settings-choices.md "Miscellaneous: seven more checks, Default template and Startup project".
@@ -210,27 +233,29 @@ pub const AUTOMATION_AT_PLAYBACK_POSITION: Check =
 /// General ▸ Miscellaneous: opening or focusing a plugin window selects its mixer track
 /// (`App::select_window_track`). Spec: ui/settings-choices.md "Miscellaneous: seven more checks, Default template and
 /// Startup project".
-pub const AUTO_SELECT_LINKED: Check = Check { key: "auto_select_linked_modules", label: "Select linked controls automatically", default: true };
+pub const ROUTE_EDGE_SCROLL:Check=Check{key:"route_edge_scroll",label:"Auto-scroll mixer while routing",default:true};
+pub const AUTO_SELECT_LINKED: Check = Check { key: "auto_select_linked_modules", label: "Auto select linked modules", default: true };
 
 /// General ▸ Miscellaneous: stored and shown only. FL showed no change on native plugin windows; it has no effect until
 /// hosted plugin windows get a toolbar (spec: ui/settings-choices.md, as above).
 pub const HIDE_PLUGIN_TOOLBAR: Check =
-    Check { key: "hide_plugin_window_toolbar", label: "Hide plugin window strip by default", default: true };
+    Check { key: "hide_plugin_window_toolbar", label: "Hide plugin window toolbar by default", default: true };
 
 /// General ▸ Miscellaneous: a sample or channel preset loaded into an existing channel renames the channel after the
 /// file (`rack::auto_name`); off, the channel keeps its name. Spec: ui/settings-choices.md "Miscellaneous: naming,
 /// detached plugins and startup".
-pub const AUTO_NAME_CHANNELS: Check = Check { key: "auto_name_channels", label: "Name channels after their sample or plugin", default: true };
+pub const ROUTE_RACK_SAMPLES: Check = Check { key: "route_rack_samples", label: "Auto-route Channel Rack samples to mixer inserts", default: false };
+pub const AUTO_NAME_CHANNELS: Check = Check { key: "auto_name_channels", label: "Auto name channels", default: true };
 
 /// General ▸ Miscellaneous: a preset loaded into an effect renames its mixer slot after the preset
 /// (`presets::auto_name`); off, the slot keeps its name. Spec: ui/settings-choices.md, as above.
 pub const AUTO_NAME_EFFECT_SLOTS: Check =
-    Check { key: "auto_name_effect_slots", label: "Name effect slots after their plugin", default: false };
+    Check { key: "auto_name_effect_slots", label: "Auto name effect slots", default: false };
 
 /// General ▸ Miscellaneous: a plugin added from now on (a new channel's, a new effect in a slot) opens its window
 /// detached (`Plugins::added`); plugins that exist keep their own mode. Spec: ui/settings-choices.md "Miscellaneous:
 /// naming, detached plugins and startup".
-pub const DETACH_NEW: Check = Check { key: "detach_new_plugins", label: "Open new plugin windows floating", default: false };
+pub const DETACH_NEW: Check = Check { key: "detach_new_plugins", label: "Detach all new plugins", default: false };
 
 /// General ▸ Miscellaneous: a detached window opening for the first time goes on the main window's monitor; off, on
 /// the primary monitor (`plugin_window::first_position`, Windows only). A reopened one goes where it was either way.
@@ -240,7 +265,7 @@ pub const DETACHED_WITH_MAIN: Check =
 
 /// General ▸ Miscellaneous: stored and shown only (native plugins have no typing keyboard option). Spec: as above.
 pub const TYPING_PRIORITY_OFF: Check =
-    Check { key: "disable_typing_priority", label: "Disable computer keyboard priority by default", default: false };
+    Check { key: "disable_typing_priority", label: "Disable typing keyboard priority by default", default: false };
 
 /// General ▸ Miscellaneous: at most `plugins::MAX_EDITORS` plugin editor windows open; opening another first closes the
 /// one opened earliest (`Plugins::open_window`). Spec: as above.
@@ -251,24 +276,14 @@ pub const LIMIT_EDITORS: Check = Check { key: "limit_plugin_editors", label: "Li
 /// naming, detached plugins and startup".
 pub const SHOW_SPLASH: Check = Check { key: "show_startup_splash", label: "Show startup splash screen", default: true };
 
-/// General ▸ Miscellaneous: stored and shown only. Lemon Studio has no startup sound (and does not use FL's); if it ever
-/// gets one, this check silences it. Spec: ui/settings-choices.md "Miscellaneous: naming, detached plugins and startup".
+/// General ▸ Miscellaneous: silence the original completion chime after the first loaded frame (Windows).
 pub const SILENT_STARTUP: Check = Check { key: "silent_startup", label: "Silent startup", default: false };
-
-/// General ▸ Updates: at start, a release build checks its channel (nightly or stable) for a newer build
-/// (`crate::update`). A build from source never checks.
-pub const AUTO_CHECK_UPDATES: Check = Check { key: "auto_check_updates", label: "Automatically check for updates", default: true };
-
-/// General ▸ Updates: a newer build found is downloaded right away, so Install and restart has nothing to wait
-/// for; off, it is downloaded once Install is chosen.
-pub const AUTO_DOWNLOAD_UPDATES: Check =
-    Check { key: "auto_download_updates", label: "Automatically download program updates", default: true };
 
 /// General ▸ Input: off, a left or a right click on a step of the step sequencer toggles it; on, the left button only
 /// sets steps and the right one only clears them. A drag sets (left) or clears (right) the steps it crosses either way
 /// (`App::rack_step`). Spec: ui/settings-choices.md "Input: Click-and-hold and both mouse buttons (2026-10-16)".
 pub const BOTH_MOUSE_BUTTONS: Check =
-    Check { key: "both_mouse_buttons_step_sequencer", label: "Right button clears steps", default: false };
+    Check { key: "both_mouse_buttons_step_sequencer", label: "Use both mouse buttons in step sequencer", default: false };
 
 /// General ▸ Miscellaneous: the project Lemon Studio starts with when no project file is passed to it
 /// (`App::startup_project`). Spec: ui/settings-choices.md, as above.
@@ -278,7 +293,7 @@ pub const STARTUP_PROJECT: Combo =
 /// General ▸ Input: a held click that doesn't move does more: in the piano roll the Draw tool's new note cycles plain,
 /// slide, porta, and a note held on is cloned; in the playlist a clip held on is cloned (`crate::hold`). Spec:
 /// ui/settings-choices.md "Input: Click-and-hold and both mouse buttons (2026-10-16)".
-pub const CLICK_AND_HOLD: Check = Check { key: "click_and_hold_gestures", label: "Click-and-hold gestures", default: false };
+pub const CLICK_AND_HOLD: Check = Check { key: "click_and_hold_gestures", label: "Click-and-hold & special gesture functions", default: false };
 
 /// General ▸ Undo history: the most steps the project's undo history keeps; past it the oldest step goes
 /// (`crate::history`). FL's range was not measured: Lemon Studio's is 1 to 999. Spec: ui/settings-choices.md "Undo
@@ -292,11 +307,10 @@ pub const UNDO_KNOB_TWEAKS: Check = Check { key: "undo_knob_tweaks", label: "Und
 /// toggles the last move and Ctrl+Alt+Z steps back further (`history::ctrl_z`). EDIT follows. Spec: as above.
 pub const ALTERNATE_UNDO: Check = Check { key: "alternate_undo_mode", label: "Alternate undo mode", default: true };
 
-/// General ▸ Undo history: stored and shown only. Undoing a recording ("Recorded items") keeps its files in the
-/// Recorded folder for now, since a redo puts its clips back; nothing moves them to the trash yet. Spec: as above (not
-/// measured).
+/// General ▸ Undo history: stored and shown only. Lemon Studio does not record audio yet, so no undone recording can
+/// go to the recycle bin; recording will read it. Spec: as above (not measured: it needs recording).
 pub const UNDONE_RECORDINGS_TO_BIN: Check =
-    Check { key: "undone_recordings_to_recycle_bin", label: "Move undone recordings to the trash", default: true };
+    Check { key: "undone_recordings_to_recycle_bin", label: "Put undone recordings in the recycle bin", default: true };
 
 /// General ▸ Undo history: Ctrl+Z also shows the browser's Current project ▸ History, opened
 /// (`browser::show_history`). Spec: as above.
@@ -333,7 +347,7 @@ pub const DONT_LIMIT_WINDOWS: Check = Check { key: "dont_limit_windows_to_screen
 /// General ▸ Advanced: "Create automation clip" also puts the control in the project's initial values with its value at
 /// that moment, replacing an earlier one, in the same undo step (`playlist::create_automation`, `crate::init`). Spec:
 /// ui/settings-choices.md "Advanced: Initialize controls automatically (2026-10-16)".
-pub const INIT_CONTROLS: Check = Check { key: "init_controls_automatically", label: "Set start values automatically", default: true };
+pub const INIT_CONTROLS: Check = Check { key: "init_controls_automatically", label: "Initialize controls automatically", default: true };
 
 /// General ▸ Advanced: stored and shown only. Lemon Studio's browser preview already starts as soon as the start of
 /// the file is decoded (ui/browser.md §7), and FL showed no difference either. Spec: ui/settings-choices.md "Advanced:
@@ -380,12 +394,12 @@ pub const FORCE_REFRESHES: Check = Check { key: "force_refreshes", label: "Force
 /// nothing yet. Spec: as above.
 pub const THICK_LINES: Check = Check { key: "thick_lines", label: "Thick lines", default: false };
 
-/// General ▸ Display: a menu goes see-through behind its open submenu (`Motion::menu_behind`). Spec: ui/animations.md
-/// §4.2.
+/// General ▸ Display: stored and shown only. FL showed no change to its menus either way, so there is nothing to copy
+/// yet. Spec: ui/settings-choices.md "Display: Smoothing, Animation refresh rate, Transparent menus and windows
+/// (2026-10-16)".
 pub const TRANSPARENT_MENUS: Check = Check { key: "transparent_menus", label: "Transparent menus", default: true };
 
-/// General ▸ Display: a window that isn't the active one shows what is behind it (`Motion::window_opacity`). Spec:
-/// ui/animations.md §4.9.
+/// General ▸ Display: stored and shown only, like Transparent menus. Spec: as above.
 pub const TRANSPARENT_WINDOWS: Combo = Combo { key: "transparent_windows", label: "Transparent windows", choices: &["Off", "On"], default: 0 };
 
 /// General ▸ Input: stored and shown only. Lemon Studio has no pen or touch input yet; when it does, these choices are
@@ -397,28 +411,18 @@ pub const OPTIMIZE_FOR: Combo =
 /// mouse's left and right buttons, so there is nothing to swap yet; when Lemon Studio reads pen input, on swaps what the
 /// tip and the barrel button do. Spec: ui/settings-choices.md "Input: Optimize for (2026-10-16)" (Invert pencil
 /// buttons).
-pub const INVERT_PENCIL_BUTTONS: Check = Check { key: "invert_pencil_buttons", label: "Swap mouse buttons for drawing", default: false };
+pub const INVERT_PENCIL_BUTTONS: Check = Check { key: "invert_pencil_buttons", label: "Invert pencil buttons", default: false };
 
 /// Audio ▸ Input / output: while another program is in front, the audio output closes and a playing transport pauses;
 /// both come back with the focus (`crate::auto_close`). Spec: ui/settings-choices.md "Input / output: Auto close; CPU
 /// and Mixer: Smart disable, Align tick lengths, Resampling quality (2026-10-16)".
 pub const AUTO_CLOSE: Check = Check { key: "auto_close", label: "Auto close", default: false };
 
-/// Audio ▸ CPU: Auto-bypass when silent for every effect slot whose own switch is on (`os_engine::engine::auto_bypass`;
-/// spec: audio/auto-bypass.md).
-pub const SMART_DISABLE: Check = Check { key: "smart_disable", label: "Auto-bypass when silent", default: true };
+/// Audio ▸ CPU: stored and shown only. Lemon Studio has no smart disable yet. Spec: as above.
+pub const SMART_DISABLE: Check = Check { key: "smart_disable", label: "Smart disable", default: true };
 
 /// Audio ▸ CPU: stored and shown only. Lemon Studio's ticks follow audio/timing.md whatever it says. Spec: as above.
 pub const ALIGN_TICK_LENGTHS: Check = Check { key: "align_tick_lengths", label: "Align tick lengths", default: false };
-
-/// Audio ▸ CPU: the mixer's tracks, and the generator channels with the sampler's voices, render on several cores
-/// (`crate::mix_threads`). Spec: audio/multicore.md "Settings".
-pub const MULTITHREADED_MIXER: Check = Check { key: "multithreaded_mixer", label: "Multithreaded mixer processing", default: true };
-pub const MULTITHREADED_GENERATORS: Check =
-    Check { key: "multithreaded_generators", label: "Multithreaded instrument processing", default: true };
-/// Audio ▸ CPU: live, the two above take the extra cores only when one thread would not keep up comfortably. Spec:
-/// audio/multicore.md "Only when needed".
-pub const MULTITHREADED_AUTO: Check = Check { key: "multithreaded_auto", label: "Extra cores only when needed", default: true };
 
 /// Audio ▸ Mixer: stored and shown only. The sampler keeps the one kernel audio/sampler.md gives, whatever is chosen;
 /// when the live kernels are measured, the choice will pick among them. Its menu groups the choices under grey
@@ -482,7 +486,7 @@ pub const COPY_USED_SAMPLES: Check = Check { key: "copy_used_samples", label: "C
 
 /// MIDI ▸ Input: a linked controller does nothing after its knob changed another way until its value reaches or
 /// crosses the knob's (`crate::remote`). Spec: ui/remote-control.md §5.
-pub const PICKUP: Check = Check { key: "midi_pickup", label: "Soft takeover", default: false };
+pub const PICKUP: Check = Check { key: "midi_pickup", label: "Pickup (takeover mode)", default: false };
 
 /// MIDI ▸ Input: the Remote control settings box accepts the first controller it detects and closes (`crate::remote`).
 /// Spec: ui/remote-control.md §2.
@@ -490,14 +494,14 @@ pub const AUTO_ACCEPT: Check = Check { key: "midi_auto_accept", label: "Auto acc
 
 /// MIDI ▸ Input: controller 64 holds released keys until the pedal comes up; off, it goes to the instrument
 /// (`crate::midi_play`). Spec: ui/midi-settings.md §3.
-pub const FOOT_PEDAL: Check = Check { key: "midi_foot_pedal", label: "Sustain pedal releases notes", default: true };
+pub const FOOT_PEDAL: Check = Check { key: "midi_foot_pedal", label: "Foot pedal controls note off", default: true };
 
 /// MIDI ▸ Input: the generator muting keys mute while held (`crate::midi_play`). Spec: ui/midi-settings.md §3.
 pub const TOGGLE_ON_RELEASE: Check = Check { key: "midi_toggle_on_release", label: "Toggle on release", default: false };
 
 /// MIDI ▸ Input: what a note's velocity becomes (`crate::midi_play`). Spec: ui/midi-settings.md §3.
 pub const VELOCITY_LINK: Combo =
-    Combo { key: "midi_velocity_link", label: "Link note on velocity to", choices: &["(none)", "Velocity", "Mod A", "Mod B"], default: 1 };
+    Combo { key: "midi_velocity_link", label: "Link note on velocity to", choices: &["(none)", "Velocity", "Mod X", "Mod Y"], default: 1 };
 
 /// MIDI ▸ Input: what a note's release velocity becomes. Spec: as above.
 pub const RELEASE_LINK: Combo = Combo { key: "midi_release_link", label: "Link release velocity to", choices: &["(none)", "Release"], default: 1 };
@@ -526,53 +530,7 @@ pub const SYNC_TYPE: Combo = Combo {
 /// markers and mute rack channels (`crate::midi_play`). Spec: ui/midi-settings.md §3.
 pub const OMNI_CHANNEL: Number = Number { key: "midi_omni_channel", label: "Omni preview MIDI channel", min: 0, max: 16, default: 0 };
 pub const MARKER_CHANNEL: Number = Number { key: "midi_marker_channel", label: "Song marker jump MIDI channel", min: 0, max: 16, default: 0 };
-pub const MUTING_CHANNEL: Number = Number { key: "midi_muting_channel", label: "Instrument muting MIDI channel", min: 0, max: 16, default: 0 };
-/// Its notes launch the arranger's performance zone (spec: ui/performance-mode.md §3).
-pub const PERFORMANCE_CHANNEL: Number = Number { key: "midi_performance_channel", label: "Performance mode MIDI channel", min: 0, max: 16, default: 0 };
-
-// Recording (Lemon Studio's own page, spec: ui/settings.md "Recording"): the same settings the Record button's
-// right-click menu, the toolbar's option buttons and the mixer's Disk recording menu set (`crate::record::Opt` reads
-// them through these), so the page and those menus always agree.
-
-/// Recording ▸ Recording filter: notes played while recording are written into the pattern. Spec: ui/recording.md §2.
-pub const REC_NOTES: Check = Check { key: "rec_notes", label: "Notes", default: true };
-/// Recording ▸ Recording filter: control moves are written into the pattern as its control points.
-pub const REC_AUTOMATION: Check = Check { key: "rec_automation", label: "Automation", default: true };
-/// Recording ▸ Recording filter: the armed mixer tracks record (spec: audio/track-io.md §2.5).
-pub const REC_AUDIO: Check = Check { key: "rec_audio", label: "Audio (armed mixer tracks)", default: false };
-/// Recording ▸ Options: a click or R on the disarmed Record button asks what to record.
-pub const REC_ASK: Check = Check { key: "rec_ask", label: "Ask what to record", default: true };
-/// Recording ▸ Options: arming while stopped also starts playback.
-pub const REC_STARTS_PLAYBACK: Check = Check { key: "rec_starts_play", label: "Recording starts playback", default: false };
-/// Recording ▸ Options: Stop disarms Record.
-pub const REC_DISARM_ON_STOP: Check = Check { key: "rec_disarm_stop", label: "Disarm on stop", default: false };
-/// Recording ▸ Options: the toolbar's Loop record (spec: ui/recording.md §4); off, playback runs on past the end while
-/// recording (`record::run_on`, kept up to date by `App::record_tick`).
-pub const REC_LOOP: Check = Check { key: "rec_loop", label: "Loop record", default: false };
-/// Recording ▸ Options: the toolbar's Blend (spec: ui/recording.md §3): a take keeps the pattern's earlier notes.
-pub const REC_BLEND: Check = Check { key: "rec_blend", label: "Blend recorded notes", default: false };
-/// Recording ▸ Quantize: recorded note starts and ends snap to the main snap.
-pub const REC_QUANTIZE_START: Check = Check { key: "rec_q_start", label: "Note start time", default: true };
-pub const REC_QUANTIZE_END: Check = Check { key: "rec_q_end", label: "Note end time", default: true };
-/// Recording ▸ Start on input: the toolbar's Start on input and its right-click checks (spec: ui/recording.md §3).
-/// Turning it off ends a wait for input (`App::pref_toggle`).
-pub const REC_WAIT: Check = Check { key: "rec_wait", label: "Start on input", default: false };
-pub const REC_WAIT_FILTER: Check = Check { key: "rec_wait_filter", label: "Respect recording filter", default: true };
-pub const REC_WAIT_ARMED: Check = Check { key: "rec_wait_armed", label: "Only when recording", default: false };
-/// Recording ▸ Count-in: the toolbar's Count-in and its length (spec: ui/recording.md §3).
-pub const REC_COUNT_IN: Check = Check { key: "rec_precount", label: "Count-in", default: false };
-pub const COUNT_IN_LENGTH: Combo = Combo { key: "rec_precount_bars", label: "Count-in length", choices: &["1 bar", "2 bars"], default: 0 };
-/// Recording ▸ Audio recording: a take recorded into mixer tracks becomes audio clips (`crate::track_rec`; the mixer
-/// menu's Disk recording ▸ Auto-create audio clips). Spec: audio/track-io.md §2.5.
-pub const AUTO_AUDIO_CLIPS: Check = Check { key: "rec_auto_clips", label: "Auto-create audio clips", default: true };
-/// Recording ▸ Audio recording: the answer to the mixer's External input question (`App::ask_external`), which its
-/// Remember my choice sets; Ask asks again. Spec: audio/track-io.md §1.4, §2.3.
-pub const EXTERNAL_INPUT: Combo = Combo {
-    key: "ext_input_answer",
-    label: "External input question",
-    choices: &["Ask", "Switch to External input only", "Keep the record source"],
-    default: 0,
-};
+pub const MUTING_CHANNEL: Number = Number { key: "midi_muting_channel", label: "Generator muting MIDI channel", min: 0, max: 16, default: 0 };
 
 /// The declared checks.
 pub const CHECKS: &[&Check] = &[
@@ -580,6 +538,7 @@ pub const CHECKS: &[&Check] = &[
     &SELECT_FIRST_CHANNEL,
     &AUTO_ZOOM_PIANO,
     &SMALL_SCROLLBARS,
+    &BRIGHT_PLAYLIST_CLIPS,
     &AUTO_ZIP_EMPTY,
     &MONO_PAINTING,
     &AUTO_CROSSFADES_NEW,
@@ -588,8 +547,10 @@ pub const CHECKS: &[&Check] = &[
     &ALTERNATE_METER_SCALE,
     &AUTOMATION_AT_PLAYBACK_POSITION,
     &AUTO_SELECT_LINKED,
+    &ROUTE_EDGE_SCROLL,
     &HIDE_PLUGIN_TOOLBAR,
     &AUTO_NAME_CHANNELS,
+    &ROUTE_RACK_SAMPLES,
     &AUTO_NAME_EFFECT_SLOTS,
     &DETACH_NEW,
     &DETACHED_WITH_MAIN,
@@ -597,8 +558,6 @@ pub const CHECKS: &[&Check] = &[
     &LIMIT_EDITORS,
     &SHOW_SPLASH,
     &SILENT_STARTUP,
-    &AUTO_CHECK_UPDATES,
-    &AUTO_DOWNLOAD_UPDATES,
     &BOTH_MOUSE_BUTTONS,
     &CLICK_AND_HOLD,
     &UNDO_KNOB_TWEAKS,
@@ -620,40 +579,29 @@ pub const CHECKS: &[&Check] = &[
     &AUTO_CLOSE,
     &SMART_DISABLE,
     &ALIGN_TICK_LENGTHS,
-    &MULTITHREADED_MIXER,
-    &MULTITHREADED_GENERATORS,
-    &MULTITHREADED_AUTO,
     &INVERT_PENCIL_BUTTONS,
     &COPY_USED_SAMPLES,
     &PICKUP,
     &AUTO_ACCEPT,
     &FOOT_PEDAL,
     &TOGGLE_ON_RELEASE,
-    &REC_NOTES,
-    &REC_AUTOMATION,
-    &REC_AUDIO,
-    &REC_ASK,
-    &REC_STARTS_PLAYBACK,
-    &REC_DISARM_ON_STOP,
-    &REC_LOOP,
-    &REC_BLEND,
-    &REC_QUANTIZE_START,
-    &REC_QUANTIZE_END,
-    &REC_WAIT,
-    &REC_WAIT_FILTER,
-    &REC_WAIT_ARMED,
-    &REC_COUNT_IN,
-    &AUTO_AUDIO_CLIPS,
 ];
 /// The declared combos.
-pub const COMBOS: &[&Combo] = &[&MAIN_GUI_SCALING, &POPUPS_SCALING, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE, &COUNT_IN_LENGTH, &EXTERNAL_INPUT];
+pub const PIANO_ZOOM_KEYS: Combo = Combo {
+    key: "piano_zoom_keys",
+    label: "Piano Roll zoom keys",
+    choices: &["Page Up / Page Down", "Ctrl + Page keys", "Alt + Page keys", "Shift + Page keys"],
+    default: 0,
+};
+
+pub const COMBOS: &[&Combo] = &[&INTERFACE_LANGUAGE, &PIANO_ZOOM_KEYS, &MAIN_GUI_SCALING, &POPUPS_SCALING, &MIXER_STYLE, &PLAYLIST_SCROLLBAR_STYLE, &NOTE_NAMES, &BLACK_NOTES, &AUTOSAVE, &BACKUP_LOCATION, &STARTUP_PROJECT, &COLORFUL_WAVEFORMS, &ANIMATION_REFRESH_RATE, &TRANSPARENT_WINDOWS, &CURSORS_SCALING, &LEGACY_SCALING, &OPTIMIZE_FOR, &RESAMPLING_QUALITY, &PROJECT_DATA_SIZE_WARNING, &TOOLBARS_SCALING, &ASK_DATA_FOLDER, &VELOCITY_LINK, &RELEASE_LINK, &CONTROLLER_TYPE, &SYNC_TYPE];
 /// The declared combos no settings page shows (a window of their own does): General ▸ Input ▸ Manage shortcuts' rows
 /// (`crate::shortcuts`). Read by the declaration tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const OFF_PAGE_COMBOS: &[&Combo] = &crate::shortcuts::ROWS;
 
 /// The declared value boxes.
-pub const NUMBERS: &[&Number] = &[&MAX_UNDO_LEVELS, &BACKUP_MAXIMUM, &BROWSER_PREVIEW_TRACK, &METRONOME_TRACK, &OMNI_CHANNEL, &MARKER_CHANNEL, &MUTING_CHANNEL, &PERFORMANCE_CHANNEL];
+pub const NUMBERS: &[&Number] = &[&MAX_UNDO_LEVELS, &BACKUP_MAXIMUM, &BROWSER_PREVIEW_TRACK, &METRONOME_TRACK, &OMNI_CHANNEL, &MARKER_CHANNEL, &MUTING_CHANNEL];
 
 /// General ▸ Input: the editors scroll by the vertical wheel's steps times value / 256 (`crate::scroll_speed`);
 /// Shift+wheel keeps its own step. Spec: ui/settings-choices.md "Input: Vertical and Horizontal scrolling speed".
@@ -710,10 +658,10 @@ fn slider_in(st: &Store, s: &Slider) -> u16 {
     st.get(s.key).and_then(|v| v.parse::<u16>().ok()).map_or(s.default, |v| v.min(s.max))
 }
 
-/// Tests only: a check that exercises the settings page, on a control that stays greyed for real (General ▸ Advanced;
-/// ui/options-coverage.md §4).
+/// Tests only: a check that exercises the settings page. It stays greyed for real until Lemon Studio can update itself
+/// (ui/options-coverage.md §4).
 #[cfg(test)]
-pub const TEST_CHECK: Check = Check { key: "test_check", label: "Use the high-performance power plan", default: true };
+pub const TEST_CHECK: Check = Check { key: "test_check", label: "Automatically check for updates", default: true };
 
 fn checks() -> impl Iterator<Item = &'static Check> {
     #[cfg(test)]
@@ -815,13 +763,6 @@ impl App {
     pub(crate) fn pref_toggle(&mut self, label: &str) {
         let Some(c) = find_check(label) else { return };
         let on = toggle(c);
-        if c.key == MULTITHREADED_MIXER.key || c.key == MULTITHREADED_GENERATORS.key || c.key == MULTITHREADED_AUTO.key {
-            crate::mix_threads::apply();
-        }
-        // Recording ▸ Start on input off ends a wait for input, as its toolbar button does.
-        if c.key == REC_WAIT.key && !on {
-            self.state.rec.waiting = false;
-        }
         self.state.message = Some(format!("{}: {}", c.label, if on { "on" } else { "off" }));
         self.invalidate();
     }
@@ -836,9 +777,10 @@ impl App {
         let mut items = Vec::new();
         for (i, &ch) in c.choices.iter().enumerate() {
             items.extend(headings(c).iter().filter(|h| h.0 == i).map(|h| PItem::head(h.1)));
-            items.push(PItem::new(ch, Cmd::Pref(c, i)).mark(Mark::Radio(i == now)));
+            let label = if c.key == INTERFACE_LANGUAGE.key { ch } else { language::Language::current().text(ch) };
+            items.push(PItem::new(label, Cmd::Pref(c, i)).mark(Mark::Radio(i == now)));
         }
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -846,6 +788,14 @@ impl App {
     pub(crate) fn pref_choose(&mut self, c: &'static Combo, i: usize) -> Option<String> {
         let band = crate::views::band_h(&self.state);
         set_choice(c, i);
+        if c.key == MIXER_STYLE.key
+            && let Some(text) = &self.state.fl_text
+            && os_theme::fl::get_key(text, crate::mixer_skin::FINISH).is_some() {
+            let next = os_theme::fl::remove_key(text, crate::mixer_skin::FINISH);
+            self.theme_mark(crate::theme_library::Step::Other);
+            self.theme_edit(next);
+            self.theme_store();
+        }
         // Toolbars scaling: the workspace's top follows the band's new height, the floating windows with it (spec:
         // ui/ui-scaling.md §1).
         if c.key == TOOLBARS_SCALING.key && !self.state.toolbar.hidden {
@@ -853,7 +803,7 @@ impl App {
             crate::app::lift_windows(&mut self.state, dy);
         }
         self.invalidate();
-        Some(format!("{}: {}", c.label, choice(c)))
+        Some(format!("{}: {}", language::Language::current().text(c.label), choice(c)))
     }
 }
 
@@ -922,7 +872,7 @@ main_gui_scaling = 200%
         set_choice(&MAIN_GUI_SCALING, 99);
         assert_eq!(choice(&MAIN_GUI_SCALING), "125%");
         assert_eq!(find_combo("Main GUI scaling"), Some(&MAIN_GUI_SCALING));
-        assert_eq!(find_check("Use the high-performance power plan"), Some(&TEST_CHECK));
+        assert_eq!(find_check("Automatically check for updates"), Some(&TEST_CHECK));
         assert_eq!((find_check("Main GUI scaling"), find_combo("Language"), find_check("")), (None, None, None));
     }
 
@@ -931,7 +881,8 @@ main_gui_scaling = 200%
     /// `OFF_PAGE_COMBOS` are on no page.
     #[test]
     fn declarations_match_the_settings_pages() {
-        let app = App::new(None);
+        let mut app = App::new(None);
+        app.state.midi.advanced = true;
         let mut checks_shown = Vec::new();
         let mut combos_shown = Vec::new();
         let mut numbers_shown = Vec::new();
@@ -999,6 +950,48 @@ main_gui_scaling = 200%
         app.paint(c, None);
     }
 
+    #[test]
+    fn interface_language_changes_from_general_and_can_return_to_english() {
+        let mut canvas = Canvas::new(1920, 1080, 1.0).unwrap();
+        let mut app = App::new(None);
+        let selector = |app: &App| {
+            app.hits.iter().rev().find_map(|hit| {
+                matches!(hit.action, Action::Settings(SAct::Combo("Interface language", ..))).then_some(hit.rect)
+            }).expect("language selector is available in General")
+        };
+        app.open_settings(settings::GENERAL);
+        app.paint(&mut canvas, None);
+        let target = selector(&app);
+        click(&mut app, &mut canvas, target);
+        let popup = app.state.playlist.popup.as_ref().unwrap();
+        assert_eq!(popup.items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>(), INTERFACE_LANGUAGE.choices);
+        let french = hit_rect(&app, &Action::PlPopup(1));
+        click(&mut app, &mut canvas, french);
+        assert_eq!(choice(&INTERFACE_LANGUAGE), "Français");
+        assert_eq!(read(|s| index_in(s, &INTERFACE_LANGUAGE)), 1);
+        assert_eq!(language::Language::current().text("Open..."), "Ouvrir...");
+        assert_eq!(language::Language::current().text("Untranslated"), "Untranslated");
+        if let Ok(dir) = std::env::var("LEMON_LANGUAGE_PREVIEW") {
+            canvas.pixmap.save_png(std::path::Path::new(&dir).join("French-General.png")).unwrap();
+        }
+        let target = selector(&app);
+        click(&mut app, &mut canvas, target);
+        let english = hit_rect(&app, &Action::PlPopup(0));
+        click(&mut app, &mut canvas, english);
+        assert!(language::Language::current().english());
+
+        for index in 1..INTERFACE_LANGUAGE.choices.len() {
+            set_choice(&INTERFACE_LANGUAGE, index);
+            for vintage in [false, true] {
+                let layout = crate::views::menus::bar_layout(&mut canvas, vintage);
+                assert!(layout.windows(2).all(|pair| pair[0].1 < pair[1].0));
+                assert!(layout.last().unwrap().1 <= 296.0, "{} menu bar must fit", choice(&INTERFACE_LANGUAGE));
+            }
+        }
+        write(INTERFACE_LANGUAGE.key, "unknown language");
+        assert!(language::Language::current().english());
+    }
+
     /// The page draws declared controls live: a check toggles and is kept, a combo lists its choices and shows the
     /// chosen one; undeclared controls stay greyed out.
     #[test]
@@ -1007,11 +1000,11 @@ main_gui_scaling = 200%
         let mut app = App::new(None);
         app.open_settings(settings::GENERAL);
         app.paint(&mut c, None);
-        // Main GUI scaling opens its list under its box, System marked; Language is not available yet.
+        // Main GUI scaling opens its list under its box, System marked; the interface language selector is live.
         let combo = |app: &App| {
             app.hits.iter().rev().find(|h| matches!(&h.action, Action::Settings(SAct::Combo(l, ..)) if *l == MAIN_GUI_SCALING.label)).map(|h| h.rect).expect("the combo works")
         };
-        assert!(app.hits.iter().any(|h| h.action == Action::Placeholder("Language")));
+        assert!(app.hits.iter().any(|h| matches!(h.action, Action::Settings(SAct::Combo("Interface language", ..)))));
         let r = combo(&app);
         click(&mut app, &mut c, r);
         let p = app.state.playlist.popup.as_ref().expect("its menu");
@@ -1030,23 +1023,21 @@ main_gui_scaling = 200%
         click(&mut app, &mut c, r);
         assert_eq!(app.state.playlist.popup.as_ref().unwrap().items[2].mark, crate::playlist::Mark::Radio(true));
         app.state.playlist.popup = None;
-        // The test check (Advanced, further down the page: the groups above it folded) toggles.
-        app.state.settings.folded.extend(["Display", "Language", "Input", "Undo history", "Hints and warnings", "System", "Updates", "Miscellaneous"]);
+        // The test check (Updates, further down the page: the groups above it folded) toggles.
+        app.state.settings.folded.extend(["Display", "Language", "Input", "Undo history"]);
         app.paint(&mut c, None);
         let key = Action::Settings(SAct::Check(TEST_CHECK.label));
         let r = hit_rect(&app, &key);
         click(&mut app, &mut c, r);
         assert!(!check(&TEST_CHECK));
-        assert_eq!(app.state.message.as_deref(), Some("Use the high-performance power plan: off"));
+        assert_eq!(app.state.message.as_deref(), Some("Automatically check for updates: off"));
         let r = hit_rect(&app, &key);
         click(&mut app, &mut c, r);
         assert!(check(&TEST_CHECK));
-        // The update checks above it are real settings (`crate::update`), not greyed out.
-        app.state.settings.folded.retain(|g| *g != "Updates");
-        app.paint(&mut c, None);
-        let download = AUTO_DOWNLOAD_UPDATES.label;
-        assert!(app.hits.iter().any(|h| h.action == Action::Settings(SAct::Check(download))));
-        assert!(!app.hits.iter().any(|h| h.action == Action::Placeholder(download)));
+        // Its neighbours are not declared: greyed out.
+        let download = "Automatically download program updates";
+        assert!(app.hits.iter().any(|h| h.action == Action::Placeholder(download)));
+        assert!(!app.hits.iter().any(|h| h.action == Action::Settings(SAct::Check(download))));
         // Nothing about usage data.
         assert!(!app.hits.iter().any(|h| matches!(h.action, Action::Placeholder(l) if l.contains("usage"))));
     }
@@ -1151,6 +1142,47 @@ main_gui_scaling = 200%
         assert_eq!(choice(&COLORFUL_WAVEFORMS), "Multiband");
         assert_eq!(app.state.message.as_deref(), Some("Colorful waveforms: Multiband"));
         set_choice(&COLORFUL_WAVEFORMS, 0);
+    }
+
+    #[test]
+    fn full_mixer_style_switches_from_theme_settings() {
+        let mut canvas = Canvas::new(1366, 768, 1.0).unwrap();
+        let mut app = App::new(None);
+        app.open_settings(settings::THEME);
+        assert_eq!(choice(&MIXER_STYLE), "Analog");
+        for index in [1, 2, 0] {
+            app.paint(&mut canvas, None);
+            let control = app.hits.iter().rev().find(|h| matches!(
+                h.action, Action::Settings(SAct::Combo(label, ..)) if label == MIXER_STYLE.label
+            )).expect("full mixer style selector").rect;
+            click(&mut app, &mut canvas, control);
+            let popup = app.state.playlist.popup.as_ref().expect("mixer style menu");
+            assert_eq!(popup.items.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>(), MIXER_STYLE.choices);
+            let entry = hit_rect(&app, &Action::PlPopup(index));
+            click(&mut app, &mut canvas, entry);
+            assert_eq!(choice(&MIXER_STYLE), MIXER_STYLE.choices[index as usize]);
+        }
+    }
+
+    #[test]
+    fn playlist_scrollbar_style_switches_from_theme_settings() {
+        let mut canvas = Canvas::new(1366, 768, 1.0).unwrap();
+        let mut app = App::new(None);
+        let style = &PLAYLIST_SCROLLBAR_STYLE;
+        assert_eq!(choice(style), "Separate thumb");
+        app.open_settings(settings::THEME);
+        for (vintage, index) in [(false, 0), (true, 1)] {
+            app.state.vintage_2005 = vintage;
+            app.invalidate();
+            app.paint(&mut canvas, None);
+            let control = app.hits.iter().rev().find(|h| matches!(
+                h.action, Action::Settings(SAct::Combo(label, ..)) if label == style.label
+            )).expect("Playlist scrollbar selector in both themes").rect;
+            click(&mut app, &mut canvas, control);
+            let entry = hit_rect(&app, &Action::PlPopup(index));
+            click(&mut app, &mut canvas, entry);
+            assert_eq!(choice(style), style.choices[index as usize]);
+        }
     }
 
     /// Every declared slider is a slider on a settings page, with a key and a label of its own among all the
@@ -1582,7 +1614,7 @@ main_gui_scaling = 200%
         v
     }
 
-    /// "Swap mouse buttons for drawing" (General ▸ Input; spec: ui/settings-choices.md "Input: Optimize for"): off by default,
+    /// "Invert pencil buttons" (General ▸ Input; spec: ui/settings-choices.md "Input: Optimize for"): off by default,
     /// ticked and unticked on the page, kept for the next start; nothing reads it yet (pens arrive as the mouse).
     #[test]
     fn invert_pencil_buttons_is_stored_and_shown() {
@@ -1596,7 +1628,7 @@ main_gui_scaling = 200%
         let r = hit_rect(&app, &key);
         click(&mut app, &mut c, r);
         assert!(check(&INVERT_PENCIL_BUTTONS));
-        assert_eq!(app.state.message.as_deref(), Some("Swap mouse buttons for drawing: on"));
+        assert_eq!(app.state.message.as_deref(), Some("Invert pencil buttons: on"));
         // Kept: a new start shows it ticked; a click unticks it.
         let mut app = App::new(None);
         app.open_settings(settings::GENERAL);
@@ -1606,96 +1638,6 @@ main_gui_scaling = 200%
         let r = hit_rect(&app, &key);
         click(&mut app, &mut c, r);
         assert!(!check(&INVERT_PENCIL_BUTTONS));
-        assert_eq!(app.state.message.as_deref(), Some("Swap mouse buttons for drawing: off"));
-    }
-
-    /// Settings ▸ Recording (spec: ui/settings.md "Recording"): every control works, and each is the setting the Record
-    /// button's menus, the toolbar's option buttons and the mixer's Disk recording menu set, so a change from either
-    /// side shows on the other and takes effect.
-    #[test]
-    fn recording_page_shares_the_record_settings() {
-        use crate::record::Opt;
-        let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
-        let mut app = App::new(None);
-        app.open_settings(settings::RECORDING);
-        app.paint(&mut c, None);
-        assert_eq!(settings::TABS[settings::RECORDING].1, "Recording options");
-        // Nothing on the page is greyed out.
-        let win = settings::rect(&app.state);
-        let inside = |r: Rect| r.x >= win.x && r.right() <= win.right() && r.y >= win.y && r.bottom() <= win.bottom();
-        let greyed: Vec<&str> = app.hits.iter().filter(|h| inside(h.rect)).filter_map(|h| match h.action { Action::Placeholder(p) => Some(p), _ => None }).collect();
-        assert!(greyed.is_empty(), "greyed: {greyed:?}");
-        // Eleven tabs still fit: About ends inside the window.
-        let about = hit_rect(&app, &Action::Settings(SAct::Tab(settings::TABS.len() - 1)));
-        assert!(about.right() + 7.0 <= win.right(), "{about:?} in {win:?}");
-        let opts = [
-            Opt::Notes,
-            Opt::Automation,
-            Opt::Audio,
-            Opt::Ask,
-            Opt::StartsPlayback,
-            Opt::DisarmOnStop,
-            Opt::Loop,
-            Opt::Blend,
-            Opt::QuantizeStart,
-            Opt::QuantizeEnd,
-            Opt::Wait,
-            Opt::WaitFilter,
-            Opt::WaitArmed,
-            Opt::Precount,
-        ];
-        for o in opts {
-            let label = o.check().label;
-            let was = o.on();
-            let r = hit_rect(&app, &Action::Settings(SAct::Check(label)));
-            click(&mut app, &mut c, r);
-            assert_eq!(o.on(), !was, "{label}: the page's click changes what recording reads");
-            assert_eq!(app.state.message.as_deref(), Some(format!("{label}: {}", if was { "off" } else { "on" }).as_str()));
-            o.toggle();
-            assert_eq!(check(o.check()), was, "{label}: the menus' toggle is the page's check");
-        }
-        // Start on input off from the page ends a wait for input, as its button does.
-        Opt::Wait.toggle();
-        app.state.rec.waiting = true;
-        let r = hit_rect(&app, &Action::Settings(SAct::Check(REC_WAIT.label)));
-        click(&mut app, &mut c, r);
-        assert!(!Opt::Wait.on() && !app.state.rec.waiting);
-        // Loop record from the page reaches the playback at the next tick: armed with it off, playback runs on.
-        app.state.rec.armed = true;
-        app.record_tick();
-        assert!(crate::record::run_on_flag().load(std::sync::atomic::Ordering::Relaxed));
-        let r = hit_rect(&app, &Action::Settings(SAct::Check(REC_LOOP.label)));
-        click(&mut app, &mut c, r);
-        app.record_tick();
-        assert!(!crate::record::run_on_flag().load(std::sync::atomic::Ordering::Relaxed));
-        set_check(&REC_LOOP, false);
-        app.state.rec.armed = false;
-        // Count-in length: the page's combo is the count-in button's right-click choice.
-        let combo = |app: &App, l: &str| app.hits.iter().rev().find(|h| matches!(&h.action, Action::Settings(SAct::Combo(k, ..)) if *k == l)).map(|h| h.rect).expect("the combo works");
-        let r = combo(&app, COUNT_IN_LENGTH.label);
-        click(&mut app, &mut c, r);
-        let labels: Vec<String> = app.state.playlist.popup.as_ref().expect("its menu").items.iter().map(|it| it.label.to_string()).collect();
-        assert_eq!(labels, ["1 bar", "2 bars"]);
-        let item = hit_rect(&app, &Action::PlPopup(1));
-        click(&mut app, &mut c, item);
-        assert_eq!(crate::record::precount_bars(), 2);
-        crate::record::set_precount_bars(1);
-        assert_eq!(choice(&COUNT_IN_LENGTH), "1 bar");
-        // Auto-create audio clips is the mixer menu's.
-        let r = hit_rect(&app, &Action::Settings(SAct::Check(AUTO_AUDIO_CLIPS.label)));
-        click(&mut app, &mut c, r);
-        assert!(!check(&AUTO_AUDIO_CLIPS));
-        set_check(&AUTO_AUDIO_CLIPS, true);
-        // The External input question's answer: chosen here, the mixer stops asking (`App::ask_external`).
-        let r = combo(&app, EXTERNAL_INPUT.label);
-        click(&mut app, &mut c, r);
-        let item = hit_rect(&app, &Action::PlPopup(2));
-        click(&mut app, &mut c, item);
-        assert_eq!(choice(&EXTERNAL_INPUT), "Keep the record source");
-        app.ask_external(1);
-        assert!(app.state.dialogs.is_empty(), "remembered: not asked");
-        set_choice(&EXTERNAL_INPUT, 0);
-        app.ask_external(1);
-        assert!(!app.state.dialogs.is_empty(), "Ask asks");
+        assert_eq!(app.state.message.as_deref(), Some("Invert pencil buttons: off"));
     }
 }

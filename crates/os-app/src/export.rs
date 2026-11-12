@@ -8,6 +8,11 @@
 // spec: audio/export.md
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+type Cancel<'a> = Option<&'a AtomicBool>;
+fn checkpoint(cancel: Cancel<'_>) -> Result<(), String> {
+    if cancel.is_some_and(|c| c.load(Ordering::Acquire)) { Err("Export cancelled during shutdown".into()) } else { Ok(()) }
+}
 
 use crate::settings_file as sf;
 
@@ -27,7 +32,7 @@ pub const BITRATES: [u32; 8] = [64, 96, 128, 160, 192, 224, 256, 320];
 /// The sample rates besides the device's (index 0).
 pub const RATES: [u32; 5] = [44100, 48000, 88200, 96000, 192000];
 pub const CHANNELS: [&str; 4] = ["Stereo", "Mono (merged)", "Mono (left)", "Mono (right)"];
-/// The resampling choices: the window's width in points (2: linear); 27 is what playback uses.
+/// The resampling choices: the window's width in points (2: linear); live playback uses 16.
 pub const POINTS: [u32; 8] = [2, 8, 16, 27, 64, 128, 256, 512];
 pub const TAILS: [&str; 3] = ["Cut", "Ring out", "Wrap"];
 
@@ -92,7 +97,7 @@ impl Default for Options {
             ogg_kbps: 192,
             rate: 0,
             channels: 0,
-            points: 27,
+            points: 512,
             tail: Tail::Ring,
             dither: false,
             hq: true,
@@ -233,6 +238,10 @@ pub struct Marker {
 /// markers, the loop, the tempo and the mixer tracks' names.
 #[derive(Debug, Clone)]
 pub struct Job {
+    /// Track renders isolate hosted generators without changing their rack identities.
+    pub instrument_rows: Option<Vec<usize>>,
+    /// Only these mixer stems need buffering (None keeps ordinary split-export behavior).
+    pub capture_tracks: Option<Vec<usize>>,
     pub options: Options,
     /// The files' folder and name (without extension).
     pub folder: PathBuf,
@@ -246,9 +255,6 @@ pub struct Job {
     pub tempo: (f64, f64),
     /// Mixer track names by track number (master first).
     pub track_names: Vec<String>,
-    /// The mixer track menu's File ▸ Render to wave file...: these tracks' outputs are the files, without the mix
-    /// (empty: an export of the mix).
-    pub tracks: Vec<u16>,
 }
 
 impl Job {
@@ -257,6 +263,8 @@ impl Job {
     pub fn wav(path: &Path) -> Job {
         let options = Options { markers: false, loops: false, ..Options::default() };
         Job {
+        instrument_rows: None,
+        capture_tracks: None,
             options,
             folder: path.parent().map(Path::to_path_buf).unwrap_or_default(),
             name: path.file_stem().map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned()),
@@ -265,19 +273,12 @@ impl Job {
             loop_frames: None,
             tempo: (120.0, 0.0),
             track_names: Vec::new(),
-            tracks: Vec::new(),
         }
     }
 
     /// The mix's file of format `f`.
     pub fn file(&self, f: usize) -> PathBuf {
         self.folder.join(format!("{}.{}", self.name, EXTENSIONS[f]))
-    }
-
-    /// Mixer track `t`'s name as a file name takes it (the characters one cannot hold as `_`).
-    fn track_name(&self, t: usize) -> String {
-        let name = self.track_names.get(t).cloned().unwrap_or_else(|| if t == 0 { "Master".into() } else { format!("Bus {t}") });
-        name.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect()
     }
 
     /// The folder the split mixer tracks go to.
@@ -292,13 +293,14 @@ const SILENT: f32 = 1.584_893_1e-5;
 /// Writes the files of `job` from the render at `rate`: `mix` and the mixer tracks' outputs (interleaved stereo, by
 /// track number; empty unless Split mixer tracks), `song` frames long before the tail. Returns the files written.
 pub fn write(job: &Job, rate: u32, mix: Vec<f32>, tracks: Vec<Vec<f32>>, song: u64) -> Result<Vec<PathBuf>, String> {
+    write_cancellable(job,rate,mix,tracks,song,None)
+}
+pub fn write_cancellable(job: &Job, rate:u32, mix:Vec<f32>, tracks:Vec<Vec<f32>>, song:u64, cancel:Cancel<'_>) -> Result<Vec<PathBuf>,String> {
+    checkpoint(cancel)?;
     let o = &job.options;
     let out_rate = if o.rate == 0 { rate } else { o.rate };
     let mut written = Vec::new();
-    if !job.tracks.is_empty() {
-        return write_tracks(job, rate, tracks, song);
-    }
-    let mix = shape(o, mix, song, rate, out_rate);
+    let mix = shape_cancellable(o, mix, song, rate, out_rate,cancel)?;
     let scale = f64::from(out_rate) / f64::from(rate);
     let meta = Meta {
         markers: job.markers.iter().map(|m| Marker { frame: (m.frame as f64 * scale).round() as u64, name: m.name.clone() }).collect(),
@@ -307,7 +309,7 @@ pub fn write(job: &Job, rate: u32, mix: Vec<f32>, tracks: Vec<Vec<f32>>, song: u
     };
     for f in o.ticked() {
         let path = job.file(f);
-        encode(o, f, &path, &mix, out_rate, &meta)?;
+        encode(o, f, &path, &mix, out_rate, &meta,cancel)?;
         written.push(path);
     }
     if o.split {
@@ -321,37 +323,15 @@ pub fn write(job: &Job, rate: u32, mix: Vec<f32>, tracks: Vec<Vec<f32>>, song: u
                 std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                 made = true;
             }
-            let audio = shape(o, audio, song, rate, out_rate);
-            let name = job.track_name(t);
+            let audio = shape_cancellable(o, audio, song, rate, out_rate,cancel)?;
+            let name = job.track_names.get(t).cloned().unwrap_or_else(|| if t == 0 { "Master".into() } else { format!("Insert {t}") });
+            let name: String = name.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
             // As FL, only WAV and FLAC (spec §3 "Split mixer tracks").
             for f in o.ticked().filter(|&f| f == WAV || f == FLAC) {
                 let path = dir.join(format!("{t:02} {name}.{}", EXTENSIONS[f]));
-                encode(o, f, &path, &audio, out_rate, &Meta::default())?;
+                encode(o, f, &path, &audio, out_rate, &Meta::default(),cancel)?;
                 written.push(path);
             }
-        }
-    }
-    Ok(written)
-}
-
-/// Render to wave file... (the mixer track menu's File ▸): the outputs of `job.tracks` (from `tracks`, by track number),
-/// each in every format ticked, silent ones too. One track's file is named as the form's name; several are
-/// "<name> - <NN> <track name>". Lemon Studio's choice: the original's own naming and form were not looked at.
-fn write_tracks(job: &Job, rate: u32, mut tracks: Vec<Vec<f32>>, song: u64) -> Result<Vec<PathBuf>, String> {
-    let o = &job.options;
-    let out_rate = if o.rate == 0 { rate } else { o.rate };
-    let mut written = Vec::new();
-    for &t in &job.tracks {
-        let audio = tracks.get_mut(usize::from(t)).map(std::mem::take).unwrap_or_default();
-        let audio = shape(o, audio, song, rate, out_rate);
-        let stem = match job.tracks.len() {
-            1 => job.name.clone(),
-            _ => format!("{} - {t:02} {}", job.name, job.track_name(usize::from(t))),
-        };
-        for f in o.ticked() {
-            let path = job.folder.join(format!("{stem}.{}", EXTENSIONS[f]));
-            encode(o, f, &path, &audio, out_rate, &Meta::default())?;
-            written.push(path);
         }
     }
     Ok(written)
@@ -360,12 +340,14 @@ fn write_tracks(job: &Job, rate: u32, mut tracks: Vec<Vec<f32>>, song: u64) -> R
 /// The tail, the sample rate and the channels applied to interleaved stereo `audio`: interleaved, in the file's
 /// channel count.
 pub fn shape(o: &Options, audio: Vec<f32>, song: u64, rate: u32, out_rate: u32) -> Vec<f32> {
-    let audio = tail(audio, song as usize, o.tail);
-    let audio = if out_rate == rate { audio } else { resample(&audio, 2, rate, out_rate, o.points) };
-    match o.channels {
-        0 => audio,
-        c => audio.chunks_exact(2).map(|f| [(f[0] + f[1]) * 0.5, f[0], f[1]][c - 1]).collect(),
-    }
+    shape_cancellable(o,audio,song,rate,out_rate,None).expect("uncancelled shape")
+}
+fn shape_cancellable(o:&Options,audio:Vec<f32>,song:u64,rate:u32,out_rate:u32,cancel:Cancel<'_>)->Result<Vec<f32>,String> {
+    checkpoint(cancel)?;
+    let audio=tail(audio,song as usize,o.tail);
+    let audio=if out_rate==rate {audio}else{resample_cancellable(&audio,2,rate,out_rate,o.points,cancel)?};
+    checkpoint(cancel)?;
+    Ok(match o.channels {0=>audio,c=>audio.chunks_exact(2).map(|f|[(f[0]+f[1])*0.5,f[0],f[1]][c-1]).collect()})
 }
 
 /// Interleaved stereo `audio` cut to `song` frames (Cut), as it is (Ring), or with what is past `song` added to the
@@ -398,7 +380,56 @@ pub fn tail(mut audio: Vec<f32>, song: usize, t: Tail) -> Vec<f32> {
 
 /// `audio` (interleaved, `ch` channels) from `from` Hz to `to` Hz through a Blackman-windowed sinc `points` wide (2:
 /// linear), its cutoff lowered to the new Nyquist when going down.
-pub fn resample(audio: &[f32], ch: usize, from: u32, to: u32, points: u32) -> Vec<f32> {
+pub fn resample(audio:&[f32],ch:usize,from:u32,to:u32,points:u32)->Vec<f32> {
+    resample_cancellable(audio,ch,from,to,points,None).expect("uncancelled resampling")
+}
+fn resample_cancellable(audio:&[f32],ch:usize,from:u32,to:u32,points:u32,cancel:Cancel<'_>)->Result<Vec<f32>,String> {
+    checkpoint(cancel)?;
+    let n = audio.len() / ch;
+    if n == 0 || from == to {
+        return Ok(audio.to_vec());
+    }
+    let step = f64::from(from) / f64::from(to);
+    let out_n = ((n as f64) / step).round() as usize;
+    let mut out = vec![0.0f32; out_n * ch];
+    if points <= 2 {
+        for j in 0..out_n {
+        if j % 256 == 0 {checkpoint(cancel)?;}
+            let t = j as f64 * step;
+            let i = (t as usize).min(n - 1);
+            let (k, x) = ((i + 1).min(n - 1), (t - i as f64) as f32);
+            for c in 0..ch {
+                out[j * ch + c] = audio[i * ch + c] + (audio[k * ch + c] - audio[i * ch + c]) * x;
+            }
+        }
+        return Ok(out);
+    }
+    let cut = (1.0 / step).min(1.0);
+    let half = f64::from(points) / 2.0;
+    // The window's reach in source samples: wider when the cutoff is lower.
+    let reach = half / cut;
+    let mut acc = vec![0.0f64; ch];
+    for j in 0..out_n {
+        if j % 256 == 0 {checkpoint(cancel)?;}
+        let t = j as f64 * step;
+        let i0 = (t - reach).ceil().max(0.0) as usize;
+        let i1 = ((t + reach).floor() as usize).min(n - 1);
+        acc.iter_mut().for_each(|a| *a = 0.0);
+        let weights=os_dsp::sinc_kernel::BlackmanSinc::new(i0 as f64-t,cut,reach);
+        for (i,w) in (i0..=i1).zip(weights) {
+            for (c, a) in acc.iter_mut().enumerate() {
+                *a += f64::from(audio[i * ch + c]) * w;
+            }
+        }
+        for (c, a) in acc.iter().enumerate() {
+            out[j * ch + c] = *a as f32;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+fn resample_reference(audio: &[f32], ch: usize, from: u32, to: u32, points: u32) -> Vec<f32> {
     let n = audio.len() / ch;
     if n == 0 || from == to {
         return audio.to_vec();
@@ -441,6 +472,7 @@ pub fn resample(audio: &[f32], ch: usize, from: u32, to: u32, points: u32) -> Ve
     out
 }
 
+#[cfg(test)]
 fn sinc(x: f64) -> f64 {
     if x == 0.0 {
         1.0
@@ -450,6 +482,7 @@ fn sinc(x: f64) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn blackman(t: f64, w: f64) -> f64 {
     if t.abs() >= w {
         return 0.0;
@@ -488,7 +521,8 @@ struct Meta {
 }
 
 /// Writes `audio` (interleaved, in the options' channel count) at `rate` as format `f` to `path`.
-fn encode(o: &Options, f: usize, path: &Path, audio: &[f32], rate: u32, meta: &Meta) -> Result<(), String> {
+fn encode(o: &Options, f: usize, path: &Path, audio: &[f32], rate: u32, meta: &Meta, cancel:Cancel<'_>) -> Result<(), String> {
+    checkpoint(cancel)?;
     let ch = o.channel_count();
     let err = |e: String| format!("{}: {e}", path.display());
     let bytes = match f {
@@ -506,26 +540,35 @@ fn encode(o: &Options, f: usize, path: &Path, audio: &[f32], rate: u32, meta: &M
             if !o.tempo {
                 meta.tempo = (0.0, 0.0);
             }
-            wav_bytes(audio, ch, rate, bits, o.dither, &meta).map_err(err)?
+            wav_bytes(audio, ch, rate, bits, o.dither, &meta,cancel).map_err(err)?
         }
-        FLAC => flac_bytes(audio, ch, rate, [16, 24][o.flac_depth], o.flac_level, o.dither).map_err(err)?,
+        FLAC => flac_bytes(audio, ch, rate, [16, 24][o.flac_depth], o.flac_level, o.dither,cancel).map_err(err)?,
         MP3 => {
             // MP3 goes up to 48 kHz: higher rates are brought down to 48 kHz for it.
             if rate > 48000 {
-                let down = resample(audio, usize::from(ch), rate, 48000, o.points);
-                mp3_bytes(&down, ch, 48000, o.mp3_kbps, o.mp3_gapless).map_err(err)?
+                let down = resample_cancellable(audio, usize::from(ch), rate, 48000, o.points,cancel)?;
+                mp3_bytes(&down, ch, 48000, o.mp3_kbps, o.mp3_gapless,cancel).map_err(err)?
             } else {
-                mp3_bytes(audio, ch, rate, o.mp3_kbps, o.mp3_gapless).map_err(err)?
+                mp3_bytes(audio, ch, rate, o.mp3_kbps, o.mp3_gapless,cancel).map_err(err)?
             }
         }
-        _ => ogg_bytes(audio, ch, rate, o.ogg_kbps).map_err(err)?,
+        _ => ogg_bytes(audio, ch, rate, o.ogg_kbps,cancel).map_err(err)?,
     };
+    checkpoint(cancel)?;
     std::fs::write(path, bytes).map_err(|e| err(e.to_string()))
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn pcm16_stereo(sample: &os_engine::Sample) -> Result<Vec<u8>, String> {
+    let audio: Vec<_> = sample.left.iter().zip(&sample.right)
+        .flat_map(|(&left, &right)| [left, right]).collect();
+    wav_bytes(&audio, 2, sample.rate, 16, false, &Meta::default(),None)
 }
 
 /// A WAV file: PCM at 16 or 24 bits (dithered when `dither`), IEEE float at 32; with `cue `, `LIST`/`adtl`, `smpl` and
 /// `acid` chunks for the markers, the loop and the tempo (`Meta`).
-fn wav_bytes(audio: &[f32], ch: u16, rate: u32, bits: u16, dither: bool, meta: &Meta) -> Result<Vec<u8>, String> {
+fn wav_bytes(audio: &[f32], ch: u16, rate: u32, bits: u16, dither: bool, meta: &Meta, cancel:Cancel<'_>) -> Result<Vec<u8>, String> {
+    checkpoint(cancel)?;
     let bps = u32::from(bits / 8);
     let data_len = audio.len() as u64 * u64::from(bps);
     if data_len > u64::from(u32::MAX) - 4096 {
@@ -550,9 +593,10 @@ fn wav_bytes(audio: &[f32], ch: u16, rate: u32, bits: u16, dither: bool, meta: &
     put(b"fmt ", &fmt);
     let mut data = Vec::with_capacity(data_len as usize);
     if bits == 32 {
-        audio.iter().for_each(|s| data.extend_from_slice(&s.to_le_bytes()));
+        for block in audio.chunks(8192) {checkpoint(cancel)?;for s in block {data.extend_from_slice(&s.to_le_bytes());}}
     } else {
-        for v in quantize(audio, u32::from(bits), dither) {
+        for (i,v) in quantize(audio, u32::from(bits), dither).into_iter().enumerate() {
+            if i%8192==0 {checkpoint(cancel)?;}
             data.extend_from_slice(&v.to_le_bytes()[..bps as usize]);
         }
     }
@@ -623,7 +667,8 @@ fn wav_bytes(audio: &[f32], ch: u16, rate: u32, bits: u16, dither: bool, meta: &
 
 /// A FLAC file at `bits`, compression `level` 0..=8 (block size, prediction order and stereo coding go up with it, as
 /// libFLAC's levels do).
-fn flac_bytes(audio: &[f32], ch: u16, rate: u32, bits: u32, level: u8, dither: bool) -> Result<Vec<u8>, String> {
+fn flac_bytes(audio: &[f32], ch: u16, rate: u32, bits: u32, level: u8, dither: bool, cancel:Cancel<'_>) -> Result<Vec<u8>, String> {
+    checkpoint(cancel)?;
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;
     let samples = quantize(audio, bits, dither);
@@ -640,8 +685,19 @@ fn flac_bytes(audio: &[f32], ch: u16, rate: u32, bits: u32, level: u8, dither: b
     config.stereo_coding.use_leftside = level >= 1;
     config.stereo_coding.use_rightside = level >= 1;
     let config = config.into_verified().map_err(|e| format!("FLAC settings: {e:?}"))?;
-    let source = flacenc::source::MemSource::from_samples(&samples, usize::from(ch), bits as usize, rate as usize);
+    struct Source<'a> { samples:&'a [i32],ch:usize,bits:usize,rate:usize,pos:usize,cancel:Cancel<'a> }
+    impl flacenc::source::Source for Source<'_> {
+        fn channels(&self)->usize{self.ch} fn bits_per_sample(&self)->usize{self.bits} fn sample_rate(&self)->usize{self.rate}
+        fn len_hint(&self)->Option<usize>{Some(self.samples.len()/self.ch)}
+        fn read_samples<F:flacenc::source::Fill>(&mut self,n:usize,dest:&mut F)->Result<usize,flacenc::error::SourceError>{
+            if checkpoint(self.cancel).is_err(){dest.fill_interleaved(&[])?;return Ok(0);}
+            let end=(self.pos+n*self.ch).min(self.samples.len());let frames=(end-self.pos)/self.ch;
+            dest.fill_interleaved(&self.samples[self.pos..end])?;self.pos=end;Ok(frames)
+        }
+    }
+    let source=Source{samples:&samples,ch:usize::from(ch),bits:bits as usize,rate:rate as usize,pos:0,cancel};
     let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size).map_err(|e| format!("FLAC: {e:?}"))?;
+    checkpoint(cancel)?;
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|e| format!("FLAC: {e:?}"))?;
     let mut bytes = sink.as_slice().to_vec();
@@ -658,7 +714,8 @@ fn flac_bytes(audio: &[f32], ch: u16, rate: u32, bits: u32, level: u8, dither: b
 
 /// An MP3 file at a constant `kbps`, LAME's best quality; `gapless`: with LAME's Info frame first (the encoder's delay
 /// and padding, for players that trim them).
-fn mp3_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32, gapless: bool) -> Result<Vec<u8>, String> {
+fn mp3_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32, gapless: bool, cancel:Cancel<'_>) -> Result<Vec<u8>, String> {
+    checkpoint(cancel)?;
     use mp3lame_encoder::{Bitrate, Builder, FlushGap, InterleavedPcm, MonoPcm, Quality};
     let rate_of = |k| match k {
         64 => Bitrate::Kbps64,
@@ -680,10 +737,9 @@ fn mp3_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32, gapless: bool) -> Res
     let mut out = Vec::new();
     let frames = audio.len() / usize::from(ch);
     out.reserve(mp3lame_encoder::max_required_buffer_size(frames));
-    if ch == 1 {
-        enc.encode_to_vec(MonoPcm(audio), &mut out).map_err(|e| format!("MP3: {e:?}"))?;
-    } else {
-        enc.encode_to_vec(InterleavedPcm(audio), &mut out).map_err(|e| format!("MP3: {e:?}"))?;
+    for block in audio.chunks(4096*usize::from(ch)) {
+        checkpoint(cancel)?;
+        if ch==1 {enc.encode_to_vec(MonoPcm(block),&mut out)} else {enc.encode_to_vec(InterleavedPcm(block),&mut out)}.map_err(|e|format!("MP3: {e:?}"))?;
     }
     // A full flush: the no-gap one (for joining streams) leaves the last samples unencoded.
     enc.flush_to_vec::<FlushGap>(&mut out).map_err(|e| format!("MP3: {e:?}"))?;
@@ -698,7 +754,8 @@ fn mp3_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32, gapless: bool) -> Res
 }
 
 /// An Ogg Vorbis file at an average `kbps`.
-fn ogg_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32) -> Result<Vec<u8>, String> {
+fn ogg_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32, cancel:Cancel<'_>) -> Result<Vec<u8>, String> {
+    checkpoint(cancel)?;
     use std::num::{NonZeroU32, NonZeroU8};
     use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
     let e = |e: vorbis_rs::VorbisError| format!("OGG: {e}");
@@ -710,6 +767,7 @@ fn ogg_bytes(audio: &[f32], ch: u16, rate: u32, kbps: u32) -> Result<Vec<u8>, St
     let mut enc = b.build().map_err(e)?;
     let chans = usize::from(ch);
     for block in audio.chunks(4096 * chans) {
+        checkpoint(cancel)?;
         let planar: Vec<Vec<f32>> = (0..chans).map(|c| block.iter().skip(c).step_by(chans).copied().collect()).collect();
         enc.encode_audio_block(&planar).map_err(e)?;
     }
@@ -744,7 +802,7 @@ mod tests {
     #[test]
     fn resampling_keeps_a_tone() {
         let a = tone(4800, 48000, 1000.0);
-        for points in [2, 27, 64] {
+        for points in [2, 16, 27, 64, 512] {
             let b = resample(&a, 2, 48000, 44100, points);
             assert_eq!(b.len() / 2, 4410);
             // The level of a 1 kHz tone stays (away from the edges).
@@ -781,8 +839,8 @@ mod tests {
     #[test]
     fn gapless_mp3_has_an_info_frame() {
         let audio: Vec<f32> = (0..44100 * 2).map(|i| ((i / 2) as f32 * 0.05).sin() * 0.5).collect();
-        let on = mp3_bytes(&audio, 2, 44100, 192, true).unwrap();
-        let off = mp3_bytes(&audio, 2, 44100, 192, false).unwrap();
+        let on = mp3_bytes(&audio, 2, 44100, 192, true,None).unwrap();
+        let off = mp3_bytes(&audio, 2, 44100, 192, false,None).unwrap();
         let find = |b: &[u8], what: &[u8]| b[..1200].windows(what.len()).position(|w| w == what);
         let info = find(&on, b"Info").or_else(|| find(&on, b"Xing")).expect("an Info frame");
         let lame = find(&on, b"LAME").expect("LAME's extension");
@@ -821,7 +879,7 @@ mod tests {
         // The mix in four formats, the master and Drums stems in WAV and FLAC; the silent track is left out.
         assert_eq!(files.len(), 8, "{files:?}");
         assert!(dir.join("mix stems").join("01 Drums.flac").exists());
-        assert!(!dir.join("mix stems").join("02 Bus 2.wav").exists());
+        assert!(!dir.join("mix stems").join("02 Insert 2.wav").exists());
         let wav = std::fs::read(dir.join("mix.wav")).unwrap();
         for id in [&b"cue "[..], b"labl", b"Verse", b"smpl", b"acid"] {
             assert!(wav.windows(id.len()).any(|w| w == id), "{}", String::from_utf8_lossy(id));
@@ -834,29 +892,54 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
 
-    /// Render to wave file... (the mixer track menu): only the tracks asked for, silent ones too, without the mix; one
-    /// track's file takes the form's name, several are "<name> - <NN> <track name>".
+#[cfg(test)]
+mod export_performance_tests {
     #[test]
-    fn render_to_wave_file_writes_the_tracks() {
-        let dir = std::env::temp_dir().join(format!("lemon-export-tracks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut job = Job::wav(&dir.join("Drums.wav"));
-        job.options.split = true;
-        job.track_names = vec!["Master".into(), "Drums".into(), "Bass/Sub".into()];
-        job.tracks = vec![1];
-        job.options.tail = Tail::Cut;
-        let mix = tone(4410, 44100, 440.0);
-        let tracks = vec![mix.clone(), mix.clone(), vec![0.0; mix.len()]];
-        let files = write(&job, 44100, mix.clone(), tracks.clone(), 4410).expect("render");
-        assert_eq!(files, [dir.join("Drums.wav")]);
-        assert_eq!(os_engine::sample::load(&files[0]).unwrap().frames(), 4410);
-        job.name = "Song".into();
-        job.tracks = vec![1, 2];
-        let files = write(&job, 44100, mix, tracks, 4410).expect("render");
-        assert_eq!(files, [dir.join("Song - 01 Drums.wav"), dir.join("Song - 02 Bass_Sub.wav")], "the silent track too");
-        assert!(!dir.join("Song.wav").exists() && !dir.join("Song stems").exists(), "no mix, no stems folder");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn export_cancellation_preserves_existing_destination() {
+        let path=std::env::temp_dir().join(format!("lemon-cancel-export-{}.wav",std::process::id()));
+        std::fs::write(&path,b"existing export").unwrap();
+        let cancel=std::sync::atomic::AtomicBool::new(true);
+        let result=super::write_cancellable(&super::Job::wav(&path),48000,vec![0.;96000],vec![],48000,Some(&cancel));
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(std::fs::read(&path).unwrap(),b"existing export");
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn export_resampling_can_cancel_mid_conversion() {
+        use std::sync::{Arc,atomic::{AtomicBool,Ordering},mpsc};
+        let cancel=Arc::new(AtomicBool::new(false));let worker_cancel=cancel.clone();
+        let (tx,rx)=mpsc::channel();
+        let worker=std::thread::spawn(move||{
+            let audio=vec![0.25;1_000_000];tx.send(()).unwrap();
+            super::resample_cancellable(&audio,2,48000,44100,512,Some(&worker_cancel))
+        });
+        rx.recv().unwrap();std::thread::sleep(std::time::Duration::from_millis(5));
+        let start=std::time::Instant::now();cancel.store(true,Ordering::Release);
+        assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+        assert!(start.elapsed()<std::time::Duration::from_millis(500));
+    }
+    #[test]
+    fn export_resampling_preserves_reference_audio() {
+        let audio:Vec<f32>=(0..4096).map(|i| ((i as f32 * 0.173).sin()*0.7)).collect();
+        for (from,to) in [(48000,44100),(44100,48000),(48000,96000),(96000,32000)] {
+            for points in [8,27,128,512] {
+                let expected=super::resample_reference(&audio,2,from,to,points);
+                let actual=super::resample(&audio,2,from,to,points);
+                assert_eq!(actual.len(),expected.len());
+                let error=actual.iter().zip(&expected).map(|(a,b)|(a-b).abs()).fold(0.0,f32::max);
+                assert!(error<2e-6,"{from}->{to}, {points}: {error}");
+            }
+        }
+    }
+    #[test]
+    #[ignore = "focused release-mode export benchmark"]
+    fn export_resampling_benchmark() {
+        let audio:Vec<f32>=(0..24000).map(|i| (i as f32 * 0.173).sin()*0.7).collect();
+        let start=std::time::Instant::now();let reference=super::resample_reference(&audio,2,48000,44100,512);let old=start.elapsed();
+        let start=std::time::Instant::now();let actual=super::resample(&audio,2,48000,44100,512);let new=start.elapsed();
+        assert_eq!(reference.len(),actual.len());
+        eprintln!("512-point stereo conversion: reference={old:?}, current={new:?}, speedup={:.2}x",old.as_secs_f64()/new.as_secs_f64());
     }
 }

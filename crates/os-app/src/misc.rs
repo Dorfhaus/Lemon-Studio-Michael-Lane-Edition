@@ -160,32 +160,44 @@ pub fn sampler_param(misc: &ChannelMisc, m: M) -> Option<(&'static str, f64)> {
     })
 }
 
-/// A Misc tab edit of rack row `row`: the channel model, its hosted Lemon Sampler (root / fine), then playback.
-/// No undo step, as in FL (measured 2026-10-28).
+/// Assign a group reserved for this channel. Both halves of other channels'
+/// manual assignments count, including channels which only listen to a group.
+pub(crate) fn cut_self(app: &mut crate::app::App, row: usize) -> Option<String> {
+    let channels=&app.state.project.channels;
+    let current=channels.get(row)?.misc;
+    let mut used=[false;1000];
+    for (_,ch) in channels.iter().enumerate().filter(|(i,_)| *i!=row) {
+        for group in [ch.misc.cut,ch.misc.cut_by] {
+            if let Some(slot)=used.get_mut(group as usize) {*slot=true;}
+        }
+    }
+    let free=|n:u32| (1..=999).contains(&n) && !used[n as usize];
+    let group=[current.cut,current.cut_by].into_iter().find(|&n|free(n))
+        .or_else(||(1..=999).find(|&n|free(n)));
+    let Some(group)=group else {return Some("All 999 cut groups are in use".into())};
+    if current.cut==group && current.cut_by==group {return Some(format!("Cut itself: group {group}"));}
+    let before=crate::history::Snap::CutGroups(channels[row].index,current.cut,current.cut_by);
+    crate::history::record(&mut app.state,"Cut itself",before);
+    let misc=&mut app.state.project.channels[row].misc;
+    misc.cut=group; misc.cut_by=group;
+    app.state.piano.dirty=true;
+    app.invalidate();
+    Some(format!("Cut itself: group {group}"))
+}
+
+/// Apply an individual manual Misc control edit.
 pub fn set(app: &mut crate::app::App, row: usize, m: M, v: f32) {
     let Some(ch) = app.state.project.channels.get_mut(row) else { return };
     put(&mut ch.misc, m, v);
-    sync(app, row, &[m]);
-    app.state.piano.dirty = true;
-    app.invalidate();
-}
-
-/// Rack row `row`'s Lemon Sampler takes the Misc values it plays again (after an undo put them back).
-pub fn follow(app: &mut crate::app::App, row: usize) {
-    sync(app, row, &M::ALL);
-    app.invalidate();
-}
-
-/// Rack row `row`'s Lemon Sampler takes Misc values `ms` it plays.
-fn sync(app: &mut crate::app::App, row: usize, ms: &[M]) {
-    let Some(ch) = app.state.project.channels.get(row).filter(|c| c.kind.is_sampler()) else { return };
     let misc = ch.misc;
-    for &m in ms {
+    let sampler = ch.kind.is_sampler();
+    if sampler {
         if let Some((name, plain)) = sampler_param(&misc, m) {
             app.plugins.set_param_named(row, name, plain);
         }
     }
-    app.state.params.reread(row);
+    app.state.piano.dirty = true;
+    app.invalidate();
 }
 
 /// The list menu of a Misc value (chord list, number boxes) at canvas point (x, y); the current value is ticked. A knob or
@@ -194,19 +206,38 @@ fn sync(app: &mut crate::app::App, row: usize, ms: &[M]) {
 pub fn menu(app: &crate::app::App, row: usize, m: M, x: f32, y: f32) -> crate::playlist::Popup {
     use crate::playlist::{Cmd, Mark, PItem, Popup};
     if mp::draggable(m) && !mp::list_on_right(m) {
-        return Popup { x, y, items: vec![PItem::new("Reset", Cmd::Misc(row, m, mp::default_of(m)))], sub: None, scroll: [0; 2] };
+        return Popup { x, y, items: vec![PItem::new("Reset", Cmd::Misc(row, m, mp::default_of(m)))], sub: None, scroll: [0; 2], cascade: Vec::new() };
     }
     let cur = app.state.project.channels.get(row).map_or(mp::default_of(m), |ch| get(&ch.misc, m));
     let items = mp::list_entries(m)
         .into_iter()
         .map(|(label, v)| PItem::new(label, Cmd::Misc(row, m, v)).mark(Mark::Radio((v - cur).abs() < 0.5)))
         .collect();
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cut_itself_allocates_private_groups_and_respects_manual_assignments() {
+        let mut app=crate::app::App::new(None);
+        app.state.project.channels.clear();
+        for _ in 0..5 {crate::app::add_channel(&mut app.state.project);}
+        app.state.project.channels[0].misc.cut=1;
+        app.state.project.channels[1].misc.cut_by=2;
+        for (row,want) in [(2,3),(3,4),(2,3),(4,5)] {
+            cut_self(&mut app,row);
+            let m=app.state.project.channels[row].misc;
+            assert_eq!((m.cut,m.cut_by),(want,want));
+        }
+        crate::history::undo(&mut app.state).unwrap();
+        let m=app.state.project.channels[4].misc;
+        assert_eq!((m.cut,m.cut_by),(0,0));
+        assert_eq!(app.state.project.channels[0].misc.cut,1);
+        assert_eq!(app.state.project.channels[1].misc.cut_by,2);
+    }
 
     /// A Misc knob's or slider's right-click menu is Reset, to the page's default; a list keeps its values.
     #[cfg(plugin_windows)]

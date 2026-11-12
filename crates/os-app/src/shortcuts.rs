@@ -25,7 +25,7 @@ pub const CLIP_MODS: &[&str] = &["(disabled)", "(none)", "Alt"];
 
 /// Browser and pickers: shows or hides the browser.
 pub const TOGGLE_BROWSER: Combo = Combo { key: "shortcut_toggle_browser", label: "Toggle browser", choices: F8_KEYS, default: 3 };
-/// Opens or closes the plugin palette (`App::toggle_plugin_palette`).
+/// Opens or closes the plugin menu (`App::toggle_plugin_menu`).
 pub const TOGGLE_PLUGIN_PICKER: Combo =
     Combo { key: "shortcut_toggle_plugin_picker", label: "Toggle plugin picker", choices: F8_KEYS, default: 0 };
 /// Opens or closes the project picker (`App::toggle_project_picker`).
@@ -33,7 +33,7 @@ pub const TOGGLE_PROJECT_PICKER: Combo =
     Combo { key: "shortcut_toggle_project_picker", label: "Toggle project picker", choices: F8_KEYS, default: 2 };
 /// Shows the plugin database: the browser on its Plugin database tab (`App::show_plugin_database`).
 pub const SHOW_PLUGIN_DATABASE: Combo =
-    Combo { key: "shortcut_show_plugin_database", label: "Show plugin library", choices: F8_KEYS, default: 1 };
+    Combo { key: "shortcut_show_plugin_database", label: "Show plugin database", choices: F8_KEYS, default: 1 };
 /// MIDI import window: the modifier held while a MIDI file is chosen or dropped picks the row whose behaviour applies
 /// (`midi_file::show_for`; spec: ui/midi-files.md §10.5).
 pub const MIDI_WHEN_NECESSARY: Combo =
@@ -83,12 +83,16 @@ pub struct Form {
     /// Each row's choice (an index in its `choices`), in `ROWS` order.
     pub vals: [usize; ROWS.len()],
     pub open: Option<usize>,
+    pub bindings: Vec<String>,
+    pub capture: Option<usize>,
+    pub page: usize,
+    pub notice: String,
 }
 
 impl Form {
     /// The applied shortcuts (as the window opens).
     pub fn applied() -> Form {
-        Form { vals: ROWS.map(prefs::index), open: None }
+        Form { vals: ROWS.map(prefs::index), open: None,bindings:COMMANDS.iter().map(|(id,_,default)|prefs::text(&format!("command_key_{id}")).unwrap_or_else(||default.to_string())).collect(),capture:None,page:0,notice:String::new() }
     }
 
     /// Row `row` takes choice `v`. Each value is used once per group, "(disabled)" included: the row of the group that
@@ -109,19 +113,76 @@ impl Form {
     /// Reset all: the defaults in the form (kept only by Apply).
     pub fn reset(&mut self) {
         self.vals = ROWS.map(|c| c.default);
+        self.bindings=COMMANDS.iter().map(|(_,_,key)|key.to_string()).collect();self.capture=None;self.notice.clear();
     }
 
     /// Apply: the form's choices are kept and work at once.
     pub fn apply(&self) {
-        for (c, &v) in ROWS.iter().zip(&self.vals) {
-            prefs::set_choice(c, v);
-        }
+        for (c, &v) in ROWS.iter().zip(&self.vals) {prefs::set_choice(c, v);}
+        for ((id,_,_),key) in COMMANDS.iter().zip(&self.bindings) {prefs::set_text(&format!("command_key_{id}"),key);}
     }
 
     /// Row `row`'s choice as its box shows it.
     pub fn text(&self, row: usize) -> &'static str {
         ROWS[row].choices[self.vals[row]]
     }
+}
+
+pub const COMMANDS:&[(&str,&str,&str)]=&[
+    ("play","Play / stop","Space"),("pause","Play / pause","Ctrl+Space"),
+    ("save","Save project","Ctrl+S"),("save_as","Save project as","Ctrl+Shift+S"),("open","Open project","Ctrl+O"),
+    ("undo","Undo","Ctrl+Z"),("redo","Redo","Ctrl+Shift+Z"),
+    ("playlist","Playlist","F5"),("rack","Channel rack","F6"),("piano","Piano roll","F7"),("mixer","Mixer","F9"),
+    ("metronome","Metronome","Ctrl+M"),("typing","Typing piano keyboard","Ctrl+T"),
+];
+pub const COMMAND_PAGE:usize=8;
+pub fn chord(key:&winit::keyboard::Key,ctrl:bool,alt:bool,shift:bool)->Option<String>{
+    use winit::keyboard::{Key,NamedKey as N};
+    let name=match key {
+        Key::Character(c) if c.chars().count()==1 && (ctrl||alt)=>c.to_uppercase(),
+        Key::Named(N::Space)=>"Space".into(),
+        Key::Named(n @ (N::F2|N::F3|N::F4|N::F5|N::F6|N::F7|N::F9|N::F10|N::F11|N::F12))=>format!("{n:?}"),
+        _=>return None,
+    };
+    if alt && name=="F4" {return None;}
+    Some(format!("{}{}{}{name}",if ctrl {"Ctrl+"}else{""},if alt {"Alt+"}else{""},if shift {"Shift+"}else{""}))
+}
+impl Form {
+    pub fn capture_key(&mut self,key:&winit::keyboard::Key,ctrl:bool,alt:bool,shift:bool)->bool {
+        use winit::keyboard::{Key,NamedKey as N};
+        let Some(i)=self.capture else{return false};
+        if matches!(key,Key::Named(N::Escape)){self.capture=None;return true;}
+        let value=if matches!(key,Key::Named(N::Backspace|N::Delete)){Some(String::new())}else{chord(key,ctrl,alt,shift)};
+        if let Some(value)=value {
+            if !value.is_empty() && self.bindings.iter().enumerate().any(|(j,v)|j!=i&&v==&value) {
+                self.notice="Already assigned. Clear that command first.".into();
+            }else {self.bindings[i]=value;self.capture=None;self.notice="Apply to keep your shortcuts.".into();}
+        }else{self.notice="Use Ctrl/Alt + a letter, Space, or a function key (F8 reserved).".into();}
+        true
+    }
+}
+pub fn command_key(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->bool {
+    let Some(key)=chord(key,ctrl,alt,app.shift) else{return false};
+    let bindings:Vec<_>=COMMANDS.iter().map(|(id,_,d)|prefs::text(&format!("command_key_{id}")).unwrap_or_else(||d.to_string())).collect();
+    let Some(i)=bindings.iter().position(|v|!v.is_empty()&&v==&key) else {
+        // A reassigned default must not fall through to its former hardcoded action.
+        return COMMANDS.iter().enumerate().any(|(i,(_,_,d))|*d==key&&bindings[i]!=*d);
+    };
+    use crate::views::menus;
+    match i {
+        0=>app.act(if app.transport.playing(){Action::Stop}else{Action::Play}),
+        1=>app.act(Action::Play),
+        2=>app.act(Action::MenuItem(0,menus::FILE_SAVE)),
+        3=>app.act(Action::MenuItem(0,menus::FILE_SAVE_AS)),
+        4=>app.act(Action::MenuItem(0,menus::FILE_OPEN)),
+        5=>app.undo_key(false),
+        6=>{let m=crate::history::ctrl_shift_z(&mut app.state);app.say(m);},
+        7=>app.act(Action::ToggleWin(Win::Playlist)),8=>app.act(Action::ToggleWin(Win::ChannelRack)),
+        9=>app.act(Action::ToggleWin(Win::PianoRoll)),10=>app.act(Action::ToggleWin(Win::Mixer)),
+        11=>app.act(Action::Metronome),12=>app.act(Action::Typing),_=>{}
+    }
+    app.invalidate();
+    true
 }
 
 /// What an F8 key runs.
@@ -171,9 +232,9 @@ pub fn clip_double_click(alt: bool) -> Option<ClipOpen> {
 pub fn menu_key(label: &str, shortcut: &'static str) -> &'static str {
     let c = match label {
         "Browser" => &TOGGLE_BROWSER,
-        "Plugin palette" => &TOGGLE_PLUGIN_PICKER,
-        "Clip palette" => &TOGGLE_PROJECT_PICKER,
-        "Plugin library" => &SHOW_PLUGIN_DATABASE,
+        "Plugin picker" => &TOGGLE_PLUGIN_PICKER,
+        "Project picker" => &TOGGLE_PROJECT_PICKER,
+        "Plugin database" => &SHOW_PLUGIN_DATABASE,
         _ => return shortcut,
     };
     if shortcut.ends_with("F8") { prefs::choice(c) } else { shortcut }
@@ -204,7 +265,7 @@ impl App {
     pub(crate) fn f8_key(&mut self, ctrl: bool, alt: bool) {
         match f8(self.shift, ctrl, alt) {
             Some(F8::Browser) => self.act(Action::ToggleWin(Win::Browser)),
-            Some(F8::PluginPicker) => self.toggle_plugin_palette(),
+            Some(F8::PluginPicker) => self.toggle_plugin_menu(),
             Some(F8::PluginDatabase) => self.show_plugin_database(),
             Some(F8::ProjectPicker) => self.toggle_project_picker(),
             None => {}
@@ -233,6 +294,19 @@ mod tests {
         ROWS.iter().position(|r| r.key == c.key).expect("a row")
     }
 
+    #[test] fn community_command_shortcuts_capture_conflicts_and_dispatch(){
+        use winit::keyboard::{Key,NamedKey};
+        let mut f=Form::applied();f.reset();f.capture=Some(10);
+        assert!(f.capture_key(&Key::Character("s".into()),true,false,false));assert_eq!(f.capture,Some(10));assert!(f.notice.contains("Already assigned"));
+        f.capture_key(&Key::Character("k".into()),true,true,false);assert_eq!(f.bindings[10],"Ctrl+Alt+K");f.apply();
+        let mut app=App::new(None);app.state.z.retain(|w|*w!=Win::Mixer);
+        assert!(command_key(&mut app,&Key::Named(NamedKey::F9),false,false));assert!(!app.state.shown(Win::Mixer));
+        assert!(command_key(&mut app,&Key::Character("k".into()),true,true));assert!(app.state.shown(Win::Mixer));
+        app.open_shortcuts();let mut canvas=Canvas::new(1280,900,1.).unwrap();app.paint(&mut canvas,None);
+        if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){canvas.pixmap.save_png(std::path::PathBuf::from(dir).join("shortcut-editor.png")).unwrap();}
+        f.reset();f.apply();
+    }
+
     fn texts(f: &Form) -> Vec<&'static str> {
         (0..ROWS.len()).map(|i| f.text(i)).collect()
     }
@@ -247,7 +321,7 @@ mod tests {
             "Toggle browser",
             "Toggle plugin picker",
             "Toggle project picker",
-            "Show plugin library",
+            "Show plugin database",
             "Show when necessary",
             "Show every time",
             "Don't show",
@@ -349,7 +423,7 @@ mod tests {
         assert_eq!(form(&app).text(0), "F8", "the window shows the applied keys");
         let reset = hit_rect(&app, &Action::Dlg(DHit::ResetAll));
         click(&mut app, &mut c, reset);
-        assert_eq!(texts(form(&app)), texts(&Form { vals: ROWS.map(|c| c.default), open: None }));
+        assert_eq!(texts(form(&app)), texts(&Form { vals: ROWS.map(|c| c.default), open: None, ..Form::applied() }));
         assert_eq!(prefs::choice(&TOGGLE_BROWSER), "F8", "Reset all applies nothing");
         let x = hit_rect(&app, &Action::Dlg(DHit::Close));
         click(&mut app, &mut c, x);
@@ -389,7 +463,7 @@ mod tests {
         app.paint(&mut c, None);
         let f8 = Key::Named(NamedKey::F8);
         let browser = |app: &App| app.state.show_browser;
-        let picker = |app: &App| crate::plugin_palette::is_open(&app.state);
+        let picker = |app: &App| crate::plugin_menu::is_open(&app.state);
         let shown = browser(&app);
         // Defaults: Alt+F8 the browser, F8 the plugin picker.
         app.key(&f8, false, true);
@@ -431,13 +505,13 @@ mod tests {
     /// The menus show the applied keys beside the browser and the pickers.
     #[test]
     fn menus_show_the_applied_keys() {
-        assert_eq!((menu_key("Browser", "Alt+F8"), menu_key("Plugin palette", "F8")), ("Alt+F8", "F8"));
+        assert_eq!((menu_key("Browser", "Alt+F8"), menu_key("Plugin picker", "F8")), ("Alt+F8", "F8"));
         let mut f = Form::applied();
         f.pick(0, 0);
         f.pick(3, 2);
         f.apply();
-        assert_eq!((menu_key("Browser", "Alt+F8"), menu_key("Plugin palette", "F8")), ("F8", "Alt+F8"));
-        assert_eq!((menu_key("Plugin library", "Shift+F8"), menu_key("Clip palette", "Ctrl+F8")), ("Ctrl+F8", "Shift+F8"));
+        assert_eq!((menu_key("Browser", "Alt+F8"), menu_key("Plugin picker", "F8")), ("F8", "Alt+F8"));
+        assert_eq!((menu_key("Plugin database", "Shift+F8"), menu_key("Project picker", "Ctrl+F8")), ("Ctrl+F8", "Shift+F8"));
         assert_eq!(menu_key("Browser", ""), "", "an entry without a key keeps none");
         assert_eq!(menu_key("Mixer", "F9"), "F9");
     }

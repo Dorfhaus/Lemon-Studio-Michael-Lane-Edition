@@ -2,19 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! The startup splash: General ▸ Miscellaneous "Show startup splash screen" (`prefs::SHOW_SPLASH`). With the check on,
-//! a borderless window centred on the primary monitor, above every other window, shows the full-colour logo as a
-//! loading gauge from launch until startup is done: the lemon fills round with startup's progress while light rakes
-//! round the record's grooves, and a status line under the disc names the step. Once the main window shows and the
-//! opened project has loaded (and the splash has shown for a moment, however quick that was), the lemon tops up, the
-//! light fades, the mark pops and the splash fades away. With the check off there is none. A program setting, read
-//! once at start (`main`); `--screenshot`, the helper processes and tests never open it. A nightly build shows the
-//! Nightly logo.
-//!
-//! The window has no background of its own: only the disc, its soft (Gaussian) shadow and the status line show, over
-//! whatever is behind, and clicks go through it. It is animated on a thread of its own (on macOS in a process of its
-//! own, `mac`), so it keeps moving while the UI thread loads the project and the plugins. Windows, macOS and Linux (X11,
-//! XWayland under Wayland, `x11`); elsewhere `open` shows nothing.
+//! Transparent ML Studio startup mark, progress and status, drawn independently of the main window.
 // spec: ui/settings-choices.md "Miscellaneous: naming, detached plugins and startup"
 #![cfg_attr(not(any(windows, target_os = "macos", target_os = "linux")), allow(dead_code))]
 
@@ -22,27 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use os_ui::{Canvas, Color, Font};
-use tiny_skia::{
-    FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Point, PremultipliedColorU8, SpreadMode, Stroke,
-    Transform,
-};
+use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 
-use crate::logo;
-
-/// The splash window in logical px: the disc, its shadow and the status line under it.
 pub const SIZE: (f32, f32) = (500.0, 500.0);
-/// The disc in the window: its centre and diameter (logical px).
-const DISC: (f32, f32, f32) = (250.0, 236.0, 360.0);
-/// The disc's shadow: how far down it falls, its Gaussian blur (sigma) in logical px, and its opacity under the disc.
-const SHADOW: (f32, f32, f32) = (10.0, 18.0, 0.45);
-/// The status line: a pill this far under the disc and this high (logical px), never wider than the disc, with this
-/// much room either side of its text.
-const CAPTION_GAP: f32 = 22.0;
-const CAPTION_H: f32 = 26.0;
-const CAPTION_PAD: f32 = 14.0;
-const CAPTION_FONT: Font = Font::new(15);
-const CAPTION_BG: u32 = 0x262626;
-const CAPTION_INK: u32 = 0xcfcfcf;
+const LOGO_WIDTH: f32 = 350.0;
 
 /// Where startup's steps start on the gauge (0..1). The opened project's loading fills it from `LOADING` to `LOADED`.
 pub const SETTINGS: f32 = 0.06;
@@ -53,77 +24,9 @@ pub const PLUGINS: f32 = 0.5;
 pub const LOADING: f32 = 0.62;
 pub const LOADED: f32 = 0.96;
 
-// The logo in its own units (`logo.rs`): the disc's centre and outer radius, fitted to its edge (the label is
-// concentric).
-const C: (f32, f32) = (490.4, 488.1);
-const R: f32 = 476.5;
-// The logo's fills: the rind and the slices from the lower right round to the upper left, and the line of the record's
-// gradient (lower right to upper left), the same in every logo.
-const LEMON: u32 = 0xffe066;
-const SLICE_FILLS: [u32; 4] = [0xffe066, 0xffe88a, 0xffeda3, 0xfff1b8];
-const RECORD_FROM: (f32, f32) = (857.748, 789.317);
-const RECORD_TO: (f32, f32) = (147.545, 158.696);
-
-/// The record half of a logo, the part that differs between them.
-struct Face {
-    /// The label's fill.
-    label: u32,
-    /// Over the label, under the record (path data and fill).
-    under: (&'static str, u32),
-    /// The record's shape, its edge and its gradient.
-    record: &'static str,
-    edge: u32,
-    stops: [(f32, u32); 3],
-    /// Over the record (path data and fill).
-    over: Option<(&'static str, u32)>,
-    /// The spindle hole's fill.
-    center: u32,
-}
-
-/// `assets/logo/logo-colored-lemon.svg`: the shimmer seen through the record's two windows.
-const FACE: Face = Face {
-    label: LEMON,
-    under: (logo::SHIMMER, 0xffffff),
-    record: logo::RECORD,
-    edge: 0x2d2d2d,
-    stops: [(0.0, 0x2d2d2d), (0.387, 0x171717), (0.8914, 0x000000)],
-    over: None,
-    center: 0x000000,
-};
-
-/// `assets/logo/logo-colored-lemon-nightly.svg`: a moon with its craters rising over the wedge's edge, a night sky for
-/// the record and stars on it.
-const NIGHTLY_FACE: Face = Face {
-    label: 0xf6f2df,
-    under: (logo::NIGHTLY_CRATERS, 0xd9d4ba),
-    record: logo::NIGHTLY_RECORD,
-    edge: 0x2f3a8a,
-    stops: [(0.0, 0x2f3a8a), (0.387, 0x1a2056), (0.8914, 0x0c0f2e)],
-    over: Some((logo::NIGHTLY_STARS, 0xfff4c2)),
-    center: 0x0c0f2e,
-};
-/// The empty part of the gauge: each fill this far toward the workspace grey.
-const EMPTY: (u32, f32) = (0x262626, 0.8);
-/// The pie sector the gauge fills, clockwise from the rind's lower end (degrees clockwise from +x).
-const GAUGE_FROM: f32 = 36.0;
-const GAUGE_SWEEP: f32 = 192.0;
-/// The groove light: two opposite wedges of this half-angle and reach (degrees, logo units), turning at this speed
-/// (degrees a second), lighting the grooves (rings from 190 units out, 8.4 apart, 1.7 wide) and a faint glow.
-const WEDGE: f32 = 18.0;
-const WEDGE_R: f32 = 520.0;
-const TURN: f32 = 165.0;
-const GROOVES: (f32, f32, usize) = (190.0, 8.4, 34);
-const GROOVE_W: f32 = 1.7;
-const GROOVE_ALPHA: f32 = 0.6;
-const GLOW_ALPHA: f32 = 0.13;
-
-/// Seconds: the intro (the light fades in), the fade in, how quickly the gauge follows startup, and the finish: the
-/// gauge tops up, the light fades out, the mark pops, the window fades away.
-const INTRO: f32 = 0.5;
 const FADE_IN: f32 = 0.3;
 const FOLLOW: f32 = 0.18;
 const TOP_UP: f32 = 0.4;
-const LIGHT_OUT: f32 = 0.6;
 const POP: (f32, f32) = (0.4, 0.8);
 const FADE_OUT: (f32, f32) = (1.0, 1.3);
 /// Seconds from the splash opening: a quicker startup still sees the gauge fill until the first; one taking longer
@@ -267,13 +170,10 @@ struct Anim {
 struct Look {
     /// The window's opacity: fading in at the start, away at the end.
     alpha: f32,
-    /// The disc's scale (its shadow's too): growing in at the start, popping at the end.
+    /// The logo's scale: growing in at the start, popping at the end.
     scale: f32,
-    /// How far round the lemon is filled, 0..=1.
+    /// The amount of progress shown, 0..=1.
     progress: f32,
-    /// The groove light's opacity, and where its wedges point (degrees clockwise).
-    light: f32,
-    angle: f32,
     /// The status line.
     caption: String,
 }
@@ -288,8 +188,6 @@ impl Anim {
             self.done = Some((t, self.shown));
         }
         let k = ease_out(seg(t, 0.0, FADE_IN));
-        let light = ease_out(seg(t, 0.0, INTRO));
-        let angle = 20.0 + TURN * t;
         let status = |p: f32| match what {
             "" => format!("{:.0}%", p * 100.0),
             _ => format!("{what} · {:.0}%", p * 100.0),
@@ -298,7 +196,7 @@ impl Anim {
             // The gauge eases toward startup's progress (all the way once it is done), never going back.
             let to = if done { 1.0 } else { progress.clamp(0.0, 1.0) };
             self.shown += (to - self.shown).max(0.0) * (1.0 - (-dt / FOLLOW).exp());
-            return Some(Look { alpha: k, scale: lerp(0.94, 1.0, k), progress: self.shown, light, angle, caption: status(self.shown) });
+            return Some(Look { alpha: k, scale: lerp(0.94, 1.0, k), progress: self.shown, caption: status(self.shown) });
         };
         let d = t - t0;
         if d >= FADE_OUT.1 {
@@ -309,8 +207,6 @@ impl Anim {
             alpha: k * (1.0 - ease_in_out(seg(d, FADE_OUT.0, FADE_OUT.1))),
             scale: lerp(0.94, 1.0, k) * (1.0 + 0.03 * bump(seg(d, POP.0, POP.1))),
             progress,
-            light: light * (1.0 - ease_in_out(seg(d, 0.0, LIGHT_OUT))),
-            angle,
             caption: if d >= TOP_UP { "Ready".into() } else { status(progress) },
         })
     }
@@ -347,303 +243,45 @@ fn device(scale: f32) -> (u32, u32) {
     ((SIZE.0 * scale).round().max(1.0) as u32, (SIZE.1 * scale).round().max(1.0) as u32)
 }
 
-/// The logo's paths in its own units, and the shapes the groove light is made of. Outlines are stroked once here, so
-/// a frame only fills.
-struct Parts {
-    label: Path,
-    under: Path,
-    record: Path,
-    over: Option<Path>,
-    record_edge: Path,
-    center: Path,
-    rind: Path,
-    rind_edge: Path,
-    slices: [Path; 4],
-}
-
-impl Parts {
-    fn new(face: &Face) -> Option<Parts> {
-        let p = |d: &str| os_ui::path_data(d, 0.0, 0.0, 1.0);
-        // Outlines `w` logo units wide, flattened finely enough for the largest splash.
-        let outline = |path: &Path, w: f32| path.stroke(&Stroke { width: w, ..Stroke::default() }, 2.0);
-        let [s1, s2, s3, s4] = logo::SLICES;
-        let (record, rind) = (p(face.record)?, p(logo::RIND)?);
-        let over = match face.over {
-            Some((d, _)) => Some(p(d)?),
-            None => None,
-        };
-        Some(Parts {
-            label: p(logo::LABEL)?,
-            under: p(face.under.0)?,
-            record_edge: outline(&record, 1.0)?,
-            record,
-            over,
-            center: p(logo::CENTER)?,
-            rind_edge: outline(&rind, 1.0)?,
-            rind,
-            slices: [p(s1)?, p(s2)?, p(s3)?, p(s4)?],
-        })
-    }
-}
-
-/// The groove light's shapes with its wedges pointing at `angle` (degrees clockwise): the two wedges, and the
-/// stretches of groove inside them (logo units).
-fn light_shapes(angle: f32) -> Option<(Path, Path)> {
-    let (mut fans, mut grooves) = (PathBuilder::new(), PathBuilder::new());
-    for mid in [angle, angle + 180.0] {
-        fan(&mut fans, mid - WEDGE, 2.0 * WEDGE, WEDGE_R);
-        for i in 0..GROOVES.2 {
-            let r = GROOVES.0 + GROOVES.1 * i as f32;
-            band(&mut grooves, mid - WEDGE, 2.0 * WEDGE, r - GROOVE_W / 2.0, r + GROOVE_W / 2.0);
-        }
-    }
-    Some((fans.finish()?, grooves.finish()?))
-}
-
-/// Adds a band between radii `r0` and `r1` round the disc's centre: from `from` degrees clockwise, `sweep` degrees
-/// round (logo units; 3-degree steps stay within a sixth of a unit of the arc).
-fn band(pb: &mut PathBuilder, from: f32, sweep: f32, r0: f32, r1: f32) {
-    let steps = (sweep / 3.0).ceil().max(1.0) as usize;
-    let at = |i: usize, r: f32| {
-        let a = (from + sweep * i as f32 / steps as f32).to_radians();
-        (C.0 + r * a.cos(), C.1 + r * a.sin())
-    };
-    let (x, y) = at(0, r1);
-    pb.move_to(x, y);
-    for i in 1..=steps {
-        let (x, y) = at(i, r1);
-        pb.line_to(x, y);
-    }
-    for i in (0..=steps).rev() {
-        let (x, y) = at(i, r0);
-        pb.line_to(x, y);
-    }
-    pb.close();
-}
-
-/// Adds a pie sector from the disc's centre: from `from` degrees clockwise, `sweep` degrees round, out to `r` (logo
-/// units). Its outer edge lies outside the disc, so straight steps serve for the arc.
-fn fan(pb: &mut PathBuilder, from: f32, sweep: f32, r: f32) {
-    let steps = (sweep / 6.0).ceil().max(1.0) as usize;
-    pb.move_to(C.0, C.1);
-    for i in 0..=steps {
-        let a = (from + sweep * i as f32 / steps as f32).to_radians();
-        pb.line_to(C.0 + r * a.cos(), C.1 + r * a.sin());
-    }
-    pb.close();
-}
-
-/// Draws the splash in device px, premultiplied RGBA on a transparent background.
 struct Painter {
-    /// Device px per logical one.
     scale: f32,
     frame: Canvas,
-    /// The status line, drawn on its own when it changes and laid over each frame, and the text it shows.
-    caption: Canvas,
-    caption_text: Option<String>,
-    shadow: Pixmap,
-    mask: Mask,
-    /// The record's shape as a mask, and the disc scale it was made at (it changes only as the disc grows in and pops).
-    record_mask: Mask,
-    record_scale: f32,
-    parts: Parts,
-    face: &'static Face,
+    logo: Pixmap,
 }
 
 impl Painter {
-    /// The painter of this build's logo.
-    fn new(scale: f32) -> Option<Painter> {
-        Painter::with_face(scale, if crate::version::NIGHTLY { &NIGHTLY_FACE } else { &FACE })
-    }
-
-    fn with_face(scale: f32, face: &'static Face) -> Option<Painter> {
+    fn new(scale: f32) -> Option<Self> {
         let (w, h) = device(scale);
-        let caption = Canvas::new((DISC.2 * scale).round() as u32, (CAPTION_H * scale).round() as u32, scale).ok()?;
-        Some(Painter {
-            scale,
-            frame: Canvas::new(w, h, scale).ok()?,
-            caption,
-            caption_text: None,
-            shadow: shadow(w, h, scale)?,
-            mask: Mask::new(w, h)?,
-            record_mask: Mask::new(w, h)?,
-            record_scale: f32::NAN,
-            parts: Parts::new(face)?,
-            face,
-        })
+        let mut frame = Canvas::new(w, h, scale).ok()?;
+        frame.set_theme_font(2, None);
+        let logo = Pixmap::decode_png(include_bytes!("../assets/ml-splash.png")).ok()?;
+        Some(Self { scale, frame, logo })
     }
 
-    /// The frame for `look`.
     fn paint(&mut self, look: &Look) -> &Pixmap {
-        let s = self.scale;
-        let (cx, cy) = (DISC.0 * s, DISC.1 * s);
-        self.paint_caption(&look.caption);
-        let (px, mask, p) = (&mut self.frame.pixmap, &mut self.mask, &self.parts);
-        // The shadow first, as it is unless the disc is growing in or popping.
-        if look.scale == 1.0 {
-            px.data_mut().copy_from_slice(self.shadow.data());
-        } else {
-            px.fill(tiny_skia::Color::TRANSPARENT);
-            let about = Transform::from_translate(cx, cy).pre_scale(look.scale, look.scale).pre_translate(-cx, -cy);
-            let smooth = PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
-            px.draw_pixmap(0, 0, self.shadow.as_ref(), &smooth, about, None);
-        }
-        // Logo units to device px, the disc's outer edge on the disc.
-        let k = DISC.2 * s * look.scale / (2.0 * R);
-        let t = Transform::from_translate(cx, cy).pre_scale(k, k).pre_translate(-C.0, -C.1);
-        let fill = |px: &mut Pixmap, path: &Path, c: u32, mask: Option<&Mask>| px.fill_path(path, &solid(c), FillRule::Winding, t, mask);
-        // The record half: the label and what is on it seen through its cut-outs, the record, what is on that, the
-        // spindle.
-        let face = self.face;
-        fill(px, &p.label, face.label, None);
-        fill(px, &p.under, face.under.1, None);
-        px.fill_path(&p.record, &record_paint(face), FillRule::Winding, t, None);
-        if let (Some(over), Some((_, c))) = (&p.over, face.over) {
-            fill(px, over, c, None);
-        }
-        fill(px, &p.record_edge, face.edge, None);
-        fill(px, &p.center, face.center, None);
-        // The groove light: its two wedges and the grooves inside them, on the record only, brightest along the
-        // wedges' middle.
-        if look.light > 0.001 {
-            if self.record_scale != look.scale {
-                self.record_mask.clear();
-                self.record_mask.fill_path(&p.record, FillRule::Winding, true, t);
-                self.record_scale = look.scale;
-            }
-            if let Some((fans, grooves)) = light_shapes(look.angle) {
-                let (turn, on) = (Transform::from_rotate_at(look.angle, C.0, C.1), Some(&self.record_mask));
-                px.fill_path(&fans, &light_paint(GLOW_ALPHA * look.light, turn), FillRule::Winding, t, on);
-                px.fill_path(&grooves, &light_paint(GROOVE_ALPHA * look.light, turn), FillRule::Winding, t, on);
-            }
-        }
-        // The lemon half: empty, then filled round as far as the gauge.
-        let lemon = std::iter::once((&p.rind, LEMON)).chain(p.slices.iter().zip(SLICE_FILLS));
-        if look.progress < 1.0 {
-            for (path, c) in lemon.clone() {
-                fill(px, path, mix(c, EMPTY.0, EMPTY.1), None);
-            }
-        }
-        if look.progress > 0.0 {
-            let part = look.progress < 0.999;
-            if part {
-                mask.clear();
-                let mut pb = PathBuilder::new();
-                fan(&mut pb, GAUGE_FROM, GAUGE_SWEEP * look.progress, WEDGE_R + 80.0);
-                if let Some(sector) = pb.finish() {
-                    mask.fill_path(&sector, FillRule::Winding, true, t);
-                }
-            }
-            let mask = part.then_some(&*mask);
-            for (path, c) in lemon {
-                fill(px, path, c, mask);
-            }
-            // The rind's outline, as in the logo.
-            fill(px, &p.rind_edge, LEMON, mask);
-        }
-        let at = (((DISC.0 - DISC.2 / 2.0) * s).round() as i32, ((DISC.1 + DISC.2 / 2.0 + CAPTION_GAP) * s).round() as i32);
-        px.draw_pixmap(at.0, at.1, self.caption.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-        &self.frame.pixmap
-    }
+        let cv = &mut self.frame;
+        cv.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        let width = LOGO_WIDTH * look.scale;
+        let k = width / self.logo.width() as f32;
+        let height = self.logo.height() as f32 * k;
+        let transform = Transform::from_translate(
+            (SIZE.0 - width) * self.scale / 2.0,
+            (220.0 - height / 2.0) * self.scale,
+        ).pre_scale(k * self.scale, k * self.scale);
+        let smooth = PixmapPaint { quality: FilterQuality::Bicubic, ..PixmapPaint::default() };
+        cv.pixmap.draw_pixmap(0, 0, self.logo.as_ref(), &smooth, transform, None);
 
-    /// Draws the status line when it changed: `text` on a pill as wide as it needs, centred.
-    fn paint_caption(&mut self, text: &str) {
-        if self.caption_text.as_deref() == Some(text) {
-            return;
-        }
-        self.caption_text = Some(text.to_string());
-        let (c, s) = (&mut self.caption, self.scale);
-        c.pixmap.fill(tiny_skia::Color::TRANSPARENT);
-        let font = c.fit_font(CAPTION_FONT, text, DISC.2 - 2.0 * CAPTION_PAD);
-        let w = c.text_width(font, text);
-        let pill = (w + 2.0 * CAPTION_PAD).min(DISC.2);
-        let (x0, r) = ((DISC.2 - pill) / 2.0, CAPTION_H / 2.0);
-        let mut pb = PathBuilder::new();
-        if let Some(mid) = tiny_skia::Rect::from_xywh((x0 + r) * s, 0.0, (pill - 2.0 * r) * s, CAPTION_H * s) {
-            pb.push_rect(mid);
-        }
-        pb.push_circle((x0 + r) * s, r * s, r * s);
-        pb.push_circle((x0 + pill - r) * s, r * s, r * s);
-        if let Some(shape) = pb.finish() {
-            c.pixmap.fill_path(&shape, &solid(CAPTION_BG), FillRule::Winding, Transform::identity(), None);
-        }
-        let y = ((CAPTION_H - c.line_height(font)) / 2.0).round();
-        c.text(font, ((DISC.2 - w) / 2.0).round(), y, Color::rgb(CAPTION_INK), text);
+        let ink = os_theme::design::lemon::MAIN;
+        let span = 136.0;
+        let x = (SIZE.0 - span) / 2.0;
+        cv.line(x, 429.0, x + span, 429.0, 2.0, ink.with_alpha(75));
+        cv.line(x, 429.0, x + span * look.progress, 429.0, 2.0, ink);
+        let font = Font::new(14);
+        let w = cv.text_width(font, &look.caption);
+        cv.text(font, (SIZE.0 - w) / 2.0, 443.0, Color::rgb(0xffffff), &look.caption);
+        &cv.pixmap
     }
 }
-
-/// The disc's shadow, `w` x `h` device px at `scale`: a black disc under it, blurred with a Gaussian.
-fn shadow(w: u32, h: u32, scale: f32) -> Option<Pixmap> {
-    let mut px = Pixmap::new(w, h)?;
-    let (cx, cy) = (DISC.0 * scale, (DISC.1 + SHADOW.0) * scale);
-    let (r, sigma) = (DISC.2 / 2.0 * scale, SHADOW.1 * scale);
-    let reach = r + 4.0 * sigma;
-    let pixels = px.pixels_mut();
-    for y in 0..h {
-        for x in 0..w {
-            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
-            if d >= reach {
-                continue;
-            }
-            // Across its edge a disc ten sigmas in radius blurs as a straight edge does.
-            let a = SHADOW.2 * 0.5 * erfc((d - r) / (sigma * std::f32::consts::SQRT_2));
-            if let Some(c) = PremultipliedColorU8::from_rgba(0, 0, 0, (a * 255.0).round() as u8) {
-                pixels[(y * w + x) as usize] = c;
-            }
-        }
-    }
-    Some(px)
-}
-
-/// The complementary error function (Abramowitz and Stegun 7.1.26, within 1.5e-7).
-fn erfc(x: f32) -> f32 {
-    let z = x.abs();
-    let t = 1.0 / (1.0 + 0.327_591_1 * z);
-    let y = t * (0.254_829_6 + t * (-0.284_496_74 + t * (1.421_413_7 + t * (-1.453_152 + t * 1.061_405_4)))) * (-z * z).exp();
-    if x >= 0.0 { y } else { 2.0 - y }
-}
-
-/// `0xRRGGBB` as a colour with opacity `a`.
-fn sk(c: u32, a: f32) -> tiny_skia::Color {
-    tiny_skia::Color::from_rgba8((c >> 16) as u8, (c >> 8) as u8, c as u8, (a.clamp(0.0, 1.0) * 255.0).round() as u8)
-}
-
-/// An opaque fill of `0xRRGGBB`.
-fn solid(c: u32) -> Paint<'static> {
-    let mut p = Paint::default();
-    p.set_color(sk(c, 1.0));
-    p
-}
-
-/// `a` taken `k` of the way to `b` (`0xRRGGBB`).
-fn mix(a: u32, b: u32, k: f32) -> u32 {
-    let ch = |c: u32, sh: u32| ((c >> sh) & 0xff) as f32;
-    [16, 8, 0].iter().fold(0, |acc, &sh| acc | ((lerp(ch(a, sh), ch(b, sh), k).round() as u32) << sh))
-}
-
-/// The record's gradient fill.
-fn record_paint(face: &Face) -> Paint<'static> {
-    let stops = face.stops.iter().map(|&(at, c)| GradientStop::new(at, sk(c, 1.0))).collect();
-    let mut p = Paint::default();
-    if let Some(shader) = LinearGradient::new(Point::from_xy(RECORD_FROM.0, RECORD_FROM.1), Point::from_xy(RECORD_TO.0, RECORD_TO.1), stops, SpreadMode::Pad, Transform::identity()) {
-        p.shader = shader;
-    }
-    p
-}
-
-/// The groove light's white: `alpha` along the middle of its wedges, nothing at their sides, turned by `turn`.
-fn light_paint(alpha: f32, turn: Transform) -> Paint<'static> {
-    let h = WEDGE_R * WEDGE.to_radians().sin();
-    let stops = vec![GradientStop::new(0.0, sk(0xffffff, 0.0)), GradientStop::new(0.5, sk(0xffffff, alpha)), GradientStop::new(1.0, sk(0xffffff, 0.0))];
-    let mut p = Paint::default();
-    if let Some(shader) = LinearGradient::new(Point::from_xy(C.0, C.1 - h), Point::from_xy(C.0, C.1 + h), stops, SpreadMode::Pad, turn) {
-        p.shader = shader;
-    }
-    p
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Windows: a layered window (per-pixel alpha), updated from the splash thread.
 
 #[cfg(windows)]
 mod win {
@@ -774,7 +412,7 @@ mod win {
             wc.hInstance = inst;
             wc.lpszClassName = class.as_ptr();
             RegisterClassW(&wc);
-            let title = wide(crate::version::NAME);
+            let title = wide("ML Studio");
             // Layered (per-pixel alpha) and transparent to the mouse; above every window that is not topmost too; a
             // tool window takes no taskbar button; never activated, so the main window gets the focus as before.
             let hwnd = CreateWindowExW(
@@ -968,7 +606,7 @@ mod x11 {
         if let (Some(ty), Some(splash)) = (atom(b"_NET_WM_WINDOW_TYPE"), atom(b"_NET_WM_WINDOW_TYPE_SPLASH")) {
             let _ = c.change_property32(PropMode::REPLACE, win, ty, AtomEnum::ATOM, &[splash]);
         }
-        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, crate::version::NAME.as_bytes());
+        let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, b"ML Studio");
         let _ = c.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"lemonstudio\0LemonStudio\0");
         // No input region: clicks go through to what is behind.
         let _ = c.shape_rectangles(shape::SO::SET, shape::SK::INPUT, ClipOrdering::UNSORTED, win, 0, 0, &[]);
@@ -1206,34 +844,6 @@ mod tests {
     use super::*;
     use crate::prefs::{check, find_check, set_check, SHOW_SPLASH, SILENT_STARTUP};
 
-    /// The colour at a point of the logo (its own units), the whole logo showing.
-    fn logo_pixel(p: &mut Painter, at: (f32, f32)) -> (u8, u8, u8) {
-        let look = Look { alpha: 1.0, scale: 1.0, progress: 1.0, light: 0.0, angle: 0.0, caption: String::new() };
-        let k = DISC.2 / (2.0 * R);
-        let (x, y) = ((DISC.0 + (at.0 - C.0) * k) as u32, (DISC.1 + (at.1 - C.1) * k) as u32);
-        let frame = p.paint(&look);
-        let c = frame.pixel(x, y).unwrap().demultiply();
-        (c.red(), c.green(), c.blue())
-    }
-
-    /// A nightly's splash is the Nightly logo: a night sky and a moon on the record half, the same lemon.
-    #[test]
-    fn the_nightly_splash_is_the_nightly_logo() {
-        let mut lemon = Painter::with_face(1.0, &FACE).unwrap();
-        let mut night = Painter::with_face(1.0, &NIGHTLY_FACE).unwrap();
-        // The record, away from the stars: black to grey on one, indigo on the other.
-        let at = (700.0, 300.0);
-        let (r, g, b) = logo_pixel(&mut lemon, at);
-        assert!(r == g && g == b, "{r} {g} {b}");
-        let (r, g, b) = logo_pixel(&mut night, at);
-        assert!(b > r + 20 && b > g + 20, "{r} {g} {b}");
-        // The moon, on the label.
-        assert_eq!(logo_pixel(&mut night, (560.0, 470.0)), (0xf6, 0xf2, 0xdf));
-        // A slice of the lemon: the same in both.
-        let at = (450.0, 700.0);
-        assert_eq!(logo_pixel(&mut night, at), logo_pixel(&mut lemon, at));
-    }
-
     /// "Show startup splash screen" (spec: ui/settings-choices.md "Miscellaneous: naming, detached plugins and
     /// startup"): on as found, a program setting; with it off the start opens no splash.
     #[test]
@@ -1248,13 +858,13 @@ mod tests {
     }
 
     /// The gauge follows startup's progress, never going back, under a status line that names the step; it fades and
-    /// grows in, a quick startup still sees it fill for a moment, and then it tops up, the light fades, it says "Ready"
+    /// grows in, a quick startup still sees it fill for a moment, and then it tops up, it says "Ready"
     /// and fades away.
     #[test]
     fn the_gauge_follows_startup_then_goes() {
         let mut a = Anim::default();
         let first = a.frame(0.0, 0.0, "Reading settings", false).unwrap();
-        assert_eq!((first.alpha, first.progress, first.light), (0.0, 0.0, 0.0), "it fades in from nothing");
+        assert_eq!((first.alpha, first.progress), (0.0, 0.0), "it fades in from nothing");
         assert!(first.scale < 1.0);
         let mut t = 0.0;
         let mut last = 0.0;
@@ -1269,9 +879,9 @@ mod tests {
         }
         let l = a.frame(t, 0.3, "Opening project", false).unwrap();
         assert!((l.progress - 0.5).abs() < 0.01, "caught up, and not back: {}", l.progress);
-        assert_eq!((l.alpha, l.scale, l.light), (1.0, 1.0, 1.0));
+        assert_eq!((l.alpha, l.scale), (1.0, 1.0));
         assert_eq!(l.caption, "Opening project · 50%");
-        // Done: it tops up while the light fades, then fades away.
+        // Done: it tops up then fades away.
         let t0 = t;
         let mut seen_ready = false;
         let gone_at = loop {
@@ -1282,9 +892,6 @@ mod tests {
                         assert!((l.progress - 1.0).abs() < 1e-6);
                         assert_eq!(l.caption, "Ready");
                         seen_ready = true;
-                    }
-                    if t - t0 >= LIGHT_OUT + 0.02 {
-                        assert_eq!(l.light, 0.0);
                     }
                     assert!(t - t0 < FADE_OUT.1 + 0.02);
                 }
@@ -1309,76 +916,28 @@ mod tests {
         assert!(c.done.is_some());
     }
 
-    /// Device px of logo point `(x, y)` (logo units) in the frame at `scale`, the disc unscaled.
-    fn at(scale: f32, x: f32, y: f32) -> (usize, usize) {
-        let k = DISC.2 * scale / (2.0 * R);
-        ((DISC.0 * scale + (x - C.0) * k) as usize, (DISC.1 * scale + (y - C.1) * k) as usize)
-    }
-
-    /// The splash's picture (as above): the full-colour logo centred on a transparent window, a soft shadow falling
-    /// under the disc, the lemon filled round as far as the gauge, the groove light on the record and the status line
-    /// under the disc.
     #[test]
-    fn the_splash_draws_the_gauge_with_its_shadow() {
+    fn splash_preserves_clear_background_and_shows_loading_progress() {
         for scale in [1.0, 2.0] {
-            let mut p = Painter::new(scale).expect("painter");
-            let look = |progress: f32, light: f32| Look { alpha: 1.0, scale: 1.0, progress, light, angle: -30.0, caption: "Opening project · 25%".into() };
-            let (w, h) = device(scale);
-            let (w, h) = (w as usize, h as usize);
-            let px = p.paint(&look(0.25, 0.0)).clone();
-            let rgba = |x: usize, y: usize| {
-                let c = px.pixel(x as u32, y as u32).unwrap().demultiply();
-                (c.red(), c.green(), c.blue(), c.alpha())
-            };
-            for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
-                assert_eq!(rgba(x, y).3, 0, "a clear corner, scale {scale}");
+            let mut painter = Painter::new(scale).unwrap();
+            let mut look = Look { alpha: 1.0, scale: 1.0, progress: 0.25, caption: "Loading project".into() };
+            let first = painter.paint(&look).clone();
+            let at = |p: &Pixmap, x: f32, y: f32| p.pixel((x * scale) as u32, (y * scale) as u32).unwrap();
+            assert_eq!(at(&first, 0.0, 0.0).alpha(), 0);
+            assert_eq!(at(&first, 250.0, 180.0).alpha(), 0);
+            assert!(first.pixels().iter().any(|p| p.alpha() == 255 && p.blue() > 230 && p.red() < 50));
+            look.progress = 1.0;
+            let last = painter.paint(&look);
+            assert!(at(last, 285.0, 429.0).alpha() > at(&first, 285.0, 429.0).alpha());
+            if let Some(dir) = std::env::var_os("LEMON_SPLASH_PREVIEW") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                last.save_png(dir.join(format!("ml-splash-{scale}.png"))).unwrap();
             }
-            // The shadow: under the disc's bottom edge more than over its top, nothing well clear of it.
-            let (cx, cy, r) = ((DISC.0 * scale) as usize, (DISC.1 * scale) as usize, (DISC.2 / 2.0 * scale) as usize);
-            let gap = (8.0 * scale) as usize;
-            let (below, above) = (rgba(cx, cy + r + gap).3, rgba(cx, cy - r - gap).3);
-            assert!(below > above && above > 0, "a soft shadow falling down, scale {scale}: {below} vs {above}");
-            assert_eq!(rgba(w - 1, cy).3, 0, "it fades out before the window's edge, scale {scale}");
-            // The gauge at a quarter: the lower right slice filled, the upper left one still empty.
-            let (x1, y1) = at(scale, 602.0, 691.0);
-            let (x4, y4) = at(scale, 272.0, 410.0);
-            assert_eq!(rgba(x1, y1), (0xff, 0xe0, 0x66, 0xff), "slice 1 filled, scale {scale}");
-            let empty = mix(SLICE_FILLS[3], EMPTY.0, EMPTY.1);
-            let e = rgba(x4, y4);
-            assert_eq!((u32::from(e.0) << 16) | (u32::from(e.1) << 8) | u32::from(e.2), empty, "slice 4 empty, scale {scale}");
-            let full = p.paint(&look(1.0, 0.0)).clone();
-            let c = full.pixel(x4 as u32, y4 as u32).unwrap().demultiply();
-            assert_eq!((c.red(), c.green(), c.blue()), (0xff, 0xf1, 0xb8), "slice 4 filled at the end, scale {scale}");
-            // The groove light: the record brighter along the wedge (pointing up and right, clear of the record's
-            // windows), and as it was 30 degrees off it.
-            let lit = p.paint(&look(0.25, 1.0)).clone();
-            let a = (-30f32).to_radians();
-            let (lx, ly) = at(scale, C.0 + 300.0 * a.cos(), C.1 + 300.0 * a.sin());
-            let sum = |pm: &Pixmap, x: usize, y: usize| {
-                let c = pm.pixel(x as u32, y as u32).unwrap();
-                u32::from(c.red()) + u32::from(c.green()) + u32::from(c.blue())
-            };
-            assert!(sum(&lit, lx, ly) > sum(&px, lx, ly) + 20, "the light on the record, scale {scale}");
-            let (ox, oy) = at(scale, C.0 + 300.0, C.1);
-            assert_eq!(sum(&lit, ox, oy), sum(&px, ox, oy), "away from the wedge, scale {scale}");
-            // The status line: an opaque pill centred under the disc, no wider than its text needs.
-            let ty = cy + r + ((CAPTION_GAP + CAPTION_H / 2.0) * scale) as usize;
-            assert_eq!(rgba(cx, ty).3, 0xff, "the status line, scale {scale}");
-            assert_eq!(rgba(cx - r, ty).3, 0, "clear beside it, scale {scale}");
         }
     }
 
-    /// The shadow's blur is a Gaussian's: half strength on the disc's edge, the error function either side.
-    #[test]
-    fn the_shadow_is_gaussian() {
-        assert!((erfc(0.0) - 1.0).abs() < 1e-6);
-        assert!((erfc(1.0) - 0.157_299_2).abs() < 1e-6);
-        assert!((erfc(-1.0) - 1.842_700_8).abs() < 1e-6);
-        assert!(erfc(4.0) < 1e-7);
-    }
-
-    /// "Silent startup" (spec, as above): stored and shown, off as found. Lemon Studio has no startup sound, so it
-    /// silences nothing yet.
+    /// The Windows startup sound preference is stored and defaults to off.
     #[test]
     fn silent_startup_is_stored() {
         assert_eq!(find_check("Silent startup").map(|c| c.key), Some(SILENT_STARTUP.key));

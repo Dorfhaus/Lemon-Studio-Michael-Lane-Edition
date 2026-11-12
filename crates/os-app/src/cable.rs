@@ -235,7 +235,6 @@ impl Cables {
     }
 
     /// General settings ▸ Animations as the user set it (the cables may hang still anyway, `paint_cost`).
-    #[cfg(test)]
     pub fn animations(&self) -> bool {
         !self.off
     }

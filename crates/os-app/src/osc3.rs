@@ -16,7 +16,7 @@ use os_model::{Channel, ChannelKind, Project};
 use crate::plugins::{Plugins, FX_KEY};
 
 /// The built-in plugin's name (picker, window title).
-pub const LEMON_TRIO: &str = "Lemon Trio";
+pub const LEMON_TRIO: &str = "ML Trio";
 /// The plugin id project files store for it (event 201).
 pub const FILE_NAME: &str = "3x Osc";
 
@@ -25,27 +25,11 @@ pub fn is_osc3(ch: &Channel) -> bool {
     ch.kind == ChannelKind::Plugin && ch.plugin.as_deref() == Some(FILE_NAME)
 }
 
-/// The state Lemon Trio starts from for channel `ch` holding 3x Osc state `fl`: an older version's state, without
-/// envelope records or filter of its own, takes the channel's (spec: plugins/lemon-3x-osc.md §6.1). A volume record
-/// exactly as the model fills a record the file does not have keeps the plugin's default one, as `ChannelVoicing::of`
-/// does for the channel.
-pub fn channel_voicing(ch: &Channel, fl: &[u8]) -> Vec<u8> {
-    let records = std::array::from_fn(|k| {
-        let e = &ch.envelopes[k];
-        (k != os_model::Envelope::VOLUME || *e != os_model::Envelope::default()).then(|| e.fields())
-    });
-    let s = &ch.sound;
-    lemon_3x_osc::params::with_channel_voicing(fl, &records, [s.cutoff, s.resonance, s.filter_type])
-}
-
 /// The plugin id a new channel of picker plugin `name` stores (the built-in recreations store the original's id).
 pub fn file_name(name: &str) -> &str {
     match name {
         LEMON_TRIO => FILE_NAME,
         crate::citrus::CITRUS => crate::citrus::FILE_NAME,
-        crate::smith::SMITH => crate::smith::FILE_NAME,
-        crate::slicer::LEMON_SLICER => crate::slicer::FILE_NAME,
-        crate::drums::LEMON_DRUMS => crate::drums::FILE_NAME,
         _ => name,
     }
 }
@@ -55,10 +39,6 @@ pub fn label(name: &str) -> &str {
     match name {
         FILE_NAME => LEMON_TRIO,
         crate::citrus::FILE_NAME => crate::citrus::CITRUS,
-        crate::smith::FILE_NAME => crate::smith::SMITH,
-        n if crate::slicer::is_file_name(n) => crate::slicer::LEMON_SLICER,
-        crate::drums::FILE_NAME => crate::drums::LEMON_DRUMS,
-        n if n.eq_ignore_ascii_case(crate::lemon_midi_out::FILE_NAME) => "Lemon MIDI Out",
         _ => name,
     }
 }
@@ -68,7 +48,7 @@ impl Plugins {
     /// row hosts something else.
     pub fn osc3_file_state(&self, row: usize) -> Option<Vec<u8>> {
         let h = self.hosted.get(&row)?;
-        let p = h.lock_for_state()?;
+        let p = h.plugin.lock().ok()?;
         if p.desc().name != LEMON_TRIO || !crate::project_plugins::is_builtin(p.desc()) {
             return None;
         }
@@ -146,7 +126,7 @@ impl crate::app::App {
             }
             let ch = &self.state.project.channels[row];
             let fl = ch.plugin_state.clone().unwrap_or_else(lemon_3x_osc::params::default_state);
-            let mut st = lemon_3x_osc::params::plugin_state_from_fl(&channel_voicing(ch, &fl));
+            let mut st = lemon_3x_osc::params::plugin_state_from_fl(&fl);
             // The channel's sample is the custom shape's (spec: plugins/3x-osc.md §1); the plugin opens the file
             // directly, so factory placeholders become real paths.
             let sample = crate::plugins::resolve_sample(ch.sample_path.as_deref().unwrap_or(""));
@@ -208,7 +188,6 @@ mod tests {
     fn builtin_lemon_3x_osc_takes_and_gives_the_file_state() {
         let mut pl = Plugins::default();
         pl.available = crate::plugins::builtin();
-        pl.set_rate(48000);
         let index = pl.index_of(LEMON_TRIO).expect("built-in Lemon Trio");
         assert!(crate::project_plugins::is_builtin(&pl.available[index].desc));
         let mut fl = default_state();
@@ -218,7 +197,8 @@ mod tests {
         set_field(&mut fl, 109, 77); // a field nothing uses: kept
         pl.create_with(2, index, Some(&op::plugin_state_from_fl(&fl))).unwrap();
         assert_eq!(pl.osc3_file_state(2), Some(fl.clone()));
-        // It sounds: a saw at 880 Hz (pitch formula of 3x-osc.md: key 69 with coarse 0), counted at 48 kHz.
+        // It sounds: a saw at 880 Hz (pitch formula of 3x-osc.md: key 69 with coarse 0), counted at the device rate
+        // the instance runs at (44.1 or 48 kHz).
         let inst = instance(&pl, 2);
         let mut i = inst.lock().unwrap();
         i.note_on(0, 69, 100.0 / 127.0);
@@ -280,33 +260,6 @@ mod tests {
         assert_eq!(again.channels[row], saved.channels[row]);
     }
 
-    /// A channel with an older version's 3x Osc state (no records or filter of its own) is hosted with the channel's
-    /// envelope records and filter, as FL plays it; a new channel's volume record keeps the plugin's default (spec:
-    /// plugins/lemon-3x-osc.md §6.1).
-    #[test]
-    fn an_older_osc3_state_takes_the_channels_voicing() {
-        let mut a = App::new(None);
-        a.state.project = crate::app::test_project();
-        a.plugins.available = crate::plugins::builtin();
-        let row = crate::app::add_plugin_channel(&mut a.state.project, LEMON_TRIO);
-        let mut old = default_state()[..92].to_vec();
-        set_field(&mut old, 0, 12);
-        set_field(&mut old, op::osc(0) + op::COARSE + 1, 5);
-        let ch = &mut a.state.project.channels[row];
-        ch.plugin_state = Some(old.clone());
-        ch.envelopes[os_model::Envelope::PITCH].enabled = true;
-        ch.envelopes[os_model::Envelope::PITCH].amount = 1200;
-        (ch.sound.cutoff, ch.sound.resonance, ch.sound.filter_type) = (64, 32, 3);
-        a.sync_osc3();
-        let st = a.plugins.osc3_file_state(row).expect("hosted");
-        assert_eq!(st[4..92], old[4..]);
-        let pitch = op::rec(op::T_PITCH) + 1;
-        assert_eq!((field(&st, pitch + 1), field(&st, pitch + 8)), (-1, 1200));
-        let vol = op::rec(op::T_VOL) + 1;
-        assert_eq!(st[4 * vol..4 * (vol + 17)], default_state()[4 * vol..4 * (vol + 17)]);
-        assert_eq!([op::CUTOFF, op::RESONANCE, op::FILTER].map(|k| field(&st, k + 1)), [64, 32, 3]);
-    }
-
     /// A 3x Osc channel's sample is the custom shape's: Lemon Trio starts with it and plays it as one period; a sample
     /// the plugin loads itself becomes the channel's (path and name) and is saved as the channel's sample, the 3x Osc
     /// state staying 460 bytes (spec: plugins/3x-osc.md §1, plugins/lemon-3x-osc.md §6).
@@ -329,7 +282,6 @@ mod tests {
         a.state.file = None;
         a.state.path = None;
         a.plugins.available = crate::plugins::builtin();
-        a.plugins.set_rate(48000);
         let row = crate::app::add_plugin_channel(&mut a.state.project, LEMON_TRIO);
         let mut fl = default_state();
         set_field(&mut fl, op::osc(0) + op::SHAPE + 1, 6); // osc 1: custom
@@ -386,6 +338,7 @@ mod tests {
     fn plugin_menus_add_lemon_3x_osc_channels() {
         use crate::plugin_menu::Target;
         let mut a = App::new(None);
+        a.state.plugdb.prefs.menu_view=crate::plugin_db::MenuView::Simple;
         a.state.project = crate::app::test_project();
         a.plugins.available = crate::plugins::builtin();
         a.state.plugdb.rebuild(&a.plugins);
@@ -443,7 +396,7 @@ mod tests {
     fn corpus_osc3_channels_survive_hosting_and_saving() {
         let Some(list) = std::env::var_os("OPENSTUDIO_FLP_CORPUS") else { return };
         let text = std::fs::read_to_string(list).unwrap();
-        let (mut files, mut channels, mut older) = (0, 0, 0);
+        let (mut files, mut channels) = (0, 0);
         let out = std::env::temp_dir().join(format!("openstudio-osc3-corpus-{}.flp", std::process::id()));
         for path in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let Some(project) = std::fs::read(path).ok().and_then(|b| os_flp::FlpFile::parse(&b).ok()).and_then(|f| os_flp::project::load(&f).ok())
@@ -460,18 +413,8 @@ mod tests {
             a.sync_osc3();
             for &r in &rows {
                 let st = project.channels[r].plugin_state.clone().expect("3x Osc state");
-                let hosted = a.plugins.osc3_file_state(r).expect("a Lemon Trio");
-                if st.len() < op::STATE_LEN {
-                    // An older version's state (projects older than FL 21): its fields kept, the channel's records
-                    // and filter added, the rest the defaults, at the current version.
-                    assert_eq!((hosted.len(), op::field(&hosted, 0)), (op::STATE_LEN, op::STATE_VERSION), "{path}: channel {r}");
-                    assert_eq!(hosted[4..st.len()], st[4..], "{path}: channel {r}");
-                    assert_eq!(hosted, channel_voicing(&project.channels[r], &st), "{path}: channel {r}");
-                    older += 1;
-                } else {
-                    assert_eq!(st.len(), op::STATE_LEN, "{path}: channel {r}");
-                    assert_eq!(hosted, st, "{path}: channel {r}");
-                }
+                assert_eq!(st.len(), op::STATE_LEN, "{path}: channel {r}");
+                assert_eq!(a.plugins.osc3_file_state(r).as_ref(), Some(&st), "{path}: channel {r}");
                 channels += 1;
             }
             let before = a.state.project.clone();
@@ -479,16 +422,12 @@ mod tests {
             assert!(a.state.message.as_deref().is_some_and(|m| m.starts_with("Saved")), "{path}: {:?}", a.state.message);
             let back = os_flp::project::load(&os_flp::FlpFile::parse(&std::fs::read(&out).unwrap()).unwrap()).unwrap();
             for &r in &rows {
-                let (mut x, mut y) = (back.channels[r].clone(), before.channels[r].clone());
-                if y.plugin_state.as_ref().is_some_and(|s| s.len() < op::STATE_LEN) {
-                    (x.plugin_state, y.plugin_state) = (None, None);
-                }
-                assert_eq!(x, y, "{path}: channel {r}");
+                assert_eq!(back.channels[r], before.channels[r], "{path}: channel {r}");
             }
             files += 1;
         }
         let _ = std::fs::remove_file(&out);
-        eprintln!("3x Osc: {channels} channels ({older} with an older version's state) in {files} files");
+        eprintln!("3x Osc: {channels} channels in {files} files");
         assert!(files > 0, "no corpus file with a 3x Osc channel");
     }
 }

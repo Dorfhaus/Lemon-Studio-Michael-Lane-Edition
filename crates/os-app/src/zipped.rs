@@ -37,7 +37,7 @@ pub struct Zipping {
 
 enum Done {
     /// The project file unzipped.
-    Unzipped(PathBuf),
+    Unzipped { project: PathBuf, archive: PathBuf },
     /// The zip written, how many samples it holds, and the samples not found (not in it).
     Zipped { zip: PathBuf, samples: usize, missing: Vec<String> },
 }
@@ -48,7 +48,7 @@ fn file_name(p: &str) -> &str {
 }
 
 fn is_project(p: &Path) -> bool {
-    crate::project_files::is_project(p)
+    p.extension().is_some_and(|e| (e.eq_ignore_ascii_case("lmn") || e.eq_ignore_ascii_case("flp")))
 }
 
 /// Starts `job` on a thread of its own, behind the panel.
@@ -77,7 +77,7 @@ pub fn import(app: &mut App, zip: PathBuf) {
     }
     let fallback = crate::app::theme_dir().map(|d| d.join(UNZIP_DIR));
     let z = zip.clone();
-    run(app, "Unzipping project", &zip, move |done, total| unzip(&z, fallback.as_deref(), done, total).map(Done::Unzipped));
+    run(app, "Unzipping project", &zip, move |done, total| unzip(&z, fallback.as_deref(), done, total).map(|project|Done::Unzipped { project, archive: z }));
 }
 
 /// A file in the zip: its index, its path inside the zip, its size.
@@ -102,7 +102,7 @@ pub fn unzip(zip: &Path, fallback: Option<&Path>, done: &AtomicU64, total: &Atom
         .filter(|e| is_project(&e.1))
         .min_by_key(|e| (e.1.components().count(), e.1.to_string_lossy().to_lowercase()))
         .map(|e| e.1.clone())
-        .ok_or_else(|| "it holds no FLP project".to_string())?;
+        .ok_or_else(|| "it holds no ML Studio or legacy FLP project".to_string())?;
     total.store(entries.iter().map(|e| e.2).sum(), Ordering::Relaxed);
     let stem = zip.file_stem().map_or_else(|| "Project".to_string(), |s| s.to_string_lossy().into_owned());
     let beside = zip.parent().map(|d| if d.as_os_str().is_empty() { Path::new(".") } else { d });
@@ -120,17 +120,14 @@ pub fn unzip(zip: &Path, fallback: Option<&Path>, done: &AtomicU64, total: &Atom
     Err(first_error.unwrap_or_else(|| "no folder to unzip it into".into()))
 }
 
-/// The folder under `base` the zip goes into: `<stem>`, else `<stem> (2)` and on. One that exists is used again when
-/// it is this zip unzipped before (it has the project file, and no file of the zip's with another size).
-fn folder_for(base: &Path, stem: &str, entries: &[Entry], project: &Path) -> Option<PathBuf> {
-    (1..100).map(|n| if n == 1 { base.join(stem) } else { base.join(format!("{stem} ({n})")) }).find(|d| {
-        if !d.exists() {
-            return true;
-        }
-        let same = |rel: &Path, size: u64| std::fs::metadata(d.join(rel)).is_ok_and(|m| m.is_file() && m.len() == size);
-        let unzipped = entries.iter().any(|e| e.1 == project && same(&e.1, e.2));
-        unzipped && entries.iter().all(|(_, rel, size)| !d.join(rel).exists() || same(rel, *size))
-    })
+/// The folder under `base` the zip goes into: `<stem>`, else `<stem> (2)` and on. Existing extraction folders are preserved; a fresh folder is reserved atomically.
+fn folder_for(base: &Path, stem: &str, _entries: &[Entry], _project: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(base).ok()?;
+    for n in 1..10000 {
+        let d=if n==1{base.join(stem)}else{base.join(format!("{stem} ({n})"))};
+        match std::fs::create_dir(&d) {Ok(())=>return Some(d),Err(e) if e.kind()==io::ErrorKind::AlreadyExists=>continue,Err(_)=>return None}
+    }
+    None
 }
 
 /// Writes the zip's files into `dest`; a file already there with the same size is kept. Each file is written beside
@@ -221,8 +218,28 @@ impl Pack {
             };
             let old = file_name(&stored);
             if old != name {
-                ch.sample_path = Some(format!("{}{name}", &stored[..stored.len() - old.len()]));
+                let path=format!("{}{name}", &stored[..stored.len() - old.len()]);
+                for w in &mut p.audio_warps{if w.rendered==stored{w.rendered=path.clone();}}
+                ch.sample_path = Some(path);
             }
+        }
+        for vocal in &mut p.vocal_edits {
+            let current=vocal.render_key==crate::vocal::key(vocal);
+            for stored in [&mut vocal.source,&mut vocal.rendered]{
+                if stored.is_empty(){continue;}let real=PathBuf::from(crate::plugins::resolve_sample(stored));
+                if !real.is_file(){self.missing.push(file_name(stored).to_string());continue;}
+                let name=if let Some((_,name))=self.files.iter().find(|(p,_)|p==&real){name.clone()}else{let name=self.free_name(&real.file_name().unwrap_or_default().to_string_lossy());self.files.push((real,name.clone()));name};
+                *stored=name;
+            }
+            if current{vocal.render_key=crate::vocal::key(vocal);}
+        }
+        for warp in &mut p.audio_warps {
+            let real=PathBuf::from(crate::plugins::resolve_sample(&warp.source));
+            if !real.is_file(){self.missing.push(file_name(&warp.source).to_string());continue;}
+            let name=if let Some((_,name))=self.files.iter().find(|(p,_)|p==&real){name.clone()}else{
+                let name=self.free_name(&real.file_name().unwrap_or_default().to_string_lossy());self.files.push((real,name.clone()));name
+            };
+            warp.source=name;
         }
     }
 
@@ -243,15 +260,13 @@ impl Pack {
 /// The project file's bytes as Save writes them (with the samples' names in the zip) and the samples to put beside it.
 /// The project itself, its file and its unsaved changes stay as they are.
 fn prepare(app: &mut App, zip: &Path) -> Result<(Vec<u8>, Pack), String> {
-    // The project goes in as Save writes it: a .lemon file (an FLP's name with .lemon).
-    let ext = crate::project_files::EXT;
-    let project = app.state.path.as_deref().and_then(Path::file_stem).map_or_else(
-        || format!("{}.{ext}", zip.file_stem().map_or_else(|| "Untitled".into(), |s| s.to_string_lossy())),
-        |n| format!("{}.{ext}", n.to_string_lossy()),
+    let project = app.state.path.as_deref().and_then(Path::file_name).map_or_else(
+        || format!("{}.lmn", zip.file_stem().map_or_else(|| "Untitled".into(), |s| s.to_string_lossy())),
+        |n| Path::new(n).with_extension("lmn").to_string_lossy().into_owned(),
     );
     let mut pack = Pack { project, ..Default::default() };
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let temp = std::env::temp_dir().join(format!("lemon-zip-{}-{nanos}.{ext}", std::process::id()));
+    let temp = std::env::temp_dir().join(format!("lemon-zip-{}-{nanos}.lmn", std::process::id()));
     let saved = app.save_copy_with(temp.clone(), &mut |p| pack.gather(p));
     let bytes = std::fs::read(&temp);
     let _ = std::fs::remove_file(&temp);
@@ -260,6 +275,39 @@ fn prepare(app: &mut App, zip: &Path) -> Result<(Vec<u8>, Pack), String> {
         Some(Err(e)) => Err(e),
         Some(Ok(())) => Ok((bytes.map_err(|e| e.to_string())?, pack)),
     }
+}
+
+/// Prepare on the control thread; compression and file reads run on the session worker.
+pub(crate) fn collaboration_pack(app:&mut App,zip:&Path)->Result<impl FnOnce()->Result<(),String>+Send+'static,String>{
+    let (bytes,pack)=prepare(app,zip)?;
+    if !pack.missing.is_empty(){return Err(format!("Find missing samples before hosting: {}",pack.missing.join(", ")));}
+    let zip=zip.to_path_buf();
+    Ok(move||write_zip(&zip,&bytes,&pack,&AtomicU64::new(0),&AtomicU64::new(0)))
+}
+
+/// Invitations are untrusted input: accept only flat project/audio packages, with bounded expansion.
+pub(crate) fn collaboration_unpack(zip:&Path)->Result<PathBuf,String>{
+    let mut a=zip::ZipArchive::new(File::open(zip).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    if a.len()>8192{return Err("Too many shared files".into());}
+    let mut total=0u64;
+    let mut names=std::collections::BTreeSet::new();
+    for i in 0..a.len(){
+        let f=a.by_index(i).map_err(|e|e.to_string())?;
+        let name=f.name().map_err(|e|e.to_string())?;
+        let ext=Path::new(name.as_ref()).extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if name.contains(['/', '\\', ':'])||name.len()>240||!names.insert(name.to_ascii_lowercase())||
+            !["lmn","flp","wav","aif","aiff","flac","mp3","ogg","m4a","aac","opus"].contains(&ext.as_str())||
+            f.unix_mode().is_some_and(|m|m & 0o170000==0o120000){
+            return Err("Unsupported or unsafe file in shared project".into());
+        }
+        total=total.checked_add(f.size()).ok_or("Shared package is too large")?;
+        if total>1024*1024*1024{return Err("Shared project expands beyond 1 GB".into());}
+        let limit=f.size();
+        let actual=std::io::copy(&mut f.take(limit+1),&mut std::io::sink()).map_err(|e|e.to_string())?;
+        if actual!=limit{return Err("Invalid shared file size".into());}
+    }
+    drop(a);
+    unzip(zip,None,&AtomicU64::new(0),&AtomicU64::new(0))
 }
 
 /// Writes the zip: the project file, then the samples, side by side at its top. Written beside `zip`, then moved in.
@@ -338,8 +386,12 @@ pub fn tick(app: &mut App) {
     };
     let z = app.zipping.take().expect("checked");
     match result {
-        Ok(Done::Unzipped(project)) => app.open(project),
+        Ok(Done::Unzipped { project, archive }) => {
+            app.open(project.clone());
+            if app.state.path.as_ref()==Some(&project) {crate::recent::add(&archive);}
+        },
         Ok(Done::Zipped { zip, samples, missing }) => {
+            crate::recent::add(&zip);
             app.state.message = Some(format!("Exported {} with {samples} samples", zip.display()));
             if !missing.is_empty() {
                 let mut names = missing;
@@ -392,6 +444,18 @@ mod tests {
     /// A zip unzips beside itself and the project nearest its top is the one opened; names leaving the folder are
     /// skipped; unzipping it again uses the same folder, and a folder holding other files of those names is not used.
     #[test]
+    fn vocal_portable_pack_preserves_original_and_render_with_colliding_names(){
+        let dir=std::env::temp_dir().join(format!("lemon-vocal-pack-{}",std::process::id()));let a=dir.join("source");let b=dir.join("render");std::fs::create_dir_all(&a).unwrap();std::fs::create_dir_all(&b).unwrap();
+        let original=a.join("Voice.wav");let rendered=b.join("Voice.wav");std::fs::write(&original,b"original source").unwrap();std::fs::write(&rendered,b"tuned cache").unwrap();
+        let mut p=crate::app::test_project();let channel=p.channels[0].index;p.channels[0].sample_path=Some(rendered.to_string_lossy().into_owned());
+        let mut edit=os_model::vocal::Edit{channel,source:original.to_string_lossy().into_owned(),source_hash:"0".repeat(64),rendered:rendered.to_string_lossy().into_owned(),render_key:String::new(),rate:16000,frames:16000,f0:vec![0.;201],notes:vec![],curve:vec![],timing:vec![(0.,0.),(1.,1.)],enabled:true,strength:1.,formant:1.};edit.render_key=crate::vocal::key(&edit);p.vocal_edits.push(edit);
+        let mut pack=Pack{project:"Vocal.lmn".into(),..Default::default()};pack.gather(&mut p);
+        assert_eq!(pack.files.len(),2);assert!(pack.missing.is_empty());let edit=&p.vocal_edits[0];assert_ne!(edit.source,edit.rendered);assert_eq!(edit.render_key,crate::vocal::key(edit));
+        assert!(pack.files.iter().any(|(p,n)|p==&original&&n==&edit.source));assert!(pack.files.iter().any(|(p,n)|p==&rendered&&n==&edit.rendered));
+        let loaded=os_flp::project::load(&os_flp::project::create(&p).unwrap()).unwrap();assert_eq!(loaded.vocal_edits,p.vocal_edits);
+    }
+
+    #[test]
     fn unzips_beside_the_zip() {
         let d = temp("unzip");
         let zip = d.join("Song pack.zip");
@@ -402,9 +466,9 @@ mod tests {
         assert_eq!(std::fs::read(d.join("Song pack/Kick.wav")).unwrap(), b"kick");
         assert!(!d.join("evil.txt").exists());
         assert_eq!(done.load(Ordering::Relaxed), total.load(Ordering::Relaxed));
-        assert_eq!(unzip(&zip, None, &done, &total).unwrap(), project, "unzipped before: the same folder");
+        assert_ne!(unzip(&zip, None, &done, &total).unwrap(), project, "each import preserves existing extracted edits");
         std::fs::write(d.join("Song pack/Kick.wav"), b"another kick").unwrap();
-        assert_eq!(unzip(&zip, None, &done, &total).unwrap(), d.join("Song pack (2)").join("Song.flp"));
+        assert_eq!(unzip(&zip, None, &done, &total).unwrap(), d.join("Song pack (3)").join("Song.flp"));
         make_zip(&d.join("empty.zip"), &[("a.wav", b"a")]);
         assert!(unzip(&d.join("empty.zip"), None, &done, &total).is_err());
         let _ = std::fs::remove_dir_all(&d);
@@ -439,6 +503,7 @@ mod tests {
         app.state.project.channels[rows[1]].sample_path = Some(two.clone());
         app.state.project.channels[rows[2]].sample_path = Some(one.clone());
         app.state.project.channels[rows[3]].sample_path = Some(d.join("Gone.wav").to_string_lossy().into_owned());
+        app.state.project.audio_warps.push(os_model::AudioWarp{source:one.clone(),rendered:two.clone(),points:vec![(0.,0.),(0.005,1.)]});
         app.state.file = None;
         app.save_to(d.join("Song.flp"));
         let before = app.state.project.clone();
@@ -450,19 +515,29 @@ mod tests {
         assert_eq!(pack.missing, vec!["Gone.wav".to_string()]);
         let (done, total) = (AtomicU64::new(0), AtomicU64::new(0));
         write_zip(&zip, &flp, &pack, &done, &total).unwrap();
-        assert_eq!(names(&zip), vec!["Song.lemon", "Kick.wav", "Kick_2.wav"], "the project goes in as a .lemon file");
+        assert_eq!(names(&zip), vec!["Song.lmn", "Kick.wav", "Kick_2.wav"]);
         assert!(!d.join("out").join("Song.zip.part").exists());
         // On another computer: the original folders are gone.
         std::fs::remove_dir_all(d.join("one")).unwrap();
         std::fs::remove_dir_all(d.join("two")).unwrap();
-        let project = unzip(&zip, None, &done, &total).unwrap();
-        app.open(project);
+        let _project = unzip(&zip, None, &done, &total).unwrap();
+        import(&mut app,zip.clone());
+        let start=std::time::Instant::now();while app.zipping.is_some(){tick(&mut app);assert!(start.elapsed().as_secs()<10);std::thread::sleep(std::time::Duration::from_millis(5));}
+        assert_eq!(crate::recent::list().first(),Some(&zip));
+        let unzipped=app.state.path.as_ref().unwrap().parent().unwrap().to_path_buf();
         let resolved = |row: usize| crate::plugins::resolve_sample(app.state.project.channels[row].sample_path.as_deref().unwrap());
-        let unzipped = d.join("out").join("Song");
+
         assert_eq!(resolved(rows[0]), unzipped.join("Kick.wav").to_string_lossy());
         assert_eq!(resolved(rows[1]), unzipped.join("Kick_2.wav").to_string_lossy());
         assert_eq!(resolved(rows[2]), unzipped.join("Kick.wav").to_string_lossy());
+        let w=&app.state.project.audio_warps[0];
+        assert_eq!(crate::plugins::resolve_sample(&w.source),resolved(rows[0]));
+        assert_eq!(crate::plugins::resolve_sample(&w.rendered),resolved(rows[1]));
         os_engine::sample::set_search_folders(Vec::new());
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+#[cfg(test)]mod audit_tests {use super::*;
+ #[test]fn audit_updated_zip_equal_lengths_gets_new_contents(){let d=std::env::temp_dir().join(format!("audit-zip-fixed-{}",std::process::id()));std::fs::create_dir_all(&d).unwrap();let path=d.join("Song.zip");let make=|bytes:&[u8]|{let mut w=zip::ZipWriter::new(File::create(&path).unwrap());w.start_file("Song.lmn",zip::write::SimpleFileOptions::default()).unwrap();w.write_all(bytes).unwrap();w.finish().unwrap();};let done=AtomicU64::new(0);let total=AtomicU64::new(0);make(b"old");let a=unzip(&path,None,&done,&total).unwrap();make(b"new");let b=unzip(&path,None,&done,&total).unwrap();assert_ne!(a,b);assert_eq!(std::fs::read(a).unwrap(),b"old");assert_eq!(std::fs::read(b).unwrap(),b"new");std::fs::remove_dir_all(d).unwrap();}
 }

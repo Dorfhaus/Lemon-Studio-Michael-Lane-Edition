@@ -64,7 +64,6 @@ fn yes() -> bool {
 #[serde(default)]
 pub struct Prefs {
     pub version: u32,
-    pub startup_scan: bool,
     pub rescan_errors: bool,
     pub combine: bool,
     pub prefer: Prefer,
@@ -81,7 +80,6 @@ impl Default for Prefs {
     fn default() -> Prefs {
         Prefs {
             version: 1,
-            startup_scan: true,
             rescan_errors: false,
             combine: true,
             prefer: Prefer::Vst3,
@@ -98,7 +96,7 @@ const PREFS_FILE: &str = "plugins.json";
 const CACHE_FILE: &str = "plugin_cache.json";
 
 /// Reads a JSON file from the user folder (nothing under test: tests never see the user's files).
-fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
     if cfg!(test) {
         return None;
     }
@@ -107,7 +105,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {
 }
 
 /// Writes a JSON file into the user folder through a temporary file, so a failed write keeps the old one.
-fn write_json<T: Serialize>(name: &str, v: &T) {
+pub(crate) fn write_json<T: Serialize + ?Sized>(name: &str, v: &T) {
     if cfg!(test) {
         return;
     }
@@ -487,7 +485,7 @@ fn walk(dir: &Path, depth: u32, formats: Formats, walked: &mut HashSet<(PathBuf,
 /// A file named like a built-in Lemon plugin, or like one by an earlier name (same plugin id): the built-in copy
 /// is used (a second copy in the process would share the built-in one's editor window class).
 fn builtin_file(p: &Path) -> bool {
-    let builtin = [crate::plugins::LEMON_SAMPLER, crate::plugins::LEMON_EQ, crate::plugins::PULP_FILTER, crate::plugins::PRESS, crate::osc3::LEMON_TRIO, crate::citrus::CITRUS, crate::smith::SMITH, crate::slicer::LEMON_SLICER, crate::drums::LEMON_DRUMS];
+    let builtin = ["ML Plasma", "ML Wave", "ML Chop", crate::plugins::LEMON_SAMPLER, crate::plugins::LEMON_EQ, crate::plugins::PULP_FILTER, crate::plugins::PRESS, crate::osc3::LEMON_TRIO, crate::citrus::CITRUS];
     let old = crate::plugins::OLD_NAMES.map(|(old, _)| old);
     p.file_stem().is_some_and(|s| builtin.iter().chain(&crate::plugins::LINKED_EFFECTS).chain(&old).any(|b| s.eq_ignore_ascii_case(b)))
 }
@@ -727,9 +725,10 @@ pub fn categories(effects: bool) -> impl Iterator<Item = &'static str> {
 /// A plugin's category (§4): the first category in table order with a matching feature string.
 pub fn category(d: &Descriptor) -> &'static str {
     match d.name.as_str() {
-        n if n == crate::plugins::LEMON_SAMPLER || n == crate::slicer::LEMON_SLICER || n == crate::drums::LEMON_DRUMS => return "Sampler",
-        n if n == crate::osc3::LEMON_TRIO || n == crate::citrus::CITRUS || n == crate::smith::SMITH => return "Synth",
+        n if n == crate::plugins::LEMON_SAMPLER || n == "ML Chop" => return "Sampler",
+        n if n == crate::osc3::LEMON_TRIO || n == crate::citrus::CITRUS => return "Synth",
         n if n == crate::plugins::LEMON_EQ => return "EQ",
+        "ML Master Assistant" | "Lemon Master Assistant" => return "Utility",
         _ => {}
     }
     let feats: Vec<String> = d.features.iter().map(|f| f.trim().to_lowercase()).collect();
@@ -738,7 +737,7 @@ pub fn category(d: &Descriptor) -> &'static str {
 }
 
 /// The built-in plugins' vendor in the menus.
-pub const BUILTIN_VENDOR: &str = "Lemon Studio";
+pub const BUILTIN_VENDOR: &str = "ML Studio";
 pub const NO_VENDOR: &str = "(unknown vendor)";
 
 /// A plugin as the menus list it.
@@ -755,7 +754,6 @@ pub struct Entry {
     pub format: Format,
     pub category: &'static str,
     pub favorite: bool,
-    /// Built into Lemon Studio (the browser's Installed ▸ Built-in, spec: ui/browser.md §2).
     pub builtin: bool,
 }
 
@@ -772,15 +770,14 @@ pub fn lists(available: &[Available], effects: &[Available], prefs: &Prefs, miss
 
 fn entries(list: &[Available], prefs: &Prefs, missing: &HashSet<String>) -> Vec<Entry> {
     let into = combined_into(list, prefs, missing);
-    let shown: Vec<usize> = (0..list.len()).filter(|&i| into[i].is_none()).filter(|&i| { let u = list[i].desc.uid(); !prefs.is_hidden(&u) && !missing.contains(&u) }).collect();
+    let shown: Vec<usize> = (0..list.len()).filter(|&i| into[i].is_none()).filter(|&i| { let u = list[i].desc.uid(); !prefs.is_hidden(&u) && !missing.contains(&u) && (list[i].desc.name!="ML Tape" || crate::workspace_visibility::shown("visible_plugin-tape")) && (list[i].desc.name!="ML Hall" || crate::workspace_visibility::shown("visible_plugin-hall")) && (list[i].desc.name != ml_plasma::NAME || crate::workspace_visibility::shown(ml_plasma::VISIBILITY)) }).collect();
     let mut v: Vec<Entry> = shown
         .iter()
         .map(|&i| {
             let d = &list[i].desc;
             let twin = shown.iter().any(|&k| k != i && list[k].desc.format != d.format && base_name(&list[k].desc.name) == base_name(&d.name));
             let label = if twin { format!("{} ({})", strip_marker(&d.name), format_label(d.format)) } else { d.name.clone() };
-            let builtin = crate::project_plugins::is_builtin(d);
-            let vendor = if builtin {
+            let vendor = if crate::project_plugins::is_builtin(d) {
                 BUILTIN_VENDOR.to_string()
             } else if d.vendor.trim().is_empty() {
                 NO_VENDOR.to_string()
@@ -788,7 +785,7 @@ fn entries(list: &[Available], prefs: &Prefs, missing: &HashSet<String>) -> Vec<
                 d.vendor.trim().to_string()
             };
             let uid = d.uid();
-            Entry { index: i, name: d.name.clone(), label, favorite: prefs.is_favorite(&uid), uid, vendor, format: d.format, category: category(d), builtin }
+            Entry { builtin: crate::project_plugins::is_builtin(d), index: i, name: d.name.clone(), label, favorite: prefs.is_favorite(&uid), uid, vendor, format: d.format, category: category(d) }
         })
         .collect();
     v.sort_by_key(|e| e.label.to_lowercase());
@@ -968,6 +965,7 @@ pub struct Db {
     pub prefs: Prefs,
     pub cache: Cache,
     pub lists: Lists,
+    pub blacklisted:Lists,
     /// Every table row (`table`); `rows` = these sorted and filtered.
     pub all_rows: Vec<TableRow>,
     pub rows: Vec<TableRow>,
@@ -987,6 +985,7 @@ impl Default for Db {
             prefs: Prefs::default(),
             cache: Cache::default(),
             lists: Lists::default(),
+            blacklisted:Lists::default(),
             all_rows: Vec::new(),
             rows: Vec::new(),
             sort: (Col::Name, false),
@@ -1002,6 +1001,9 @@ impl Db {
     /// Rebuilds the lists and the table from the plugins the host knows.
     pub fn rebuild(&mut self, plugins: &crate::plugins::Plugins) {
         self.lists = lists(&plugins.available, &plugins.effects, &self.prefs, &plugins.missing);
+        let mut visible=self.prefs.clone();visible.hidden.clear();visible.combine=false;
+        self.blacklisted=lists(&plugins.available,&plugins.effects,&visible,&plugins.missing);
+        self.blacklisted.gens.retain(|e|self.prefs.is_hidden(&e.uid));self.blacklisted.fx.retain(|e|self.prefs.is_hidden(&e.uid));
         self.all_rows = table(&plugins.available, &plugins.effects, &self.cache, &self.prefs, &plugins.missing);
         self.refilter();
     }
@@ -1105,10 +1107,62 @@ mod tests {
     /// Installed bundles of the built-in Lemon plugins are not scanned: the built-in copy is used.
     #[test]
     fn installed_copies_of_built_in_plugins_are_skipped() {
-        for name in ["Lemon Sampler.clap", "Lemon Parametric EQ.vst3", "Lemon Limiter.clap", "Lemon Chorus.vst3", "lemon stereo shaper.clap"] {
+        for name in ["Lemon Chop.clap", "Lemon Chop.vst3", "Lemon Sampler.clap", "Lemon Parametric EQ.vst3", "Lemon Limiter.clap", "Lemon Chorus.vst3", "lemon stereo shaper.clap"] {
             assert!(builtin_file(Path::new(&format!("/Library/Audio/Plug-Ins/{name}"))), "{name}");
         }
         assert!(!builtin_file(Path::new("/Library/Audio/Plug-Ins/Surge XT.clap")));
+    }
+
+    /// Existing scan caches predate newly bundled instruments and must not hide them.
+    #[test]
+    fn chop_is_in_instruments_after_upgrade_with_old_cache() {
+        let old: Cache = serde_json::from_str(r#"{"version":1,"files":[]}"#).unwrap();
+        let mut plugins = crate::plugins::Plugins::builtins();
+        for _ in 0..2 {
+            plugins.merge(&old);
+            let listed = lists(&plugins.available, &plugins.effects, &Prefs::default(), &plugins.missing);
+            let chop: Vec<_> = listed.gens.iter().filter(|e| e.name == "ML Chop").collect();
+            assert_eq!(chop.len(), 1, "upgrade and rescan retain exactly one Chop instrument");
+            assert_eq!(chop[0].category, "Sampler");
+            assert_eq!(chop[0].vendor, BUILTIN_VENDOR);
+            assert_eq!(plugins.available[chop[0].index].desc.kind, Kind::Instrument);
+            assert!(!listed.fx.iter().any(|e| e.name == "ML Chop"));
+        }
+    }
+
+    #[test]
+    fn ml_plasma_stock_visibility_and_upgrade_without_scan() {
+        let mut plugins = crate::plugins::Plugins::builtins();
+        crate::settings_file::set_flag(ml_plasma::VISIBILITY, true);
+        for _ in 0..2 {
+            plugins.merge(&Cache::default());
+            let listed = lists(&plugins.available, &plugins.effects, &Prefs::default(), &plugins.missing);
+            let found: Vec<_> = listed.gens.iter().filter(|e| e.name == ml_plasma::NAME).collect();
+            assert_eq!(found.len(), 1, "the stock synth appears once after an update/rescan");
+            assert!(found[0].builtin);
+            assert_eq!(found[0].category, "Synth");
+            assert_eq!(found[0].vendor, BUILTIN_VENDOR);
+            assert!(!listed.fx.iter().any(|e| e.name == ml_plasma::NAME));
+        }
+        crate::settings_file::set_flag(ml_plasma::VISIBILITY, false);
+        let listed = lists(&plugins.available, &plugins.effects, &Prefs::default(), &plugins.missing);
+        assert!(!listed.gens.iter().any(|e| e.name == ml_plasma::NAME));
+        assert!(plugins.available.iter().any(|a| a.desc.id == ml_plasma::ID),
+            "hiding menus must preserve the library used by existing projects");
+        crate::settings_file::set_flag(ml_plasma::VISIBILITY, true);
+    }
+
+    #[test]
+    fn wave_factory_organization_and_recall_without_scan() {
+        let mut plugins=crate::plugins::Plugins::builtins();
+        for _ in 0..2 {
+            plugins.merge(&Cache::default());let listed=lists(&plugins.available,&plugins.effects,&Prefs::default(),&plugins.missing);
+            let waves:Vec<_>=listed.gens.iter().filter(|e|e.name=="ML Wave").collect();assert_eq!(waves.len(),1);assert_eq!(waves[0].category,"Synth");assert!(!listed.fx.iter().any(|e|e.name=="ML Wave"));
+            for e in listed.gens.iter().chain(&listed.fx){assert_ne!(e.category,OTHER,"{} must have a factory category",e.name);}
+            let available=&plugins.available[waves[0].index];assert!(crate::project_plugins::is_wrapped(&available.desc));
+            let shared=available.lib.clone().create(&available.desc.id).unwrap();let mut p=shared.lock().unwrap();assert!(p.activate(48000));let state=p.save_state().unwrap();assert!(p.load_state(&state));p.note_on(0,60,0.8);let(mut l,mut r)=(vec![0.;1024],vec![0.;1024]);p.process(48000,&mut l,&mut r);assert!(l.iter().any(|x|x.abs()>0.0001));assert!(l.iter().chain(&r).all(|x|x.is_finite()));
+        }
+        assert!(builtin_file(Path::new("Lemon Wave.vst3")));
     }
 
     /// Combining (spec: ui/plugin-manager.md §3): one entry per plugin in the preferred format, the next format when the
@@ -1335,7 +1389,7 @@ mod tests {
     fn files_round_trip_and_take_defaults() {
         let p: Prefs = serde_json::from_str(r#"{"prefer":"clap","folders":[{"path":"D:\\Plugins"}]}"#).unwrap();
         assert_eq!(p.prefer, Prefer::Clap);
-        assert!(p.combine && p.startup_scan && p.folders[0].on);
+        assert!(p.combine && p.folders[0].on);
         let text = serde_json::to_string(&p).unwrap();
         assert!(text.contains("\"menu_view\":\"categories\""));
         assert_eq!(serde_json::from_str::<Prefs>(&text).unwrap(), p);

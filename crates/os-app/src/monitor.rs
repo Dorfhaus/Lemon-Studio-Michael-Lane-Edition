@@ -130,6 +130,7 @@ pub enum Mode {
 
 pub struct Monitor {
     pub mode: Mode,
+    pub combined:bool,
     pub cfg: Settings,
     /// The F12 debug panel is open.
     pub debug: bool,
@@ -152,9 +153,6 @@ pub struct Monitor {
     ranges: Vec<(usize, usize, f32)>,
     re: Vec<f32>,
     im: Vec<f32>,
-    /// Each bin's power, and the twiddles that split a half-size FFT of the real input (`real_power`).
-    power: Vec<f32>,
-    twiddle: Vec<(f32, f32)>,
     input: Vec<f32>,
 }
 
@@ -164,7 +162,7 @@ pub const SILENT_DB: f32 = -200.0;
 impl Default for Monitor {
     fn default() -> Self {
         Monitor {
-            mode: Mode::Spectrum,
+            mode: Mode::Spectrum,combined:false,
             cfg: Settings::default(),
             debug: false,
             wave: [(0.0, 0.0); COLS],
@@ -180,8 +178,6 @@ impl Default for Monitor {
             ranges: Vec::new(),
             re: Vec::new(),
             im: Vec::new(),
-            power: Vec::new(),
-            twiddle: Vec::new(),
             input: vec![0.0; MAX_FFT],
         }
     }
@@ -285,7 +281,8 @@ impl Monitor {
         self.meter(if live { [db(pl), db(pr)] } else { [SILENT_DB; 2] }, now, dt);
         match self.mode {
             Mode::Scope => self.scope(live),
-            Mode::Spectrum => self.spectrum(live, dt),
+            Mode::Spectrum if self.combined=>{self.bars_db.fill(SILENT_DB);self.scope(live);},
+            Mode::Spectrum => self.spectrum(live,dt),
         }
         before != (self.wave, self.bars_db, self.meter_db, self.hold)
     }
@@ -348,14 +345,8 @@ impl Monitor {
         }
         self.built = key;
         self.window = (0..fft).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / fft as f32).cos()).collect();
-        self.re = vec![0.0; fft / 2];
-        self.im = vec![0.0; fft / 2];
-        self.power = vec![0.0; fft / 2];
-        self.twiddle = (0..fft / 2).map(|k| {
-            let a = 2.0 * PI * k as f32 / fft as f32;
-            (a.cos(), -a.sin())
-        })
-        .collect();
+        self.re = vec![0.0; fft];
+        self.im = vec![0.0; fft];
         let bin_hz = self.rate as f32 / fft as f32;
         let tilt = self.cfg.v[k::TILT];
         self.ranges = (0..COLS)
@@ -383,9 +374,13 @@ impl Monitor {
             self.bars_db.iter_mut().for_each(decay);
             return;
         }
-        let fft = self.window.len();
+        let fft = self.re.len();
         let s = &self.input[self.input.len() - fft..];
-        real_power(s, &self.window, &self.twiddle, &mut self.re, &mut self.im, &mut self.power);
+        for i in 0..fft {
+            self.re[i] = s[i] * self.window[i];
+            self.im[i] = 0.0;
+        }
+        fft_in_place(&mut self.re, &mut self.im);
         // A full-scale sine reads 0 dB: amplitude = 2 |X| / sum(window) = 2 |X| / (N / 2).
         let norm = 4.0 / fft as f32;
         let avg = self.cfg.v[k::PEAK_MODE] >= 0.5;
@@ -393,7 +388,7 @@ impl Monitor {
         for (c, &(a, b, tilt)) in self.ranges.iter().enumerate() {
             let mut m = 0.0f32;
             for i in a..b {
-                let p = self.power[i];
+                let p = self.re[i] * self.re[i] + self.im[i] * self.im[i];
                 m = if avg { m + p } else { m.max(p) };
             }
             if avg {
@@ -426,29 +421,6 @@ impl Monitor {
 }
 
 /// In-place radix-2 FFT (`re`, `im` length a power of two).
-/// The power of bins 0..n/2 of the FFT of `x` times `window` (both n long, n a power of two), from an FFT of half the
-/// size: the even samples as the real part, the odd ones as the imaginary, then split (about half the work of a full
-/// complex FFT of real input). `re`, `im` and `power` are n/2 long; `twiddle[k]` is e^(-2 pi i k / n).
-fn real_power(x: &[f32], window: &[f32], twiddle: &[(f32, f32)], re: &mut [f32], im: &mut [f32], power: &mut [f32]) {
-    let h = re.len();
-    for k in 0..h {
-        re[k] = x[2 * k] * window[2 * k];
-        im[k] = x[2 * k + 1] * window[2 * k + 1];
-    }
-    fft_in_place(re, im);
-    for k in 0..h {
-        let j = (h - k) % h;
-        // Z[k] and the conjugate of Z[h - k] give the even and the odd samples' spectra.
-        let (ar, ai, br, bi) = (re[k], im[k], re[j], -im[j]);
-        let (er, ei) = (0.5 * (ar + br), 0.5 * (ai + bi));
-        let (or, oi) = (0.5 * (ai - bi), -0.5 * (ar - br));
-        let (wr, wi) = twiddle[k];
-        let xr = er + wr * or - wi * oi;
-        let xi = ei + wr * oi + wi * or;
-        power[k] = xr * xr + xi * xi;
-    }
-}
-
 fn fft_in_place(re: &mut [f32], im: &mut [f32]) {
     let n = re.len();
     let mut j = 0;
@@ -488,30 +460,6 @@ fn fft_in_place(re: &mut [f32], im: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The half-size FFT gives each bin's power as a full complex FFT of the windowed input does.
-    #[test]
-    fn real_power_matches_a_full_fft() {
-        for bits in [9usize, 12, 14] {
-            let n = 1 << bits;
-            let x: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.37).sin() * 0.6 + ((i * 7919 % 101) as f32 / 101.0 - 0.5) * 0.3).collect();
-            let window: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos()).collect();
-            let (mut fr, mut fi): (Vec<f32>, Vec<f32>) = (x.iter().zip(&window).map(|(a, w)| a * w).collect(), vec![0.0; n]);
-            fft_in_place(&mut fr, &mut fi);
-            let tw: Vec<(f32, f32)> = (0..n / 2).map(|k| {
-                let a = 2.0 * PI * k as f32 / n as f32;
-                (a.cos(), -a.sin())
-            })
-            .collect();
-            let (mut re, mut im, mut p) = (vec![0.0; n / 2], vec![0.0; n / 2], vec![0.0; n / 2]);
-            real_power(&x, &window, &tw, &mut re, &mut im, &mut p);
-            let top = (0..n / 2).map(|k| fr[k] * fr[k] + fi[k] * fi[k]).fold(0.0f32, f32::max);
-            for k in 0..n / 2 {
-                let full = fr[k] * fr[k] + fi[k] * fi[k];
-                assert!((p[k] - full).abs() <= top * 1e-4 + full * 1e-3, "n {n} bin {k}: {} vs {full}", p[k]);
-            }
-        }
-    }
 
     /// A live stream playing silence (an open plugin editor keeps one running): the analyzer rests and stops
     /// repainting.

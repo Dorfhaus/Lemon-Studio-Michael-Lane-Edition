@@ -423,6 +423,7 @@ fn render(name: Option<&str>, mode: Mode, rate: Option<u32>, buffer: Option<u32>
             return;
         }
     };
+    mix.headphones.set_rate(s.info.rate);
     if let Err(e) = unsafe { s.client.Start() } {
         let _ = tx.send(Err(Refused::of(&e)));
         return;
@@ -490,7 +491,11 @@ impl Started {
             let p = self.render.GetBuffer(frames)?;
             // Safety: Windows lends `frames` frames of the stream's format at `p` until `ReleaseBuffer`.
             let out = std::slice::from_raw_parts_mut(p, frames as usize * self.channels * self.format.bytes());
-            write(out, mix.block(frames as usize), self.channels, self.format);
+            // Native WASAPI provides the stream's estimated playback latency rather than a CPAL callback timestamp.
+            let playback_at = self.info.latency.map(|frames| Duration::from_secs_f64(f64::from(frames) / f64::from(self.info.rate)))
+                .filter(|&delay| delay <= Duration::from_secs(1))
+                .and_then(|delay| Instant::now().checked_add(delay));
+            write(out, mix.block_at(frames as usize, playback_at), self.channels, self.format);
             self.render.ReleaseBuffer(frames, 0)
         }
     }
@@ -549,7 +554,7 @@ fn exclusive(
         // A rate the device does not run at itself: its own.
         None => match pick(m.rate)? {
             Some(f) => (m.rate, f),
-            None => return Err(Refused::Other("it takes none of the sample formats Lemon Studio writes".into())),
+            None => return Err(Refused::Other("it takes none of the sample formats ML Studio writes".into())),
         },
     };
     let w = wave(format, rate, m.channels, m.mask);
@@ -588,7 +593,7 @@ fn small(d: &IMMDevice, m: &MixFormat, rate: Option<u32>, buffer: Option<u32>) -
         if rate.is_some_and(|r| r != m.rate) {
             return Err(Refused::OwnRate(m.rate));
         }
-        let format = m.format.ok_or_else(|| Refused::Other("the system mixer's sample format is not one Lemon Studio writes".into()))?;
+        let format = m.format.ok_or_else(|| Refused::Other("the system mixer's sample format is not one ML Studio writes".into()))?;
         c3.InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, &m.wave.Format, None).map_err(|e| Refused::of(&e))?;
         let client: IAudioClient = c3.cast().map_err(|e| Refused::Other(text(&e)))?;
         Ok((client, format, m.rate, (min, def)))

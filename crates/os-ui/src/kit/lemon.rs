@@ -63,7 +63,7 @@ pub fn ink_on_lit(t: &Palette) -> Color {
 
 /// Text colour that reads on `col` (dark on light faces, light on dark ones).
 pub fn ink_on(col: Color) -> Color {
-    if col.hsl().2 > 0.62 { brand::COLORED_DARK } else { Color::rgb(0xf4f4f4) }
+    if col.hsl().2 > 0.52 { brand::COLORED_DARK } else { Color::rgb(0xf4f4f4) }
 }
 
 /// Lit (lemon) face: a soft top-light gradient from the highlight to the main colour (the plugin editors' brand look).
@@ -268,9 +268,10 @@ pub fn popup(c: &mut Canvas, t: &Palette, r: Rect) {
     outlined(c, r, rad, t.menu_pop_border, t.menu_pop);
 }
 
-/// Hovered row of a list or menu: an inset rounded bar in the coloured dark.
+/// Hovered row of a list or menu, centered with an even inset.
 pub fn row_highlight(c: &mut Canvas, t: &Palette, r: Rect) {
-    c.fill_rrect(Rect::new(r.x + 3.0, r.y, r.w - 6.0, r.h), 4.0_f32.min(r.h / 2.0), t.menu_pop_hi);
+    let band = Rect::new(r.x + 4.0, r.y + 1.5, r.w - 8.0, r.h - 3.0);
+    c.fill_rrect(band, 4.0_f32.min(band.h / 2.0), t.menu_pop_hi);
 }
 
 /// Window button hover face (minimize / maximize / close).
@@ -288,14 +289,16 @@ pub fn step(c: &mut Canvas, t: &Palette, r: Rect, on: bool, odd: bool, dim: bool
     let (a, b) = if dim { (t.step_dim_a, t.step_dim_b) } else { (t.step_a, t.step_b) };
     let off = if odd { b } else { a };
     let (main, high) = (t.brand_sel(brand::MAIN), t.brand_sel(brand::HIGHLIGHT));
-    if on {
-        let (top, bottom) = if dim { (main.mix(off, 0.45), main.mix(off, 0.55)) } else { (high.mix(main, 0.5), main) };
-        c.fill_rect_gradient(r, if hover { high } else { top }, bottom, rad);
-        if playing {
-            c.fill_rrect(Rect::new(r.x + 2.0, r.bottom() - 4.0, r.w - 4.0, 2.0), 1.0, t.brand_sel(brand::COLORED_DARK));
-        }
-    } else {
-        c.fill_rrect(r, rad, if hover { off.mix(t.brand_grey(brand::DARK_HIGHLIGHT), 0.4) } else { off });
+    c.fill_rrect(r,rad,off.shade(-0.47));
+    let mut face=r.inset(0.8);
+    if on {face.y+=0.8;face.h=(face.h-0.8).max(0.);}
+    let base=if on && dim {main.mix(off,0.48)} else if on {main} else {off};
+    let top=if hover {base.mix(high,0.23)} else {base.shade(if on {0.09} else {0.16})};
+    c.fill_rect_gradient(face,top,base.shade(if on {-0.08} else {-0.24}),rad);
+    if face.w>5. && face.h>6. {
+        c.line(face.x+2.,face.y+1.,face.right()-2.,face.y+1.,0.8,top.shade(0.24));
+        c.line(face.x+2.,face.bottom()-1.,face.right()-2.,face.bottom()-1.,1.,base.shade(-0.33));
+        if playing {c.fill_rrect(Rect::new(face.x+2.,face.bottom()-4.,face.w-4.,2.),1.,t.brand_sel(brand::COLORED_DARK));}
     }
 }
 
@@ -419,7 +422,7 @@ pub fn toggle(c: &mut Canvas, cx: f32, cy: f32, on: bool, st: State) {
     if st.disabled {
         c.stroke_rrect(r.inset(0.5), 3.5, 1.0, if st.hover { Color::rgb(0x5f5f5f) } else { Color::rgb(0x4f4f4f) });
         if on {
-            c.fill_rrect(r.inset(3.0), 2.0, Color::rgb(0x6e6436));
+            c.fill_rrect(r.inset(3.0), 2.0, Color::rgb(0x355978));
         }
         return;
     }
@@ -459,7 +462,7 @@ pub fn field(c: &mut Canvas, r: Rect, st: State) {
 /// only an outline (olive when on, as a disabled `toggle`). Returns the colour for its label or glyph.
 pub fn plug_button(c: &mut Canvas, r: Rect, radius: f32, st: State) -> Color {
     if st.disabled {
-        c.stroke_rrect(r.inset(0.5), (radius - 0.5).max(0.0), 1.0, if st.on { Color::rgb(0x6e6436) } else { plug::FACE });
+        c.stroke_rrect(r.inset(0.5), (radius - 0.5).max(0.0), 1.0, if st.on { Color::rgb(0x355978) } else { plug::FACE });
         return plug::OFF;
     }
     if st.on {
@@ -495,30 +498,22 @@ pub fn spaced_width(c: &mut Canvas, f: Font, s: &str, track: f32) -> f32 {
 
 /// The small lemon drawn next to plugin wordmarks: a tilted oval with a nub at each end, `s` = half its length.
 pub fn lemon_mark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Color) {
-    let (sin, cos) = (-0.5f32).sin_cos();
-    let at = |x: f32, y: f32| (cx + x * cos - y * sin, cy + x * sin + y * cos);
-    let oval = |ox: f32, rx: f32, ry: f32| -> Vec<(f32, f32)> {
-        (0..24)
-            .map(|i| {
-                let a = i as f32 / 24.0 * 2.0 * PI;
-                at(ox + rx * a.cos(), ry * a.sin())
-            })
-            .collect()
-    };
-    c.fill_polygon(&oval(0.0, s, s * 0.72), col);
-    c.fill_polygon(&oval(s * 1.02, s * 0.18, s * 0.14), col);
-    c.fill_polygon(&oval(-s * 1.02, s * 0.18, s * 0.14), col);
+    let x = cx - s;
+    let y = cy - s;
+    let stroke = (s * 0.26).max(1.);
+    c.polyline(&[(x,y+2.*s),(x,y),(cx,y+s),(cx+s,y),(cx+s,y+2.*s)], stroke, col);
+    c.line(cx-s*0.1,cy+s,cx+s,cy+s,stroke,col);
 }
 
-/// A plugin wordmark: the lemon mark and "LEMON" small in lemon above `name` large and grey, right-aligned at
+/// A plugin wordmark: the lemon mark and "ML" small in lemon above `name` large and grey, right-aligned at
 /// `right` (or left-aligned at `right` when `left`). `top` = top of the small line.
 pub fn wordmark(c: &mut Canvas, x: f32, top: f32, left: bool, name: &str, big: Font, small: Font) {
-    let (wn, ws) = (spaced_width(c, big, name, 3.0), spaced_width(c, small, "LEMON", 3.0));
+    let (wn, ws) = (spaced_width(c, big, name, 3.0), spaced_width(c, small, "ML", 3.0));
     let lh_s = c.line_height(small);
     let x0 = if left { x } else { x - wn };
     let sx = if left { x0 + 12.0 } else { (x - ws).max(x0 + 12.0) };
     lemon_mark(c, sx - 8.0, top + lh_s / 2.0, 4.5, brand::MAIN);
-    spaced(c, small, sx, top, brand::MAIN, "LEMON", 3.0);
+    spaced(c, small, sx, top, brand::MAIN, "ML", 3.0);
     spaced(c, big, x0, top + lh_s - 2.0, plug::WORDMARK, name, 3.0);
 }
 

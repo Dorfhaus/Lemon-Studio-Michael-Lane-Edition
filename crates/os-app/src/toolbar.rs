@@ -34,6 +34,7 @@ const KEY: &str = "toolbar_layout";
 /// What the toolbar can hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
+    CustomActions,
     Caption,
     Hint,
     Transport,
@@ -58,7 +59,8 @@ pub enum Panel {
 }
 
 /// Every panel, in the palette's order.
-pub const PANELS: [Panel; 19] = [
+pub const PANELS: [Panel; 20] = [
+    Panel::CustomActions,
     Panel::Menu,
     Panel::Hint,
     Panel::Caption,
@@ -84,6 +86,7 @@ impl Panel {
     /// Its name in files.
     pub fn key(self) -> &'static str {
         match self {
+            Panel::CustomActions => "custom-actions",
             Panel::Caption => "caption",
             Panel::Hint => "hint",
             Panel::Transport => "transport",
@@ -113,6 +116,7 @@ impl Panel {
     /// Its name in the editor.
     pub fn name(self) -> &'static str {
         match self {
+            Panel::CustomActions => "Custom actions",
             Panel::Caption => "Caption buttons",
             Panel::Hint => "Hint panel",
             Panel::Transport => "Transport",
@@ -123,7 +127,7 @@ impl Panel {
             Panel::Utilities => "Utility buttons",
             Panel::Menu => "Menu bar",
             Panel::Volume => "Main volume",
-            Panel::Pitch => "Main pitch",
+            Panel::Pitch => "Varispeed",
             Panel::SongPos => "Song position",
             Panel::Modes => "Mode buttons",
             Panel::Snap => "Global snap",
@@ -144,6 +148,7 @@ impl Panel {
     /// left edge of the panel it comes with (`separator`). The spaces have no home: row 1 from x 0.
     pub fn home(self) -> (usize, f32, f32) {
         match self {
+            Panel::CustomActions => (0, 1440., 1584.),
             Panel::Caption => (0, 0.0, 68.0),
             Panel::Hint => (0, 68.0, 379.0),
             Panel::Transport => (0, 379.0, 575.0),
@@ -168,6 +173,14 @@ impl Panel {
 
     /// Its width when it does not grow.
     pub fn width(self) -> f32 {
+        match self {Panel::Hint=>return 130.0,Panel::Recording=>return 168.0,_=>{}}
+        if matches!(self, Panel::Monitor | Panel::Cpu | Panel::Tools) { return 0.0; }
+        if self == Panel::Utilities {
+            return 72.0;
+        }
+        if crate::settings_file::flag("declutter_toolbar", false) {
+            match self { Panel::Tools => return 35.0, _ => {} }
+        }
         let (_, x0, x1) = self.home();
         x1 - x0
     }
@@ -175,9 +188,10 @@ impl Panel {
     /// Where (home x) its first part ends: the panel, or its first button, shows when that fits (`views::toolbar::room`).
     pub fn first_end(self) -> f32 {
         match self {
+            Panel::CustomActions => 1472.,
             Panel::Caption => 63.0,
-            Panel::Hint => 376.0,
-            Panel::Transport => 570.0,
+            Panel::Hint => 221.0,
+            Panel::Transport => 572.0,
             Panel::Recording => 610.0,
             Panel::Time => 873.0,
             Panel::Monitor => 1045.0,
@@ -245,11 +259,15 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::classic()
+        Layout::single_row()
     }
 }
 
 impl Layout {
+    pub fn single_row() -> Layout {
+        use Panel::*;
+        Layout{rows:vec![vec![Caption,Menu,Transport,Recording,Time,Volume,Pitch,Snap,Pattern,Windows,Utilities,Hint]],logo:false}
+    }
     /// The layout of spec ui/main-window.md §1-3.
     pub fn classic() -> Layout {
         PRESETS[0].layout()
@@ -316,7 +334,10 @@ impl Layout {
 
     /// The layout kept in `settings.txt`; the classic one when there is none or it cannot be read.
     pub fn load() -> Layout {
-        crate::settings_file::get(KEY).and_then(|v| Layout::parse(&v)).unwrap_or_else(Layout::classic)
+        if !crate::settings_file::flag("single_row_toolbar_v1",false) {
+            let l=Layout::single_row();l.save();crate::settings_file::set_flag("single_row_toolbar_v1",true);return l;
+        }
+        crate::settings_file::get(KEY).and_then(|v| Layout::parse(&v)).unwrap_or_else(Layout::single_row)
     }
 
     /// Keeps the layout for the next start.
@@ -390,6 +411,7 @@ pub fn place(l: &Layout, width: f32, editing: bool) -> Vec<Placed> {
         let share = if flexes == 0 { 0.0 } else { ((avail - row_width(row, editing)).max(0.0) / flexes as f32).floor() };
         let mut x = lead;
         for (idx, &panel) in row.iter().enumerate() {
+            if matches!(panel, Panel::Monitor | Panel::Cpu | Panel::Tools) { continue; }
             let w = if panel == Panel::Flex { min_flex + share } else { panel.width() };
             out.push(Placed { panel, row: r, idx, x, w });
             x += w;

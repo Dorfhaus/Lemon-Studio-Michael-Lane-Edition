@@ -8,7 +8,7 @@
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::App;
-use crate::plugin_db::{self as db, DirKind, Mode};
+use crate::plugin_db::{self as db, DirKind};
 use crate::views::settings::{self, Plug};
 
 impl App {
@@ -16,7 +16,6 @@ impl App {
     pub(crate) fn plugin_check(&mut self, key: &str) {
         let p = &mut self.state.plugdb.prefs;
         match key {
-            settings::STARTUP_CHECK => p.startup_scan = !p.startup_scan,
             settings::ERRORS_CHECK => p.rescan_errors = !p.rescan_errors,
             settings::COMBINE_CHECK => p.combine = !p.combine,
             _ => return,
@@ -31,18 +30,15 @@ impl App {
         }
         let dir = |app: &App, i: usize| db::search_dirs(&app.state.plugdb.prefs).into_iter().nth(i);
         match a {
-            // Any folder change starts a scan (§2).
             Plug::Folder(i) => {
                 let Some(d) = dir(self, i) else { return };
                 self.state.plugdb.prefs.toggle_folder(&d.path);
                 self.prefs_changed();
-                self.start_scan(Mode::Changed);
             }
             Plug::Remove(i) => {
                 let Some(d) = dir(self, i).filter(|d| d.kind == DirKind::Added) else { return };
                 self.state.plugdb.prefs.remove_folder(&d.path);
                 self.prefs_changed();
-                self.start_scan(Mode::Changed);
                 self.state.message = Some(format!("Removed search folder {}", d.path.display()));
             }
             Plug::Prefer(p) => {
@@ -80,8 +76,7 @@ impl App {
     pub(crate) fn plugin_folder_chosen(&mut self, path: std::path::PathBuf) {
         self.state.message = Some(if self.state.plugdb.prefs.add_folder(&path) {
             self.prefs_changed();
-            self.start_scan(Mode::Changed);
-            format!("Added search folder {}: looking for plugins", path.display())
+            format!("Added search folder {}. Click Find new plugins to scan.", path.display())
         } else {
             format!("{} is searched already", path.display())
         });

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! Docked browser (left): four tabs, a tree of the project / plugin database / folders / favorites, drag sources.
-// spec: ui/main-window.md §4, ui/browser.md (§4 options menu, §5 search, §6 dropped folders, §10 favorites, §11 index)
+//! Sample browser: Pro Samples library and persistent file/folder favorites.
+// spec: ui/main-window.md §4, ui/browser.md (§4 options menu, §5 search, §6 dropped folders)
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -31,28 +31,12 @@ pub const INFO_H: f32 = 84.0;
 /// (label, icon, category colour index). Only the roots with content: FL's other disk-folder roots (Recent files,
 /// Channel presets, Packs...) are left out until Lemon Studio has content for them (owner decision); dropped folders
 /// follow these. Plugin presets: the preset store, user and factory (spec: plugins/presets.md "Browser").
-/// Channel presets: the channel state files (`crate::channel_states`; empty until one is saved). My projects: the user's
-/// projects folder, as FL lists its own (`save_form::default_root`, where the Save as and New project forms put them
-/// and the backups go; empty until a project is saved there).
-const ROOTS: &[(&str, Icon, u8)] = &[
-    ("Current project", Icon::Page, 0),
-    ("Plugin library", Icon::Speaker, 1),
-    (PLUGIN_PRESETS, Icon::FilePreset, 1),
-    (CHANNEL_PRESETS, Icon::FilePreset, 1),
-    (MY_PROJECTS, Icon::Folder, FOLDER),
-];
+const ROOTS: &[(&str, Icon, u8)] = &[("Current project", Icon::Page, 0), ("Plugin database", Icon::Speaker, 1), (PLUGIN_PRESETS, Icon::FilePreset, 1)];
 pub const PLUGIN_PRESETS: &str = "Plugin presets";
-pub const CHANNEL_PRESETS: &str = "Channel presets";
-pub const MY_PROJECTS: &str = "My projects";
-
-/// Tree key of the All tab's Channel presets root.
-pub fn channel_presets_key() -> String {
-    format!("0:{CHANNEL_PRESETS}")
-}
 
 /// Tree key of the All tab's Plugin presets root; a plugin's node is `<this>/<plugin folder name>`.
 pub fn presets_key() -> String {
-    format!("0:{PLUGIN_PRESETS}")
+    format!("4:{PLUGIN_PRESETS}")
 }
 
 /// The "Current project" tree's sections, in screenshot order (spec §2), without the one nothing is tracked in yet
@@ -65,25 +49,17 @@ const PROJECT: &[(&str, Icon)] = &[
     ("Patterns", Icon::Note),
     ("Effects", Icon::Speaker),
     ("Generators", Icon::Plug),
-    (REMOTE_CONTROL, Icon::MidiControl),
     (INITIALIZED_CONTROLS, Icon::Slide),
     (PROJECT_DATA, Icon::Folder),
     ("Samples", Icon::Wave),
 ];
-pub const INITIALIZED_CONTROLS: &str = "Controls with a start value";
-/// The controller links, one row each (`crate::remote::label`); VIEW > Remote control opens it.
-pub const REMOTE_CONTROL: &str = "Remote control";
+pub const INITIALIZED_CONTROLS: &str = "Initialized controls";
 pub const PROJECT_DATA: &str = "Project data";
 
-/// The Current project, Plugin database and Favorites tabs (spec §1).
+/// The Current project and Plugin database tabs (spec §1).
 pub const PROJECT_TAB: usize = 1;
 pub const PLUGIN_TAB: usize = 2;
-pub const FAV_TAB: usize = 3;
-
-/// The Plugin database's section listing every plugin by format (spec §2).
-pub const INSTALLED: &str = "Installed";
-/// The format folder of the plugins built into Lemon Studio, under Installed.
-pub const BUILT_IN: &str = "Built-in";
+pub const PARAMETERS_TAB: usize = 7;
 
 /// Tree key of the Current project tab's root.
 pub fn project_root() -> String {
@@ -110,11 +86,14 @@ pub enum Item {
     Channel(usize),
     /// Sample file path.
     Sample(String),
+    Samples(Vec<String>),
     /// A generator (index into `Plugins::available`).
     Generator(usize),
     /// An effect (index into `Plugins::effects`).
     Effect(usize),
-    /// A non-audio file in a dropped folder (not draggable, spec §6).
+    Effects(Vec<usize>),
+    EffectChains(std::sync::Arc<[crate::plugin_picker::chains::Chain]>),
+    /// A non-audio file in a dropped folder; MIDI files can be dragged to import.
     File(String),
     /// A parameter of a hosted plugin: hosted key, parameter index (spec: plugins/plugin-parameters.md §6).
     Param(usize, usize),
@@ -124,9 +103,6 @@ pub enum Item {
     /// A plugin preset file (any `presets::IMPORT_EXTS` type) or factory preset path: dropped, it loads (spec:
     /// plugins/presets.md "Drag and drop").
     Preset(String),
-    /// Lemon Studio's container (its Patcher, `crate::container`): dropped on a slot or channel with Shift, it wraps
-    /// the plugin there; without, it puts an empty container there (spec: plugins/patcher/README.md §3.3 "Shift+drop").
-    Container,
 }
 
 #[derive(Debug, Clone)]
@@ -148,7 +124,7 @@ pub struct Row {
 
 /// Keys of the rows that start opened (the project tab shows Patterns, like the screenshot).
 pub fn default_open() -> std::collections::HashSet<String> {
-    ["1:Current project", "1:Current project/Patterns", "2:Plugin library"].iter().map(|k| k.to_string()).collect()
+    ["1:Current project", "1:Current project/Patterns", "2:Plugin database"].iter().map(|k| k.to_string()).collect()
 }
 
 /// Options-menu toggles (spec §4); `DEFAULT_OPTS` are on in a fresh browser.
@@ -164,9 +140,43 @@ pub const OPT_AUTOHIDE: &str = "autohide";
 pub const OPT_HIDEDRAG: &str = "hidedrag";
 pub const OPT_CONTRAST: &str = "contrast";
 pub const OPT_PREVIEW: &str = "preview";
-pub const DEFAULT_OPTS: &[&str] = &[OPT_FOLDERS, OPT_TAGS, OPT_INDEX, OPT_REINDEX, OPT_HIDEDRAG];
-/// Every toggle, in menu order (`browser.txt` keeps the ones that are on).
-pub const ALL_OPTS: &[&str] = &[OPT_PARENTS, OPT_EXPAND, OPT_FOLDERS, OPT_TOP, OPT_TYPE, OPT_TAGS, OPT_INDEX, OPT_REINDEX, OPT_AUTOHIDE, OPT_HIDEDRAG, OPT_CONTRAST, OPT_PREVIEW];
+pub const OPT_PANEL: &str = "preview_panel";
+pub const OPT_TREE_PLUGINS: &str = "sample_plugins";
+pub const OPT_PROJECT: &str = "project_tab";
+pub const OPT_PLUGINS: &str = "plugins_tab";
+pub const OPT_PRESETS: &str = "presets_tab";
+pub const OPT_SINGLE_FOLDER: &str = "single_folder";
+pub const OPT_PARAMETERS: &str = "parameters_tab";
+pub const DEFAULT_OPTS: &[&str] = &[OPT_FOLDERS, OPT_TAGS, OPT_INDEX, OPT_REINDEX, OPT_HIDEDRAG, OPT_PREVIEW, OPT_PANEL];
+pub fn saved_opts()->std::collections::HashSet<&'static str> {
+    if crate::prefs::text("browser_preset_drop_v1").as_deref()!=Some("1") {
+        crate::prefs::set_text("browser_option_presets_tab","1");
+        crate::prefs::set_text("browser_preset_drop_v1","1");
+    }
+    if crate::prefs::text("browser_full_preview_v2").as_deref()!=Some("1") {
+        crate::prefs::set_text("browser_option_preview","1");
+        crate::prefs::set_text("browser_full_preview_v2","1");
+    }
+    [OPT_PANEL,OPT_TREE_PLUGINS,OPT_PARENTS,OPT_EXPAND,OPT_FOLDERS,OPT_TOP,OPT_TYPE,OPT_TAGS,OPT_INDEX,OPT_REINDEX,OPT_AUTOHIDE,OPT_HIDEDRAG,OPT_CONTRAST,OPT_PREVIEW,OPT_PROJECT,OPT_PLUGINS,OPT_PRESETS,OPT_PARAMETERS,OPT_SINGLE_FOLDER].into_iter().filter(|k| {
+        crate::prefs::text(&format!("browser_option_{k}")).map_or(DEFAULT_OPTS.contains(k),|v|v=="1")
+    }).collect()
+}
+pub fn tabs(s:&State)->Vec<(usize,Icon,&'static str)> {
+    let mut tabs = vec![
+        (0, Icon::Wave, "Samples"),
+        (3, Icon::Star, "Favorites"),
+        (5, Icon::Download, "Plugin Downloads"),
+    ];
+    tabs.retain(|(id, _, _)| *id == s.browser_tab || match *id {
+        3 => crate::workspace_visibility::shown("visible_browser-favorites"),
+        5 => crate::workspace_visibility::shown("visible_browser-downloads"),
+        _ => true,
+    });
+    for (key,id,icon,label) in [(OPT_PROJECT,1,Icon::Page,"Current project"),(OPT_PLUGINS,2,Icon::Plug,"Plugin database"),(OPT_PRESETS,4,Icon::FilePreset,"Plugin presets"),(OPT_PARAMETERS,PARAMETERS_TAB,Icon::Slide,"Parameters")] {
+        if opt(s,key) || s.browser_tab==id {tabs.push((id,icon,label));}
+    }
+    tabs
+}
 
 pub fn opt(s: &State, k: &str) -> bool {
     s.browser_opts.contains(k)
@@ -174,7 +184,15 @@ pub fn opt(s: &State, k: &str) -> bool {
 
 /// Whether `row` matches the search text `q` (lower case), spec §5.
 pub fn matches(s: &State, row: &Row, q: &str) -> bool {
-    !q.is_empty() && (opt(s, OPT_FOLDERS) || row.open.is_none()) && row.label.to_lowercase().contains(q)
+    if q.is_empty() || (!opt(s, OPT_FOLDERS) && row.open.is_some()) { return false; }
+    if row.label.to_lowercase().contains(q) { return true; }
+    let Item::Sample(path) = &row.item else { return false };
+    if s.browser_tags.is_empty() { return false; }
+    let tags = s.browser_tags.get(path).or_else(|| {
+        if std::path::Path::new(path).is_absolute() { return None; }
+        s.browser_tags.get(&crate::plugins::resolve_sample(path))
+    });
+    tags.is_some_and(|names| names.iter().any(|tag| tag.to_lowercase().contains(q)))
 }
 
 /// A node is open when the user opened it, or always while searching (search covers the whole tree).
@@ -183,113 +201,168 @@ fn is_open(s: &State, key: &str) -> bool {
 }
 
 /// The visible rows of the active tab, top to bottom (filtered while searching, spec §5).
+#[derive(Default)]
+pub struct SearchIndex {
+    roots: Vec<PathBuf>,
+    data: std::sync::Arc<std::sync::Mutex<SearchData>>,
+    started: bool,
+}
+#[derive(Default)]
+struct SearchData { rows: Vec<Row>, done: bool, changed: bool }
+
+pub fn search_busy(s: &State) -> bool {
+    let index = s.browser_index.borrow();
+    index.started && index.data.lock().is_ok_and(|d| !d.done || d.changed)
+}
+pub fn search_changed(s: &State) -> bool {
+    s.browser_index.borrow().data.lock().is_ok_and(|mut d| std::mem::take(&mut d.changed))
+}
+
 pub fn rows(s: &State) -> Vec<Row> {
-    let all = tree(s);
-    if s.browser_search.is_empty() {
-        return all;
-    }
-    let q = s.browser_search.to_lowercase();
-    let hit: Vec<bool> = all.iter().map(|r| matches(s, r, &q)).collect();
-    // "Expand folders" (§4): what a found folder holds is listed under it; `inside[i]` = the depth of the found folder
-    // row i is in.
-    let mut inside: Vec<Option<u8>> = vec![None; all.len()];
-    if opt(s, OPT_EXPAND) {
-        let mut under: Option<u8> = None;
-        for (i, r) in all.iter().enumerate() {
-            if under.is_some_and(|d| r.depth <= d) {
-                under = None;
-            }
-            if under.is_some() {
-                inside[i] = under;
-            } else if hit[i] && r.open.is_some() {
-                under = Some(r.depth);
-            }
+    if s.browser_tab==5 {return crate::plugin_downloads::rows(s)}
+    if matches!(s.browser_tab,0|3) && opt(s,OPT_SINGLE_FOLDER) {
+        if let Some(folder)=&s.browser_single_folder {
+            let mut shallow=Vec::new();
+            disk_rows(s,folder,&disk_key(folder),0,&mut shallow);
+            shallow.retain(|r|r.depth==0);
+            for r in &mut shallow {if r.open.is_some(){r.open=Some(false);}}
+            let q=s.browser_search.to_lowercase();
+            if !q.is_empty(){shallow.retain(|r|r.label.to_lowercase().contains(&q));}
+            if let Some(parent)=folder.parent(){shallow.insert(0,Row{key:format!("single:up:{}",parent.display()),depth:0,label:".. (Parent folder)".into(),icon:Icon::Folder,cat:FOLDER,open:Some(false),bright:true,item:Item::None,path:Some(parent.into())});}
+            return shallow;
         }
     }
-    if !opt(s, OPT_PARENTS) {
-        return all.into_iter().zip(hit.into_iter().zip(inside)).filter(|(_, (h, n))| *h || n.is_some()).map(|(mut r, (_, n))| {
-            r.depth = n.map_or(0, |d| r.depth - d);
-            r
-        }).collect();
-    }
-    // Keep matches, what found folders hold, and their ancestors.
-    let mut keep: Vec<bool> = hit.iter().zip(&inside).map(|(h, n)| *h || n.is_some()).collect();
-    let mut stack: Vec<usize> = Vec::new();
-    for (i, r) in all.iter().enumerate() {
-        while stack.last().is_some_and(|&p| all[p].depth >= r.depth) {
-            stack.pop();
+    if s.browser_search.is_empty() { return tree(s); }
+    if [1,2,4,PARAMETERS_TAB].contains(&s.browser_tab) {
+        let q=s.browser_search.to_lowercase();
+        let all=tree(s);
+        let hit:Vec<_>=all.iter().map(|r|matches(s,r,&q)).collect();
+        if !opt(s,OPT_PARENTS) {return all.into_iter().zip(hit).filter(|(_,keep)|*keep).map(|(mut r,_)|{r.depth=0;r}).collect();}
+        let mut keep=hit.clone();
+        let mut stack:Vec<usize>=Vec::new();
+        for (i,r) in all.iter().enumerate() {
+            while stack.last().is_some_and(|&p|all[p].depth>=r.depth) {stack.pop();}
+            if hit[i] {for &p in &stack {keep[p]=true;}}
+            stack.push(i);
         }
-        if hit[i] && inside[i].is_none() {
-            for &p in &stack {
-                keep[p] = true;
+        return all.into_iter().zip(keep).filter(|(_,k)|*k).map(|(r,_)|r).collect();
+    }
+    let roots = if s.browser_tab == 3 { crate::browser::favorites() } else { library_roots(s) };
+    let mut index = s.browser_index.borrow_mut();
+    if !index.started || index.roots != roots {
+        *index = SearchIndex { roots: roots.clone(), started: true, ..SearchIndex::default() };
+        let data = index.data.clone();
+        std::thread::spawn(move || {
+            let mut pending = roots;
+            let mut visited = std::collections::HashSet::new();
+            while let Some(path) = pending.pop() {
+                if std::sync::Arc::strong_count(&data) == 1 { return; }
+                let Ok(canonical) = path.canonicalize() else { continue };
+                if !visited.insert(canonical) { continue; }
+                if path.is_dir() {
+                    let name=folder_name(&path);
+                    let text=path.to_string_lossy().into_owned();
+                    let row=Row{key:format!("search:@{text}"),depth:0,label:name,icon:Icon::Folder,cat:FOLDER,open:Some(false),bright:false,item:Item::None,path:Some(path.clone())};
+                    {let mut d=data.lock().unwrap();d.rows.push(row);d.changed=true;}
+                    if let Ok(entries) = std::fs::read_dir(&path) {
+                        pending.extend(entries.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()));
+                    }
+                } else {
+                    let name = folder_name(&path);
+                    let icon = file_icon(&name);
+                    let label = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                    let text = path.to_string_lossy().into_owned();
+                    let row = Row { key: format!("search:@{text}"), depth: 0, label, icon, cat: FILE, open: None, bright: false,
+                        item: if icon == Icon::FileAudio { Item::Sample(text) } else if crate::presets::is_preset_file(&path) {Item::Preset(text)} else { Item::File(text) }, path: Some(path) };
+                    let mut d = data.lock().unwrap(); d.rows.push(row); d.changed = true;
+                }
             }
-        }
-        stack.push(i);
+            let mut d = data.lock().unwrap();
+            d.rows.sort_by_cached_key(|r| (r.label.to_lowercase(), r.key.clone()));
+            d.done = true; d.changed = true;
+        });
     }
-    all.into_iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r).collect()
+    let query = s.browser_search.to_lowercase();
+    let data = index.data.lock().unwrap();
+    let mut result:Vec<_>=data.rows.iter().filter(|r|matches(s,r,&query)).cloned().collect();
+    if s.browser_tab==0 && opt(s,OPT_TREE_PLUGINS) {
+        let mut plugins=Vec::new();plugin_rows(s,"0:Plugin database",1,&mut plugins);
+        result.extend(plugins.into_iter().filter(|r|matches!(r.item,Item::Generator(_)|Item::Effect(_))&&r.label.to_lowercase().contains(&query)).map(|mut r|{r.depth=0;r}));
+    }
+    result
 }
 
 fn tree(s: &State) -> Vec<Row> {
     let mut out = Vec::new();
     let tab = s.browser_tab;
-    let mut roots: Vec<Result<usize, usize>> = match tab {
-        0 => (0..ROOTS.len()).map(Ok).collect(),
-        1 => vec![Ok(0)],
-        2 => vec![Ok(1)],
-        _ => {
-            fav_rows(s, &mut out);
-            return out;
-        }
-    };
-    if tab == 0 {
-        // Dropped folders follow the roots, in alphabetical order of their labels (spec §6).
-        let name = |r: &Result<usize, usize>| match *r {
-            Ok(i) => ROOTS[i].0.to_lowercase(),
-            Err(f) => root_label(s, &s.browser_folders[f]).to_lowercase(),
-        };
-        let fixed = roots.len();
-        for f in 0..s.browser_folders.len() {
-            let me = root_label(s, &s.browser_folders[f]).to_lowercase();
-            let at = (fixed..roots.len()).find(|&j| name(&roots[j]) > me).unwrap_or(roots.len());
-            roots.insert(at, Err(f));
-        }
+    if tab == PARAMETERS_TAB { return parameter_rows(s); }
+    if [1,2,4].contains(&tab) {
+        let root=match tab {1=>0,2=>1,_=>2};
+        let (label,icon,cat)=ROOTS[root];
+        let key=format!("{tab}:{label}");
+        let open=is_open(s,&key);
+        out.push(Row{key:key.clone(),depth:0,label:label.into(),icon,cat,open:Some(open),bright:open,item:Item::None,path:None});
+        if open {match root {0=>project_rows(s,&key,cat,&mut out),1=>plugin_rows(s,&key,cat,&mut out),_=>preset_rows(s,&key,cat,&mut out)}}
+        return out;
     }
-    for r in roots {
-        let r = match r {
-            Ok(r) => r,
-            Err(f) => {
-                let path = &s.browser_folders[f];
-                let key = disk_key(path);
-                let label = root_label(s, path);
-                let open = s.browser_open.contains(&key) || search_opens(s, path, &label);
-                let icon = if open { Icon::FolderOpen } else { Icon::Folder };
-                out.push(Row { key: key.clone(), depth: 0, label, icon, cat: FOLDER, open: Some(open), bright: true, item: Item::None, path: Some(path.clone()) });
-                if open {
-                    disk_rows(s, path, &key, 1, &mut out);
-                }
-                continue;
-            }
-        };
-        let (label, icon, cat) = ROOTS[r];
-        let key = format!("{tab}:{label}");
-        let open = is_open(s, &key);
-        out.push(Row { key: key.clone(), depth: 0, label: label.into(), icon, cat, open: Some(open), bright: open, item: Item::None, path: None });
-        if !open {
+    if tab == 3 {
+        for path in crate::browser::favorites() {
+            let key = format!("3:@{}", path.display());
+            let label = folder_name(&path);
+            let dir = path.is_dir();
+            let open = dir && is_open(s, &key);
+            let icon = if dir { if open { Icon::FolderOpen } else { Icon::Folder } } else { file_icon(&label) };
+            let name = path.to_string_lossy().into_owned();
+            let item = if dir { Item::None } else if icon == Icon::FileAudio { Item::Sample(name) }
+                else if crate::presets::is_preset_file(&path) { Item::Preset(name) } else { Item::File(name) };
+            out.push(Row { key: key.clone(), depth: 0, label, icon, cat: if dir { FOLDER } else { FILE }, open: dir.then_some(open), bright: true, item, path: Some(path.clone()) });
+            if open { disk_rows(s, &path, &key, 1, &mut out); }
+        }
+        return out;
+    }
+    if opt(s,OPT_TREE_PLUGINS) {
+        let key="0:Plugin database";
+        let open=is_open(s,key);
+        out.push(Row{key:key.into(),depth:0,label:"Plugin database".into(),icon:Icon::Plug,cat:1,open:Some(open),bright:open,item:Item::None,path:None});
+        if open {plugin_rows(s,key,1,&mut out);}
+    }
+    // Samples opens directly at the user's library contents, with no redundant root row.
+    let root = samples_root();
+    disk_rows(s, &root, &disk_key(&root), 0, &mut out);
+    for path in library_roots(s).into_iter().filter(|p| *p != root) {
+        let key=disk_key(&path);
+        if path.is_file() && file_icon(&path.to_string_lossy())==Icon::FileAudio {
+            out.push(Row {key,depth:0,label:root_label(s,&path),icon:Icon::FileAudio,cat:FILE,open:None,bright:true,
+                item:Item::Sample(path.to_string_lossy().into_owned()),path:Some(path)});
             continue;
         }
-        match r {
-            0 => project_rows(s, &key, cat, &mut out),
-            1 => plugin_rows(s, &key, cat, &mut out),
-            2 => preset_rows(s, &key, cat, &mut out),
-            3 => {
-                if let Some(dir) = crate::channel_states::root().filter(|d| d.is_dir()) {
-                    disk_rows(s, &dir, &key, 1, &mut out);
-                }
-            }
-            _ => {
-                if let Some(dir) = crate::save_form::default_root().filter(|d| d.is_dir()) {
-                    disk_rows(s, &dir, &key, 1, &mut out);
-                }
+        let open=is_open(s,&key);
+        out.push(Row {key:key.clone(),depth:0,label:root_label(s,&path),icon:if open {Icon::FolderOpen}else{Icon::Folder},cat:FOLDER,open:Some(open),bright:open,item:Item::None,path:Some(path.clone())});
+        if open {disk_rows(s,&path,&key,1,&mut out);}
+    }
+    out
+}
+
+/// Stable instance keys keep equally named plugins and their automation targets separate.
+pub fn parameter_node_key(key: usize) -> String { format!("{PARAMETERS_TAB}:plugin/{key}") }
+
+fn parameter_rows(s: &State) -> Vec<Row> {
+    let mut out = Vec::new();
+    for &key in s.params.lists.keys() {
+        if !s.params.has_params(key) { continue; }
+        let (label, icon) = if let Some((track, slot)) = crate::plugins::fx_of(key) {
+            let Some(label) = crate::params::effect_label(s, track, slot) else { continue; };
+            (format!("{label} - Slot {}", slot + 1), Icon::Speaker)
+        } else {
+            let Some(label) = channel_label(s, key) else { continue; };
+            (format!("{label} - Channel {}", key + 1), Icon::Plug)
+        };
+        let node = parameter_node_key(key);
+        let open = is_open(s, &node);
+        out.push(Row { key: node.clone(), depth: 0, label, icon, cat: 1, open: Some(open), bright: open, item: Item::None, path: None });
+        if open {
+            for (index, entry) in s.params.visible(key) {
+                out.push(Row { key: format!("{node}/{index}"), depth: 1, label: entry.name.clone(), icon: Icon::Slide, cat: 1, open: None, bright: false, item: Item::Param(key, index), path: None });
             }
         }
     }
@@ -339,20 +412,29 @@ pub fn list_dir(s: &State, dir: &Path) -> Rc<Vec<Entry>> {
     if let Some(v) = s.browser_dirs.borrow().get(dir) {
         return v.clone();
     }
-    let mut v: Vec<Entry> = std::fs::read_dir(dir)
-        .map(|rd| {
+    let Ok(entries)=std::fs::read_dir(dir) else {return Rc::new(Vec::new());};
+    let mut v: Vec<Entry> = {
+            let rd=entries;
             rd.flatten()
                 .filter_map(|e| {
                     let name = e.file_name().to_string_lossy().into_owned();
+                    let low = name.to_ascii_lowercase();
                     let md = e.metadata().ok()?;
-                    if !crate::browser_index::listed(&name, &md) {
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::MetadataExt;
+                        // FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+                        if md.file_attributes() & 0x6 != 0 {
+                            return None;
+                        }
+                    }
+                    if name.starts_with('.') || low == "desktop.ini" || low == "thumbs.db" {
                         return None;
                     }
                     Some(Entry { name, path: e.path(), dir: md.is_dir(), size: md.len(), modified: md.modified().ok() })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        };
     v.sort_by_cached_key(|e| (!e.dir, e.name.to_lowercase()));
     let v = Rc::new(v);
     s.browser_dirs.borrow_mut().insert(dir.to_path_buf(), v.clone());
@@ -363,37 +445,14 @@ pub fn list_dir(s: &State, dir: &Path) -> Rc<Vec<Entry>> {
 pub fn file_icon(name: &str) -> Icon {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
-        "wav" | "mp3" | "ogg" | "flac" | "aif" | "aiff" | "m4a" => Icon::FileAudio,
+        "wav" | "mp3" | "ogg" | "flac" | "aif" | "aiff" => Icon::FileAudio,
         "mid" | "midi" => Icon::PianoRoll,
-        "flp" | "lemon" => Icon::FileProject,
+        "lmn" | "flp" => Icon::FileProject,
         "txt" | "url" | "pdf" | "nfo" | "rtf" | "htm" | "html" | "md" => Icon::FileText,
-        "fxp" | "fxb" | "fst" | "vstpreset" | "nmsv" | "spf" | "h2p" | "clap-preset" | "ospreset" | "oschannel" => Icon::FilePreset,
+        "fxp" | "fxb" | "fst" | "vstpreset" | "nmsv" | "spf" | "h2p" | "clap-preset" | "ospreset" => Icon::FilePreset,
         "zip" | "rar" | "7z" => Icon::FileZip,
         _ => Icon::FileBlank,
     }
-}
-
-/// What a file row stands for (spec §6): an audio file a sample, a preset file a preset, anything else a file.
-fn file_item(name: &str, path: &str) -> Item {
-    if file_icon(name) == Icon::FileAudio {
-        Item::Sample(path.into())
-    } else if crate::presets::is_preset_file(Path::new(path)) || crate::presets::is_factory(Path::new(path)) || crate::channel_states::is_state_file(Path::new(path)) {
-        Item::Preset(path.into())
-    } else {
-        Item::File(path.into())
-    }
-}
-
-/// While searching, whether disk folder `path` (shown as `label`) shows open: it holds a match the index knows of
-/// (spec §11), or it matches itself with "Expand folders" on (§4).
-fn search_opens(s: &State, path: &Path, label: &str) -> bool {
-    if s.browser_search.is_empty() {
-        return false;
-    }
-    let q = s.browser_search.to_lowercase();
-    let folders = opt(s, OPT_FOLDERS);
-    (opt(s, OPT_EXPAND) && folders && label.to_lowercase().contains(&q))
-        || (opt(s, OPT_INDEX) && s.browser_index.match_dirs(&q, folders).is_some_and(|d| d.contains(path)))
 }
 
 /// Rows of an opened disk folder: its subfolders (recursing into opened ones), then its files.
@@ -401,15 +460,24 @@ fn disk_rows(s: &State, dir: &Path, key: &str, depth: u8, out: &mut Vec<Row>) {
     for e in list_dir(s, dir).iter() {
         let k = format!("{key}/{}", e.name);
         if e.dir {
-            let open = s.browser_open.contains(&k) || search_opens(s, &e.path, &e.name);
+            let open = is_open(s, &k);
             let icon = if open { Icon::FolderOpen } else { Icon::Folder };
             out.push(Row { key: k.clone(), depth, label: e.name.clone(), icon, cat: FOLDER, open: Some(open), bright: open, item: Item::None, path: Some(e.path.clone()) });
             if open {
                 disk_rows(s, &e.path, &k, depth.saturating_add(1), out);
             }
         } else {
-            let (label, item) = (crate::browser_index::disk_label(&e.name, &e.path, false), file_item(&e.name, &e.path.to_string_lossy()));
-            out.push(Row { key: k, depth, label, icon: file_icon(&e.name), cat: FILE, open: None, bright: false, item, path: Some(e.path.clone()) });
+            let icon = file_icon(&e.name);
+            let p = e.path.to_string_lossy().into_owned();
+            let stem = || e.name.rsplit_once('.').map_or(e.name.as_str(), |(a, _)| a).to_string();
+            let (label, item) = if icon == Icon::FileAudio {
+                (stem(), Item::Sample(p))
+            } else if crate::presets::is_preset_file(&e.path) {
+                (stem(), Item::Preset(p))
+            } else {
+                (e.name.clone(), Item::File(p))
+            };
+            out.push(Row { key: k, depth, label, icon, cat: FILE, open: None, bright: false, item, path: Some(e.path.clone()) });
         }
     }
 }
@@ -452,13 +520,6 @@ fn project_rows(s: &State, root: &str, cat: u8, out: &mut Vec<Row>) {
                 for i in 0..p.channels.len() {
                     let label = channel_label(s, i).unwrap_or_default();
                     plugin_node(s, out, &parent, label, Icon::Plug, cat, i == s.selected_channel, Item::Channel(i), i);
-                    // A channel's container's plugins follow it, in its order (plugins/patcher §4.4).
-                    for mem in crate::container::members(s, i as u16, crate::container::CHANNEL).unwrap_or_default() {
-                        let Some(key) = crate::container::member_key(s, i, mem.id) else { continue };
-                        let label = crate::container::member_label(s, key).unwrap_or_default();
-                        let icon = if mem.instrument { Icon::Plug } else { Icon::Speaker };
-                        plugin_node(s, out, &parent, label, icon, cat, false, Item::None, key);
-                    }
                 }
             }
             "Effects" => {
@@ -466,19 +527,7 @@ fn project_rows(s: &State, root: &str, cat: u8, out: &mut Vec<Row>) {
                     for k in (0..m.slots.len()).filter(|&k| m.slots[k].is_some()) {
                         let label = crate::params::effect_label(s, m.index, k as u8).unwrap_or_default();
                         plugin_node(s, out, &parent, label, Icon::Speaker, cat, false, Item::None, crate::plugins::fx_key(m.index, k as u8));
-                        // A container's effects follow it, in its order (Lemon Studio's design: plugins/patcher §4.2).
-                        let list = crate::container::members(s, m.index, k as u8).unwrap_or_default();
-                        for mem in &list {
-                            let Some(key) = crate::container::member_key(s, crate::container::place_key(m.index, k as u8), mem.id) else { continue };
-                            let label = crate::container::member_label(s, key).unwrap_or_default();
-                            plugin_node(s, out, &parent, label, Icon::Speaker, cat, false, Item::None, key);
-                        }
                     }
-                }
-            }
-            REMOTE_CONTROL => {
-                for l in crate::remote::links() {
-                    leaf(out, &parent, crate::remote::label(s, &l), Icon::MidiControl, cat, false, Item::None);
                 }
             }
             // "<owner> - <setting>", as the automation clip on the control is named.
@@ -586,106 +635,48 @@ fn preset_rows(s: &State, root: &str, cat: u8, out: &mut Vec<Row>) {
     }
 }
 
-/// The plugin menus' generators and effects (spec §2, ui/plugin-menu.md §5): Generators and Effects by category, then
-/// Installed with both by format.
+/// The plugin menus' generators and effects (spec: ui/plugin-menu.md §5).
 fn plugin_rows(s: &State, root: &str, cat: u8, out: &mut Vec<Row>) {
-    let lists = [("Generators", Icon::Plug, &s.plugdb.lists.gens, false), ("Effects", Icon::Speaker, &s.plugdb.lists.fx, true)];
-    let folder = |out: &mut Vec<Row>, key: String, depth: u8, label: &str| -> bool {
-        let open = is_open(s, &key);
-        let icon = if open { Icon::FolderOpen } else { Icon::Folder };
-        out.push(Row { key, depth, label: label.into(), icon, cat, open: Some(open), bright: open, item: Item::None, path: None });
-        open
-    };
-    let plugin = |out: &mut Vec<Row>, parent: &str, depth: u8, e: &crate::plugin_db::Entry, icon: Icon, effect: bool| {
-        let item = if effect { Item::Effect(e.index) } else { Item::Generator(e.index) };
-        out.push(Row { key: format!("{parent}/{}", e.label), depth, label: e.label.clone(), icon, cat, open: None, bright: false, item, path: None });
-    };
-    for &(name, icon, list, effect) in &lists {
-        if !section(s, root, name, icon, cat, out) {
-            continue;
-        }
-        let parent = format!("{root}/{name}");
-        for c in crate::plugin_db::categories(effect) {
-            let key = format!("{parent}/{c}");
-            if list.iter().any(|e| e.category == c) && folder(out, key.clone(), 2, c) {
-                for e in list.iter().filter(|e| e.category == c) {
-                    plugin(out, &key, 3, e, icon, effect);
+    for (effect, title, icon, list) in [(false, "Generators", Icon::Plug, &s.plugdb.lists.gens), (true, "Effects", Icon::Speaker, &s.plugdb.lists.fx)] {
+        if !section(s, root, title, icon, cat, out) { continue; }
+        let parent = format!("{root}/{title}");
+        let groups: std::collections::BTreeMap<String, Vec<String>> = crate::prefs::text(if effect { "fl_effect_groups" } else { "fl_generator_groups" }).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        let mut used = std::collections::HashSet::new();
+        for (group, names) in groups {
+            let entries: Vec<_> = list.iter().filter(|e| names.iter().any(|n| crate::plugin_menu::normalized(n) == crate::plugin_menu::normalized(&e.name))).collect();
+            if entries.is_empty() { continue; }
+            let key = format!("{parent}/{group}");
+            let open = is_open(s, &key);
+            out.push(Row { key: key.clone(), depth: 2, label: group, icon: Icon::Folder, cat, open: Some(open), bright: open, item: Item::None, path: None });
+            for e in entries {
+                used.insert(e.uid.clone());
+                if open {
+                    leaf(out, &key, e.label.clone(), icon, cat, false, if effect { Item::Effect(e.index) } else { Item::Generator(e.index) });
+                    if let Some(row) = out.last_mut() { row.depth = 3; }
                 }
             }
         }
-        // Lemon Studio's own: the container after the categories, under its own name (owner request #8 on the name is
-        // open), in both sections, as it holds instruments on a channel and effects in a slot. Dragged with Shift it
-        // wraps the plugin it is dropped on (`App::drop_container_on_slot`, `App::drop_container_on_rack`).
-        let label = crate::container::CONTAINER.to_string();
-        out.push(Row { key: format!("{parent}/{label}"), depth: 2, label, icon, cat, open: None, bright: false, item: Item::Container, path: None });
-    }
-    if !section(s, root, INSTALLED, Icon::Plug, cat, out) {
-        return;
-    }
-    for &(name, icon, list, effect) in &lists {
-        let parent = format!("{root}/{INSTALLED}/{name}");
-        if !folder(out, parent.clone(), 2, name) {
-            continue;
+        for e in list.iter().filter(|e| !used.contains(&e.uid)) {
+            leaf(out, &parent, e.label.clone(), icon, cat, false, if effect { Item::Effect(e.index) } else { Item::Generator(e.index) });
         }
-        for f in [BUILT_IN, "CLAP", "VST3", "VST2", "native"] {
-            let of = |e: &&crate::plugin_db::Entry| if e.builtin { f == BUILT_IN } else { f == crate::plugin_db::format_label(e.format) };
-            let key = format!("{parent}/{f}");
-            if list.iter().any(|e| of(&e)) && folder(out, key.clone(), 3, if f == "native" { "Native" } else { f }) {
-                for e in list.iter().filter(of) {
-                    plugin(out, &key, 4, e, icon, effect);
-                }
-            }
-        }
-    }
-}
-
-/// The Favorites tab (spec §10): the favorite generators, effects (the plugin manager's star) and files, flat, each
-/// group alphabetical.
-fn fav_rows(s: &State, out: &mut Vec<Row>) {
-    let root = format!("{FAV_TAB}:");
-    for (list, icon, effect) in [(&s.plugdb.lists.gens, Icon::Plug, false), (&s.plugdb.lists.fx, Icon::Speaker, true)] {
-        for e in list.iter().filter(|e| e.favorite) {
-            let item = if effect { Item::Effect(e.index) } else { Item::Generator(e.index) };
-            out.push(Row { key: format!("{root}plugin:{}", e.uid), depth: 0, label: e.label.clone(), icon, cat: 1, open: None, bright: false, item, path: None });
-        }
-    }
-    let mut files: Vec<&crate::browser::Fav> = s.browser_favs.iter().collect();
-    files.sort_by_cached_key(|f| f.label.to_lowercase());
-    for f in files {
-        let p = PathBuf::from(&f.path);
-        let name = p.file_name().map_or(f.path.clone(), |n| n.to_string_lossy().into_owned());
-        let factory = crate::presets::is_factory(&p);
-        let icon = if factory { Icon::FilePreset } else { file_icon(&name) };
-        let item = file_item(&name, &f.path);
-        // A factory preset has no file; a file that is gone is still listed, without its info.
-        let disk = (!factory && p.exists()).then_some(p);
-        out.push(Row { key: format!("{root}{}", f.path), depth: 0, label: f.label.clone(), icon, cat: FILE, open: None, bright: false, item, path: disk });
-    }
-}
-
-/// Whether `row` is a favorite (spec §10): a plugin the plugin manager stars, or a file in the favorites.
-pub fn is_favorite(s: &State, row: &Row) -> bool {
-    match &row.item {
-        Item::Generator(i) => s.plugdb.lists.gens.iter().any(|e| e.index == *i && e.favorite),
-        Item::Effect(i) => s.plugdb.lists.fx.iter().any(|e| e.index == *i && e.favorite),
-        Item::Sample(p) | Item::Preset(p) | Item::File(p) => s.browser_favs.iter().any(|f| f.path == *p),
-        _ => false,
     }
 }
 
 /// Height of the list viewport for a browser of height `h` (from `WORK_Y`).
 pub fn list_h(s: &State) -> f32 {
+    if s.browser_tab==5 {return (s.screen.1-list_top(s)-FOOTER_H-crate::plugin_downloads::detail_height(s)).max(0.);}
     (s.screen.1 - list_top(s) - FOOTER_H - info_h(&rows(s), s)).max(0.0)
 }
 
 /// The selected disk entry, shown in the info panel (spec §6).
 fn info_path(rows: &[Row], s: &State) -> Option<PathBuf> {
+    if !crate::workspace_visibility::shown("visible_browser-info") { return None; }
     let k = s.browser_sel.as_deref()?;
     rows.iter().find(|r| r.key == k)?.path.clone()
 }
 
 fn info_h(rows: &[Row], s: &State) -> f32 {
-    if info_path(rows, s).is_some() { INFO_H } else { 0.0 }
+    if crate::browser_preview::visible(s) {crate::browser_preview::HEIGHT} else if info_path(rows, s).is_some() { INFO_H } else { 0.0 }
 }
 
 /// `35 B`, `12.4 KB`, `2.29 MB` (spec §6).
@@ -762,15 +753,28 @@ fn paint_info(ui: &mut Ui, s: &State, path: &Path, r: Rect) {
 /// Top of the rows: below the search box when "Search box on top" is on (spec §4).
 pub fn list_top(s: &State) -> f32 {
     let lift = super::work_y(s) - super::WORK_Y;
-    lift + if opt(s, OPT_TOP) { LIST_Y + SEARCH_ROW } else { LIST_Y }
+    lift + if s.vintage_2005 {128.0}else{LIST_Y} + if opt(s,OPT_TOP) {SEARCH_ROW} else {0.}
 }
 
 /// Height of the search row above the list ("Search box on top").
 const SEARCH_ROW: f32 = 27.0;
 
+pub fn row_h(s:&State)->f32 {if s.browser_tab==5 {crate::plugin_downloads::ROW_H}else if s.vintage_2005 {if s.params.generic_editor.is_some(){17.0}else{13.0}}else{ROW_H}}
+
 /// Largest useful scroll offset.
+/// Scroll geometry shared by painting and pointer handling.
+pub fn scrollbar(s: &State) -> Option<(Rect, Rect)> {
+    let h = list_h(s).max(0.);
+    let max = max_scroll(s);
+    if max <= 0. || h <= 0. { return None; }
+    let track = Rect::new(crate::views::browser_w(s) - 12., list_top(s), 11., h);
+    let thumb_h = (h * h / (h + max)).max(24.).min(h);
+    let y = track.y + s.browser_scroll.clamp(0., max) / max * (h - thumb_h);
+    Some((track, Rect::new(track.x + 2., y, 7., thumb_h)))
+}
+
 pub fn max_scroll(s: &State) -> f32 {
-    (rows(s).len() as f32 * ROW_H - list_h(s)).max(0.0)
+    (rows(s).len() as f32 * row_h(s) - list_h(s)).max(0.0)
 }
 
 /// A hovered row whose label does not fit scrolls it slowly to its end and back (spec §9): the row, when the hover
@@ -803,6 +807,12 @@ pub fn marquee_offset(t: f32, over: f32) -> f32 {
 
 pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     let t = ui.t;
+    if s.browser_auto_hidden && s.native_view != Some(crate::app::Win::Browser) {
+        ui.c.fill_rect(r,t.browser_title);
+        ui.hit(r,Action::Swallow,"Move here to show the browser");
+        ui.c.fill_rect(Rect::new(r.x+2.,r.y+8.,3.,28.),t.text_dim);
+        return;
+    }
     // Measured with the browser top at `WORK_Y`; it moves up with a hidden toolbar (spec: ui/toolbar-menu.md §5).
     let dy = r.y - super::WORK_Y;
     // The panel left of the splitter: 201 px measured, wider as the splitter is dragged (§9).
@@ -810,6 +820,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     ui.hit(r, Action::Swallow, "");
     // Title bar.
     ui.c.fill_rect(Rect::span(0.0, bw - 1.0, 83.0 + dy, 105.0 + dy), t.browser_title);
+    if s.vintage_2005 {crate::vintage_rack_art::header_middle(ui.c,Rect::new(0.,83.+dy,bw,23.));}
     let at = menu_at(s);
     let menu_open = s.playlist.popup.as_ref().is_some_and(|p| p.x == at.0 && p.y == at.1);
     let mhov = ui.hit(Rect::new(2.0, 85.0 + dy, 16.0, 18.0), Action::BrowserMenu, "Browser options");
@@ -828,54 +839,64 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
         }
         icons::draw(ui.c, icon, Rect::new(r.x + 1.0, 87.0 + dy, 12.0, 14.0), if hov { t.glyph } else { t.text_dim });
     }
-    // Level with the arrows before it (their middle is y 94).
-    ui.c.text_mid(os_ui::Font::new(14), 52.0, 94.0 + dy, t.text_dim, "Browser");
+    ui.c.text_clip(os_ui::Font::new(14), 52.0, 85.0 + dy, (bw - 56.0).max(0.0),
+        t.text_dim, crate::prefs::language::Language::current().text("Browser"));
     // Tabs (spec ui/browser.md §1): FL's five without Online content, sharing the strip.
-    ui.c.fill_rect(Rect::span(0.0, bw - 1.0, 106.0 + dy, 141.0 + dy), t.browser_tabs);
-    const TIPS: [&str; 4] = ["All", "Current project", "Plugin library", "Favorites"];
-    for (i, icon) in [Icon::Wave, Icon::Page, Icon::Speaker, Icon::Star].into_iter().enumerate() {
-        let cx = 25.0 + 50.0 * i as f32;
-        let rr = Rect::new(cx - 18.0, 108.0 + dy, 36.0, 30.0);
-        let hov = ui.hit(rr, Action::BrowserTab(i), TIPS[i]);
-        if i == s.browser_tab {
-            ui.c.stroke_rrect(rr, 4.0, 1.5, t.browser_tab_outline);
-        }
-        let c = if hov || i == s.browser_tab { t.glyph } else { t.glyph.shade(-0.1) };
-        icons::draw(ui.c, icon, Rect::new(cx - 9.0, 114.0 + dy, 18.0, 18.0), c);
+    ui.c.fill_rect(Rect::span(0.0, bw - 1.0, 106.0 + dy, (if s.vintage_2005 {127.0}else{141.0}) + dy), t.browser_tabs);
+    let tabs=tabs(s);
+    let step=((bw-6.)/tabs.len() as f32).min(50.);
+    for (slot,(i,icon,tip)) in tabs.into_iter().enumerate() {
+        let cx = 3. + step*(slot as f32+0.5);
+        let tab_w=(step-2.).min(36.);
+        let rr = Rect::new(cx - tab_w/2., 108.0 + dy, tab_w, if s.vintage_2005 {18.0}else{30.0});
+        let hov = ui.hit(rr, Action::BrowserTab(i), tip);
+        let active = s.browser_tab == i;
+        if active { ui.c.stroke_rrect(rr, 4.0, 1.5, t.browser_tab_outline); }
+        let c = if hov || active { t.glyph } else { t.glyph.shade(-0.1) };
+        icons::draw(ui.c, icon, if s.vintage_2005 {Rect::new(cx-6.,111.+dy,12.,12.)}else{Rect::new(cx - 9.0, 114.0 + dy, 18.0, 18.0)}, c);
     }
     // List.
     let top = list_top(s);
-    let search_on_top = opt(s, OPT_TOP);
+    let search_on_top = opt(s,OPT_TOP);
     if search_on_top {
-        ui.c.fill_rect(Rect::new(0.0, LIST_Y + dy, bw, SEARCH_ROW), t.browser_footer);
-        search_box(ui, s, Rect::new(13.0, LIST_Y + dy + 4.0, bw - 38.0, 20.0));
+        ui.c.fill_rect(Rect::new(0.0, (if s.vintage_2005 {128.0}else{LIST_Y}) + dy, bw, SEARCH_ROW), t.browser_footer);
+        search_box(ui, s, Rect::new(13.0, (if s.vintage_2005 {128.0}else{LIST_Y}) + dy + 4.0, bw - 38.0, 20.0));
     }
+    if s.browser_tab==5 {
+        crate::plugin_downloads::paint(ui,s,Rect::new(0.,top,bw,(r.bottom()-FOOTER_H-top).max(0.)));
+    } else {
     let rows = rows(s);
     let info = info_path(&rows, s);
-    let ih = if info.is_some() { INFO_H } else { 0.0 };
+    let ih = info_h(&rows,s);
     let list = Rect::span(13.0, bw - 1.0, top, r.bottom() - FOOTER_H - ih);
     ui.c.fill_rect(Rect::new(0.0, top, 13.0, list.h), t.browser_tabs.shade(0.02));
     ui.c.fill_rect(list, t.browser_list);
     ui.hit(Rect::new(0.0, top, bw, list.h), Action::BrowserList, "");
     ui.c.push_clip(Rect::new(0.0, top, bw, list.h));
     let cats: [Color; 2] = [t.cat_project, t.cat_plugin_db];
-    let scroll = s.browser_scroll.min((rows.len() as f32 * ROW_H - list.h).max(0.0)).max(0.0);
+    let rh=row_h(s);
+    let scroll = s.browser_scroll.min((rows.len() as f32 * rh - list.h).max(0.0)).max(0.0);
     let sel = s.browser_sel.as_deref();
     let mut marquee = None;
     for (i, row) in rows.iter().enumerate() {
-        let y = top + ROW_H * i as f32 - scroll;
-        if y + ROW_H < list.y || y > list.bottom() {
+        let y = top + rh * i as f32 - scroll;
+        if y + rh < list.y || y > list.bottom() {
             continue;
         }
         let x = 13.0 + INDENT * f32::from(row.depth);
-        let rect = Rect::new(13.0, y, bw - 13.0, ROW_H);
+        let rect = Rect::new(13.0, y, bw - 13.0, rh);
         // A parameter row's hint carries its value (spec: plugins/plugin-parameters.md §6); read for the hovered row only.
         let hint = match row.item {
             Item::Param(key, index) if ui.hovering(rect) => crate::params::row_hint(s, key, index),
             _ => row.label.clone(),
         };
+        if t.style.vintage_2005 {
+            ui.c.fill_rect(Rect::new(rect.x, rect.y, rect.w - 3.0, 1.0), Color::rgb(0x4b565c));
+            ui.c.fill_rect(Rect::new(rect.x, rect.bottom()-1., rect.w - 3.0, 1.0), Color::rgb(0x242e34));
+            ui.c.fill_rect(Rect::new(rect.right()-4.0, rect.y, 1.0, rect.h), Color::rgb(0x4b565c));
+        }
         let hov = ui.hit(rect, Action::BrowserRow(i), hint);
-        if sel == Some(row.key.as_str()) || hov {
+        if sel == Some(row.key.as_str()) || s.browser_samples.contains(&row.key) || hov {
             ui.c.fill_rect(rect, t.browser_row_hi);
         }
         let base = match row.cat {
@@ -883,11 +904,19 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             FILE => t.text.shade(-0.08),
             c => cats[usize::from(c).min(1)],
         };
+        let base = if s.vintage_2005 && row.depth == 0 && row.open.is_some() {
+            match row.label.as_str() {
+                "Automation" | "Channel presets" | "Mixer presets" | "Packs" | "Scores" | "Plugin presets" => Color::rgb(0xaa879c),
+                "Current project" | "Projects" | "Projects bones" => Color::rgb(0xb38c77),
+                _ => Color::rgb(0x91aab3),
+            }
+        } else { base };
         let c = if row.bright { base.shade(0.12) } else if row.depth > 0 { base.shade(-0.06) } else { base };
+        let c = if opt(s,OPT_CONTRAST) {t.text} else {c};
         let c = if matches!(row.item, Item::History(e) if s.history.undone(e)) { t.text_faint } else { c };
         // Expander: only an opened node shows its ▾ in the gutter (FL screenshots, spec §2).
         if row.open == Some(true) && s.browser_search.is_empty() {
-            let (ax, cy) = (x - 9.0, y + ROW_H / 2.0);
+            let (ax, cy) = (x - 9.0, y + rh / 2.0);
             for k in 0..4 {
                 let k = k as f32;
                 ui.c.fill_rect(Rect::new(ax + k, cy - 2.0 + k, 7.0 - 2.0 * k, 1.0), t.text_dim);
@@ -899,60 +928,69 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
             Icon::PianoRoll if row.cat == FILE => t.cat_plugin_db,
             _ => c,
         };
-        icons::draw(ui.c, row.icon, Rect::new(x + 6.0, y + 3.0, 17.0, 17.0), ic);
-        // A favorite's star at the row's right end (§10); the label stops before it.
-        let fav = is_favorite(s, row);
-        if fav {
-            let sc = if hov || sel == Some(row.key.as_str()) { t.glyph } else { t.text_dim };
-            icons::draw(ui.c, Icon::Star, Rect::new(bw - 19.0, y + 5.0, 13.0, 13.0), sc);
+        let label_x=x+if s.vintage_2005 {17.}else{25.};
+        let original_tree = s.vintage_2005 && row.open.is_some() &&
+            crate::vintage_skin::native(ui.c, "SBItem", usize::from(row.open == Some(true)), x, y);
+        if !original_tree {
+            icons::draw(ui.c,row.icon,if s.vintage_2005 {Rect::new(x+3.,y+1.,10.,10.)}else{Rect::new(x+6.,y+3.,17.,17.)},ic);
         }
-        let (f, w) = (os_ui::Font::new(17), bw - 1.0 - x - 27.0 - if fav { 16.0 } else { 0.0 });
-        // The label level with the icon (both are centred on the row).
-        let ty = y + ROW_H / 2.0 - ui.c.cap_mid(f);
+        let (f,w)=(if s.vintage_2005 {os_ui::Font::vintage(11)}else{os_ui::Font::new(17)},bw-15.-label_x);
+        let w=if let Item::Param(key,index)=row.item {
+            if s.params.generic_editor==Some(key) {
+                let width=(w*0.42).clamp(25.,65.);
+                let value=Rect::new(rect.right()-width-12.,y+2.,width,rh-4.);
+                if let Some(list)=s.params.lists.get(&key) && let Some(entry)=list.params.get(index){
+                    let v=list.values.borrow().get(&entry.id).copied().unwrap_or(entry.default);
+                    ui.c.fill_rrect(value,3.,t.sunken);
+                    ui.c.text_center(os_ui::Font::new(11),value,t.text,&format!("{:.1}%",100.*v));
+                    if !entry.read_only{ui.hit(value,Action::GenericValue(key,index),"Edit parameter value");}
+                }
+                (w-width-12.).max(0.)
+            }else{w}
+        }else if s.params.generic_editor.is_some_and(|key|row.key==parameter_node_key(key) || crate::params::node_key(s,key).as_ref()==Some(&row.key)) {
+            let button=Rect::new(rect.right()-71.,y+2.,58.,rh-4.);
+            ui.c.fill_rrect(button,3.,t.button_hi);ui.c.text_center(os_ui::Font::new(11),button,t.text,"Presets");
+            ui.hit(button,Action::GenericPresets(s.params.generic_editor.unwrap()),"Plugin presets");
+            (w-72.).max(0.)
+        }else{w};
         let over = ui.c.text_width(f, &row.label) - w;
         // Hovered, a label that does not fit scrolls (§9) rather than being cut.
         if hov && over > 0.0 {
             let now = std::time::Instant::now();
             let since = s.browser_marquee.borrow().as_ref().filter(|m| m.key == row.key).map_or(now, |m| m.since);
             let off = marquee_offset(now.duration_since(since).as_secs_f32(), over);
-            let lr = Rect::new(x + 25.0, y, w, ROW_H);
+            let lr = Rect::new(label_x, y, w, rh);
             ui.c.push_clip(lr);
-            ui.c.text(f, lr.x - off, ty, c, &row.label);
+            ui.c.text(f, lr.x - off, y, c, &row.label);
             ui.c.pop_clip();
             marquee = Some(Marquee { key: row.key.clone(), since, rect: lr, over, off });
             continue;
         }
         let label = if row.path.is_some() { middle_cut(ui, f, &row.label, w) } else { row.label.clone() };
-        ui.c.text_clip(f, x + 25.0, ty, w, c, &label);
+        ui.c.text_clip(f, label_x, y+if s.vintage_2005 {1.}else{0.}, w, c, &label);
     }
     *s.browser_marquee.borrow_mut() = marquee;
-    let indexing = opt(s, OPT_INDEX) && s.browser_index.building();
-    let empty: &[&str] = if s.browser_search.is_empty() {
-        &["No favorites yet: right-click a", "file or a plugin, tick Favorite"]
-    } else if indexing {
-        &["No matches yet (indexing folders)"]
-    } else {
-        &["No matches"]
-    };
-    if rows.is_empty() && (s.browser_tab == FAV_TAB || !s.browser_search.is_empty()) {
-        for (k, line) in empty.iter().enumerate() {
-            ui.c.text(os_ui::Font::new(14).italic(), 22.0, top + 6.0 + 18.0 * k as f32, t.text_faint, line);
-        }
-    }
+    let empty = if !s.browser_search.is_empty() { if search_busy(s) { "Searching samples..." } else { "No matches" } } else if s.browser_tab == PARAMETERS_TAB { "Load a plugin to browse parameters" } else if s.browser_tab == 3 { "No favorites yet" } else { "No samples yet" };
+    if rows.is_empty() {
+        if s.browser_tab == 0 && s.browser_search.is_empty() {
+            crate::starter_pack::paint_empty(ui, list);
+        } else { ui.c.text(os_ui::Font::new(14).italic(), 22.0, top + 6.0, t.text_faint, empty); }
+    } else if s.browser_tab == 0 { crate::starter_pack::paint_status(ui, list); }
     ui.c.pop_clip();
-    if let Some(p) = &info {
+    if let Some((track, thumb)) = scrollbar(s) {
+        ui.c.fill_rect(track, t.browser_list);
+        let hover = ui.hit(track, Action::BrowserScroll, "Drag to scroll samples");
+        ui.c.fill_rrect(thumb, 3., if hover { t.text_dim } else { t.splitter.shade(0.15) });
+    }
+    if crate::browser_preview::visible(s) {crate::browser_preview::paint(ui,s,Rect::new(0.,list.bottom(),bw,ih));}
+    else if let Some(p) = &info {
         paint_info(ui, s, p, Rect::new(0.0, list.bottom(), bw, ih));
+    }
     }
     // Footer: the search field takes the width the splitter adds.
     let fy = r.bottom() - 27.0;
     ui.c.fill_rect(Rect::new(0.0, fy, bw, 27.0), t.browser_footer);
-    // Tags: not available yet, greyed out.
-    let tags = Rect::new(13.0, fy + 4.0, 41.0, 20.0);
-    ui.off(tags, "Tags");
-    ui.c.fill_rrect(tags, 3.0, t.sunken);
-    ui.c.text_center(os_ui::Font::condensed(11, 6).bold(), tags, ui.t.tx(0xc0c8cc), "TAGS");
-    ui.veil(tags, t.browser_footer);
-    let field = Rect::new(57.0, fy + 4.0, bw - 82.0, 20.0);
+    let field = Rect::new(13.0, fy + 4.0, bw - 38.0, 20.0);
     if !search_on_top {
         search_box(ui, s, field);
     } else {
@@ -960,17 +998,18 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect) {
     }
     icons::draw(ui.c, Icon::Folder, Rect::new(field.right() - 18.0, fy + 7.0, 14.0, 14.0), t.text_faint);
     let glass = Rect::new(bw - 23.0, fy + 3.0, 21.0, 21.0);
-    // With text in the box the magnifier becomes a cross that clears it (§5).
-    if s.browser_search.is_empty() {
-        let hov = ui.hit(glass, Action::BrowserSearch, "Search the browser (Enter = find next, Esc = clear)");
-        icons::draw(ui.c, Icon::Search, Rect::new(glass.x + 2.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
-    } else {
-        let hov = ui.hit(glass, Action::BrowserClear, "Clear the search");
-        icons::draw(ui.c, Icon::Close, Rect::new(glass.x + 3.0, fy + 6.0, 15.0, 15.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
+    let hov = ui.hit(glass, Action::BrowserSearch, "Search the browser (Enter = find next, Esc = clear)");
+    icons::draw(ui.c, Icon::Search, Rect::new(glass.x + 2.0, fy + 5.0, 17.0, 17.0), if hov { t.browser_search.shade(0.2) } else { t.browser_search });
+    if t.style.vintage_2005 {
+        let frame = Rect::new(1., r.y+1., bw-2., r.h-2.);
+        ui.c.stroke_rrect(frame,0.,1.,t.window_border);
+        ui.c.stroke_rrect(frame.inset(1.),0.,1.,t.toolbar_edge);
+        ui.c.stroke_rrect(frame.inset(3.),0.,1.,t.window_border);
     }
     // Splitter: drags the browser's width (§9).
     ui.c.fill_rect(Rect::new(bw, r.y, 6.0, r.h), t.splitter);
     ui.c.fill_rect(Rect::new(bw + 6.0, r.y, 2.0, r.h), t.splitter_dark);
+    if s.native_view == Some(crate::app::Win::Browser) { return; }
     ui.hit(Rect::new(bw, r.y, SPLITTER, r.h), Action::BrowserSplitter, "Browser: drag to resize, double-click for the default width");
 }
 
@@ -993,6 +1032,20 @@ fn middle_cut(ui: &mut Ui, f: os_ui::Font, text: &str, w: f32) -> String {
     String::new()
 }
 
+/// The primary library plus all user-added folders; shared by browsing and recursive search.
+pub(crate) fn library_roots(s: &State) -> Vec<PathBuf> {
+    let mut roots=vec![samples_root()];
+    for path in &s.browser_folders {if !roots.contains(path) {roots.push(path.clone());}}
+    roots[1..].sort_by_key(|p|root_label(s,p).to_lowercase());
+    roots
+}
+
+/// Libraries belong to the current profile. Personal locations are explicit preferences, never machine-wide guesses.
+pub fn samples_root() -> PathBuf {
+    crate::prefs::text("browser_samples_root").filter(|p| !p.trim().is_empty()).map(PathBuf::from)
+        .unwrap_or_else(|| os_paths::user_dir().unwrap_or_else(|| PathBuf::from(".")).join("Samples"))
+}
+
 /// Where the options menu opens (just below the title bar's ▸, spec §4).
 pub fn menu_at(s: &State) -> (f32, f32) {
     (1.0, 105.0 + super::work_y(s) - super::WORK_Y)
@@ -1007,108 +1060,56 @@ fn search_box(ui: &mut Ui, s: &State, r: Rect) {
         ui.c.stroke_rrect(r, 3.0, 1.0, t.browser_search);
     }
     let f = os_ui::Font::new(14);
-    let text_w = r.w - 26.0;
+    let edit_tags=s.browser_tag_edit.is_some();
+    let label_w=if edit_tags { 34. } else { 0. };
+    if edit_tags { ui.c.text_clip(f,r.x+5.,r.y+1.,label_w,t.accent,"Tags:"); }
+    let text_w = (r.w - 26.0-label_w).max(1.);
     // Show the end of a long query.
-    let mut shown: &str = &s.browser_search;
+    let mut shown: &str = s.browser_tag_edit.as_ref().map_or(s.browser_search.as_str(),|(_,text)|text.as_str());
+    if s.browser_tag_edit.is_some(){ui.c.stroke_rrect(r,3.,1.,t.accent);}
     while ui.c.text_width(f, shown) > text_w && !shown.is_empty() {
         let cut = shown.char_indices().nth(1).map_or(shown.len(), |(i, _)| i);
         shown = &shown[cut..];
     }
-    ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.glyph, shown);
+    if shown.is_empty() && !s.browser_search_focus {
+        ui.c.text_clip(f, r.x + 5.0, r.y + 1.0, text_w, t.text_faint, if s.browser_tab==5 {"Search plugins..."}else if s.browser_tab==PARAMETERS_TAB {"Search parameters..."}else{"Search samples..."});
+    } else {
+        ui.c.text_clip(f, r.x + 5.0+label_w, r.y + 1.0, text_w, t.glyph, shown);
+    }
     if s.browser_search_focus {
-        let cx = r.x + 6.0 + ui.c.text_width(f, shown);
+        let cx = r.x + 6.0 + label_w+ui.c.text_width(f, shown);
         ui.c.fill_rect(Rect::new(cx, r.y + 4.0, 1.0, r.h - 8.0), t.glyph);
     }
 }
 
-/// Everything the drag tag can cover with the mouse at (x, y), however it swings.
+/// Rect of the drag label at mouse position (x, y).
 pub fn ghost_rect(x: f32, y: f32) -> Rect {
-    crate::motion::tag_reach(x, y)
+    Rect::new(x + 12.0, y + 6.0, 190.0, 22.0)
 }
 
-/// The tag that follows the cursor during a browser drag (spec §3): a card with the item's name hanging by its top
-/// centre just below and right of the mouse, slightly see-through, with a soft shadow. From Animations ▸ Polished up
-/// it swings after the mouse like a sign on a nail (spec: ui/animations.md §4.1, `crate::motion`); below, it hangs
-/// rigid.
+/// The label that follows the cursor during a browser drag (spec §3).
 pub fn paint_ghost(ui: &mut Ui, s: &State) {
-    if let Some((label, x, y)) = &s.browser_drag {
-        let angle = s.motion.borrow().tag_angle();
-        paint_tag(ui, label, *x, *y, angle, 0.9);
-    }
-}
-
-/// The glow on where a browser drag would drop in window `win` (spec: ui/animations.md §4.6): a faint wash of the
-/// accent colour with an outline, drawn with the window so that what covers the window covers it.
-pub fn paint_drop_glows(ui: &mut Ui, s: &State, win: crate::app::Win) {
-    let glows = s.motion.borrow_mut().drop_glows(s.drop_on, win);
-    for (r, a) in glows {
-        let c = ui.t.accent;
-        ui.c.fill_rect(r, c.with_alpha((a * 26.0) as u8));
-        ui.c.stroke_rrect(r.inset(0.75), 2.0, 1.5, c.with_alpha((a * 200.0) as u8));
-    }
-}
-
-/// The tag of a cancelled drag in window `win` (None: the main one), falling away (spec: ui/animations.md §4.1).
-pub fn paint_fall(ui: &mut Ui, s: &State, win: Option<crate::app::Win>) {
-    let fall = s.motion.borrow_mut().falling(win);
-    if let Some((label, x, y, angle, alpha)) = fall {
-        paint_tag(ui, &label, x, y, angle, 0.9 * alpha);
-    }
-}
-
-/// The drag tag `label` hanging from the mouse at (`x`, `y`), turned by `angle` (radians, clockwise), at opacity
-/// `alpha`.
-fn paint_tag(ui: &mut Ui, label: &str, x: f32, y: f32, angle: f32, alpha: f32) {
-    use crate::motion::{TAG_H, TAG_MAX_W, TAG_PIN};
+    let Some((label, x, y)) = &s.browser_drag else { return };
     let t = ui.t;
+    let r = ghost_rect(*x, *y);
     let f = os_ui::Font::new(15);
-    let w = (ui.c.text_width(f, label) + 18.0).clamp(40.0, TAG_MAX_W).round();
-    let (px, py) = ((x + TAG_PIN.0).round(), (y + TAG_PIN.1).round());
-    let card = Rect::new((px - w / 2.0).round(), py, w, TAG_H);
-    let layer = ui.c.begin_layer(Rect::new(card.x - 6.0, card.y - 2.0, card.w + 12.0, card.h + 10.0), true);
-    // A soft shadow, from Subtle up (at Off the tag is the plain card).
-    if crate::anim::level() > crate::anim::Level::Off {
-        for (grow, alpha) in [(3.0, 28), (1.5, 42)] {
-            let sh = Rect::new(card.x - grow, card.y + 2.0 - grow / 2.0, card.w + 2.0 * grow, card.h + grow);
-            ui.c.fill_rrect(sh, 4.0 + grow, Color::rgb(0).with_alpha(alpha));
-        }
-    }
-    ui.c.fill_rrect(card, 4.0, t.browser_row_hi.shade(0.08));
-    ui.c.stroke_rrect(card, 4.0, 1.0, t.browser_tab_outline);
-    // Text writes every pixel around it too: on the card, or it would leave a black line on the cleared layer.
-    ui.c.push_clip(card.inset(1.0));
-    ui.c.text_clip(f, card.x + 9.0, card.y + 3.0, card.w - 14.0, t.glyph, label);
-    ui.c.pop_clip();
-    if let Some(tag) = ui.c.take_layer(layer) {
-        ui.c.sprite(&tag, px, py, angle, 1.0, 0.0, 0.0, alpha);
-    }
+    let w = (ui.c.text_width(f, label) + 14.0).min(r.w);
+    let r = Rect::new(r.x, r.y, w, r.h);
+    ui.c.fill_rrect(r, 3.0, t.browser_row_hi.shade(0.08));
+    ui.c.stroke_rrect(r, 3.0, 1.0, t.browser_tab_outline);
+    ui.c.text_clip(f, r.x + 7.0, r.y + 2.0, r.w - 10.0, t.glyph, label);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// My projects lists the user's projects folder, as FL lists its own: each project's folder and the backups, which
-    /// open like any folder.
     #[test]
-    fn my_projects_lists_the_users_projects_folder() {
-        let dir = std::env::temp_dir().join(format!("os_myprojects_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("Song").join("Samples")).unwrap();
-        std::fs::write(dir.join("Song").join("Song.lemon"), b"x").unwrap();
-        std::fs::create_dir_all(dir.join("Backup")).unwrap();
-        crate::save_form::TEST_ROOT.with(|d| *d.borrow_mut() = Some(dir.clone()));
-        let mut app = crate::app::App::new(None);
-        let key = format!("0:{MY_PROJECTS}");
-        assert!(rows(&app.state).iter().any(|r| r.key == key), "a root of the All tab");
-        app.state.browser_open.insert(key.clone());
-        app.state.browser_open.insert(format!("{key}/Song"));
-        let labels: Vec<String> = rows(&app.state).into_iter().map(|r| r.label).collect();
-        for want in ["Backup", "Song", "Song.lemon"] {
-            assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
-        }
-        crate::save_form::TEST_ROOT.with(|d| *d.borrow_mut() = None);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn sample_library_defaults_to_active_profile_and_keeps_explicit_choice() {
+        crate::prefs::set_text("browser_samples_root", "");
+        assert_eq!(samples_root(),os_paths::user_dir().unwrap().join("Samples"));
+        crate::prefs::set_text("browser_samples_root", "D:/My Samples");
+        assert_eq!(samples_root(),PathBuf::from("D:/My Samples"));
     }
 
     /// File dates read in the local time zone on every platform (spec §6): within a day of the UTC date.

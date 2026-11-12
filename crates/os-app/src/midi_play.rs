@@ -20,14 +20,66 @@ use crate::record::Extra;
 use crate::step_edit::Src;
 use crate::views::midi_page::{CurveEdit, MAct};
 
+pub(crate) const HINT_ACTIVITY: &str = "visible_hint-midi";
+pub(crate) const RACK_ACTIVITY: &str = "visible_rack-midi";
+
+#[derive(Default)]
+pub(crate) struct Activity {
+    input: Option<Pulse>,
+    rows: std::collections::BTreeMap<u16, Pulse>,
+}
+
+struct Pulse {
+    since: Instant,
+    held: bool,
+    level: u8,
+}
+
+impl Pulse {
+    fn new(since: Instant) -> Self {
+        Self { since, held: false, level: 0 }
+    }
+
+    fn advance(&mut self, now: Instant, held: bool) -> bool {
+        if self.held && !held {
+            self.since = now;
+        }
+        self.held = held;
+        let age = now.saturating_duration_since(self.since).as_millis();
+        let level = if held { 12 } else { (12 * (220 - age.min(220)).min(150) / 150) as u8 };
+        std::mem::replace(&mut self.level, level) != level
+    }
+}
+
+impl Activity {
+    pub(crate) fn input(&self) -> f32 {
+        self.input.as_ref().map_or(0.0, |p| f32::from(p.level) / 12.0)
+    }
+
+    pub(crate) fn row(&self, id: u16) -> f32 {
+        self.rows.get(&id).map_or(0.0, |p| f32::from(p.level) / 12.0)
+    }
+
+    pub(crate) fn fading(&self) -> bool {
+        self.input.iter().chain(self.rows.values()).any(|p| !p.held)
+    }
+}
+
 /// What Settings > MIDI shows of the devices, kept up to date by `App::midi_tick`.
 #[derive(Debug, Default, Clone)]
 pub struct Page {
+    /// The full set of controls is opt-in for the current session.
+    pub advanced: bool,
     pub inputs: Vec<InPort>,
     pub outputs: Vec<String>,
     /// The device each list has selected (its options show under it).
     pub input: usize,
     pub output: usize,
+    pub input_top: usize,
+    pub output_top: usize,
+    pub learning: Option<(String, crate::controller::Transport)>,
+    pub monitor: bool,
+    pub trace: VecDeque<crate::controller::Trace>,
     /// External sync's status line ("Status: off").
     pub status: String,
     /// The mapping curve window, while open.
@@ -60,6 +112,13 @@ struct Held {
 /// The input side's state.
 #[derive(Debug, Default)]
 pub struct Play {
+    pub(crate) surface_banks: std::collections::HashMap<String, u16>,
+    pub(crate) surface_touched: std::collections::HashMap<std::sync::Arc<str>, u16>,
+    pub(crate) launchkey_encoder_mode: std::collections::HashMap<std::sync::Arc<str>, u8>,
+    pub(crate) surface_frame_at: Option<Instant>,
+    surface_frames: Vec<crate::midi_out::SurfaceFrame>,
+    pub(crate) transport_bindings: std::collections::HashMap<std::sync::Arc<str>, crate::controller::Bindings>,
+    pub(crate) transport_held: std::collections::HashSet<(std::sync::Arc<str>, crate::controller::Binding)>,
     held: Vec<Held>,
     /// The foot pedal is down.
     pedal: bool,
@@ -81,7 +140,7 @@ impl Play {
 
     /// Something waits for its time: the shell keeps ticking.
     pub fn busy(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.surface_frames.is_empty()
     }
 }
 
@@ -147,7 +206,12 @@ impl App {
             self.midi_refresh(false);
         }
         let evs = self.midi.poll();
+        if self.state.vintage_2005 && !evs.is_empty() {
+            self.state.vintage_midi_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(120));
+            self.damage_live(crate::app::Live::VintageMidi);
+        }
         self.midi_events(evs);
+        self.midi_activity_tick(Instant::now());
         self.midi_pending();
         self.ext_sync_tick();
         self.remote_tick();
@@ -163,13 +227,35 @@ impl App {
     /// changed in the hint bar.
     pub(crate) fn midi_refresh(&mut self, said: bool) {
         let before: Vec<String> = self.midi_page().inputs.iter().map(|i| i.name.clone()).collect();
+        let previous_inputs: Vec<_> = self.midi_page().inputs.iter().filter(|i| i.open).map(|i| i.name.clone()).collect();
         let opened = self.midi.refresh();
+        if previous_inputs.iter().any(|name| !self.midi.inputs.iter().any(|i| i.open && &i.name == name)) {
+            self.midi_release_all();
+        }
         self.midi.set_ext_sync(cfg::ext_sync().as_deref());
+        self.midi_play.surface_frame_at = None;
         let p = &mut self.state.midi;
+        let input = p.selected_input().map(|i| i.name.clone());
+        let output = p.selected_output().cloned();
         p.inputs = self.midi.inputs.clone();
         p.outputs = self.midi.outputs.clone();
-        p.input = p.input.min(p.inputs.len().saturating_sub(1));
-        p.output = p.output.min(p.outputs.len().saturating_sub(1));
+        p.input = p.inputs.iter().position(|i| Some(&i.name) == input.as_ref())
+            .unwrap_or_else(|| p.input.min(p.inputs.len().saturating_sub(1)));
+        p.output = p.outputs.iter().position(|name| Some(name) == output.as_ref())
+            .unwrap_or_else(|| p.output.min(p.outputs.len().saturating_sub(1)));
+        use crate::views::midi_page::{IN_ROWS, OUT_ROWS};
+        p.input_top = p.input_top.min(p.inputs.len().saturating_sub(IN_ROWS));
+        p.output_top = p.output_top.min(p.outputs.len().saturating_sub(OUT_ROWS));
+        let connected = |dev: &str| p.inputs.iter().any(|i| i.open && i.name == dev);
+        self.midi_play.transport_held.retain(|(dev, _)| connected(dev));
+        self.midi_play.surface_touched.retain(|dev, _| connected(dev));
+        self.midi_play.launchkey_encoder_mode.retain(|dev, _| connected(dev));
+        if p.selected_input().map(|i| &i.name) != input.as_ref() {
+            p.trace.clear();
+        }
+        if p.learning.as_ref().is_some_and(|(dev, _)| !p.selected_input().is_some_and(|i| i.open && &i.name == dev)) {
+            p.learning = None;
+        }
         let failed: Vec<&str> = p.inputs.iter().filter(|i| i.failed).map(|i| i.name.as_str()).collect();
         let added: Vec<&String> = opened.iter().filter(|n| !before.contains(n)).collect();
         let msg = if !failed.is_empty() {
@@ -193,36 +279,94 @@ impl App {
 
     /// Messages received, oldest first (spec §3, §4, §8). With Enable MIDI remote control off, all are ignored.
     pub(crate) fn midi_events(&mut self, evs: Vec<Ev>) {
-        if evs.is_empty() || !Switch::Remote.on() {
+        if evs.is_empty() { return; }
+        if !Switch::Remote.on() {
+            for ev in &evs { self.trace_midi(ev, "Remote MIDI disabled"); }
             return;
         }
         let ext = cfg::ext_sync();
         let mut notes = false;
-        for ev in evs {
-            match ev.msg {
-                Msg::Start | Msg::Continue | Msg::Stop | Msg::Spp(_) => {
-                    if ext.as_deref() == Some(&*ev.dev) {
-                        self.ext_message(ev.msg);
+        let row=self.state.selected_channel;
+        let chop_slab=evs.iter().any(|e|e.dev.to_ascii_lowercase().contains("slab")) && self.plugins.descriptor(row).is_some_and(|d| d.name=="ML Chop" && crate::project_plugins::is_builtin(&d)) &&
+            self.plugins.state(row).and_then(|b|serde_json::from_slice::<serde_json::Value>(b.get(8..)?).ok())
+            .and_then(|v|v["fields"]["chop-document"].as_str().and_then(|s|serde_json::from_str::<lemon_chop::params::Document>(s).ok())).is_some_and(|d|d.slab);
+        use crate::controller::Role;
+        for mut ev in evs {
+            if matches!(ev.msg, Msg::On { vel: 1.., .. }) {
+                let now = Instant::now();
+                self.state.midi_activity.input.get_or_insert_with(|| Pulse::new(now)).since = now;
+            }
+            if matches!(ev.msg, Msg::Start | Msg::Continue | Msg::Stop | Msg::Spp(_)) {
+                if ext.as_deref() == Some(ev.dev.as_ref()) {
+                    self.trace_midi(&ev, "External sync");
+                    self.ext_message(ev.msg);
+                } else {
+                    self.trace_midi(&ev, "External sync inactive");
+                }
+                continue;
+            }
+            let role = crate::controller::role(&ev.dev);
+            if role != Role::Instrument && self.controller_event(&ev) {
+                self.trace_midi(&ev, "DAW controller");
+                continue;
+            }
+            if role == Role::Control {
+                let handled = match ev.msg {
+                    Msg::Cc { ch, n, v } => self.remote_cc(&ev.dev, ch, n, v),
+                    _ => false,
+                };
+                self.trace_midi(&ev, if handled { "Linked control" } else { "Unmapped DAW input" });
+                continue;
+            }
+            if self.mpe_input(&ev.dev,ev.msg){
+                self.trace_midi(&ev, "MPE instrument");
+                continue;
+            }
+            // A held SLAB pad still releases after selecting another rack channel or disabling its profile.
+            if !chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {
+                if let Msg::Off{ch,key,vel}=ev.msg {
+                    if let Some(mapped)=lemon_chop::controller::pad_note(ch,key).filter(|k|self.midi_play.held.iter().any(|h|h.src==Src::Midi(*k))) {
+                        ev.msg=Msg::Off{ch:0,key:mapped,vel};
                     }
                 }
+            }
+            if chop_slab && ev.dev.to_ascii_lowercase().contains("slab") {
+                match ev.msg {
+                    Msg::On{ch,key,vel} if lemon_chop::controller::pad_note(ch,key).is_some()=>ev.msg=Msg::On{ch:0,key:lemon_chop::controller::pad_note(ch,key).unwrap(),vel},
+                    Msg::Off{ch,key,vel} if lemon_chop::controller::pad_note(ch,key).is_some()=>ev.msg=Msg::Off{ch:0,key:lemon_chop::controller::pad_note(ch,key).unwrap(),vel},
+                    Msg::On{ch,key,..}|Msg::Off{ch,key,..} if lemon_chop::controller::button(ch,key).is_some()=>{self.trace_midi(&ev, "ML Chop");self.midi_forward(ev.msg);continue;},
+                    Msg::Cc{ch,n,v} if lemon_chop::controller::cc(ch,n,v).is_some()=>{self.trace_midi(&ev, "ML Chop");self.midi_forward(ev.msg);continue;},
+                    _=>{},
+                }
+            }
+            match ev.msg {
+                Msg::Start | Msg::Continue | Msg::Stop | Msg::Spp(_) => unreachable!("sync is handled above"),
+                Msg::Machine(_) => self.trace_midi(&ev, "MMC mode inactive"),
                 Msg::On { ch, key, vel } => {
+                    self.trace_midi(&ev, "Instrument path");
                     notes = true;
                     self.midi_note_on(ch, key, vel);
                 }
                 Msg::Off { ch, key, vel } => {
+                    self.trace_midi(&ev, "Instrument path");
                     notes = true;
                     self.midi_note_off(ch, key, vel);
                 }
                 Msg::Cc { n: 64, v, .. } if prefs::check(&prefs::FOOT_PEDAL) => {
+                    self.trace_midi(&ev, "Sustain pedal");
                     notes = true;
                     self.midi_pedal(v >= 64);
                 }
                 Msg::Cc { ch, n, v } => {
-                    if !self.remote_cc(&ev.dev, ch, n, v) {
+                    if role != Role::Instrument && self.remote_cc(&ev.dev, ch, n, v) {
+                        self.trace_midi(&ev, "Linked control");
+                    } else {
+                        self.trace_midi(&ev, "Instrument path");
                         self.midi_forward(ev.msg);
                     }
                 }
                 Msg::Bend { .. } => {
+                    self.trace_midi(&ev, "Instrument path");
                     let row = self.state.selected_channel;
                     if row < self.state.project.channels.len() {
                         self.sync_live();
@@ -232,12 +376,28 @@ impl App {
                         self.midi_play.bend_row = Some(row);
                     }
                 }
-                Msg::Pressure { .. } | Msg::Poly { .. } | Msg::Program { .. } => self.midi_forward(ev.msg),
+                Msg::Pressure { .. } | Msg::Poly { .. } | Msg::Program { .. } => {
+                    self.trace_midi(&ev, "Instrument path");
+                    self.midi_forward(ev.msg);
+                }
             }
         }
         if notes {
             self.typing_lit_changed();
         }
+    }
+
+    fn trace_midi(&mut self, ev: &Ev, route: &'static str) {
+        let p = &mut self.state.midi;
+        if !p.monitor || !self.state.settings.open || self.state.settings.tab != crate::views::settings::MIDI
+            || !p.selected_input().is_some_and(|i| i.name == ev.dev.as_ref())
+            || !crate::workspace_visibility::shown(crate::controller::VISIBILITY)
+        {
+            return;
+        }
+        if p.trace.len() == 4 { p.trace.pop_front(); }
+        p.trace.push_back(crate::controller::Trace { msg: ev.msg, route });
+        self.invalidate();
     }
 
     /// Tests: messages from a device named "Test".
@@ -263,16 +423,13 @@ impl App {
         if Some(ch) == channel_of(&prefs::OMNI_CHANNEL) {
             let Some(row) = white_index(key).filter(|&r| r < n) else { return };
             extra.channel = Some(self.state.project.channels[row].index);
-            return self.midi_start(Src::Omni(key), key, row, 60, vel, extra, 0);
+            return self.midi_start(Src::Omni(key), key, row, 60, vel, extra);
         }
         if Some(ch) == channel_of(&prefs::MARKER_CHANNEL) {
             if let Some(i) = white_index(key) {
                 self.marker_jump(i);
             }
             return;
-        }
-        if Some(ch) == channel_of(&prefs::PERFORMANCE_CHANNEL) {
-            return self.perform_note(key, vel, true);
         }
         if Some(ch) == channel_of(&prefs::MUTING_CHANNEL) {
             if let Some(row) = white_index(key).filter(|&r| r < n) {
@@ -288,46 +445,62 @@ impl App {
         if row >= n {
             return;
         }
-        // MIDI channel through (spec: ui/channel-rack.md §18): the plugin gets the note on the channel it came on, and a
-        // recorded note takes that channel as its colour; unticked, channel 1.
-        let midi = if crate::rack::through(&self.state, row) { ch & 15 } else { 0 };
-        if midi > 0 {
-            extra.group = Some(midi);
-        }
-        self.midi_start(Src::Midi(key), key, row, u16::from(key), vel, extra, midi);
+        let play=if self.state.piano.harmony.midi_snap {self.state.piano.harmony.snap(i32::from(key),127)}else{u16::from(key)};
+        self.midi_start(Src::Midi(key), key, row, play, vel, extra);
     }
 
-    /// Starts a note, on MIDI channel `midi` for a hosted plugin; a key the pedal still holds ends its earlier note
-    /// first (spec §3).
-    fn midi_start(&mut self, src: Src, key: u8, row: usize, play: u16, vel: u8, extra: Extra, midi: u8) {
+    /// Starts a note; a key the pedal still holds ends its earlier note first (spec §3).
+    fn midi_start(&mut self, src: Src, key: u8, row: usize, play: u16, vel: u8, extra: Extra) {
         while let Some(i) = self.midi_play.held.iter().position(|h| h.src == src) {
             let h = self.midi_play.held.remove(i);
             self.midi_end(h, h.up.unwrap_or(64));
         }
         self.sync_live();
-        self.transport.note_on_midi(row, play, vel, midi);
+        if !self.midi_play.held.iter().any(|h|h.row==row&&h.play==play){self.transport.note_on(row, play, vel);}
         self.midi_play.held.push(Held { key, src, row, play, up: None });
+        self.midi_row_activity(self.state.project.channels[row].index);
         self.step_edit_down_with(src, play, vel, extra);
     }
 
+    pub(crate) fn midi_row_activity(&mut self, id: u16) {
+        let now = Instant::now();
+        self.state.midi_activity.rows.entry(id).or_insert_with(|| Pulse::new(now)).since = now;
+    }
+
+    pub(crate) fn midi_activity_tick(&mut self, now: Instant) {
+        if self.state.midi_activity.input.is_none() && self.state.midi_activity.rows.is_empty() {
+            return;
+        }
+        let held: Vec<_> = self.midi_play.lit().map(|(row, _)| row)
+            .chain(self.state.mpe.held_rows())
+            .filter_map(|row| self.state.project.channels.get(row).map(|channel| channel.index))
+            .collect();
+        let activity = &mut self.state.midi_activity;
+        let input_changed = activity.input.as_mut().is_some_and(|pulse| pulse.advance(now, !held.is_empty()));
+        if activity.input.as_ref().is_some_and(|pulse| pulse.level == 0) {
+            activity.input = None;
+        }
+        let mut changed = Vec::new();
+        activity.rows.retain(|id, pulse| {
+            if pulse.advance(now, held.contains(id)) {
+                changed.push(*id);
+            }
+            pulse.level != 0
+        });
+        if input_changed {
+            self.damage_live(crate::app::Live::MidiHint);
+        }
+        for id in changed {
+            self.damage_live(crate::app::Live::MidiRack(id));
+        }
+    }
+
     fn midi_end(&mut self, h: Held, release: u8) {
-        self.transport.note_off(h.row, h.play);
+        if !self.midi_play.held.iter().any(|other|other.row==h.row&&other.play==h.play){self.transport.note_off(h.row, h.play);}
         self.step_edit_up_with(h.src, Some(release));
     }
 
-    /// A key of the Performance mode MIDI channel (spec: ui/performance-mode.md §3).
-    pub(crate) fn perform_note(&mut self, key: u8, vel: u8, down: bool) {
-        let now = self.transport.playing().then(|| self.transport.tick().max(0.0) as u32);
-        if let Some(m) = crate::perform::midi_note(&mut self.state, key, vel, down, now) {
-            self.state.message = Some(m);
-        }
-        self.invalidate();
-    }
-
     fn midi_note_off(&mut self, ch: u8, key: u8, vel: u8) {
-        if Some(ch) == channel_of(&prefs::PERFORMANCE_CHANNEL) {
-            return self.perform_note(key, vel, false);
-        }
         if Some(ch) == channel_of(&prefs::MUTING_CHANNEL) {
             while let Some(i) = self.midi_play.muted.iter().position(|m| m.0 == key) {
                 let (_, row) = self.midi_play.muted.remove(i);
@@ -363,6 +536,7 @@ impl App {
 
     /// Every device note ends (the device list changed, remote control switched off).
     pub(crate) fn midi_release_all(&mut self) {
+        self.mpe_release_all();
         self.midi_play.pedal = false;
         for h in std::mem::take(&mut self.midi_play.held) {
             self.midi_end(h, 64);
@@ -479,8 +653,7 @@ impl App {
         }
     }
 
-    /// Master sync (spec §7): the outputs with Send master sync while Enable MIDI output and master sync are on; and
-    /// while Enable MIDI output is on, the outputs with a port, for Lemon MIDI Out (spec: plugins/midi-out.md §6.4).
+    /// Master sync (spec §7): the outputs with Send master sync while Enable MIDI output and master sync are on.
     fn midi_out_tick(&mut self) {
         let send = Switch::Output.on() && Switch::MasterSync.on();
         let sync = if send {
@@ -495,22 +668,16 @@ impl App {
         } else {
             Vec::new()
         };
-        let (mut ports, mut ports_off) = (Vec::new(), Vec::new());
-        if Switch::Output.on() {
-            for name in &self.midi.outputs {
-                let c = cfg::output(name);
-                if let Some(p) = c.port {
-                    ports.push((name.clone(), p));
-                    if c.notes_off {
-                        ports_off.push(name.clone());
-                    }
-                }
-            }
+        if !Switch::Output.on() || !Switch::Remote.on() {
+            self.midi_play.surface_frames.clear();
+            self.midi_play.surface_frame_at = None;
+        } else if self.midi_play.surface_frame_at.is_none_or(|at| at.elapsed() >= Duration::from_millis(40)) {
+            self.midi_play.surface_frames = self.controller_frames();
+            self.midi_play.surface_frame_at = Some(Instant::now());
         }
         let c = crate::midi_out::Config {
             sync,
-            ports,
-            ports_off,
+            surfaces: self.midi_play.surface_frames.clone(),
             kind: crate::midi_out::SyncKind::of(prefs::index(&prefs::SYNC_TYPE)),
             offset_ms: cfg::offset(Offset::MasterSync),
             ppq: self.state.project.ppq.max(1),
@@ -531,7 +698,23 @@ impl App {
 impl App {
     /// Settings > MIDI opened: the device lists are read again (spec §1).
     pub(crate) fn midi_page_opened(&mut self) {
+        self.state.midi.learning = None;
         self.midi_refresh(false);
+    }
+
+    fn midi_list_scroll(&mut self, input: bool, rows: i32) -> bool {
+        use crate::views::midi_page::{IN_ROWS, OUT_ROWS};
+        let p = &mut self.state.midi;
+        let (top, max) = if input {
+            (&mut p.input_top, p.inputs.len().saturating_sub(IN_ROWS))
+        } else {
+            (&mut p.output_top, p.outputs.len().saturating_sub(OUT_ROWS))
+        };
+        let next = top.saturating_add_signed(rows as isize).min(max);
+        if next == *top { return false; }
+        *top = next;
+        self.invalidate();
+        true
     }
 
     pub(crate) fn midi_page_act(&mut self, m: MAct) {
@@ -539,17 +722,87 @@ impl App {
         let out = p.selected_output().cloned();
         let inp = p.selected_input().map(|i| i.name.clone());
         match m {
+            MAct::View(advanced) => {
+                self.state.midi.advanced = advanced;
+                self.state.midi.learning = None;
+                self.state.midi.curve = None;
+                self.state.settings.scroll = 0.0;
+            }
+            MAct::ToggleController(i) => {
+                if let Some(name) = p.inputs.get(i).map(|d| d.name.clone()) {
+                    self.midi_enable(&name);
+                }
+            }
             MAct::Output(i) => self.state.midi.output = i,
-            MAct::Input(i) => self.state.midi.input = i,
-            MAct::Power(i) => {
+            MAct::Input(i) | MAct::Power(i) => {
+                let Some(name) = p.inputs.get(i).map(|d| d.name.clone()) else { return };
+                if p.input != i {
+                    self.state.midi.learning = None;
+                    self.state.midi.trace.clear();
+                }
                 self.state.midi.input = i;
-                let Some(name) = self.state.midi.inputs.get(i).map(|d| d.name.clone()) else { return };
-                self.midi_enable(&name);
+                if matches!(m, MAct::Power(_)) {
+                    self.midi_enable(&name);
+                }
             }
             MAct::Enable => {
                 if let Some(name) = inp {
                     self.midi_enable(&name);
                 }
+            }
+            MAct::ListScroll(input, rows) => { self.midi_list_scroll(input, i32::from(rows)); }
+            MAct::Preset(save) => {
+                if let Some(device) = inp {
+                    self.state.midi.learning = None;
+                    self.controller_preset_dialog(device, save);
+                }
+            }
+            MAct::Monitor => {
+                self.state.midi.monitor = !p.monitor;
+                self.state.midi.trace.clear();
+            }
+            MAct::InputRole => {
+                let Some(device) = inp else { return };
+                self.midi_release_all();
+                self.state.midi.learning = None;
+                self.midi_play.transport_held.retain(|(dev, _)| dev.as_ref() != device);
+                crate::controller::set_role(&device, crate::controller::role(&device).next());
+                self.midi_play.surface_touched.remove(device.as_str());
+                self.midi_play.surface_frame_at = None;
+            }
+            MAct::OneShot => {
+                let Some(device) = inp else { return };
+                self.midi_play.transport_held.retain(|(dev, _)| dev.as_ref() != device);
+                crate::controller::set_one_shot(&device, !crate::controller::one_shot(&device));
+            }
+            MAct::PairOutput(on) => {
+                let Some(device) = inp else { return };
+                if on && out.is_none() { return; }
+                if on && p.inputs.iter().any(|other| other.name != device
+                    && crate::controller::feedback_output(&other.name) == out)
+                {
+                    self.state.message = Some("That feedback output is already paired with another MIDI input.".into());
+                } else {
+                    crate::controller::set_feedback_output(&device, if on { out.as_deref() } else { None });
+                    self.midi_play.surface_frame_at = None;
+                }
+            }
+            MAct::Learn(action) => {
+                let Some(device) = inp else { return };
+                if !p.selected_input().is_some_and(|i| i.open) || !Switch::Remote.on()
+                    || crate::controller::role(&device) == crate::controller::Role::Instrument
+                { return; }
+                let target = (device, action);
+                if p.learning.as_ref() == Some(&target) {
+                    self.state.midi.learning = None;
+                } else {
+                    self.state.midi.learning = Some(target);
+                }
+            }
+            MAct::ClearBinding(action) => {
+                let Some(device) = inp else { return };
+                self.state.midi.learning = None;
+                self.clear_transport_binding(&device, action);
             }
             MAct::OutSync | MAct::OutNotesOff => {
                 let Some(name) = out else { return };
@@ -620,8 +873,16 @@ impl App {
     }
 
     /// The wheel (or a drag, or right-click with `reset`) on a value box of the page: `steps` up or down.
-    pub(crate) fn midi_page_wheel(&mut self, m: MAct, steps: i32) {
-        self.midi_page_step(m, Some(steps));
+    pub(crate) fn midi_page_wheel(&mut self, m: MAct, steps: i32) -> bool {
+        match m {
+            MAct::Input(_) | MAct::Power(_) | MAct::ListScroll(true, _) => self.midi_list_scroll(true, -steps),
+            MAct::Output(_) | MAct::ListScroll(false, _) => self.midi_list_scroll(false, -steps),
+            m if m.is_value() => {
+                self.midi_page_step(m, Some(steps));
+                true
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn midi_page_reset(&mut self, m: MAct) {
@@ -673,7 +934,7 @@ impl App {
             let it = PItem::new(d.name.clone(), Cmd::MidiExt(Some(d.name.clone()))).mark(Mark::Radio(on));
             items.push(if cfg::input(&d.name).enabled { it } else { it.off() });
         }
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -690,6 +951,8 @@ impl App {
         let on = !sw.on();
         sw.set(on);
         if sw == Switch::Remote && !on {
+            self.state.midi.learning = None;
+            self.midi_play.transport_held.clear();
             self.midi_release_all();
         }
         self.state.message = Some(format!("{}: {}", sw.label(), if on { "on" } else { "off" }));
@@ -719,6 +982,21 @@ mod tests {
         assert_eq!(release_of(10), 64);
     }
 
+    #[test]
+    fn harmony_midi_snaps_heard_and_recorded_notes_and_releases_original_keys() {
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        app.state.piano.harmony.midi_snap=true;
+        app.transport.pretend_at(0.,false);app.toggle_record();
+        app.midi_notes(vec![on(61),on(60)]);
+        assert_eq!(app.midi_play.held.len(),2);assert!(app.midi_play.held.iter().all(|h|h.play==60));
+        app.state.piano.harmony.root=2; // release still uses mapped pitch captured at note-on
+        app.transport.pretend_at(96.,false);app.midi_notes(vec![off(61)]);
+        assert_eq!(app.midi_play.held.len(),1);assert_eq!(app.midi_play.held[0].play,60);
+        app.midi_notes(vec![off(60)]);assert!(app.midi_play.held.is_empty());
+        assert!(crate::piano::notes(&app.state).iter().any(|n|n.key==60&&n.length>0));
+        assert!(!crate::piano::notes(&app.state).iter().any(|n|n.key==61));
+    }
+
     fn on(key: u8) -> Msg {
         Msg::On { ch: 0, key, vel: 100 }
     }
@@ -736,6 +1014,20 @@ mod tests {
         app.state.selected_channel = 0;
         assert!(app.state.project.channels.len() >= 2, "the new project has channels");
         app
+    }
+
+    #[test]
+    fn chop_slab_notes_keep_recording_and_release_after_channel_change() {
+        let mut a=app();a.plugins=crate::plugins::Plugins::builtins();
+        let idx=a.plugins.index_of("ML Chop").unwrap();a.plugins.create(0,idx).unwrap();
+        let state=a.plugins.state(0).unwrap();let mut j:serde_json::Value=serde_json::from_slice(&state[8..]).unwrap();
+        let doc=lemon_chop::params::Document{slab:true,..Default::default()};j["fields"]["chop-document"]=serde_json::json!(serde_json::to_string(&doc).unwrap());
+        let body=serde_json::to_vec(&j).unwrap();let mut state=(body.len() as u64).to_le_bytes().to_vec();state.extend(body);a.plugins.create_with(0,idx,Some(&state)).unwrap();
+        let ev=|msg|Ev{dev:std::sync::Arc::from("SLAB"),msg};
+        a.midi_events(vec![ev(Msg::On{ch:7,key:12,vel:100})]);
+        assert_eq!(a.midi_play.held.len(),1);assert_eq!(a.midi_play.held[0].play,36);
+        a.state.selected_channel=1;a.midi_events(vec![ev(Msg::Off{ch:7,key:12,vel:0})]);assert!(a.midi_play.held.is_empty());
+        a.state.selected_channel=0;a.midi_events(vec![ev(Msg::On{ch:0,key:81,vel:127})]);assert!(a.midi_play.held.is_empty(),"controller undo must not become a recorded note");
     }
 
     /// spec §3 Foot pedal controls note off.
@@ -839,11 +1131,11 @@ mod tests {
         app.midi = crate::midi_in::MidiIn::open(|| {});
         app.midi_out = crate::midi_out::MidiOut::start(app.transport.watch());
         let name = app.midi.outputs.iter().find(|n| n.contains("LemonKeys")).cloned().expect("a LemonKeys output");
-        let input = midir::MidiInput::new("Lemon Studio clock test").unwrap();
+        let input = midir::MidiInput::new("ML Studio clock test").unwrap();
         let port = input.ports().into_iter().find(|p| input.port_name(p).is_ok_and(|n| n.contains("LemonKeys")));
         let got: Arc<Mutex<Vec<u8>>> = Arc::default();
         let sink = got.clone();
-        let mut input = midir::MidiInput::new("Lemon Studio clock test").unwrap();
+        let mut input = midir::MidiInput::new("ML Studio clock test").unwrap();
         input.ignore(midir::Ignore::None);
         let _conn = input
             .connect(&port.expect("a LemonKeys input"), "clock", move |_, b, _| sink.lock().unwrap().push(b[0]), ())

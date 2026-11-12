@@ -22,6 +22,7 @@ pub enum Tool {
     Mute,
     Slice,
     Select,
+    Stretch,
     Zoom,
     Playback,
 }
@@ -43,7 +44,7 @@ impl Tool {
 
     /// Tools whose left-drag on a selected note moves the whole selection (§9).
     pub fn moves_groups(self) -> bool {
-        matches!(self, Tool::Draw | Tool::Select)
+        matches!(self, Tool::Draw | Tool::Paint | Tool::Select)
     }
 }
 
@@ -61,7 +62,26 @@ pub enum Overlay {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClipSession {
+    pub arrangement:usize,
+    pub parts:Vec<(usize,os_model::Clip)>,
+    pub active:usize,
+}
+impl ClipSession {
+    pub fn clip(&self,s:&State,index:usize)->Option<os_model::Clip> {
+        if self.arrangement!=s.project.arrangement_index(){return None;}
+        let (i,old)=self.parts.get(index)?;
+        crate::playlist::clips(s).get(*i).cloned().filter(|c|c.track==old.track && c.position==old.position && c.source==old.source)
+    }
+}
+pub fn active_clip(s:&State)->Option<os_model::Clip>{
+    let session=s.piano.clip_session.as_ref()?;
+    session.clip(s,session.active).filter(|c|c.source==os_model::ClipSource::Pattern(s.pattern))
+}
+
+#[derive(Debug, Clone)]
 pub struct PianoState {
+    pub harmony: crate::harmony::Harmony,
     /// Time scroll in ticks (left edge of the grid).
     pub scroll_x: f32,
     /// Key scroll in pixels from the top of the highest key's row.
@@ -76,14 +96,20 @@ pub struct PianoState {
     /// The last note clicked or edited in the event panel: new notes take its controls (velocity, pan, release, cutoff,
     /// resonance, fine pitch, repeat, colour), as FL does; `None` = the defaults.
     pub last_controls: Option<Note>,
+    pub draw_slide:bool,
+    pub draw_porta:bool,
+    pub properties_click:Option<(u16,usize,Note,std::time::Instant,(f32,f32))>,
     /// The project changed since the playing engine last got it (notes, steps, mixer, channel
     /// settings, tempo); `App::tick` sends it to the transport.
     pub dirty: bool,
+    pub edit_length:Option<(u16,u32)>,
     /// Key held with the mouse (keyboard press or a dragged note), lit on the keyboard (§4).
     pub held: Option<i32>,
     /// Keys held on the typing keyboard as (channel index, key), lit too (ui/typing-keyboard.md).
     pub typed: Vec<(u16, i32)>,
     pub tool: Tool,
+    /// Stretch selected note timing at note ends while retaining the drawing tool.
+    pub stretch: bool,
     /// Event panel target.
     pub lane: Lane,
     /// Cents at the middle of the channel pitch lane's window (its scroll position, §7b).
@@ -91,6 +117,9 @@ pub struct PianoState {
     pub overlay: Option<Overlay>,
     /// Ctrl+C copies (positions as copied).
     pub clipboard: Vec<Note>,
+    /// Channel event-panel focus; note-grid clicks restore note shortcuts.
+    pub event_focus: bool,
+    pub event_clipboard: Vec<ControlPoint>,
     /// Zoom tool: the view before "zoom out" (px per beat, scroll x, scroll y), for right-click.
     pub zoom_back: Option<(f32, f32, f32)>,
     /// Play-start marker in the ruler (ticks; pattern playback starts here, §10).
@@ -104,6 +133,8 @@ pub struct PianoState {
     /// Key row pitch in pixels (vertical zoom, §3a; the measured default is [`ROW`]).
     pub row_h: f32,
     /// Ghost channels: other channels' notes of the pattern drawn dimmed (§5, Alt+V).
+    pub clip_session:Option<ClipSession>,
+    pub layers:std::collections::BTreeSet<(u16,u16)>,
     pub ghosts: bool,
     /// Random state of the Randomize and humanize tools (§11).
     pub rng: u64,
@@ -122,25 +153,34 @@ pub struct PianoState {
 impl Default for PianoState {
     fn default() -> Self {
         PianoState {
+            harmony: crate::harmony::Harmony::default(),
             scroll_x: 0.0,
             scroll_y: ((TOP_KEY - 72) as f32) * ROW,
             px_per_beat: 96.0,
             bar_span: None,
             last_len: 0,
             last_controls: None,
+            draw_slide:false,
+            draw_porta:false,properties_click:None,
             dirty: false,
+            edit_length:None,
             held: None,
             typed: Vec::new(),
             tool: Tool::Draw,
+            stretch: false,
             lane: Lane::Velocity,
             pitch_center: 0,
             overlay: None,
             clipboard: Vec::new(),
+            event_focus: false,
+            event_clipboard: Vec::new(),
             zoom_back: None,
             marker: 0,
             marker_placed: false,
             range: None,
             row_h: ROW,
+            clip_session:None,
+            layers:Default::default(),
             ghosts: true,
             rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1,
             split: crate::piano_split::load(),
@@ -154,6 +194,22 @@ impl Default for PianoState {
 }
 
 impl PianoState {
+    pub fn choose_tool(&mut self, tool: Tool) {
+        if tool == Tool::Stretch {
+            self.stretch = !self.stretch;
+            if !matches!(self.tool, Tool::Draw | Tool::Paint) { self.tool = Tool::Draw; }
+        } else {
+            self.tool = tool;
+        }
+        self.overlay = None;
+    }
+
+    /// Use the picked note's type for subsequent placements.
+    pub fn use_note_type(&mut self, note: &Note) {
+        self.draw_slide = note.slide();
+        self.draw_porta = note.porta();
+    }
+
     /// Selected note indices (into the pattern's notes) for this pattern and channel.
     pub fn selection(&self, pattern: u16, channel: Option<u16>) -> Vec<usize> {
         match channel {
@@ -182,6 +238,8 @@ impl PianoState {
 /// Mapping between grid pixels and ticks / keys for one frame.
 pub struct Geom {
     pub grid: Rect,
+    pub source_window:Option<(f32,f32)>,
+    pub keys: Vec<i32>,
     pub ppt: f32,
     pub scroll_x: f32,
     pub scroll_y: f32,
@@ -198,12 +256,27 @@ pub struct Geom {
 
 impl Geom {
     pub fn new(s: &State, grid: Rect) -> Geom {
+        let mut geom=Self::timeline(s,grid);
+        if let Some(c)=active_clip(s){geom.for_clip(s,&c);}
+        geom
+    }
+
+    pub fn for_clip(&mut self,s:&State,c:&os_model::Clip){
+        self.scroll_x=((f64::from(s.piano.scroll_x)-f64::from(c.position))*c.pattern_rate()+crate::playlist::window(s,c).0) as f32;
+        self.ppt/=c.pattern_rate() as f32;
+        let start=crate::playlist::window(s,c).0 as f32;
+        self.source_window=Some((start,start+c.length as f32*c.pattern_rate() as f32));
+    }
+
+    pub fn timeline(s:&State,grid:Rect)->Geom{
         let ppq = u32::from(s.project.ppq.max(4));
         // A beat is the signature's note value: a quarter in 4/4, an eighth in 3/8.
         let bars: Vec<(u32, u32, u32)> =
             s.project.pattern_bars(s.pattern).into_iter().map(|(start, bar, (num, _))| (start, bar, (bar / u32::from(num.max(1))).max(1))).collect();
         Geom {
             grid,
+            source_window:None,
+            keys: visible_key_list(s),
             ppt: s.piano.px_per_beat / ppq as f32,
             scroll_x: s.piano.scroll_x,
             scroll_y: s.piano.scroll_y,
@@ -246,11 +319,11 @@ impl Geom {
 
     /// Top of `key`'s row (`row - 1` px of fill, then the separator).
     pub fn y_of(&self, key: i32) -> f32 {
-        self.grid.y + (TOP_KEY - key) as f32 * self.row - self.scroll_y
+        self.grid.y + self.keys.iter().position(|k| *k == key).map_or(-10000.0, |i| i as f32) * self.row - self.scroll_y
     }
 
     pub fn key_at(&self, y: f32) -> i32 {
-        TOP_KEY - ((y - self.grid.y + self.scroll_y) / self.row).floor() as i32
+        { let i = ((y - self.grid.y + self.scroll_y) / self.row).floor() as i32; self.keys[i.clamp(0, self.keys.len() as i32 - 1) as usize] }
     }
 
     /// Keys with at least one visible pixel, lowest first.
@@ -263,12 +336,14 @@ impl Geom {
     /// A note covers its row plus the separators above and below (§5).
     pub fn note_rect(&self, n: &Note) -> Option<Rect> {
         let key = i32::from(n.key);
-        if key > TOP_KEY {
+        if !self.keys.contains(&key) {
             return None;
         }
         let len = if n.length == 0 { self.step } else { n.length };
-        let x = self.x_of(n.position as f32);
-        let w = (len as f32 * self.ppt).max(3.0);
+        let (mut start,mut end)=(n.position as f32,n.position as f32+len as f32);
+        if let Some((a,b))=self.source_window{start=start.max(a);end=end.min(b);if end<=start{return None;}}
+        let x=self.x_of(start);
+        let w=((end-start)*self.ppt).max(3.0);
         Some(Rect::new(x, self.y_of(key) - 1.0, w, self.row + 1.0))
     }
 }
@@ -289,6 +364,41 @@ pub fn song_spans(s: &State) -> Vec<(u32, u32, u32)> {
         .collect();
     v.sort_unstable();
     v
+}
+
+/// A display clock that follows transport without drawing the audio callback's small timing steps.
+#[derive(Default)]
+pub(crate) struct PlayheadClock {
+    last: Option<(std::time::Instant, u64, f64, f64)>,
+}
+
+impl PlayheadClock {
+    pub(crate) fn sample(&mut self, at: std::time::Instant, generation: u64, tick: f64, rate: f64) -> f64 {
+        let shown = self.last.map_or(tick, |(before, session, raw, drawn)| {
+            let elapsed = at.saturating_duration_since(before).as_secs_f64();
+            let step = elapsed * rate;
+            let predicted = drawn + step;
+            let error = tick - predicted;
+            if generation != session || elapsed > 0.150 || raw - tick > rate * 0.015 || error > rate * 0.120 {
+                return tick;
+            }
+            // Follow the musical rate, correcting modest clock error gradually. If audio stalls, hold
+            // within 45 ms of it until it catches up instead of snapping the line backward.
+            let adjustment = (error * 0.22).clamp(-step * 0.18, step * 0.18);
+            (predicted + adjustment).min(tick + rate * 0.045).max(drawn)
+        });
+        self.last = Some((at, generation, tick, shown));
+        shown
+    }
+}
+
+pub(crate) fn playhead_x(s: &State, g: &Geom, tick: f64, song: bool) -> Option<f32> {
+    if song && s.song_mode && g.source_window.is_some() {
+        let ppt = f64::from(s.piano.px_per_beat) / f64::from(s.project.ppq.max(4));
+        return Some(g.grid.x + ((tick - f64::from(s.piano.scroll_x)) * ppt) as f32);
+    }
+    let tick = if song { pattern_tick_in_song(s, tick)? } else { tick };
+    Some(g.grid.x + ((tick - f64::from(g.scroll_x)) * f64::from(g.ppt)) as f32)
 }
 
 /// The pattern tick at song tick `t`, when a clip of the current pattern plays there (the latest-starting one).
@@ -313,25 +423,6 @@ pub fn song_tick_of(s: &State, t: u32, near: u32) -> Option<u32> {
         .map(place)
 }
 
-/// What the Playback tool's line sounds on channel `ch` moving from tick `from` to `to` (the same tick for a press): the
-/// notes it is on now and those whose start it just passed, as (key, velocity), a key once at its loudest note's velocity.
-pub fn scrub_keys(s: &State, ch: u16, from: f32, to: f32) -> Vec<(u16, u8)> {
-    let (a, b) = (from.min(to), from.max(to));
-    let mut keys: Vec<(u16, u8)> = notes(s)
-        .iter()
-        .filter(|n| n.channel == ch && !n.muted())
-        .filter(|n| {
-            let p = n.position as f32;
-            let on = p <= to && to < p + shown_len(s, n) as f32;
-            on || (p > a && p <= b)
-        })
-        .map(|n| (n.key, n.velocity))
-        .collect();
-    keys.sort_unstable_by_key(|&(k, v)| (k, std::cmp::Reverse(v)));
-    keys.dedup_by_key(|n| n.0);
-    keys
-}
-
 /// Length used for drawing: a plain step (length 0) is shown one step long (Lemon Studio choice).
 pub fn shown_len(s: &State, n: &Note) -> u32 {
     if n.length == 0 { u32::from(s.project.ppq.max(4)) / 4 } else { n.length }
@@ -347,6 +438,7 @@ pub fn pattern_length(s: &State, n: u16) -> u32 {
 /// last three edit the pattern's channel control points.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lane {
+    Drive,
     Velocity,
     Pan,
     Release,
@@ -375,22 +467,23 @@ const CTRL_MAX: i32 = 12800;
 
 impl Lane {
     /// Menu order: note properties (the first `NOTE_LANES`), then channel controls.
-    pub const ALL: [Lane; 10] = [
+    pub const ALL: [Lane; 11] = [
         Lane::Pan,
         Lane::Velocity,
         Lane::Release,
         Lane::Cutoff,
         Lane::Resonance,
         Lane::FinePitch,
-        Lane::Repeat,
+        Lane::Repeat,Lane::Drive,
         Lane::ChanPan,
         Lane::ChanVolume,
         Lane::ChanPitch,
     ];
-    pub const NOTE_LANES: usize = 7;
+    pub const NOTE_LANES: usize = 8;
     /// Dimmed name over the panel.
     pub fn name(self) -> &'static str {
         match self {
+            Lane::Drive => "Note drive",
             Lane::Velocity => "Velocity",
             Lane::Pan => "Pan",
             Lane::Release => "Release",
@@ -406,6 +499,7 @@ impl Lane {
     /// Entry in the Control menu.
     pub fn menu_name(self) -> &'static str {
         match self {
+            Lane::Drive => "Note drive (Sampler)",
             Lane::Velocity => "Note velocity",
             Lane::Pan => "Note pan",
             Lane::Release => "Note release",
@@ -439,6 +533,7 @@ impl Lane {
             Lane::Cutoff => n.mod_x,
             Lane::Resonance => n.mod_y,
             Lane::FinePitch => n.fine_pitch,
+            Lane::Drive => n.drive,
             Lane::Repeat => n.repeat,
             _ => 0,
         }
@@ -451,6 +546,7 @@ impl Lane {
             Lane::Cutoff => n.mod_x = v,
             Lane::Resonance => n.mod_y = v,
             Lane::FinePitch => n.fine_pitch = v,
+            Lane::Drive => n.drive=v.min(127),
             Lane::Repeat => n.repeat = v,
             _ => {}
         }
@@ -461,6 +557,7 @@ impl Lane {
             Lane::Velocity | Lane::Pan | Lane::Release => 128.0,
             Lane::Cutoff | Lane::Resonance => 256.0,
             Lane::FinePitch => 240.0,
+            Lane::Drive => 127.,
             Lane::Repeat => 14.0,
             _ => 1.0,
         }
@@ -581,6 +678,7 @@ pub fn snapshot(s: &mut State) {
 /// `snapshot`, the step named `name` (as the browser's History lists it; spec: ui/settings-choices.md "Undo history:
 /// the four checks (2026-10-16)").
 pub fn snapshot_as(s: &mut State, name: &'static str) {
+    s.piano.edit_length=Some((s.pattern,s.project.pattern_length(s.pattern)));
     s.piano.dirty = true;
     let snap = crate::history::Snap::pattern(s, s.pattern);
     crate::history::record(s, name, snap);
@@ -601,9 +699,11 @@ pub fn rescale(s: &mut State, from: u16, to: u16) {
     let p = &mut s.piano;
     p.scroll_x *= k;
     p.last_len = rescale_length(p.last_len, from, to);
+    if let Some((_,len))=&mut p.edit_length{*len=rescale_length(*len,from,to);}
     p.marker = rescale_tick(p.marker, from, to);
     p.range = p.range.map(|(a, b)| (rescale_tick(a, from, to), rescale_tick(b, from, to)));
     p.clipboard.iter_mut().for_each(|n| n.rescale(from, to));
+    p.event_clipboard.iter_mut().for_each(|c| c.rescale(from, to));
     if let Some((_, x, _)) = &mut p.zoom_back {
         *x *= k;
     }
@@ -613,10 +713,12 @@ pub fn rescale(s: &mut State, from: u16, to: u16) {
 pub fn add_note(s: &mut State, channel: u16, tick: u32, key: i32) -> usize {
     let ppq = u32::from(s.project.ppq.max(4));
     let length = if s.piano.last_len > 0 { s.piano.last_len } else { ppq / 2 };
+    let key = if s.piano.harmony.edit_snap {i32::from(s.piano.harmony.snap(key,TOP_KEY))}else{key};
     let mut note = Note { length, key: key.clamp(0, TOP_KEY) as u16, ..Note::step(channel, tick) };
     if let Some(t) = s.piano.last_controls {
         copy_controls(&t, &mut note);
     }
+    note.set_slide(s.piano.draw_slide);note.set_porta(s.piano.draw_porta);
     let p = pattern_mut(s);
     p.notes.push(note);
     p.notes.len() - 1
@@ -665,6 +767,7 @@ pub fn copy_controls(from: &Note, to: &mut Note) {
 
 /// Delete notes by index.
 pub fn delete(s: &mut State, mut idx: Vec<usize>) {
+    let old=s.project.pattern_length(s.pattern);
     idx.sort_unstable();
     idx.dedup();
     let p = pattern_mut(s);
@@ -674,10 +777,12 @@ pub fn delete(s: &mut State, mut idx: Vec<usize>) {
         }
     }
     s.piano.clear_selection();
+    crate::playlist::refit_pattern_clips(s,s.pattern,old);
 }
 
 /// Restore storage order (sorted by position, patterns.md) after an edit, keeping the selection.
 pub fn finish_edit(s: &mut State) {
+    if let Some((n,old))=s.piano.edit_length.take(){crate::playlist::refit_pattern_clips(s,n,old);}
     let (pattern, sel_key) = (s.pattern, s.piano.sel_key);
     let p = pattern_mut(s);
     let mut order: Vec<usize> = (0..p.notes.len()).collect();
@@ -745,11 +850,12 @@ pub fn shift(s: &mut State, idx: &[usize], dt: i64, dk: i32) -> bool {
         return false;
     }
     snapshot(s);
+    let harmony=s.piano.harmony.clone();
     let p = pattern_mut(s);
     for &i in idx {
         if let Some(n) = p.notes.get_mut(i) {
             n.position = (i64::from(n.position) + dt) as u32;
-            n.key = (i32::from(n.key) + dk) as u16;
+            n.key = if harmony.edit_snap {harmony.snap(i32::from(n.key)+dk,TOP_KEY)}else{(i32::from(n.key) + dk) as u16};
         }
     }
     finish_edit(s);
@@ -769,11 +875,14 @@ pub fn slice(s: &mut State, tick: u32) -> usize {
         return 0;
     }
     snapshot(s);
+    let mut expressions=std::collections::BTreeMap::new();
+    for &i in &cut{let n=notes(s)[i];if let Some(e)=s.project.mpe.get(n.expression).cloned(){let at=(tick-n.position)as f32/n.length as f32;let a=s.project.mpe.add(e.window(0.,at));let b=s.project.mpe.add(e.window(at,1.));expressions.insert(i,(a,b));}}
     let p = pattern_mut(s);
     for &i in &cut {
         let n = p.notes[i];
         p.notes[i].length = tick - n.position;
-        p.notes.push(Note { position: tick, length: n.position + n.length - tick, ..n });
+        let (a,b)=expressions.get(&i).copied().unwrap_or((n.expression,n.expression));p.notes[i].expression=a;
+        p.notes.push(Note { expression:b,position: tick, length: n.position + n.length - tick, ..n });
     }
     s.piano.clear_selection();
     finish_edit(s);
@@ -814,6 +923,7 @@ pub fn rotate(s: &mut State, idx: &[usize], dt: i64) -> bool {
     }
     let end = i64::from(pattern_end(s));
     snapshot(s);
+    let harmony=s.piano.harmony.clone();
     let p = pattern_mut(s);
     for &i in idx {
         if let Some(n) = p.notes.get_mut(i) {
@@ -848,8 +958,10 @@ pub fn center_keys(s: &mut State, view_h: f32) {
         _ => 60.0,
     };
     let row = s.piano.row_h;
-    let max = (TOP_KEY + 1) as f32 * row - view_h;
-    s.piano.scroll_y = ((TOP_KEY as f32 - center) * row - view_h / 2.0 + row / 2.0).clamp(0.0, max.max(0.0)).round();
+    let keys = visible_key_list(s);
+    let index = keys.iter().enumerate().min_by_key(|(_, k)| ((**k as f32 - center).abs() * 100.0) as i32).map_or(0, |(i,_)| i);
+    let max = keys.len() as f32 * row - view_h;
+    s.piano.scroll_y = (index as f32 * row - view_h / 2.0 + row / 2.0).clamp(0.0, max.max(0.0)).round();
     s.piano.scroll_x = 0.0;
 }
 
@@ -889,8 +1001,28 @@ pub fn auto_zoom(s: &mut State, grid: Rect) {
     center_keys(s, grid.h);
 }
 
+/// Frame every note in the displayed channel, including notes past a pattern marker.
+pub fn fit_notes(s: &mut State, grid: Rect) {
+    let channel = channel(s);
+    let mut window = None;
+    for note in notes(s).iter().filter(|n| Some(n.channel) == channel) {
+        let end = note.position.saturating_add(note.length.max(1) as u32);
+        let (start, stop, low, high) = window.unwrap_or((note.position, end, note.key, note.key));
+        window = Some((start.min(note.position), stop.max(end), low.min(note.key), high.max(note.key)));
+    }
+    let Some((start, stop, low, high)) = window else { auto_zoom(s, grid); return; };
+    let ppq = f32::from(s.project.ppq.max(4));
+    let margin = ppq / 4.0;
+    let left = (start as f32 - margin).max(0.0);
+    s.piano.px_per_beat = ((grid.w.max(1.0) - 1.0).max(1.0) * ppq / (stop as f32 + margin - left).max(1.0)).min(1600.0);
+    s.piano.row_h = (grid.h / f32::from(high-low+3)).floor().clamp(1.0, MAX_ROW);
+    center_keys(s, grid.h);
+    s.piano.scroll_x = left;
+    s.piano.zoom_back = None;
+}
+
 pub fn clamp_scroll(s: &mut State, view_h: f32) {
-    let max = ((TOP_KEY + 1) as f32 * s.piano.row_h - view_h).max(0.0);
+    let max = (visible_key_list(s).len() as f32 * s.piano.row_h - view_h).max(0.0);
     s.piano.scroll_y = s.piano.scroll_y.clamp(0.0, max).round();
     s.piano.scroll_x = s.piano.scroll_x.max(0.0);
 }
@@ -915,18 +1047,43 @@ pub fn set_rows(s: &mut State, grid: Rect, y: f32, row: f32) {
     clamp_scroll(s, grid.h);
 }
 
-/// Time zoom by `notches` wheel notches from zoom `from` (px a beat: the zoom drawn, or where an eased zoom is going,
-/// `crate::smooth`) around grid x `x`, which keeps the tick drawn there (§3a).
-pub fn zoom_time(s: &mut State, g: &Geom, x: f32, from: f32, notches: f32) {
+/// Time zoom by `notches` wheel notches around grid x `x` (§3a).
+pub fn zoom_time(s: &mut State, g: &Geom, x: f32, notches: f32) {
     let tick = g.tick_at(x);
     let p = &mut s.piano;
-    p.px_per_beat = (from * 1.25f32.powf(notches)).clamp(6.0, 1600.0);
+    p.px_per_beat = (p.px_per_beat * 1.25f32.powf(notches)).clamp(6.0, 1600.0);
     let ppt = p.px_per_beat / f32::from(s.project.ppq.max(4));
     p.scroll_x = (tick - (x - g.grid.x) / ppt).max(0.0);
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn playlist_parts_round_trip_trimmed_and_stretched_song_positions(){
+        use super::*;
+        use crate::{app::App,playlist as pl,piano_tools::{self,NCmd}};
+        use os_model::{Clip,ClipSource};
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        let note=Note{position:120,length:48,..Note::step(0,0)};
+        app.state.project.patterns[0].notes.push(note);
+        app.state.project.patterns.push(Pattern{number:2,notes:vec![Note{channel:1,..note}],..Default::default()});
+        let a=Clip::new(384,192,2,ClipSource::Pattern(1));
+        let mut b=Clip::new(768,192,3,ClipSource::Pattern(2));
+        b.pattern_speed=2.;b.window=Some((96.,480.));
+        pl::arr_mut(&mut app.state).clips=vec![a,b];
+        app.state.playlist.sel=vec![0,1];pl::run(&mut app,pl::Cmd::ClipSession(0));
+        let rect=Rect::new(0.,0.,1500.,700.);
+        let timeline=Geom::timeline(&app.state,rect);
+        let x=timeline.x_of(780.);
+        piano_tools::run(&mut app,NCmd::SessionPart(1,1));
+        let editing=Geom::new(&app.state,rect);
+        assert_eq!(app.state.pattern,2);assert_eq!(app.state.selected_channel,1);
+        assert!((editing.tick_at(x)-120.).abs()<0.01);
+        assert!((editing.x_of(120.)-x).abs()<0.01);
+        assert!(editing.note_rect(&Note{position:0,length:12,..note}).is_none());
+        piano_tools::run(&mut app,NCmd::EndSession);assert!(active_clip(&app.state).is_none());
+    }
+
     #[test]
     fn new_notes_copy_controls_not_place_or_mute() {
         use super::*;
@@ -1250,7 +1407,8 @@ mod tests {
     fn typing_keyboard_keys() {
         use winit::keyboard::KeyCode;
         let mut a = app();
-        assert!(a.typing_on(), "on by default");
+        // Test the enabled typing keyboard without assuming the user's startup preference.
+        if !a.typing_on() { a.toggle_typing(); }
         assert!(a.typing_key(KeyCode::KeyZ, true, false, false));
         assert!(a.typing_key(KeyCode::KeyQ, true, false, false));
         assert!(a.typing_key(KeyCode::KeyQ, true, false, false), "repeat is taken, not replayed");
@@ -1345,4 +1503,8 @@ mod tests {
         }
         set_check(&AUTO_ZOOM_PIANO, false);
     }
+}
+
+pub fn visible_key_list(s: &State) -> Vec<i32> {
+    (0..=TOP_KEY).rev().filter(|k| !s.piano.harmony.scale_only || !s.piano.harmony.shade || s.piano.harmony.allows(*k)).collect()
 }

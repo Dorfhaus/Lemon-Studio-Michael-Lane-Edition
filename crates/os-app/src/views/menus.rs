@@ -13,6 +13,7 @@
 use os_ui::{Font, Rect};
 
 use crate::app::{Action, State, Ui, Win};
+use crate::prefs::language::Language;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -29,115 +30,10 @@ pub enum Mark {
     Radio(bool),
 }
 
-/// What a menu entry does. `App::menu_item` and the menus' own logic (what works, what is ticked, which ▸ entries open
-/// a submenu) read it, never the label, so a label can change alone (the naming pass renamed most of them).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum MenuCmd {
-    /// Nothing yet (greyed out), a heading or separator, or an entry dispatched by its place (FILE's first entries,
-    /// About: `FILE_NEW`, ...).
-    None,
-    SaveToNewFolder,
-    SaveAsTemplate,
-    DeleteUnused,
-    ExportZip,
-    RestoreBackup,
-    Undo,
-    Redo,
-    MorePlugins,
-    Sampler,
-    /// ADD ▸ MIDI Out: a Lemon MIDI Out channel (spec: plugins/midi-out.md §6.2).
-    MidiOut,
-    AudioClip,
-    AutomationClip,
-    Layer,
-    /// ADD's display modes of the plugin menus.
-    View(crate::plugin_db::MenuView),
-    PluginPalette,
-    ClipPalette,
-    Rescan,
-    /// ADD > Pattern: a new empty pattern.
-    NewPattern,
-    Pattern(crate::patterns::Cmd),
-    /// VIEW's window entries: toggle the window.
-    Window(Win),
-    CloseAll(crate::app::CloseAll),
-    IntoWorkspace,
-    /// VIEW > Align all channel editors.
-    AlignEditors,
-    /// TOOLS > Save MIDI clipboard to browser.
-    SaveMidiClip,
-    /// TOOLS > Save audio clipboard to browser (`crate::audio_clipboard`).
-    SaveAudioClip,
-    /// HELP > Diagnostics (`crate::diagnostics`).
-    Diagnostics,
-    /// HELP > Check for updates (`crate::update`).
-    CheckUpdates,
-    /// HELP's entries that open a page in the web browser (`crate::help_links`).
-    Web(&'static str),
-    /// The menu bar's ways into the browser.
-    Jump(crate::browser::Jump),
-    /// A settings tab.
-    Settings(usize),
-    Midi(crate::midi_cfg::Switch),
-    Typing,
-    Metronome,
-    Record(crate::record::Opt),
-    StepEdit,
-    Autoscroll,
-    Groups,
-    Multilink,
-    ClearLog,
-    /// TOOLS > Retro audio capture: Enabled, and Open capture in audio editor.
-    AudioLog,
-    DumpAudioLog,
-    /// The last tweaked parameters' entries.
-    Params(crate::params::MenuEntry),
-    StopSound,
-    CancelRecording,
-    SelectUnused,
-    PurgeClips,
-    /// TOOLS ▸ Switch auto-bypass for all plugins (`crate::mixer::MCmd::AutoBypassAll`).
-    AutoBypassAll,
-    ResetEmptyTracks,
-    /// TOOLS ▸ Set up for live performance: Prepare for performance mode (spec: ui/performance-mode.md §1).
-    PrepPerformance,
-    /// TOOLS ▸ Set up for MIDI export: every instrument channel becomes a MIDI Out channel (spec: plugins/midi-out.md
-    /// §6.6, ui/menus.md).
-    PrepMidiExport,
-    /// TOOLS ▸ Chord progression tool...: the progression box (`crate::chord_tool`).
-    Chords,
-    /// TOOLS ▸ Lock all tracks to their clips / Unlock all tracks from their clips (`crate::playlist::Cmd::LockClips`).
-    LockClips(bool),
-    RemoveTeslas,
-    /// A ▸ entry with a submenu built (`sub_items`).
-    Sub(Sub),
-}
-
-/// The submenus the dropdown builds (`sub_items`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Sub {
-    Templates,
-    Import,
-    Effect,
-    Toolbars,
-    Arrange,
-    Background,
-    OneClick,
-    DumpLog,
-    AudioLog,
-    ClipsAll,
-    ClipsSel,
-    Editors,
-    KeyFocus,
-    Declick,
-    Tutorials,
-}
-
 #[derive(Clone, Copy)]
 pub struct Item {
     pub kind: Kind,
     pub label: &'static str,
-    pub cmd: MenuCmd,
     pub shortcut: &'static str,
     /// Implemented in this build.
     pub works: bool,
@@ -147,17 +43,14 @@ pub struct Item {
 }
 
 const fn it(label: &'static str, shortcut: &'static str) -> Item {
-    Item { kind: Kind::Item, label, cmd: MenuCmd::None, shortcut, works: false, mark: Mark::None, sub: false }
+    Item { kind: Kind::Item, label, shortcut, works: false, mark: Mark::None, sub: false }
 }
 const fn head(label: &'static str) -> Item {
-    Item { kind: Kind::Head, label, cmd: MenuCmd::None, shortcut: "", works: false, mark: Mark::None, sub: false }
+    Item { kind: Kind::Head, label, shortcut: "", works: false, mark: Mark::None, sub: false }
 }
-const SEP: Item = Item { kind: Kind::Sep, label: "", cmd: MenuCmd::None, shortcut: "", works: false, mark: Mark::None, sub: false };
+const SEP: Item = Item { kind: Kind::Sep, label: "", shortcut: "", works: false, mark: Mark::None, sub: false };
 
 impl Item {
-    const fn cmd(self, cmd: MenuCmd) -> Item {
-        Item { cmd, ..self }
-    }
     const fn on(self) -> Item {
         Item { works: true, ..self }
     }
@@ -196,36 +89,46 @@ pub const FILE_EXIT: usize = 19;
 /// OPTIONS > Theme settings (flat index: header counts).
 #[cfg(test)]
 pub const OPT_THEME: usize = 5;
-/// TOOLS > Set keyboard focus of all plugins to ▸ (`rack::key_focus_items`).
-pub const KEY_FOCUS_LABEL: &str = "Set keyboard focus of all plugins to";
 /// OPTIONS > Metronome (spec: ui/metronome.md §1).
 pub const METRONOME_LABEL: &str = "Metronome";
 /// OPTIONS > the record options (spec: ui/recording.md §3).
-pub const PRECOUNT_LABEL: &str = "Count-in";
+pub const PRECOUNT_LABEL: &str = "Recording precount";
 pub const WAIT_LABEL: &str = "Start on input";
 pub const BLEND_LABEL: &str = "Blend recorded notes";
 pub const LOOP_LABEL: &str = "Loop record";
 
+/// The record option an OPTIONS entry switches.
+pub fn record_option(label: &str) -> Option<crate::record::Opt> {
+    use crate::record::Opt;
+    match label {
+        PRECOUNT_LABEL => Some(Opt::Precount),
+        WAIT_LABEL => Some(Opt::Wait),
+        BLEND_LABEL => Some(Opt::Blend),
+        LOOP_LABEL => Some(Opt::Loop),
+        _ => None,
+    }
+}
 /// OPTIONS > Auto scrolling (spec: ui/auto-scrolling.md §1).
 pub const AUTOSCROLL_LABEL: &str = "Auto scrolling";
 /// OPTIONS > Enable groups (spec: ui/enable-groups.md §1).
-pub const GROUPS_LABEL: &str = "Grouped clips move together";
+pub const GROUPS_LABEL: &str = "Enable groups";
 /// OPTIONS > Step edit (spec: ui/step-edit.md).
 pub const STEP_EDIT_LABEL: &str = "Step edit";
 /// OPTIONS ▸ Switches: Multilink to controllers (spec: ui/remote-control.md §4).
-pub const MULTILINK_LABEL: &str = "Multi MIDI learn";
+pub const MULTILINK_LABEL: &str = "Multilink to controllers";
 /// VIEW > Into workspace: windows partly outside the workspace move fully back in (`App::move_into_workspace`). A plain
-/// entry after "Arrange windows" (spec: ui/settings-choices.md "Advanced: Don't limit
+/// entry after "Arrange windows", whose submenu isn't built (spec: ui/settings-choices.md "Advanced: Don't limit
 /// windows to screen (2026-10-16)").
 pub const INTO_WORKSPACE_LABEL: &str = "Into workspace";
-pub const ALIGN_LABEL: &str = "Align all channel editors";
 /// Index of the OPTIONS menu.
 pub const OPTIONS_MENU: usize = 5;
 /// OPTIONS > Project info (the toolbar's info button).
 pub const OPT_INFO: usize = 9;
-/// HELP > About (the toolbar logo, the Help button's right click, the macOS application menu).
+/// HELP > About (the toolbar logo).
 pub const HELP_MENU: usize = 7;
-pub const HELP_ABOUT: usize = 11;
+pub const HELP_ABOUT: usize = 6;
+pub const HELP_GUIDE: usize = 0;
+pub const HELP_CHANGE_LOG: usize = 4;
 /// Index of the ADD and TOOLS menus.
 pub const ADD_MENU: usize = 2;
 pub const TOOLS_MENU: usize = 6;
@@ -241,208 +144,213 @@ pub const EDIT_MENU: usize = 1;
 
 const FILE: &[Item] = &[
     it("New", "").on(),
-    it("New from template", "").sub().cmd(MenuCmd::Sub(Sub::Templates)),
+    it("New from template", "").sub(),
     it("Open...", "Ctrl+O").on(),
     SEP,
     it("Save", "Ctrl+S").on(),
     it("Save as...", "Shift+Ctrl+S").on(),
     it("Save new version", "Ctrl+N").on(),
-    it("Save to new project folder...", "").on().cmd(MenuCmd::SaveToNewFolder),
-    it("Save as template...", "").on().cmd(MenuCmd::SaveAsTemplate),
-    it(DELETE_UNUSED_LABEL, "").on().cmd(MenuCmd::DeleteUnused),
+    it("Save to new project folder...", "").on(),
+    it("Save as template...", "").on(),
+    it(DELETE_UNUSED_LABEL, "").on(),
     SEP,
-    it("Import", "").sub().cmd(MenuCmd::Sub(Sub::Import)),
+    it("Import", "").sub(),
     it("Export audio...", "Ctrl+R").on(),
     it("Export MP3...", "Shift+Ctrl+R").on(),
     it("Export MIDI...", "Shift+Ctrl+M").on(),
-    it(EXPORT_ZIP_LABEL, "").on().cmd(MenuCmd::ExportZip),
+    it(EXPORT_ZIP_LABEL, "").on(),
     SEP,
-    it("Restore backup...", "").on().cmd(MenuCmd::RestoreBackup),
+    it("Revert to last backup", "").on(),
     SEP,
     it("Exit", "").on(),
+    SEP,
+    it(crate::collaboration::LABEL, "").on(),
 ];
 
 /// The project's undo history (spec: ui/settings-choices.md "Undo history: the four checks (2026-10-16)"): the first
 /// entry names what Ctrl+Z does next, Redo (Ctrl+Alt+Z) is there with Alternate undo mode on and a history to act on
 /// (`label_now`, `in_menu`).
-const EDIT: &[Item] = &[it("Undo", "Ctrl+Z").cmd(MenuCmd::Undo), it("Redo", "Ctrl+Alt+Z").cmd(MenuCmd::Redo)];
+const EDIT: &[Item] = &[it("Undo", "Ctrl+Z"), it("Redo", "Ctrl+Alt+Z"), it("Undo history", "")];
 
 const ADD_PLUGINS: &[Item] = &[
-    it("More plugins...", "").on().cmd(MenuCmd::MorePlugins),
+    it("More plugins...", "").on(),
     SEP,
     head("Channel"),
-    it("Sampler", "").on().cmd(MenuCmd::Sampler),
-    it(crate::lemon_midi_out::LEMON_MIDI_OUT, "").on().cmd(MenuCmd::MidiOut),
+    it("Sampler", "").on(),
     head("Misc"),
-    it("Audio clip", "").on().cmd(MenuCmd::AudioClip),
-    it("Automation clip", "").on().cmd(MenuCmd::AutomationClip),
-    it("Layer", "").on().cmd(MenuCmd::Layer),
+    it("Audio clip", "").on(),
+    it("Automation clip", "").on(),
+    it("Layer", "").on(),
     SEP,
     // The plugin menus' display mode (spec: ui/plugin-menu.md §2-3; `mark_of` puts the dot).
-    it("Categories", "").radio(true).on().cmd(MenuCmd::View(crate::plugin_db::MenuView::Categories)),
-    it("Simple", "").radio(false).on().cmd(MenuCmd::View(crate::plugin_db::MenuView::Simple)),
-    it("By vendor", "").radio(false).on().cmd(MenuCmd::View(crate::plugin_db::MenuView::Vendor)),
+    it("Categories", "").radio(true).on(),
+    it("Simple", "").radio(false).on(),
+    it("By vendor", "").radio(false).on(),
 ];
 const ADD_OTHER: &[Item] = &[
     head("Other"),
-    it("Effect", "").sub().cmd(MenuCmd::Sub(Sub::Effect)),
-    it("Plugin palette", "F8").on().cmd(MenuCmd::PluginPalette),
-    it("Browse plugin library", "").cmd(MenuCmd::Jump(crate::browser::Jump::PluginDb)),
-    it("Browse all installed plugins", "").cmd(MenuCmd::Jump(crate::browser::Jump::Installed)),
-    it("Browse presets", "").cmd(MenuCmd::Jump(crate::browser::Jump::Presets)),
+    it("Effect", "").sub(),
+    it("Plugin picker", "F8").on(),
+    it("Browse plugin database", ""),
+    it("Browse all installed plugins", ""),
+    it("Browse presets", ""),
     SEP,
-    it("Rescan plugins (fast)", "").on().cmd(MenuCmd::Rescan),
-    it("Manage plugins", "").cmd(MenuCmd::Settings(crate::views::settings::PLUGINS)),
+    it("Refresh plugin list (fast scan)", "").on(),
+    it("Manage plugins", ""),
     SEP,
-    it("Automation for the most recent parameter", "").cmd(MenuCmd::Params(crate::params::MenuEntry::Automation)),
+    it("Automation for last tweaked parameter", ""),
     SEP,
-    it("Pattern", "").on().cmd(MenuCmd::NewPattern),
+    it("Pattern", "").on(),
 ];
 
 /// The pattern list column is built from the project; this is its placeholder (never drawn).
 const PAT_LIST: &[Item] = &[];
 const PAT_CMDS: &[Item] = &[
-    it("New empty pattern...", "Shift+F4").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::FindFirst)),
-    it("Next empty pattern...", "F4").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::FindNext)),
-    it("Next empty pattern (unnamed)", "Ctrl+F4").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::FindNextNoName)),
+    it("Find first empty...", "Shift+F4").on(),
+    it("Find next empty...", "F4").on(),
+    it("Find next empty (no naming)", "Ctrl+F4").on(),
     SEP,
-    it("Select in arranger", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::SelectInPlaylist)),
-    it("Rename and colour...", "F2").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::Rename)),
-    it("Change color...", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::ChangeColor)),
-    it("Random color", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::RandomColor)),
-    it("Open in project browser", "Shift+Ctrl+P").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::OpenInBrowser)),
-    it("Set time signature...", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::TimeSignature)),
-    it("Transpose...", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::Transpose)),
+    it("Select in playlist", "").on(),
+    it("Rename and color...", "F2").on(),
+    it("Change color...", "").on(),
+    it("Random color", "").on(),
+    it("Open in project browser", "Shift+Ctrl+P").on(),
+    it("Set time signature...", "").on(),
+    it("Transpose...", "").on(),
     SEP,
-    it("Insert one", "Shift+Ctrl+Ins").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::InsertOne)),
-    it("Clone", "Shift+Ctrl+C").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::Clone)),
-    it("Delete", "Shift+Ctrl+Del").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::Delete)),
+    it("Insert one", "Shift+Ctrl+Ins").on(),
+    it("Clone", "Shift+Ctrl+C").on(),
+    it("Delete", "Shift+Ctrl+Del").on(),
     SEP,
-    it("Move up", "Shift+Ctrl+Up").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::MoveUp)),
-    it("Move down", "Shift+Ctrl+Down").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::MoveDown)),
+    it("Move up", "Shift+Ctrl+Up").on(),
+    it("Move down", "Shift+Ctrl+Down").on(),
     SEP,
-    it("Split by instrument", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::SplitByChannel)),
+    it("Split by channel", "").on(),
     // Spec: ui/pattern-render.md.
-    it("Render to audio clip", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::QuickRender)),
-    it("Render as audio clip...", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::RenderAsClip)),
-    it("Render and replace...", "").on().cmd(MenuCmd::Pattern(crate::patterns::Cmd::RenderReplace)),
+    it("Quick render as audio clip", "").on(),
+    it("Render as audio clip...", "").on(),
+    it("Render and replace...", "").on(),
 ];
 
 const VIEW_ITEMS: &[Item] = &[
     head("Windows"),
-    it("Arranger", "F5").on().tick().cmd(MenuCmd::Window(Win::Playlist)),
-    it("Piano roll", "F7").on().tick().cmd(MenuCmd::Window(Win::PianoRoll)),
-    it("Instrument rack", "F6").on().tick().cmd(MenuCmd::Window(Win::ChannelRack)),
-    it("Mixer", "F9").on().tick().cmd(MenuCmd::Window(Win::Mixer)),
-    it("Browser", "Alt+F8").on().tick().cmd(MenuCmd::Window(Win::Browser)),
-    it("Clip palette", "Ctrl+F8").on().cmd(MenuCmd::ClipPalette),
-    it("Plugin palette", "F8").on().cmd(MenuCmd::PluginPalette),
-    it("Tap tempo", "Ctrl+F5").tick().cmd(MenuCmd::Window(Win::Tapper)),
-    it("Touch controller", "Alt+F7").tick().cmd(MenuCmd::Window(Win::Touch)),
+    it("Playlist", "F5").on().tick(),
+    it("Piano roll", "F7").on().tick(),
+    it("Channel rack", "F6").on().tick(),
+    it("Mixer", "F9").on().tick(),
+    it("Browser", "Alt+F8").on().tick(),
+    it("Project picker", "Ctrl+F8").on(),
+    it("Plugin picker", "F8").on(),
+    it("Tempo tapper", "Ctrl+F5").tick(),
+    it("Touch controller", "Alt+F7").tick(),
     it("Script output", ""),
-    it("Toolbars", "").sub().cmd(MenuCmd::Sub(Sub::Toolbars)),
-    it("Plugin performance monitor", "").cmd(MenuCmd::Window(Win::Perf)),
+    it("Toolbars", "").sub(),
+    it("Plugin performance monitor", ""),
     head("Layout"),
-    it("Close all windows", "F12").on().cmd(MenuCmd::CloseAll(crate::app::CloseAll::All)),
-    it("Close all plugin windows", "Alt+F12").on().cmd(MenuCmd::CloseAll(crate::app::CloseAll::Plugins)),
-    it("Close all unfocused windows", "Ctrl+F12").on().cmd(MenuCmd::CloseAll(crate::app::CloseAll::Unfocused)),
-    it(ALIGN_LABEL, "Shift+F12").on().cmd(MenuCmd::AlignEditors),
-    it("Arrange windows", "").sub().cmd(MenuCmd::Sub(Sub::Arrange)),
-    it(INTO_WORKSPACE_LABEL, "").on().cmd(MenuCmd::IntoWorkspace),
-    it("Background", "").sub().cmd(MenuCmd::Sub(Sub::Background)),
+    it("Close all windows", "F12").on(),
+    it("Close all plugin windows", "Alt+F12").on(),
+    it("Close all unfocused windows", "Ctrl+F12").on(),
+    it("Align all channel editors", "Shift+F12"),
+    it("Arrange windows", "").sub(),
+    it(INTO_WORKSPACE_LABEL, "").on(),
+    it("Background", "").sub(),
     head("Browser"),
-    it("Undo history", "").cmd(MenuCmd::Jump(crate::browser::Jump::Section("History"))),
-    it("Patterns", "").cmd(MenuCmd::Jump(crate::browser::Jump::Section("Patterns"))),
-    it("Instruments in use", "").cmd(MenuCmd::Jump(crate::browser::Jump::Section("Generators"))),
-    it("Effects in use", "").cmd(MenuCmd::Jump(crate::browser::Jump::Section("Effects"))),
-    it("Remote control", "").cmd(MenuCmd::Jump(crate::browser::Jump::Section(crate::views::browser::REMOTE_CONTROL))),
-    it("Plugin library", "Shift+F8").cmd(MenuCmd::Jump(crate::browser::Jump::PluginDb)),
+    it("Undo history", ""),
+    it("Patterns", ""),
+    it("Generators in use", ""),
+    it("Effects in use", ""),
+    it("Remote control", ""),
+    it("Plugin database", "Shift+F8"),
 ];
 
 const OPTIONS: &[Item] = &[
     head("System"),
-    it("MIDI settings", "F10").cmd(MenuCmd::Settings(crate::views::settings::MIDI)),
-    it("Audio settings", "").cmd(MenuCmd::Settings(crate::views::settings::AUDIO)),
-    it("General settings", "").cmd(MenuCmd::Settings(crate::views::settings::GENERAL)),
-    it("File settings", "").cmd(MenuCmd::Settings(crate::views::settings::FILE)),
-    it("Theme settings", "").cmd(MenuCmd::Settings(crate::views::settings::THEME)),
-    it("Manage plugins", "").cmd(MenuCmd::Settings(crate::views::settings::PLUGINS)),
+    it("MIDI settings", "F10"),
+    it("Audio settings", ""),
+    it("General settings", ""),
+    it("File settings", ""),
+    it("Theme settings", ""),
+    it("Manage plugins", ""),
     head("Project"),
-    it("Project general settings", "").cmd(MenuCmd::Settings(crate::views::settings::PROJECT)),
-    it("Project info", "F11").cmd(MenuCmd::Settings(crate::views::settings::INFO)),
+    it("Project general settings", ""),
+    it("Project info", "F11"),
     head("Info"),
-    it("Debugging log", "").cmd(MenuCmd::Settings(crate::views::settings::DEBUG)),
+    it("Debugging log", ""),
     head("MIDI"),
-    it("Enable MIDI remote control", "").on().tick().cmd(MenuCmd::Midi(crate::midi_cfg::Switch::Remote)),
-    it("Enable MIDI output", "").on().tick().cmd(MenuCmd::Midi(crate::midi_cfg::Switch::Output)),
-    it("Enable MIDI master sync", "").on().tick().cmd(MenuCmd::Midi(crate::midi_cfg::Switch::MasterSync)),
+    it("Enable MIDI remote control", "").on().tick(),
+    it("Enable MIDI output", "").on().tick(),
+    it("Enable MIDI master sync", "").on().tick(),
     head("Switches"),
-    it("Computer MIDI keyboard", "Ctrl+T").on().tick().cmd(MenuCmd::Typing),
-    it(METRONOME_LABEL, "Ctrl+M").on().tick().cmd(MenuCmd::Metronome),
-    it(PRECOUNT_LABEL, "Ctrl+P").on().tick().cmd(MenuCmd::Record(crate::record::Opt::Precount)),
-    it(WAIT_LABEL, "Ctrl+I").on().tick().cmd(MenuCmd::Record(crate::record::Opt::Wait)),
-    it(BLEND_LABEL, "Ctrl+B").on().tick().cmd(MenuCmd::Record(crate::record::Opt::Blend)),
-    it(STEP_EDIT_LABEL, "Ctrl+E").on().tick().cmd(MenuCmd::StepEdit),
-    it(LOOP_LABEL, "").on().tick().cmd(MenuCmd::Record(crate::record::Opt::Loop)),
-    it(AUTOSCROLL_LABEL, "").on().tick().cmd(MenuCmd::Autoscroll),
-    it(GROUPS_LABEL, "Shift+Alt+G").on().tick().cmd(MenuCmd::Groups),
-    it(MULTILINK_LABEL, "Ctrl+J").on().tick().cmd(MenuCmd::Multilink),
+    it("Typing keyboard to piano", "Ctrl+T").on().tick(),
+    it(METRONOME_LABEL, "Ctrl+M").on().tick(),
+    it(PRECOUNT_LABEL, "Ctrl+P").on().tick(),
+    it(WAIT_LABEL, "Ctrl+I").on().tick(),
+    it(BLEND_LABEL, "Ctrl+B").on().tick(),
+    it(STEP_EDIT_LABEL, "Ctrl+E").on().tick(),
+    it(LOOP_LABEL, "").on().tick(),
+    it(AUTOSCROLL_LABEL, "").on().tick(),
+    it(GROUPS_LABEL, "Shift+Alt+G").on().tick(),
+    it(MULTILINK_LABEL, "Ctrl+J").on().tick(),
+    head("CPU meter"),
+    it("Compact", "").on().radio(false),
+    it("Classic FL-style (CPU and MB)", "").on().radio(false),
+    it("Lemon live monitor", "").on().radio(true),
 ];
 
+pub const OPT_CPU_COMPACT: usize = OPTIONS.len()-3;
+pub const OPT_CPU_CLASSIC: usize = OPTIONS.len()-2;
+pub const OPT_CPU_COMBINED:usize=OPTIONS.len()-1;
+
 const TOOLS_A: &[Item] = &[
-    it("Browser find...", "Ctrl+F").cmd(MenuCmd::Jump(crate::browser::Jump::Find)),
-    it(ONE_CLICK_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::OneClick)),
-    it("Chord progression tool...", "").on().cmd(MenuCmd::Chords),
-    it("Control builder", ""),
+    it("Browser find...", "Ctrl+F"),
+    it(ONE_CLICK_LABEL, "").sub(),
+    it("Chord progression tool...", ""),
+    it("Control creator", ""),
     head("Clipboard"),
-    it(SAVE_AUDIO_CLIP_LABEL, "").on().cmd(MenuCmd::SaveAudioClip),
-    it(SAVE_MIDI_CLIP_LABEL, "").on().cmd(MenuCmd::SaveMidiClip),
-    head("MIDI capture"),
-    it(DUMP_LOG_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::DumpLog)),
-    it(CLEAR_LOG_LABEL, "").on().cmd(MenuCmd::ClearLog),
-    head(LOGGER_HEAD),
-    it(LOGGER_ON_LABEL, "").on().tick().cmd(MenuCmd::AudioLog),
-    it(LOGGER_SETTINGS_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::AudioLog)),
-    it(LOGGER_DUMP_LABEL, "").on().cmd(MenuCmd::DumpAudioLog),
-    head("Recent parameters"),
-    it("Most recent", "").sub().cmd(MenuCmd::Params(crate::params::MenuEntry::Last)),
-    it("Second most recent", "").sub().cmd(MenuCmd::Params(crate::params::MenuEntry::NextToLast)),
+    it("Save audio clipboard to browser", ""),
+    it("Save MIDI clipboard to browser", ""),
+    head("Score logger"),
+    it(DUMP_LOG_LABEL, "").sub(),
+    it(CLEAR_LOG_LABEL, "").on(),
+    head("Audio logger"),
+    it("Enabled", "").tick(),
+    it("Settings", "").sub(),
+    it("Dump to audio editor", ""),
+    head("Last tweaked parameters"),
+    it("Last tweaked", "").sub(),
+    it("Next to last tweaked", "").sub(),
 ];
 const TOOLS_B: &[Item] = &[
-    head("Project clean-up"),
-    it("Stop sound", "Ctrl+H").on().cmd(MenuCmd::StopSound),
-    it("Cancel recording", "").on().cmd(MenuCmd::CancelRecording),
+    head("Macros"),
+    it("Stop sound", "Ctrl+H").on(),
+    it("Cancel recording", "").on(),
     SEP,
-    it("Set up for live performance", "").on().cmd(MenuCmd::PrepPerformance),
-    it(crate::lemon_midi_out::PREP_LABEL, "").on().cmd(MenuCmd::PrepMidiExport),
-    it("Select unused instruments", "").on().cmd(MenuCmd::SelectUnused),
-    it("Remove unused audio clips", "").on().cmd(MenuCmd::PurgeClips),
-    it(crate::mixer::AUTO_BYPASS_ALL_LABEL, "").on().cmd(MenuCmd::AutoBypassAll),
-    it(CLIPS_ALL_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::ClipsAll)),
-    it(CLIPS_SEL_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::ClipsSel)),
-    it("Lock all tracks to their clips", "").on().cmd(MenuCmd::LockClips(true)),
-    it("Unlock all tracks from their clips", "").on().cmd(MenuCmd::LockClips(false)),
-    it("Reset empty tracks", "").on().cmd(MenuCmd::ResetEmptyTracks),
-    it(REMOVE_TESLAS_LABEL, "").on().cmd(MenuCmd::RemoveTeslas),
-    it(DELETE_UNUSED_LABEL, "").on().cmd(MenuCmd::DeleteUnused),
-    it(EDITORS_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::Editors)),
-    it(KEY_FOCUS_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::KeyFocus)),
-    it(DECLICK_LABEL, "").sub().cmd(MenuCmd::Sub(Sub::Declick)),
+    it("Prepare for performance mode", ""),
+    it("Prepare for MIDI export", ""),
+    it("Select unused channels", "").on(),
+    it("Purge unused audio clips", "").on(),
+    it("Switch smart disable for all plugins", ""),
+    it(CLIPS_ALL_LABEL, "").sub(),
+    it(CLIPS_SEL_LABEL, "").sub(),
+    it("Lock all playlist tracks to content", ""),
+    it("Unlock all playlist tracks from content", ""),
+    it("Reset empty playlist tracks", "").on(),
+    it(REMOVE_TESLAS_LABEL, "").on(),
+    it(DELETE_UNUSED_LABEL, "").on(),
+    it(EDITORS_LABEL, "").sub(),
+    it("Set keyboard focus for all plugins to", "").sub(),
+    it(DECLICK_LABEL, "").sub(),
 ];
 
 const HELP: &[Item] = &[
-    it("Help index", "").on().cmd(MenuCmd::Web(crate::help_links::HELP_INDEX_URL)),
-    it("Tutorials", "").sub().cmd(MenuCmd::Sub(Sub::Tutorials)),
-    it("Keyboard shortcuts", "").on().cmd(MenuCmd::Web(crate::help_links::SHORTCUTS_URL)),
+    it(crate::help::LABEL, "").on(),
+    it("Tutorials", "").sub(),
     head("Support"),
-    it("Troubleshooting", "").on().cmd(MenuCmd::Web(crate::help_links::TROUBLESHOOTING_URL)),
-    it("Report a bug", "").on().cmd(MenuCmd::Web(crate::help_links::REPORT_BUG_URL)),
-    it("Diagnostics", "").on().cmd(MenuCmd::Diagnostics),
-    it("What's new", "").on().cmd(MenuCmd::Web(crate::help_links::WHATS_NEW_URL)),
-    it("Check for updates", "").on().cmd(MenuCmd::CheckUpdates),
+    it("Diagnostics", ""),
+    it(crate::change_log::LABEL, "").on(),
     SEP,
-    it("Lemon Studio website", "").on().cmd(MenuCmd::Web(crate::help_links::WEBSITE_URL)),
-    it("About...", "").cmd(MenuCmd::Settings(crate::views::settings::ABOUT)),
+    it("About...", "").on(),
+    it("Community Discord", "").on(),
 ];
 
 pub const MENUS: &[Menu] = &[
@@ -463,11 +371,74 @@ pub fn item_at(menu: usize, i: usize) -> Option<&'static Item> {
 
 /// Menu bar font: Cuprum 18 px condensed (spec §3).
 pub const BAR_FONT: Font = Font::condensed(18, 6);
+pub const VINTAGE_TITLES:[&str;8]=["File","Edit","Add","Patterns","View","Options","Tools","Help"];
+
+/// Lay out the modern menu from the displayed labels and the active font's natural widths.
+pub(super) fn modern_bar(c: &mut os_ui::Canvas) -> (Font, [(&'static str, f32, f32); 8]) {
+    let language = Language::current();
+    let compact = c.size().0 < 1300.0;
+    let titles: [&str; 8] = std::array::from_fn(|i| {
+        if !language.english() {
+            language.text(VINTAGE_TITLES[i])
+        } else if compact && i == HELP_MENU {
+            "…"
+        } else {
+            MENUS[i].title
+        }
+    });
+    const ROOM: f32 = 278.0;
+    const MIN_GAP: f32 = 7.0;
+    let (font, widths, total) = (9..=14).rev().map(|size| {
+        let font = Font::new(size);
+        let widths = titles.map(|title| c.text_width(font, title).ceil());
+        (font, widths, widths.iter().sum::<f32>())
+    }).find(|(font, _, total)| *total + MIN_GAP * 7.0 <= ROOM || font.size == 9).unwrap();
+    let gap = ((ROOM - total) / 7.0).clamp(MIN_GAP, 12.0);
+    let mut x = 10.0;
+    let items = std::array::from_fn(|i| {
+        let start = x;
+        let end = start + widths[i];
+        x = end + gap;
+        (titles[i], start, end)
+    });
+    (font, items)
+}
 
 /// Menu bar item layout: (x0, x1, average character width of the font). Left edges are the measured word
 /// starts. The words are as wide as the font makes them; where a text engine sets them wider than the slots
 /// were measured for, all eight are condensed one step further so that no word runs into the next.
-pub fn bar_layout(c: &mut os_ui::Canvas) -> [(f32, f32, f32); 8] {
+pub fn bar_layout(c: &mut os_ui::Canvas, vintage: bool) -> [(f32, f32, f32); 8] {
+    let language = Language::current();
+    if !language.english() {
+        let titles = VINTAGE_TITLES.map(|title| language.text(title));
+        let size = if vintage { 13 } else { BAR_FONT.size };
+        for width in [6, 5, 4, 3] {
+            let font = Font::condensed(size, width);
+            let widths = titles.map(|title| c.text_width(font, title).ceil());
+            if widths.iter().sum::<f32>() + 42.0 <= 284.0 || width == 3 {
+                let mut x = 8.0;
+                return widths.map(|w| {
+                    let start = x;
+                    x += w + 6.0;
+                    (start, start + w, f32::from(width))
+                });
+            }
+        }
+    }
+
+    if vintage && crate::vintage_skin::available() {
+        let mut x=12.;
+        return VINTAGE_TITLES.map(|title| {let start=x;let w=crate::vintage_skin::lettering_width(title);x+=w+8.;(start,start+w,11.)});
+    }
+    if vintage {
+        // Measure natural glyph widths; never squeeze letter shapes to historic slots.
+        let size=[13,12,11].into_iter().find(|&n| VINTAGE_TITLES.iter().map(|m|c.text_width(Font::vintage(n),m)).sum::<f32>()+48.<=284.).unwrap_or(11);
+        let font=Font::vintage(size);
+        let widths:[f32;8]=std::array::from_fn(|i|c.text_width(font,VINTAGE_TITLES[i]).ceil());
+        let gap=((284.-widths.iter().sum::<f32>())/8.).max(3.);
+        let mut x=8.;
+        return widths.map(|w|{let left=x;x+=w+gap;(left,left+w,f32::from(size))});
+    }
     const X: [f32; 8] = [8.0, 35.0, 61.0, 88.0, 143.0, 176.0, 226.0, 266.0];
     const END: f32 = 300.0;
     let mut out = [(0.0, 0.0, 6.0); 8];
@@ -486,18 +457,35 @@ pub fn bar_layout(c: &mut os_ui::Canvas) -> [(f32, f32, f32); 8] {
     out
 }
 
+/// VIEW's window entries toggle their window.
+fn win_of(label: &str) -> Option<Win> {
+    Some(match label {
+        "Playlist" => Win::Playlist,
+        "Piano roll" => Win::PianoRoll,
+        "Channel rack" => Win::ChannelRack,
+        "Mixer" => Win::Mixer,
+        "Browser" => Win::Browser,
+        "Plugin performance monitor" => Win::Perf,
+        // spec: ui/tempo-tapper.md §1
+        "Tempo tapper" => Win::Tapper,
+        // spec: ui/touch-controller.md §2
+        "Touch controller" => Win::Touch,
+        _ => return None,
+    })
+}
 
 /// Whether an entry does something in this build: its static flag, or one of the label-dispatched commands
 /// `App::menu_item` handles (settings tabs, pattern commands, window toggles, plugin picker, undo, the ways into the
 /// browser), or a ▸ entry whose submenu is built.
 pub fn works(menu: usize, item: &Item) -> bool {
     item.works
+        || ((menu == OPTIONS_MENU || menu == ADD_MENU) && crate::views::settings::tab_for_menu(item.label).is_some())
+        || (menu == PATTERNS && crate::patterns::Cmd::from_label(item.label).is_some())
+        || (menu == VIEW && (win_of(item.label).is_some() || matches!(item.label, "Plugin picker" | "Project picker")))
+        || (menu == EDIT_MENU && matches!(item.label, "Undo" | "Redo"))
+        || crate::params::menu_handles(item.label)
+        || crate::browser::Jump::from_label(menu, item.label).is_some()
         || opens_sub(menu, item)
-        || match item.cmd {
-            MenuCmd::Settings(_) | MenuCmd::Pattern(_) | MenuCmd::Window(_) | MenuCmd::PluginPalette | MenuCmd::ClipPalette | MenuCmd::Undo | MenuCmd::Redo | MenuCmd::Params(_) => true,
-            MenuCmd::Jump(j) => j.available(),
-            _ => false,
-        }
 }
 
 /// An entry's text now: FILE's first item names the Default template, "New (<name>)" (spec: ui/settings-choices.md
@@ -518,10 +506,16 @@ pub fn shortcut_now(item: &Item) -> &'static str {
 /// `label_of` for the project as it is now: EDIT's entries name the step they act on, "Undo step seq edit" (spec:
 /// ui/settings-choices.md "Undo history: the four checks (2026-10-16)").
 pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'static, str> {
+    let language = Language::current();
+    if !language.english() {
+        return match (menu, item.label) {
+            (0, "New") => format!("{} ({})", language.text("New"), crate::templates::name()).into(),
+            _ => language.text(item.label).into(),
+        };
+    }
     match (menu, item.label) {
         (EDIT_MENU, "Undo") => crate::history::edit_label(s, false).into(),
         (EDIT_MENU, "Redo") => crate::history::edit_label(s, true).into(),
-        (TOOLS_MENU, LOGGER_HEAD) => format!("{LOGGER_HEAD} (memory used: {}MB)", crate::audio_log::memory_mb()).into(),
         _ => label_of(menu, item),
     }
 }
@@ -529,42 +523,41 @@ pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'stati
 /// Whether an entry is in its menu now: EDIT's Redo only with Alternate undo mode on and a history to act on (spec:
 /// ui/menus.md "EDIT": only Undo while the history is empty).
 pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
+    if item.label==crate::collaboration::LABEL {return s.collaborating || crate::workspace_visibility::shown(crate::collaboration::VISIBLE);}
+    if menu == HELP_MENU && item.label == crate::change_log::LABEL {
+        return crate::workspace_visibility::shown(crate::change_log::VISIBILITY);
+    }
+    if menu == HELP_MENU && item.label == crate::help::LABEL {
+        return crate::workspace_visibility::shown(crate::help::VISIBILITY);
+    }
     !(menu == EDIT_MENU && item.label == "Redo") || crate::history::redo_shown(s)
 }
 
-/// Whether an entry can be chosen now: it works (`works`), EDIT's have a step to act on, the project file rows
-/// that need a saved project have one (`needs_file`), Save MIDI clipboard to browser has notes to save and Save audio
-/// clipboard to browser audio.
+/// Whether an entry can be chosen now: it works (`works`), EDIT's have a step to act on, and the project file rows
+/// that need a saved project have one (`needs_file`).
 pub fn active(s: &State, menu: usize, item: &Item) -> bool {
-    works(menu, item)
-        && (menu != EDIT_MENU || crate::history::edit_enabled(s, item.label == "Redo"))
-        && (s.path.is_some() || !needs_file(menu, item.label))
-        && (!matches!(item.cmd, MenuCmd::SaveMidiClip) || !s.piano.clipboard.is_empty())
-        && (!matches!(item.cmd, MenuCmd::SaveAudioClip) || crate::audio_clipboard::has_audio())
+    works(menu, item) && (menu != EDIT_MENU || item.label == "Undo history" || crate::history::edit_enabled(s, item.label == "Redo")) && (s.path.is_some() || !needs_file(menu, item.label))
 }
 
-/// TOOLS ▸ Save MIDI clipboard to browser (`App::save_midi_clipboard`).
-pub const SAVE_MIDI_CLIP_LABEL: &str = "Save MIDI clipboard to browser";
-/// TOOLS ▸ Save audio clipboard to browser (`App::save_audio_clipboard`).
-pub const SAVE_AUDIO_CLIP_LABEL: &str = "Save audio clipboard to browser";
-
 /// FILE / TOOLS ▸ Delete unused files and save project.
-pub const DELETE_UNUSED_LABEL: &str = "Clean up and save";
+pub const DELETE_UNUSED_LABEL: &str = "Delete unused files and save project";
 
 /// The rows greyed out for a project that was never saved (spec: ui/menu-submenus.md §1): Save to new project
 /// folder..., Delete unused files and save project, and Revert to last backup (Lemon Studio rule: a project never
 /// saved has no backups of its own; "untitled" ones may be any other's).
 pub fn needs_file(menu: usize, label: &str) -> bool {
     match menu {
-        0 => matches!(label, "Save to new project folder..." | DELETE_UNUSED_LABEL | "Restore backup..."),
+        0 => matches!(label, "Save to new project folder..." | DELETE_UNUSED_LABEL | "Revert to last backup"),
         TOOLS_MENU => label == DELETE_UNUSED_LABEL,
         _ => false,
     }
 }
 
 fn item_action(menu: usize, i: usize, item: &Item) -> Action {
-    if let MenuCmd::Window(w) = item.cmd {
-        return Action::ToggleWin(w);
+    if menu == VIEW {
+        if let Some(w) = win_of(item.label) {
+            return Action::ToggleWin(w);
+        }
     }
     if opens_sub(menu, item) {
         return Action::MenuSub(menu, i);
@@ -573,68 +566,49 @@ fn item_action(menu: usize, i: usize, item: &Item) -> Action {
 }
 
 /// A ▸ entry whose submenu the dropdown opens (`submenu`). Last tweaked ▸ and Next to last tweaked ▸ open theirs at the
-/// mouse from `App::menu_item` instead (`MenuCmd::Params`).
-fn opens_sub(_menu: usize, item: &Item) -> bool {
-    item.sub && sub_items(item.cmd).is_some()
+/// mouse from `App::menu_item` instead (`params::menu_handles`).
+fn opens_sub(menu: usize, item: &Item) -> bool {
+    item.sub && submenu(menu, item.label).is_some()
 }
 
 /// TOOLS > Switch all plugin editors to ▸ and Change declicking for selected channels to ▸, also in the channel rack's
 /// options menu (spec: ui/channel-rack.md §17).
-pub const ONE_CLICK_LABEL: &str = "Quick record";
+pub const ONE_CLICK_LABEL: &str = "One-click audio recording";
 /// TOOLS > Macros: every Tesla in the mixer goes, after a question (FL: Remove all Edison instances; spec:
 /// plugins/tesla/README.md "Recording into Tesla from Lemon Studio").
 pub const REMOVE_TESLAS_LABEL: &str = "Remove all audio editor instances";
-pub const DUMP_LOG_LABEL: &str = "Capture MIDI into pattern";
+pub const DUMP_LOG_LABEL: &str = "Dump score log to selected pattern";
 pub const CLEAR_LOG_LABEL: &str = "Clear log";
-/// TOOLS > Retro audio capture (spec: ui/audio-logger.md); its header shows the memory the capture takes.
-pub const LOGGER_HEAD: &str = "Retro audio capture";
-pub const LOGGER_ON_LABEL: &str = "Enabled";
-pub const LOGGER_SETTINGS_LABEL: &str = "Settings";
-pub const LOGGER_DUMP_LABEL: &str = "Open capture in audio editor";
-pub const EDITORS_LABEL: &str = "Set all plugin windows to";
-pub const DECLICK_LABEL: &str = "Change click removal of selected channels to";
+pub const EDITORS_LABEL: &str = "Switch all plugin editors to";
+pub const DECLICK_LABEL: &str = "Change declicking for selected channels to";
 /// TOOLS > Switch all / selected audio clip channels to ▸, also in the channel rack's options menu (spec:
 /// ui/channel-switches.md §1).
-pub const CLIPS_ALL_LABEL: &str = "Set all audio clip channels to";
+pub const CLIPS_ALL_LABEL: &str = "Switch all audio clip channels to";
 pub const CLIPS_SEL_LABEL: &str = "Switch selected audio clip channels to";
 
 /// What fills the submenu of ▸ entry `label` of `menu`: the app's own popup items, as the same submenu shows them
 /// elsewhere (the channel rack's options menu, the plugin menus). `None` while it is not built: the entry stays greyed
 /// out. The dropdown opens it to the right of the row (`App::open_menu_sub`).
-pub fn sub_items(cmd: MenuCmd) -> Option<fn(&State) -> Vec<crate::playlist::PItem>> {
-    let MenuCmd::Sub(sub) = cmd else { return None };
-    Some(match sub {
-        // spec: ui/midi-files.md §1: FL's Import holds only MIDI file...
-        Sub::Import => |_| vec![crate::playlist::PItem::new("MIDI file...", crate::playlist::Cmd::MidiImport(false))],
-        // spec: ui/project-templates.md
-        Sub::Templates => crate::project_files::template_items,
-        // spec: ui/plugin-menu.md §1: the effects, a pick into the selected mixer track's first empty slot as from F8.
-        Sub::Effect => |s| crate::plugin_menu::items(s, crate::plugin_menu::Target::Fx(None), true),
-        Sub::Editors => |_| crate::rack::editor_items(),
-        // spec: ui/channel-switches.md §3, §6
-        Sub::KeyFocus => |_| crate::rack::key_focus_items(),
-        // spec: ui/one-click-recording.md §2
-        Sub::OneClick => crate::one_click::items,
-        // spec: ui/recording.md §6
-        Sub::DumpLog => crate::score_log::items,
-        Sub::AudioLog => crate::audio_log::items,
-        Sub::Declick => crate::rack::declick_items,
-        Sub::ClipsAll => |_| crate::rack::stretch_items(true),
-        Sub::ClipsSel => |_| crate::rack::stretch_items(false),
-        // spec: ui/toolbar-menu.md §8
-        Sub::Toolbars => toolbar_items,
-        // spec: ui/menu-submenus.md §2
-        Sub::Arrange => crate::arrange::items,
-        // spec: ui/menu-submenus.md §3
-        Sub::Background => crate::wallpaper::items,
-        // spec: ui/menus.md "HELP"
-        Sub::Tutorials => |_| crate::help_links::tutorial_items(),
-    })
-}
-
-/// The submenu of ▸ entry `label` of `menu` (`sub_items`; a test's or another view's way to it by name).
 pub fn submenu(menu: usize, label: &str) -> Option<fn(&State) -> Vec<crate::playlist::PItem>> {
-    MENUS.get(menu)?.cols.iter().flat_map(|(_, items)| items.iter()).find(|it| it.label == label).and_then(|it| sub_items(it.cmd))
+    match (menu, label) {
+        // spec: ui/midi-files.md §1: FL's Import holds only MIDI file...
+        (0, "Import") => Some(|_| vec![crate::playlist::PItem::new("MIDI file...", crate::playlist::Cmd::MidiImport(false)),crate::playlist::PItem::new("Project import report...",crate::playlist::Cmd::ImportReport),crate::playlist::PItem::new("Resolve imported files...",crate::playlist::Cmd::ImportOptions)]),
+        // spec: ui/project-templates.md
+        (0, "New from template") => Some(crate::project_files::template_items),
+        // spec: ui/plugin-menu.md §1: the effects, a pick into the selected mixer track's first empty slot as from F8.
+        (ADD_MENU, "Effect") => Some(|s| crate::plugin_menu::items(s, crate::plugin_menu::Target::Fx(None), true)),
+        (TOOLS_MENU, EDITORS_LABEL) => Some(|_| crate::rack::editor_items()),
+        // spec: ui/one-click-recording.md §2
+        (TOOLS_MENU, ONE_CLICK_LABEL) => Some(crate::one_click::items),
+        // spec: ui/recording.md §6
+        (TOOLS_MENU, DUMP_LOG_LABEL) => Some(crate::score_log::items),
+        (TOOLS_MENU, DECLICK_LABEL) => Some(crate::rack::declick_items),
+        (TOOLS_MENU, CLIPS_ALL_LABEL) => Some(|_| crate::rack::stretch_items(true)),
+        (TOOLS_MENU, CLIPS_SEL_LABEL) => Some(|_| crate::rack::stretch_items(false)),
+        // spec: ui/toolbar-menu.md §8
+        (VIEW, "Toolbars") => Some(toolbar_items),
+        _ => None,
+    }
 }
 
 /// The submenu that row `i` of `menu`'s dropdown opens: a ▸ entry's (`submenu`), or FILE's More ▸ with the older recent
@@ -643,7 +617,7 @@ pub fn sub_at(menu: usize, i: usize) -> Option<fn(&State) -> Vec<crate::playlist
     if (menu, i) == (0, RECENT_MORE) {
         return Some(crate::recent::more_items);
     }
-    item_at(menu, i).and_then(|it| sub_items(it.cmd))
+    item_at(menu, i).and_then(|it| submenu(menu, it.label))
 }
 
 /// A row of FILE's Recent projects section (spec: ui/recent-projects.md §2): the heading, a project with its key, More ▸.
@@ -672,33 +646,38 @@ fn recent_rows() -> Vec<Recent> {
 /// Whether FILE's Recent projects section goes before item `i` of `items`: the separator over Revert to last backup,
 /// so it follows the exports as in FL.
 fn recent_before(menu: usize, items: &[Item], i: usize) -> bool {
-    menu == 0 && items.get(i + 1).is_some_and(|n| n.cmd == MenuCmd::RestoreBackup)
+    menu == 0 && items.get(i + 1).is_some_and(|n| n.label == "Revert to last backup")
 }
 
+/// ADD > Categories / Simple / By vendor: the plugin menus' display mode the radio picks (spec: ui/plugin-menu.md §3).
+pub fn menu_view(menu: usize, label: &str) -> Option<crate::plugin_db::MenuView> {
+    let views = if menu == ADD_MENU { crate::plugin_menu::VIEWS } else { &[] };
+    views.iter().find(|(l, _)| *l == label).map(|&(_, v)| v)
+}
 
 /// An entry's tick or radio state now: window entries follow their window (the browser its panel), the typing keyboard
 /// switch its toggle, ADD's display modes the plugin menus' mode; other ticks are drawn unticked.
-fn mark_of(s: &State, _menu: usize, item: &Item) -> Mark {
-    let on = match (item.mark, item.cmd) {
-        (Mark::Radio(_), MenuCmd::View(v)) => return Mark::Radio(s.plugdb.prefs.menu_view == v),
-        (Mark::Check(_), cmd) => match cmd {
-            // The browser is a panel of its own, shown by its own switch.
-            MenuCmd::Window(Win::Browser) => s.show_browser,
-            MenuCmd::Window(w) => s.shown(w),
-            MenuCmd::Typing => s.toggles.contains(&"typing"),
-            MenuCmd::Metronome => crate::metronome::on(),
-            MenuCmd::Record(o) => o.on(),
-            MenuCmd::Autoscroll => crate::autoscroll::on(),
-            MenuCmd::Groups => crate::enable_groups::on(),
-            MenuCmd::StepEdit => crate::step_edit::on(),
-            MenuCmd::Multilink => s.multilink.on,
-            MenuCmd::Midi(sw) => sw.on(),
-            MenuCmd::AudioLog => crate::audio_log::enabled(),
-            _ => false,
-        },
-        (mk, _) => return mk,
-    };
-    Mark::Check(on)
+fn mark_of(s: &State, menu: usize, item: &Item) -> Mark {
+    if let (Mark::Radio(_), Some(v)) = (item.mark, menu_view(menu, item.label)) {
+        return Mark::Radio(s.plugdb.prefs.menu_view == v);
+    }
+    if menu==OPTIONS_MENU && matches!(item.label,"Compact"|"Classic FL-style (CPU and MB)"|"Lemon live monitor") {
+        return Mark::Radio(if crate::settings_file::flag("toolbar_cpu_combined",true){item.label=="Lemon live monitor"}else{item.label==if crate::settings_file::flag("toolbar_cpu_classic",false){"Classic FL-style (CPU and MB)"}else{"Compact"}});
+    }
+    match (item.mark, menu == VIEW) {
+        // The browser is a panel of its own, shown by its own switch.
+        (Mark::Check(_), true) if item.label == "Browser" => Mark::Check(s.show_browser),
+        (Mark::Check(_), true) => Mark::Check(win_of(item.label).is_some_and(|w| s.shown(w))),
+        (Mark::Check(_), _) if item.label == "Typing keyboard to piano" => Mark::Check(s.toggles.contains(&"typing")),
+        (Mark::Check(_), _) if item.label == METRONOME_LABEL => Mark::Check(crate::metronome::on()),
+        (Mark::Check(_), _) if let Some(o) = record_option(item.label) => Mark::Check(o.on()),
+        (Mark::Check(_), _) if item.label == AUTOSCROLL_LABEL => Mark::Check(crate::autoscroll::on()),
+        (Mark::Check(_), _) if item.label == GROUPS_LABEL => Mark::Check(crate::enable_groups::on()),
+        (Mark::Check(_), _) if item.label == STEP_EDIT_LABEL => Mark::Check(crate::step_edit::on()),
+        (Mark::Check(_), _) if item.label == MULTILINK_LABEL => Mark::Check(s.multilink.on),
+        (Mark::Check(_), _) if let Some(sw) = crate::midi_cfg::Switch::from_label(item.label) => Mark::Check(sw.on()),
+        (mk, _) => mk,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -784,6 +763,37 @@ pub fn pick(menu: usize, i: usize) -> Action {
     }
 }
 
+/// Compact root menus retain stable action indices and use the shared scrolling popup.
+pub fn organized_items(s:&State,menu:usize)->Vec<crate::playlist::PItem> {
+    if menu >= MENUS.len() { return Vec::new(); }
+    crate::menu_layout::Menu::Main(menu).apply(default_organized_items(s, menu, false))
+}
+
+pub(crate) fn default_organized_items(s:&State,menu:usize,catalog:bool)->Vec<crate::playlist::PItem> {
+ use crate::playlist::{Cmd,PItem,Mark as PM};
+ let Some(m)=MENUS.get(menu) else{return vec![];};
+ let all:Vec<_>=m.cols.iter().flat_map(|(_,items)|items.iter()).collect();
+ let entry=|i:usize|->Option<PItem>{let it=*all.get(i)?;if it.kind!=Kind::Item||!works(menu,it)||(!catalog&&!in_menu(s,menu,it)){return None;}
+  let label=if catalog {it.label.into()} else {label_now(s,menu,it)};let mut p=if let Some(build)=submenu(menu,it.label){PItem::sub(label,build(s))}else{PItem::new(label,Cmd::MainMenu(menu,i))};
+  p.key=shortcut_now(it);p.enabled=active(s,menu,it);p.mark=match mark_of(s,menu,it){Mark::None=>PM::None,Mark::Check(v)=>PM::Check(v),Mark::Radio(v)=>PM::Radio(v)};Some(p)
+ };
+ let groups:Vec<(&str,Vec<usize>)>=match menu {
+  0=>vec![("",vec![0,1,2]),("Save",vec![4,5,6,7,8]),("Import / export",vec![11,12,13,14,15]),("Project maintenance",vec![9,17])],
+  PATTERNS=>vec![("Find empty pattern",vec![0,1,2]),("Edit pattern",vec![4,5,6,7,8,9,10,12,13,14]),("Arrange",vec![16,17,19]),("Render",vec![20,21,22])],
+  VIEW=>vec![("",(1..=11).collect()),("Window layout",(14..=20).collect()),("Browser shortcuts",(22..all.len()).collect())],
+  OPTIONS_MENU=>vec![("Settings",(1..=6).collect()),("CPU meter",vec![OPT_CPU_COMPACT,OPT_CPU_CLASSIC,OPT_CPU_COMBINED]),("Project",vec![8,9]),("MIDI",vec![13,14,15]),("Recording / transport",(17..OPT_CPU_COMPACT-1).collect())],
+  TOOLS_MENU=>vec![("Recording",vec![1,8,9]),("Parameters",vec![15,16]),("Audio clips",vec![26,27,35]),("Project cleanup",vec![23,24,30,31,32]),("",vec![18,19]),("Plugin windows",vec![33,34])],
+  _=>vec![("",(0..all.len()).collect())],
+ };
+ let mut out=Vec::new();let mut included=std::collections::HashSet::new();
+ for(label,ids) in groups {let rows:Vec<_>=ids.into_iter().filter_map(|i|{let p=entry(i)?;included.insert(i);Some(p)}).collect();if rows.is_empty(){continue;}if label.is_empty(){out.extend(rows)}else{out.push(PItem::sub(label,rows));}}
+ // Retain any implemented command not covered by a group as menus grow.
+ for i in 0..all.len(){if !included.contains(&i)&&!(menu==0&&i==FILE_EXIT){if let Some(p)=entry(i){out.push(p);}}}
+ if menu==PATTERNS {out.insert(0,PItem::sub("Select pattern",crate::patterns::listed(s).into_iter().map(|n|PItem::new(crate::patterns::name_of(s,n),Cmd::MainMenu(menu,PATTERN_PICK+n as usize)).mark(PM::Radio(n==s.pattern))).collect()));}
+ if menu==0 {let recent=recent_rows().into_iter().filter_map(|r|match r{Recent::Head=>None,Recent::More=>Some(PItem::sub(Language::current().text("Older projects"),crate::recent::more_items(s))),_=>{let(label,key,_)=recent_text(&r);Some(PItem::new(label,Cmd::MainMenu(0,match r{Recent::Project(n,_)=>RECENT_PICK+n,_=>RECENT_MORE})).key(key))}}).collect::<Vec<_>>();if catalog||!recent.is_empty(){out.push(PItem::sub(Language::current().text("Recent projects"),recent));}out.push(PItem::sep());if let Some(p)=entry(FILE_EXIT){out.push(p);}}
+ out
+}
+
 // Row heights follow the display scale like FL's popup menus (spec: ui/ui-scaling.md §2).
 fn row_h(m: &os_ui::kit::menu::Metrics, it: &Item) -> f32 {
     match it.kind {
@@ -796,8 +806,17 @@ fn row_h(m: &os_ui::kit::menu::Metrics, it: &Item) -> f32 {
 /// Paints menu `menu`'s dropdown under its title. `k`: the canvas is at the Pop-ups scaling, a window position `x` is
 /// `x / k` (see `Ui::scaled`).
 pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
+    if s.menu_sub.is_none()&&s.playlist.popup.is_some(){return;}
     let Some(m) = MENUS.get(menu) else { return };
-    let x0 = bar_layout(ui.c)[menu].0;
+    let x0 = if super::lemon(ui) && !s.vintage_2005 {
+        // The dropdown is painted at popup scale, but its anchor uses toolbar font metrics.
+        let old = ui.c.rescale(ui.c.scale / k * super::band_k(s));
+        let start = modern_bar(ui.c).1[menu].1;
+        ui.c.unscale(old);
+        start
+    } else {
+        bar_layout(ui.c, s.vintage_2005)[menu].0
+    };
     let t = ui.t;
     let mt = os_ui::kit::menu::metrics(ui.c.scale);
     let (row, border) = (mt.row, mt.border);
@@ -809,7 +828,7 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     } else {
         Vec::new()
     };
-    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(Font::new(14), n) + 28.0).fold(80.0f32, f32::max).ceil();
+    let list_w = pats.iter().map(|(_, n)| ui.c.text_width(os_ui::kit::menu::app_font(t, 12), n) + 28.0).fold(80.0f32, f32::max).ceil();
     // FILE's Recent projects section (spec: ui/recent-projects.md §2).
     let recent = if menu == 0 { recent_rows() } else { Vec::new() };
     let recent_h: f32 = recent.iter().map(|r| if *r == Recent::Head { mt.head } else { row }).sum();
@@ -822,16 +841,17 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
             col_ws.push(list_w);
             continue;
         }
-        let f = Font::new(14);
+        let f = os_ui::kit::menu::app_font(t, 12);
+        let key_font = os_ui::kit::menu::app_shortcut_font(t, f);
         let mut need = *w;
         for it in items.iter().filter(|it| matches!(it.kind, Kind::Item) && in_menu(s, menu, it)) {
-            let key = if it.shortcut.is_empty() { 0.0 } else { ui.c.text_width(f.italic(), shortcut_now(it)) + 16.0 };
+            let key = if it.shortcut.is_empty() { 0.0 } else { ui.c.text_width(key_font, shortcut_now(it)) + 16.0 };
             need = need.max(20.0 + ui.c.text_width(f, &label_now(s, menu, it)) + key + if it.sub { 18.0 } else { 8.0 });
         }
         if has_recent(items) {
             for r in recent.iter().filter(|r| **r != Recent::Head) {
                 let (label, key, sub) = recent_text(r);
-                let key = if key.is_empty() { 0.0 } else { ui.c.text_width(f.italic(), key) + 16.0 };
+                let key = if key.is_empty() { 0.0 } else { ui.c.text_width(key_font, key) + 16.0 };
                 need = need.max(20.0 + ui.c.text_width(f, &label) + key + if sub { 18.0 } else { 8.0 });
             }
         }
@@ -855,145 +875,107 @@ pub fn paint_dropdown(ui: &mut Ui, s: &State, menu: usize, k: f32) {
     let (ax, ay) = match (menu == PATTERNS, s.pat_ui.menu_at) {
         (true, Some(at)) => at,
         _ => {
-            let at = super::band_rect(s, Rect::new(x0 - 4.0, 78.0, 0.0, 0.0));
+            let at = if super::vintage_toolbar::active(s,s.screen.0/super::band_k(s)) {
+                super::scale_rect(Rect::new(x0-4.,49.,0.,0.),super::band_k(s))
+            } else {super::band_rect(s, Rect::new(x0 - 4.0, 78.0, 0.0, 0.0))};
             (at.x, at.y)
         }
     };
     let r = Rect::new((ax / k).min(s.screen.0 / k - width).max(0.0), ay / k, width, body_h + border * 2.0);
     let away = !r.contains(ui.mouse.0, ui.mouse.1);
-    // It drops from its title (spec: ui/animations.md §4.2).
-    use crate::motion::Slot;
-    let key = crate::motion::key((menu, ax.to_bits(), ay.to_bits()));
-    let mut draw = s.motion.borrow_mut().menu_begin(ui.c, Slot::Dropdown, key, r, (r.x, r.y), k);
-    let behind = s.menu_sub.is_some() && s.playlist.popup.is_some();
-    s.motion.borrow_mut().menu_behind(ui.c, &mut draw, Slot::Dropdown, behind, r, k);
-    s.motion.borrow_mut().captions_live(Slot::Dropdown, r, k);
     // Lemon (spec: ui/lemon-design.md §9): a rounded panel, rounded row highlights.
     let lemon = super::lemon(ui);
-    super::playlist::menu_panel(ui, r, &mt);
+    if t.style.vintage_2005 {
+        os_ui::kit::menu::vintage_frame(ui.c, t, r, &mt);
+    } else if lemon {
+        os_ui::kit::popup(ui.c, t, r);
+    } else {
+        ui.c.fill_rect(r, t.menu_pop);
+        ui.c.stroke_rrect(Rect::new(r.x + mt.line, r.y + mt.line, r.w - 2.0 * mt.line, r.h - 2.0 * mt.line), 0.0, border, t.menu_pop_border);
+    }
     ui.hit(r, Action::Swallow, "");
-    let font = Font::new(14);
+
+    let font = os_ui::kit::menu::app_font(t, 12);
     // Text sits where it does at 100 %, moved by half of what the row lost.
     let dy = (row - os_ui::kit::menu::ROW) / 2.0;
     // The ▸ entry whose submenu is open stays lit, as in the app's popups.
     let open = s.menu_sub.filter(|_| s.playlist.popup.is_some());
-    let rows = |ui: &mut Ui, lit: &mut Lit| {
-        let mut cx = r.x + border;
-        let mut flat = 0usize;
-        for (ci, (_, items)) in m.cols.iter().enumerate() {
-            let cw = &col_ws[ci];
-            let col = Rect::new(cx, r.y + border, *cw, body_h);
-            if ci > 0 {
-                ui.c.fill_rect(Rect::new(cx - 1.0, col.y, 1.0, body_h), t.menu_pop_head);
+    let mut cx = r.x + border;
+    let mut flat = 0usize;
+    for (ci, (_, items)) in m.cols.iter().enumerate() {
+        let cw = &col_ws[ci];
+        let col = Rect::new(cx, r.y + border, *cw, body_h);
+        if ci > 0 {
+            ui.c.fill_rect(Rect::new(cx - 1.0, col.y, 1.0, body_h), t.menu_pop_head);
+        }
+        let mut y = col.y;
+        if menu == PATTERNS && ci == 0 {
+            for (n, name) in &pats {
+                let rr = Rect::new(col.x, y, col.w, row);
+                let hov = ui.hit(rr, Action::MenuItem(menu, PATTERN_PICK + *n as usize), "Select pattern");
+                ui.menu_row(crate::app::MENU_DROPDOWN);
+                let lit = hov || (*n == s.pattern && away);
+                if lit && lemon {
+                    os_ui::kit::row_highlight(ui.c, t, rr);
+                } else if lit {
+                    ui.c.fill_rect(rr, ui.t.s(0x03080c));
+                }
+                let col = if *n == s.pattern { t.glyph } else { t.menu_pop_text };
+                let dx = if lit { 22.0 } else { 20.0 };
+                ui.c.text_clip(font, rr.x + dx, rr.y + 2.0 + dy, rr.w - dx - 4.0, col, name);
+                y += row;
             }
-            let mut y = col.y;
-            if menu == PATTERNS && ci == 0 {
-                for (n, name) in &pats {
-                    let rr = Rect::new(col.x, y, col.w, row);
-                    let hov = ui.hit(rr, Action::MenuItem(menu, PATTERN_PICK + *n as usize), "Select pattern");
-                    ui.menu_row(crate::app::MENU_DROPDOWN);
-                    let on = hov || (*n == s.pattern && away);
-                    if hov && lit.glide {
-                        lit.hot = Some(rr);
-                    } else if on && lemon {
-                        os_ui::kit::row_highlight(ui.c, t, rr);
-                    } else if on {
-                        ui.c.fill_rect(rr, ui.t.s(0x03080c));
-                    }
-                    let col = if *n == s.pattern { t.glyph } else { t.menu_pop_text };
-                    let dx = if on { 22.0 } else { 20.0 };
-                    ui.c.text_clip(font, rr.x + dx, rr.y + 2.0 + dy, rr.w - dx - 4.0, col, name);
-                    y += row;
-                }
+        }
+        for (i, item) in items.iter().enumerate() {
+            if recent_before(menu, items, i) {
+                y = paint_recent(ui, &recent, Rect::new(col.x, y, col.w, 0.0), open);
             }
-            for (i, item) in items.iter().enumerate() {
-                if recent_before(menu, items, i) {
-                    y = paint_recent(ui, s, &recent, Rect::new(col.x, y, col.w, 0.0), open, lit);
-                }
-                if !in_menu(s, menu, item) {
-                    flat += 1;
-                    continue;
-                }
-                let h = row_h(&mt, item);
-                let rr = Rect::new(col.x, y, col.w, h);
-                match item.kind {
-                    Kind::Sep => ui.c.fill_rect(Rect::new(col.x, y + mt.sep_line, col.w, mt.line), t.menu_pop_head),
-                    Kind::Head => head_row(ui, rr, &label_now(s, menu, item)),
-                    Kind::Item => {
-                        let ok = active(s, menu, item);
-                        // Greyed-out entries never light up; they only say they are not available yet (EDIT's without a
-                        // step to act on say nothing).
-                        if ok {
-                            let hov = ui.hit(rr, item_action(menu, flat, item), item.label);
-                            ui.menu_row(crate::app::MENU_DROPDOWN);
-                            lit.row(ui, rr, hov, open == Some(flat));
-                        } else if !works(menu, item) {
-                            ui.off(rr, item.label);
-                        }
-                        let mark = mark_of(s, menu, item);
-                        let (mx, my) = (rr.x + 10.0, rr.y + row / 2.0);
-                        match mark {
-                            Mark::Check(true) => {
-                                ui.c.line(mx - 4.0, my, mx - 1.0, my + 3.0, 1.5, t.menu_pop_text);
-                                ui.c.line(mx - 1.0, my + 3.0, mx + 4.0, my - 3.0, 1.5, t.menu_pop_text);
-                            }
-                            Mark::Radio(on) => {
-                                if on {
-                                    ui.c.fill_circle(mx, my, 3.0, t.menu_pop_text);
-                                } else {
-                                    ui.c.stroke_circle(mx, my, 3.5, 1.0, t.menu_pop_dim);
-                                }
-                            }
-                            _ => {}
-                        }
-                        let key = if item.shortcut.is_empty() { "" } else { shortcut_now(item) };
-                        let caption = s.motion.borrow().caption(Slot::Dropdown, lit.next());
-                        row_text(ui, rr, &label_now(s, menu, item), key, item.sub, ok, caption);
-                    }
-                }
+            if !in_menu(s, menu, item) {
                 flat += 1;
-                y += h;
+                continue;
             }
-            cx += cw;
+            let h = row_h(&mt, item);
+            let rr = Rect::new(col.x, y, col.w, h);
+            match item.kind {
+                Kind::Sep => ui.c.fill_rect(Rect::new(col.x, y + mt.sep_line, col.w, mt.line), t.menu_pop_head),
+                Kind::Head => head_row(ui, rr, Language::current().text(item.label)),
+                Kind::Item => {
+                    let ok = active(s, menu, item);
+                    // Greyed-out entries never light up; they only say they are not available yet (EDIT's without a
+                    // step to act on say nothing).
+                    if ok {
+                        let hov = ui.hit(rr, item_action(menu, flat, item), item.label);
+                        ui.menu_row(crate::app::MENU_DROPDOWN);
+                        if hov || open == Some(flat) {
+                            light(ui, rr);
+                        }
+                    } else if !works(menu, item) {
+                        ui.off(rr, item.label);
+                    }
+                    let mark = mark_of(s, menu, item);
+                    let (mx, my) = (rr.x + 10.0, rr.y + row / 2.0);
+                    match mark {
+                        Mark::Check(true) => {
+                            ui.c.line(mx - 4.0, my, mx - 1.0, my + 3.0, 1.5, t.menu_pop_text);
+                            ui.c.line(mx - 1.0, my + 3.0, mx + 4.0, my - 3.0, 1.5, t.menu_pop_text);
+                        }
+                        Mark::Radio(on) => {
+                            if on {
+                                ui.c.fill_circle(mx, my, 3.0, t.menu_pop_text);
+                            } else {
+                                ui.c.stroke_circle(mx, my, 3.5, 1.0, t.menu_pop_dim);
+                            }
+                        }
+                        _ => {}
+                    }
+                    let key = if item.shortcut.is_empty() { "" } else { shortcut_now(item) };
+                    row_text(ui, rr, &label_now(s, menu, item), key, item.sub, ok);
+                }
+            }
+            flat += 1;
+            y += h;
         }
-    };
-    // From Polished up the highlight bar glides from row to row under the rows' text, so it is painted before them. Text
-    // only blends over what is already there; going through the rows once without painting says where the bar goes.
-    let glide = crate::motion::glides();
-    if glide {
-        let mut dry = Lit { glide, hot: None, shown: 0 };
-        ui.dry(|ui| rows(ui, &mut dry));
-        let up = Rect::new(r.x * k, r.y * k, r.w * k, r.h * k);
-        if let Some(b) = s.motion.borrow_mut().glide(Slot::Dropdown, key, dry.hot, up) {
-            light(ui, b);
-        }
-    }
-    rows(ui, &mut Lit { glide, hot: None, shown: 0 });
-    crate::motion::Motion::menu_end(ui.c, draw);
-}
-
-/// The dropdown's highlight: the row under the mouse goes to the gliding bar (`glide`), or is lit where it is.
-struct Lit {
-    glide: bool,
-    hot: Option<Rect>,
-    /// The captions drawn so far, for their entrance (`Motion::caption`).
-    shown: usize,
-}
-
-impl Lit {
-    /// The next caption's place in the order.
-    fn next(&mut self) -> usize {
-        self.shown += 1;
-        self.shown - 1
-    }
-
-    /// Row `rr`, under the mouse (`hov`) or lit anyway (`stays`: its submenu is open).
-    fn row(&mut self, ui: &mut Ui, rr: Rect, hov: bool, stays: bool) {
-        if hov && self.glide {
-            self.hot = Some(rr);
-        } else if hov || stays {
-            light(ui, rr);
-        }
+        cx += cw;
     }
 }
 
@@ -1005,28 +987,35 @@ fn head_row(ui: &mut Ui, rr: Rect, label: &str) {
     } else {
         ui.c.fill_rect(rr, t.menu_pop_head);
     }
-    ui.c.text(Font::new(12), rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, label);
+    ui.c.text(os_ui::kit::menu::app_font(t, 10), rr.x + 4.0, rr.y + 1.0 + (rr.h - os_ui::kit::menu::HEAD) / 2.0, t.menu_pop_head_text, label);
 }
 
 /// A row under the mouse, or the ▸ row whose submenu is open.
 fn light(ui: &mut Ui, rr: Rect) {
-    let lemon = super::lemon(ui);
-    super::playlist::menu_highlight(ui, rr, lemon);
+    let t = ui.t;
+    if t.style.vintage_2005 {
+        os_ui::kit::menu::vintage_highlight(ui.c, t, rr);
+    } else if super::lemon(ui) {
+        os_ui::kit::row_highlight(ui.c, t, rr);
+    } else {
+        ui.c.fill_rect(rr, t.menu_pop_hi);
+    }
 }
 
-/// A row's text: its label, its key (italic, at the right) and its ▸ (`sub`); dim when it cannot be chosen (`ok`).
-fn row_text(ui: &mut Ui, rr: Rect, label: &str, key: &str, sub: bool, ok: bool, caption: (f32, f32)) {
+/// A row's text: its label, its shortcut at the right and its ▸ (`sub`); dim when it cannot be chosen (`ok`).
+fn row_text(ui: &mut Ui, rr: Rect, label: &str, key: &str, sub: bool, ok: bool) {
     let t = ui.t;
-    let font = Font::new(14);
-    // Text sits where it does at 100 %, moved by half of what the row lost.
-    let (dy, my) = ((rr.h - os_ui::kit::menu::ROW) / 2.0, rr.cy());
+    let font = os_ui::kit::menu::app_font(t, 12);
+    let my = rr.cy();
     let color = if ok { t.menu_pop_text } else { t.menu_pop_dim };
-    let color = color.with_alpha((f32::from(color.a) * caption.1) as u8);
-    ui.c.text_clip(font, rr.x + 20.0 - caption.0, rr.y + 2.0 + dy, rr.w - 24.0, color, label);
+    let label_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, font, 2.0);
+    ui.c.text_clip(font, rr.x + 20.0, label_y, rr.w - 24.0, color, label);
     let right = rr.right() - if sub { 16.0 } else { 8.0 };
     if !key.is_empty() {
         let sc = if ok { t.menu_pop_shortcut } else { t.menu_pop_dim.mix(t.menu_pop, 0.35) };
-        ui.c.text_right(font.italic(), right, rr.y + 3.0 + dy, sc, key);
+        let key_font = os_ui::kit::menu::app_shortcut_font(t, font);
+        let key_y = os_ui::kit::menu::app_row_text_y(ui.c, t, rr, key_font, 3.0);
+        ui.c.text_right(key_font, right, key_y, sc, key);
     }
     if sub {
         let ax = rr.right() - 11.0;
@@ -1046,7 +1035,7 @@ fn recent_text(r: &Recent) -> (String, &'static str, bool) {
 
 /// Paints FILE's Recent projects section from the top of `at` (its x and width) down; `open`: the dropdown's open
 /// submenu. Returns the y under it.
-fn paint_recent(ui: &mut Ui, s: &State, rows: &[Recent], at: Rect, open: Option<usize>, lit: &mut Lit) -> f32 {
+fn paint_recent(ui: &mut Ui, rows: &[Recent], at: Rect, open: Option<usize>) -> f32 {
     let mt = os_ui::kit::menu::metrics(ui.c.scale);
     let mut y = at.y;
     for r in rows {
@@ -1063,9 +1052,10 @@ fn paint_recent(ui: &mut Ui, s: &State, rows: &[Recent], at: Rect, open: Option<
         let rr = Rect::new(at.x, y, at.w, mt.row);
         let hov = ui.hit(rr, act, hint);
         ui.menu_row(crate::app::MENU_DROPDOWN);
-        lit.row(ui, rr, hov, sub && open == Some(RECENT_MORE));
-        let caption = s.motion.borrow().caption(crate::motion::Slot::Dropdown, lit.next());
-        row_text(ui, rr, &label, key, sub, true, caption);
+        if hov || (sub && open == Some(RECENT_MORE)) {
+            light(ui, rr);
+        }
+        row_text(ui, rr, &label, key, sub, true);
         y += mt.row;
     }
     y
@@ -1121,34 +1111,20 @@ mod tests {
         }
         let save = bar[0].rows.iter().find(|r| r.label == "Save").unwrap();
         assert_eq!((save.shortcut, save.pick), ("Ctrl+S", Some((0, FILE_SAVE))));
-        let playlist = bar[VIEW].rows.iter().find(|r| r.label == "Arranger").unwrap();
+        let playlist = bar[VIEW].rows.iter().find(|r| r.label == "Playlist").unwrap();
         assert_eq!(pick(VIEW, playlist.pick.unwrap().1), Action::ToggleWin(Win::Playlist));
         assert_eq!(playlist.mark, Mark::Check(app.state.shown(Win::Playlist)));
         // Patterns in use head PATTERNS, the current one marked.
-        assert_eq!(bar[PATTERNS].rows[0].label, "New empty pattern...", "a new project uses no pattern yet");
+        assert_eq!(bar[PATTERNS].rows[0].label, "Find first empty...", "a new project uses no pattern yet");
         app.state.project.patterns.iter_mut().find(|p| p.number == 1).expect("pattern 1").name = Some("Intro".into());
         let first = bar_model(&app.state)[PATTERNS].rows[0].clone();
         assert_eq!((first.label.as_str(), first.mark, first.pick), ("Intro", Mark::Radio(true), Some((PATTERNS, PATTERN_PICK + 1))));
         // Live state: hiding the playlist unticks it.
         app.state.hide(Win::Playlist);
-        let playlist = bar_model(&app.state)[VIEW].rows.iter().find(|r| r.label == "Arranger").unwrap().clone();
+        let playlist = bar_model(&app.state)[VIEW].rows.iter().find(|r| r.label == "Playlist").unwrap().clone();
         assert_eq!(playlist.mark, Mark::Check(false));
         let declick = bar[TOOLS_MENU].rows.iter().find(|r| r.label == DECLICK_LABEL).unwrap();
         assert_eq!((declick.enabled, declick.pick), (false, None), "no native submenus yet");
-    }
-
-    /// Every entry that works says what it does (`MenuCmd`), but for those dispatched by their place (FILE's first
-    /// entries): none falls through to "not available yet", whatever its label.
-    #[test]
-    fn working_entries_have_their_command() {
-        let by_place = [(0, FILE_NEW), (0, FILE_OPEN), (0, FILE_SAVE), (0, FILE_SAVE_AS), (0, FILE_SAVE_VERSION), (0, FILE_EXPORT), (0, FILE_EXPORT_MP3), (0, FILE_EXPORT_MIDI), (0, FILE_EXIT)];
-        for (mi, m) in MENUS.iter().enumerate() {
-            for (i, it) in m.cols.iter().flat_map(|(_, items)| items.iter()).enumerate().filter(|(_, it)| it.kind == Kind::Item) {
-                if works(mi, it) && !by_place.contains(&(mi, i)) {
-                    assert_ne!(it.cmd, MenuCmd::None, "{} works but has no command", it.label);
-                }
-            }
-        }
     }
 
     /// The ▸ entries with a built submenu work, and open it; the others stay greyed out (spec: ui/menus.md "Look").
@@ -1159,22 +1135,25 @@ mod tests {
         for (mi, m) in MENUS.iter().enumerate() {
             for (i, it) in m.cols.iter().flat_map(|(_, items)| items.iter()).enumerate().filter(|(_, it)| it.sub) {
                 let built_here = submenu(mi, it.label).is_some();
-                assert_eq!(works(mi, it), built_here || matches!(it.cmd, MenuCmd::Params(_)), "{}", it.label);
+                assert_eq!(works(mi, it), built_here || crate::params::menu_handles(it.label), "{}", it.label);
                 assert_eq!(item_action(mi, i, it) == Action::MenuSub(mi, i), built_here, "{}", it.label);
                 if built_here {
                     built.push(it.label);
                 }
             }
         }
-        assert_eq!(built, ["New from template", "Import", "Effect", "Toolbars", "Arrange windows", "Background", ONE_CLICK_LABEL, DUMP_LOG_LABEL, LOGGER_SETTINGS_LABEL, CLIPS_ALL_LABEL, CLIPS_SEL_LABEL, EDITORS_LABEL, KEY_FOCUS_LABEL, DECLICK_LABEL, "Tutorials"]);
+        assert_eq!(built, ["New from template", "Import", "Effect", "Toolbars", ONE_CLICK_LABEL, DUMP_LOG_LABEL, CLIPS_ALL_LABEL, CLIPS_SEL_LABEL, EDITORS_LABEL, DECLICK_LABEL]);
         let labels = |menu, label| submenu(menu, label).unwrap()(&app.state).iter().map(|p| p.label.to_string()).collect::<Vec<_>>();
-        let modes = ["Fade out only", "Transient", "Transient (tail continues)", "Standard (tail continues)", "Smooth (tail continues)", "Crossfade (tail continues)"];
+        let modes = ["Out only (no bleeding)", "Transient (no bleeding)", "Transient (bleeding)", "Generic (bleeding)", "Smooth (bleeding)", "Crossfade (bleeding)"];
         assert_eq!(labels(TOOLS_MENU, DECLICK_LABEL), modes, "the six declick modes in order (spec: audio/declick.md)");
         assert_eq!(labels(TOOLS_MENU, EDITORS_LABEL), ["Attached", "Detached"]);
         // ADD > Effect: the effect plugin menu as a submenu (spec: ui/plugin-menu.md §1-2).
         let fx = submenu(ADD_MENU, "Effect").unwrap()(&app.state);
         assert_eq!(fx, crate::plugin_menu::items(&app.state, crate::plugin_menu::Target::Fx(None), true));
-        assert_eq!(labels(TOOLS_MENU, KEY_FOCUS_LABEL), ["Enabled", "Disabled"]);
+        for label in ["Set keyboard focus for all plugins to"] {
+            let (mi, it) = MENUS.iter().enumerate().find_map(|(mi, m)| m.cols.iter().flat_map(|(_, items)| items.iter()).find(|it| it.label == label).map(|it| (mi, it))).unwrap();
+            assert!(!works(mi, it), "{label} stays greyed out");
+        }
     }
 
     /// ADD's Categories / Simple / By vendor are the plugin menus' display mode: the dot follows it, a pick sets it as
@@ -1212,18 +1191,18 @@ pub fn pattern_popup(x: f32, y: f32) -> crate::playlist::Popup {
         .map(|it| match it.kind {
             Kind::Sep => PItem::sep(),
             Kind::Head => PItem::head(it.label),
-            Kind::Item => match it.cmd {
-                MenuCmd::Pattern(c) if it.works => PItem::new(it.label, Cmd::Pattern(c)).key(it.shortcut),
+            Kind::Item => match crate::patterns::Cmd::from_label(it.label) {
+                Some(c) if it.works => PItem::new(it.label, Cmd::Pattern(c)).key(it.shortcut),
                 _ => PItem::not_yet(it.label).key(it.shortcut),
             },
         })
         .collect();
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// The Toolbars menu: the hint panel's and the bare toolbar's right-click menu (spec: ui/toolbar-menu.md §8).
 pub fn hint_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
-    crate::playlist::Popup { x, y, items: toolbar_items(s), sub: None, scroll: [0; 2] }
+    crate::playlist::Popup { x, y, items: toolbar_items(s), sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// The Toolbars menu's entries, also VIEW > Toolbars ▸ (spec: ui/toolbar-menu.md §1, §8): Edit (the toolbar editor),
@@ -1236,17 +1215,22 @@ pub fn toolbar_items(s: &State) -> Vec<crate::playlist::PItem> {
     let switch = |label: &'static str, sw: Switch, on: bool| PItem::new(label, Cmd::Toolbar(sw)).mark(Mark::Check(on));
     let mut items = vec![
         PItem::head("Toolbars"),
+        PItem::new("Mixer",Cmd::MainMenu(VIEW,VIEW_ITEMS.iter().position(|item|item.label=="Mixer").expect("Mixer menu entry"))).key("F9").mark(Mark::Check(s.shown(Win::Mixer))),
         switch("Edit", Switch::Edit, s.bar.editing),
         switch("Separators", Switch::Separators, o.separators),
         switch("Flat buttons", Switch::Flat, o.flat),
-        PItem::not_yet("Show detected MIDI chords near the status bar").mark(Mark::Check(false)),
         PItem::sep(),
-        switch("Status bar", Switch::HintBar, o.hint_bar),
+        switch("Hint bar", Switch::HintBar, o.hint_bar),
+        switch("Tesla audio editor",Switch::Tesla,crate::settings_file::flag("toolbar_tesla",false)),
+        if s.vintage_2005 {
+            switch("Vintage CPU meter", Switch::CpuMemory, crate::workspace_visibility::shown("visible_vintage_cpu"))
+        } else {
+            switch("CPU and memory", Switch::CpuMemory, crate::settings_file::flag("toolbar_cpu_visible",true))
+        },
         // A command: always the dim mark (§1).
         switch("Hide", Switch::Hide, false).key("Ctrl+F11"),
-        PItem::col(),
     ];
-    items.extend(preset_items(s));
+    items.push(PItem::sub("Layout presets",preset_items(s)));
     items
 }
 
@@ -1278,7 +1262,7 @@ pub fn editor_presets_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup
     items.push(if s.bar.layout.factory().is_none() && s.bar.user_current().is_some() { delete } else { delete.off() });
     items.push(PItem::sep());
     items.extend(preset_items(s));
-    crate::playlist::Popup { x, y, items, sub: None, scroll: [0; 2] }
+    crate::playlist::Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
 
 /// The time display's right-click menu: Mode and Middle unit, one dot each (spec: ui/time-display.md §1).
@@ -1292,5 +1276,46 @@ pub fn clock_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
     items.push(PItem::head("Middle unit"));
     items.push(PItem::new("Step", Cmd::ClockBeat(false)).mark(Mark::Radio(!c.beat)));
     items.push(PItem::new("Beat", Cmd::ClockBeat(true)).mark(Mark::Radio(c.beat)));
-    Popup { x, y, items, sub: None, scroll: [0; 2] }
+    Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
+}
+
+#[cfg(test)] mod cleanup_tests {
+ use super::*;
+ #[test] fn options_selects_classic_and_compact_toolbar_meter(){
+    let mut app=crate::app::App::new(None);
+    let old=crate::settings_file::flag("toolbar_cpu_classic",false);
+    let visible=crate::settings_file::flag("toolbar_cpu_visible",true);
+    let mut canvas=os_ui::Canvas::new(1600,800,1.).unwrap();
+    let combined=crate::settings_file::flag("toolbar_cpu_combined",true);
+    for (style,width) in [(OPT_CPU_COMBINED,239.),(OPT_CPU_CLASSIC,crate::app::CPU_RECT.w),(OPT_CPU_COMPACT,48.)] {
+        app.menu_item(OPTIONS_MENU,style);
+        app.paint(&mut canvas,None);
+        let rows=organized_items(&app.state,OPTIONS_MENU);
+        let menu=rows.iter().find(|r|r.label=="CPU meter").unwrap();
+        assert!(menu.children.iter().any(|r|r.cmd==crate::playlist::Cmd::MainMenu(OPTIONS_MENU,style) && r.mark==crate::playlist::Mark::Radio(true)));
+        assert!(app.hits.iter().any(|h|h.action==Action::CpuPanel && (h.rect.w-width*crate::views::band_k(&app.state)).abs()<1.));
+    }
+    crate::settings_file::set_flag("toolbar_cpu_combined",combined);
+    crate::settings_file::set_flag("toolbar_cpu_classic",old);
+    crate::settings_file::set_flag("toolbar_cpu_visible",visible);
+ }
+ #[test] fn community_cleanup_menus_toolbar_and_resize(){
+  let mut app=crate::app::App::new(None);
+  for m in 0..MENUS.len(){let rows=organized_items(&app.state,m);assert!(!rows.is_empty());assert!(rows.len()<22,"menu {m} still too long");
+   fn commands(rows:&[crate::playlist::PItem],out:&mut Vec<(usize,usize)>){for r in rows{assert!(!matches!(r.cmd,crate::playlist::Cmd::NotYet(_)));if let crate::playlist::Cmd::MainMenu(m,i)=r.cmd{out.push((m,i));}commands(&r.children,out);}}
+   let mut cmds=vec![];commands(&rows,&mut cmds);let mut unique=cmds.clone();unique.sort();unique.dedup();// Mixer is intentionally reachable both directly in View and under Toolbars.
+   let mixer=(VIEW,VIEW_ITEMS.iter().position(|item|item.label=="Mixer").unwrap());
+   if m==VIEW{assert_eq!(cmds.iter().filter(|c|**c==mixer).count(),2);}
+   assert_eq!(cmds.len(),unique.len()+usize::from(m==VIEW));
+   for(i,item) in MENUS[m].cols.iter().flat_map(|(_,v)|v.iter()).enumerate(){if item.kind==Kind::Item&&works(m,item)&&in_menu(&app.state,m,item)&&submenu(m,item.label).is_none(){assert!(cmds.contains(&(m,i)),"missing {}",item.label);}}
+  }
+  let old=crate::settings_file::flag("toolbar_cpu_visible",true);
+  for cpu in [true,false]{crate::settings_file::set_flag("toolbar_cpu_visible",cpu);for hint in [true,false]{app.state.toolbar.hint_bar=hint;for w in [1000,1600]{let mut c=os_ui::Canvas::new(w,700,1.).unwrap();app.paint(&mut c,None);
+   assert_eq!(app.hits.iter().any(|h|h.action==Action::CpuPanel&&h.rect.y<50.),cpu);
+   assert!(!app.hits.iter().any(|h|h.hint=="Hint bar"&&h.rect.y>100.));
+   if w==1600{assert_eq!(app.hits.iter().any(|h|h.hint=="Hint bar"),hint);}
+   app.act(Action::Menu(VIEW));app.paint(&mut c,None);assert!(app.state.playlist.popup.as_ref().is_some_and(|p|p.items.iter().any(|i|i.label=="Toolbars")));app.act(Action::Menu(VIEW));
+  }}}
+  crate::settings_file::set_flag("toolbar_cpu_visible",old);
+ }
 }

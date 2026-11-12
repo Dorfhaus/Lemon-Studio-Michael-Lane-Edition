@@ -223,7 +223,7 @@ impl App {
         use crate::playlist::{Cmd, Mark, PItem, Popup};
         let now = choice(&self.state.project);
         let items = (0..CHOICES.len() as u32).map(|i| PItem::new(CHOICES[i as usize], Cmd::DataFolder(DCmd::Choice(i))).mark(Mark::Radio(i == now))).collect();
-        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2] });
+        self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();
     }
 
@@ -259,11 +259,21 @@ impl App {
                     if hosted.is_some_and(|h| h != to) {
                         self.plugins.load_sample(row, &to);
                     }
+                    if let Some(old)=self.state.project.channels[row].sample_path.as_ref(){for w in &mut self.state.project.audio_warps{if w.rendered==*old{w.rendered=to.clone();}}}
                     self.state.project.channels[row].sample_path = Some(to);
                     copied += 1;
                 }
                 Err(_) => failed += 1,
             }
+        }
+        for vocal in &mut self.state.project.vocal_edits {
+            let current=vocal.render_key==crate::vocal::key(vocal);
+            for stored in [&mut vocal.source,&mut vocal.rendered]{if stored.is_empty(){continue;}let source=crate::plugins::resolve_sample(stored);match copy_sample(Path::new(&source),dir){Ok(p)=>*stored=p.to_string_lossy().into_owned(),Err(_)=>failed+=1}}
+            if current{vocal.render_key=crate::vocal::key(vocal);}
+        }
+        for w in &mut self.state.project.audio_warps {
+            let source=crate::plugins::resolve_sample(&w.source);
+            match copy_sample(Path::new(&source),dir){Ok(p)=>w.source=p.to_string_lossy().into_owned(),Err(_)=>failed+=1}
         }
         reread(&self.state);
         self.invalidate();
@@ -316,7 +326,7 @@ impl App {
                         self.copy_used_samples();
                     }
                     let name = crate::backup::project_name(self.state.path.as_deref());
-                    self.save_to(dir.join(format!("{name}.{}", crate::project_files::EXT)));
+                    self.save_to(dir.join(format!("{name}.lmn")));
                     reread(&self.state);
                 }
             }
@@ -350,7 +360,7 @@ impl App {
             Some((old, new)) => file.strip_prefix(old).map_or_else(|_| file.clone(), |rel| new.join(rel)),
             None => file.clone(),
         };
-        let target = file_after.with_file_name(format!("{}.{}", name.trim(), file.extension().map_or_else(|| crate::project_files::EXT.to_string(), |e| e.to_string_lossy().into_owned())));
+        let target = file_after.with_file_name(format!("{}.{}",name.trim(),file_after.extension().unwrap_or_else(||std::ffi::OsStr::new("lmn")).to_string_lossy()));
         // Both names are checked before anything is renamed (the file's new name where the file is now).
         if let Some((_, new)) = folder_move.as_ref().filter(|(_, new)| new.exists()) {
             return self.rename_refused(new);
@@ -714,9 +724,9 @@ mod tests {
         crate::dialog::fake::answer(Some(other.clone()));
         app.data_folder_pick();
         app.dialog_click(crate::dialog::DHit::Button(0));
-        assert_eq!(app.state.path, Some(other.join("song.lemon")));
+        assert_eq!(app.state.path, Some(other.join("song.lmn")));
         assert!(!app.unsaved());
-        let opened = App::new(Some(other.join("song.lemon")));
+        let opened = App::new(Some(other.join("song.lmn")));
         assert_eq!(opened.state.project.data_folder, Some(DataFolder { choice: DataFolder::SPECIFIED, folder: folder_text(&other) }));
         let copy = other.join(SAMPLES_DIR).join("kick.wav");
         assert_eq!(opened.state.project.channels[0].sample_path.as_deref(), Some(copy.to_string_lossy().as_ref()));

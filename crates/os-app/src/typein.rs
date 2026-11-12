@@ -1,9 +1,8 @@
 // Copyright (C) 2026 ItsAlphaNeon
-// Copyright (C) 2026 thacer13
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! "Enter value...": the value box of the knob and parameter menus. It is the playlist's inline text box
+//! "Type in value...": the value box of the knob and parameter menus. It is the playlist's inline text box
 //! (`EditTarget::TypeIn`) drawn as FL's value box, reading the text in the knob's own unit or as a normalized value.
 //!
 // spec: ui/type-in-value.md
@@ -15,64 +14,13 @@ use crate::playlist::EditTarget;
 /// What a value box sets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Target {
+    SampleTempo(usize),
     Knob(KnobId),
     /// A mixer track's volume fader (0..1, the fader law; spec: ui/mixer.md §4).
     Fader(u16),
     /// A plugin parameter: hosted key, parameter index.
     Param(usize, usize),
-    /// A mixer track's input latency (`true`) or output latency setting, typed in a unit (spec: audio/track-io.md
-    /// §2.6).
-    Latency(u16, bool, LatUnit),
-    /// The mixer track box of the channel on rack row `.0`, typed as a track number, 0 or "Master" for the master (Lemon
-    /// Studio's design: spec ui/type-in-value.md "Lemon Studio").
-    RackTrack(usize),
-    /// The mute LED of the channel on rack row `.0`: "On" (playing) or "Off" (muted) (Lemon Studio's design, as above).
-    RackLed(usize),
-    /// The wet (`true`) or dry level of member `.2` (its id) of the container in slot `.1` of mixer track `.0`, as a
-    /// percent (Lemon Studio's design: `crate::container`).
-    Member(u16, u8, u32, bool),
-    /// Parameter `.3` of member `.2` (its id) of the container in slot `.1` of mixer track `.0`: a plugin parameter
-    /// named by what a project keeps, for remote control links (`crate::params::link_target`).
-    MemberParam(u16, u8, u32, usize),
 }
-
-/// A member's parameter as the hosted instance's (`Target::Param`), while its effect is loaded.
-fn resolved(s: &State, t: Target) -> Option<Target> {
-    match t {
-        Target::MemberParam(m, k, id, i) => Some(Target::Param(crate::container::member_key(s, crate::container::place_key(m, k), id)?, i)),
-        t => Some(t),
-    }
-}
-
-/// The units a latency setting is typed in: Set in ms / samples / beats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LatUnit {
-    Ms,
-    Samples,
-    Beats,
-}
-
-impl LatUnit {
-    pub fn name(self) -> &'static str {
-        match self {
-            LatUnit::Ms => "ms",
-            LatUnit::Samples => "samples",
-            LatUnit::Beats => "beats",
-        }
-    }
-
-    /// Milliseconds per unit: a sample at the device's rate (44.1 kHz with none open), a beat at the project's tempo.
-    fn ms(self, s: &State) -> f64 {
-        match self {
-            LatUnit::Ms => 1.0,
-            LatUnit::Samples => 1000.0 / f64::from(crate::device::rate().unwrap_or(44100).max(1)),
-            LatUnit::Beats => 60000.0 / s.project.tempo.unwrap_or(140.0).max(1.0),
-        }
-    }
-}
-
-/// The range a latency setting takes, in ms (OS).
-pub const LATENCY_MAX_MS: f64 = 1000.0;
 
 /// Clicks on the box's parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,12 +54,6 @@ enum Unit {
     Hz,
     /// No value mode (plugin parameters, OS).
     Plain,
-    /// A latency setting in its unit (no value mode).
-    Latency,
-    /// A rack row's mixer track box: "Master", "Bus 7" (no value mode).
-    Track,
-    /// A rack row's mute LED: "On" / "Off" (no value mode).
-    Switch,
 }
 
 /// The gain laws of the dB controls (spec: audio/gain-laws.md).
@@ -129,24 +71,21 @@ fn unit(t: Target) -> Unit {
         Target::Knob(KnobId::ChanVol(_)) => Unit::Db(Law::Channel),
         Target::Knob(KnobId::MasterVol) => Unit::Db(Law::Main),
         Target::Knob(KnobId::Send(..)) | Target::Fader(_) => Unit::Db(Law::Fader),
-        Target::Knob(KnobId::Swing | KnobId::SlotMix(..) | KnobId::Member(..)) | Target::Member(..) => Unit::Percent,
+        Target::Knob(KnobId::Swing | KnobId::SlotMix(..) | KnobId::Strip(..)) => Unit::Percent,
         Target::Knob(KnobId::MasterPitch) => Unit::Hz,
         // The equaliser's settings take the plain 0..1 position for now.
-        Target::Param(..) | Target::MemberParam(..) | Target::Knob(KnobId::Eq(..) | KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_) | KnobId::AutoLfo(..) | KnobId::MidiOut(..)) => Unit::Plain,
-        Target::Latency(..) => Unit::Latency,
-        Target::RackTrack(_) => Unit::Track,
-        Target::RackLed(_) => Unit::Switch,
+        Target::SampleTempo(_) | Target::Param(..) | Target::Knob(KnobId::Varispeed | KnobId::ChanPitch(_) | KnobId::Eq(..) | KnobId::Strum(_) | KnobId::Arp(_) | KnobId::PianoDlg(_)) => Unit::Plain,
     }
 }
 
-/// The value-mode button's label and its name in the hint ("Enter value as: <name>"), when the box has the two
+/// The value-mode button's label and its name in the hint ("Type in value as: <name>"), when the box has the two
 /// mode buttons (spec §3).
 pub fn mode_button(t: Target) -> Option<(&'static str, &'static str)> {
     match unit(t) {
         Unit::Pan | Unit::Sep => Some(("C", "Centered")),
         Unit::Db(_) => Some(("dB", "dB")),
         Unit::Percent => Some(("%", "%")),
-        Unit::Hz | Unit::Plain | Unit::Latency | Unit::Track | Unit::Switch => None,
+        Unit::Hz | Unit::Plain => None,
     }
 }
 
@@ -157,7 +96,7 @@ pub fn width(t: Target) -> f32 {
 /// The mode a box opens in: the remembered one, or the only one it has.
 fn opening_norm(t: Target, remembered: bool) -> bool {
     match unit(t) {
-        Unit::Hz | Unit::Latency | Unit::Track | Unit::Switch => false,
+        Unit::Hz => false,
         Unit::Plain => true,
         _ => remembered,
     }
@@ -165,16 +104,9 @@ fn opening_norm(t: Target, remembered: bool) -> bool {
 
 /// The caption under the field (spec §6, §7).
 pub fn caption(s: &State, t: Target) -> String {
-    match t {
-        Target::Knob(KnobId::MasterPitch) => "Master pitch (Hz)".into(),
-        _ => format!("Value for {}", target_name(s, t)),
-    }
-}
-
-/// What a target is called: "Bus 1 - Volume", "Channel volume", a plugin parameter's name (`crate::remote::label`
-/// names the owner of every kind).
-pub fn target_name(s: &State, t: Target) -> String {
-    match t {
+    let name = match t {
+        Target::SampleTempo(_) => return "Source tempo (BPM, 20-400)".into(),
+        Target::Knob(KnobId::MasterPitch) => return "Master pitch (Hz)".into(),
         Target::Knob(k @ (KnobId::MixPan(m) | KnobId::MixSep(m) | KnobId::SlotMix(m, _))) => {
             let label = if let KnobId::MixSep(_) = k { "Stereo separation".to_string() } else { knob_label(s, k) };
             format!("{} - {label}", crate::mixer::name(s, m))
@@ -182,15 +114,8 @@ pub fn target_name(s: &State, t: Target) -> String {
         Target::Knob(k) => knob_label(s, k),
         Target::Fader(m) => format!("{} - Volume", crate::mixer::name(s, m)),
         Target::Param(key, index) => crate::params::param_name(s, key, index).unwrap_or_else(|| format!("Parameter {}", index + 1)),
-        Target::Latency(m, input, u) => format!("{} - {} latency ({})", crate::mixer::name(s, m), if input { "Input" } else { "Track" }, u.name()),
-        Target::RackTrack(_) => "Target mixer track".into(),
-        Target::RackLed(_) => "Channel on / off".into(),
-        Target::Member(m, k, id, wet) => crate::container::level_name(s, m, k, id, wet),
-        Target::MemberParam(.., i) => match resolved(s, t) {
-            Some(p @ Target::Param(..)) => target_name(s, p),
-            _ => format!("Parameter {}", i + 1),
-        },
-    }
+    };
+    format!("Value for {name}")
 }
 
 /// The knob's hint text up to its colon ("Channel volume").
@@ -226,91 +151,43 @@ fn position_for_gain(k: Law, g: f64) -> f64 {
 
 pub(crate) fn get(s: &State, t: Target) -> Option<f64> {
     match t {
+        Target::SampleTempo(_) => Some(s.tempo),
         Target::Knob(k) => Some(f64::from(s.knob(k))),
         Target::Fader(m) => Some(crate::mixer::track(s, m)?.volume.unwrap_or(0.8)),
         Target::Param(key, index) => crate::params::param_value(s, key, index),
-        Target::Latency(m, input, _) => crate::mixer::track(s, m).map(|t| f64::from(if input { t.latency_in } else { t.latency_out })),
-        Target::RackTrack(r) => s.project.channels.get(r).map(|c| f64::from(c.mixer_track)),
-        Target::RackLed(r) => s.project.channels.get(r).map(|c| if c.enabled { 1.0 } else { 0.0 }),
-        Target::Member(m, k, id, wet) => crate::container::level(s, m, k, id, wet).map(f64::from),
-        Target::MemberParam(..) => match resolved(s, t)? {
-            p @ Target::Param(..) => get(s, p),
-            _ => None,
-        },
     }
 }
 
 fn set(s: &mut State, t: Target, v: f64) {
+    let locked = match t {
+        Target::Fader(track) => crate::mixer::locked(s, track),
+        Target::Knob(id) => crate::mixer::locked_knob(s, id),
+        Target::Param(key, _) => crate::mixer::locked_effect(s, key),
+        _ => false,
+    };
+    if locked { s.message = Some(crate::mixer::LOCK_MESSAGE.into()); return; }
     match t {
+        Target::SampleTempo(row) => s.sample_tempo_requests.push((row,(v*1000.).round() as u32)),
         Target::Knob(k) => {
             crate::history::knob(s, k, false);
             s.set_knob(k, v as f32);
         }
-        Target::Fader(m) => crate::control::knob_edit(s, crate::history::MIXER_VOLUME, crate::control::command::Region::Track(m), |s| {
+        Target::Fader(m) => {
+            crate::history::fader(s, m, false);
             if let Some(t) = crate::mixer::track_mut(s, m) {
                 t.volume = Some(v.clamp(0.0, 1.0));
                 s.piano.dirty = true;
             }
-        }),
+        }
         Target::Param(key, index) => {
             let before = crate::params::param_value(s, key, index);
             if crate::params::set_param_value(s, key, index, v) {
-                crate::control::param_set(s, key, index, before, v);
+                crate::history::param(s, key, index, before, v);
             } else {
                 s.message = Some("The plugin did not take the value".into());
             }
         }
-        // `v` is in the box's unit.
-        Target::Latency(m, input, u) => crate::mixer::set_latency(s, m, input, (v * u.ms(s)).clamp(-LATENCY_MAX_MS, LATENCY_MAX_MS) as f32),
-        // One undo step, as the box's own menu commands.
-        Target::RackTrack(r) => {
-            let track = v.round().clamp(0.0, f64::from(crate::mixer::max_insert(&s.project))) as u16;
-            if s.project.channels.get(r).is_some_and(|c| c.mixer_track != track) {
-                crate::control::edit(s, "Channel mixer track", crate::control::command::Region::Channel(r), |s| {
-                    if let Some(c) = s.project.channels.get_mut(r) {
-                        c.mixer_track = track;
-                    }
-                });
-                s.piano.dirty = true;
-            }
-        }
-        Target::RackLed(r) => {
-            if s.project.channels.get(r).is_some_and(|c| c.enabled != (v >= 0.5)) {
-                crate::rack::toggle_mute(s, r);
-            }
-        }
-        Target::Member(m, k, id, wet) => crate::container::set_level(s, m, k, id, wet, v.clamp(0.0, 1.0) as f32),
-        Target::MemberParam(..) => match resolved(s, t) {
-            Some(p @ Target::Param(..)) => set(s, p, v),
-            _ => s.message = Some("This effect is not loaded (its plugin was not found)".into()),
-        },
     }
-}
-
-/// The 0..1 position of a rack row's mixer track box or LED, for Copy value and Paste value (Lemon Studio's design):
-/// the track over the highest insert, the LED 0 (off) or 1 (on). `None` for the other targets, which copy their knob.
-pub(crate) fn position(s: &State, t: Target) -> Option<f64> {
-    let v = get(s, t)?;
-    match t {
-        Target::RackTrack(_) => Some(v / f64::from(crate::mixer::max_insert(&s.project).max(1))),
-        Target::RackLed(_) => Some(v),
-        _ => None,
-    }
-}
-
-/// The value (in the box's unit) of a rack row's mixer track box or LED at position `p` (0..1): the nearest track, or
-/// the LED on from one half.
-pub(crate) fn at_position(s: &State, t: Target, p: f64) -> f64 {
-    let p = p.clamp(0.0, 1.0);
-    match t {
-        Target::RackTrack(_) => (p * f64::from(crate::mixer::max_insert(&s.project))).round(),
-        _ => if p >= 0.5 { 1.0 } else { 0.0 },
-    }
-}
-
-/// Sets a rack row's mixer track box or LED to `v`, in the box's unit (its menu's Paste value and Set...).
-pub(crate) fn set_value(s: &mut State, t: Target, v: f64) {
-    set(s, t, v);
 }
 
 /// `v` with at most `places` decimals and no trailing zeros ("0.5", "1", "466.16376151809").
@@ -323,9 +200,6 @@ fn short(v: f64, places: usize) -> String {
 /// The field's text for the box's current value in a mode (spec §3, §6).
 pub fn text(s: &State, t: Target, norm: bool) -> String {
     let n = get(s, t).unwrap_or(0.0);
-    if let Target::Latency(_, _, u) = t {
-        return short(n / u.ms(s), 4);
-    }
     if norm {
         return short(n, 4);
     }
@@ -339,9 +213,7 @@ pub fn text(s: &State, t: Target, norm: bool) -> String {
         }
         Unit::Percent => format!("{:.0}%", n * 100.0),
         Unit::Hz => short(440.0 * 2f64.powf(bipolar), 11),
-        Unit::Track => crate::views::rack::insert_name(n as u16),
-        Unit::Switch => if n >= 0.5 { "On" } else { "Off" }.into(),
-        Unit::Plain | Unit::Latency => short(n, 4),
+        Unit::Plain => short(n, 4),
     }
 }
 
@@ -369,14 +241,11 @@ fn strip_suffix_ci<'a>(text: &'a str, suffix: &str) -> &'a str {
 /// (spec §4, §5, §8; unreadable = unchanged is the OS choice).
 pub fn parse(t: Target, norm: bool, text: &str) -> Option<f64> {
     let text = text.trim();
+    if matches!(t,Target::SampleTempo(_)){return text.parse::<f64>().ok().filter(|v|v.is_finite() && (20.0..=400.0).contains(v));}
     if text.is_empty() {
         return None;
     }
     let u = unit(t);
-    // A latency in its unit, with or without the unit's name after it.
-    if let Target::Latency(_, _, lu) = t {
-        return number(strip_suffix_ci(text, lu.name())).filter(|(_, pct)| !pct).map(|(v, _)| v);
-    }
     if norm || u == Unit::Plain {
         // spec §5: up to 1 = the position, above 1 or with "%" = a percent.
         let (v, pct) = number(text)?;
@@ -409,33 +278,11 @@ pub fn parse(t: Target, norm: bool, text: &str) -> Option<f64> {
             let (hz, _) = number(strip_suffix_ci(text, "hz"))?;
             (hz > 0.0).then(|| 0.5 + (1200.0 * (hz / 440.0).log2()).clamp(-1200.0, 1200.0) / 2400.0)
         }
-        // A track number, with or without "Bus" (or the original's "Insert") before it; "Master" or "M" is 0. Above the
-        // last bus: the last.
-        Unit::Track => {
-            if text.eq_ignore_ascii_case("master") || text.eq_ignore_ascii_case("m") {
-                return Some(0.0);
-            }
-            let prefixed = |p: &str| text.len() >= p.len() && text.is_char_boundary(p.len()) && text[..p.len()].eq_ignore_ascii_case(p);
-            let t = if prefixed("insert") { &text[6..] } else if prefixed("bus") { &text[3..] } else { text };
-            match number(t)? {
-                (_, true) => None,
-                (v, false) => Some(v.round().max(0.0)),
-            }
-        }
-        // "On" / "Off" (also "unmute" / "mute", "muted"), or a number: on from 0.5 (from 50 with "%").
-        Unit::Switch => {
-            let w = text.to_ascii_lowercase();
-            match w.as_str() {
-                "on" | "unmute" | "unmuted" => Some(1.0),
-                "off" | "mute" | "muted" => Some(0.0),
-                _ => number(&w).map(|(v, pct)| if (if pct { v / 100.0 } else { v }) >= 0.5 { 1.0 } else { 0.0 }),
-            }
-        }
-        Unit::Plain | Unit::Latency => None,
+        Unit::Plain => None,
     }
 }
 
-/// "Enter value...": the box at the mouse (spec §1), its field holding the value in the remembered mode.
+/// "Type in value...": the box at the mouse (spec §1), its field holding the value in the remembered mode.
 pub fn open(s: &mut State, t: Target, mouse: (f32, f32)) {
     let norm = opening_norm(t, s.playlist.typein_norm);
     let w = width(t);
@@ -455,7 +302,7 @@ pub fn accept(s: &mut State, t: Target, norm: bool, typed: &str) {
         s.playlist.typein_norm = norm;
     }
     // The field as it opened keeps the exact value (no rounding to the shown decimals, OS).
-    if typed.trim() == text(s, t, norm).trim() {
+    if !matches!(t,Target::SampleTempo(_)) && typed.trim() == text(s, t, norm).trim() {
         return;
     }
     if let Some(v) = parse(t, norm, typed) {
