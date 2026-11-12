@@ -174,6 +174,7 @@ pub struct ChannelInfo {
     pub name: String,
     /// "Insert 3" / "Master".
     pub target: String,
+    pub sidechain: Option<String>,
     pub enabled: bool,
     /// 0..1, -1..1, cents.
     pub volume: f64,
@@ -691,7 +692,12 @@ fn paint(c: &mut Canvas, st: &State) {
                 c.text_clip(Font::new(15),a.x+10.,a.y+5.,a.w-20.,c_text(),"Effect routing");
                 let button=sidechain_button(st);
                 c.fill_rrect(button,5.,c_frame());
-                c.text_center(Font::new(15),button,c_text(),"Sidechain input...");
+                if let Some(source) = &st.info.sidechain {
+                    let label = format!("Sidechain: {source}");
+                    c.text_clip(Font::new(15), button.x + 8.0, button.y + 5.0, button.w - 16.0, c_text(), &label);
+                } else {
+                    c.text_center(Font::new(15), button, c_text(), "Sidechain input...");
+                }
             }
         }
     }
@@ -1401,7 +1407,7 @@ mod tests {
     use super::*;
 
     fn state(strip: bool, target: &str) -> State {
-        let info = ChannelInfo { name: "Keys".into(), target: target.into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 0, max_track: 125, misc: Some(Default::default()) };
+        let info = ChannelInfo { name: "Keys".into(), target: target.into(), enabled: true, volume: 0.78, pan: 0.0, pitch_cents: 0, range: 2, track: 0, max_track: 125, sidechain: None, misc: Some(Default::default()) };
         State { strip, ..State::new(info, (480.0, 270.0), false) }
     }
 

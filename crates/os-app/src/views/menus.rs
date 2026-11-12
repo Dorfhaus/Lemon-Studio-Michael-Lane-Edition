@@ -122,6 +122,7 @@ pub const MULTILINK_LABEL: &str = "Multilink to controllers";
 pub const INTO_WORKSPACE_LABEL: &str = "Into workspace";
 /// Index of the OPTIONS menu.
 pub const OPTIONS_MENU: usize = 5;
+pub const OPTIONS_DRAG_VISIBILITY: &str = "visible_options-menu-drag";
 /// OPTIONS > Project info (the toolbar's info button).
 pub const OPT_INFO: usize = 9;
 /// HELP > About (the toolbar logo).
@@ -295,11 +296,14 @@ const OPTIONS: &[Item] = &[
     it("Compact", "").on().radio(false),
     it("Classic FL-style (CPU and MB)", "").on().radio(false),
     it("Lemon live monitor", "").on().radio(true),
+    it("AI assistant settings", "").on(),
 ];
 
-pub const OPT_CPU_COMPACT: usize = OPTIONS.len()-3;
-pub const OPT_CPU_CLASSIC: usize = OPTIONS.len()-2;
-pub const OPT_CPU_COMBINED:usize=OPTIONS.len()-1;
+pub const OPT_AI_ASSISTANT: usize = OPTIONS.len()-1;
+
+pub const OPT_CPU_COMPACT: usize = OPTIONS.len()-4;
+pub const OPT_CPU_CLASSIC: usize = OPTIONS.len()-3;
+pub const OPT_CPU_COMBINED:usize=OPTIONS.len()-2;
 
 const TOOLS_A: &[Item] = &[
     it("Browser find...", "Ctrl+F"),
@@ -383,12 +387,12 @@ pub(super) fn modern_bar(c: &mut os_ui::Canvas) -> (Font, [(&'static str, f32, f
         } else if compact && i == HELP_MENU {
             "…"
         } else {
-            MENUS[i].title
+            VINTAGE_TITLES[i]
         }
     });
     const ROOM: f32 = 278.0;
     const MIN_GAP: f32 = 7.0;
-    let (font, widths, total) = (9..=14).rev().map(|size| {
+    let (font, widths, total) = (9..=16).rev().map(|size| {
         let font = Font::new(size);
         let widths = titles.map(|title| c.text_width(font, title).ceil());
         (font, widths, widths.iter().sum::<f32>())
@@ -781,7 +785,7 @@ pub(crate) fn default_organized_items(s:&State,menu:usize,catalog:bool)->Vec<cra
   0=>vec![("",vec![0,1,2]),("Save",vec![4,5,6,7,8]),("Import / export",vec![11,12,13,14,15]),("Project maintenance",vec![9,17])],
   PATTERNS=>vec![("Find empty pattern",vec![0,1,2]),("Edit pattern",vec![4,5,6,7,8,9,10,12,13,14]),("Arrange",vec![16,17,19]),("Render",vec![20,21,22])],
   VIEW=>vec![("",(1..=11).collect()),("Window layout",(14..=20).collect()),("Browser shortcuts",(22..all.len()).collect())],
-  OPTIONS_MENU=>vec![("Settings",(1..=6).collect()),("CPU meter",vec![OPT_CPU_COMPACT,OPT_CPU_CLASSIC,OPT_CPU_COMBINED]),("Project",vec![8,9]),("MIDI",vec![13,14,15]),("Recording / transport",(17..OPT_CPU_COMPACT-1).collect())],
+  OPTIONS_MENU=>vec![("Settings",vec![1,2,3,OPT_AI_ASSISTANT,4,5,6]),("CPU meter",vec![OPT_CPU_COMPACT,OPT_CPU_CLASSIC,OPT_CPU_COMBINED]),("Project",vec![8,9]),("MIDI",vec![13,14,15]),("Recording / transport",(17..OPT_CPU_COMPACT-1).collect())],
   TOOLS_MENU=>vec![("Recording",vec![1,8,9]),("Parameters",vec![15,16]),("Audio clips",vec![26,27,35]),("Project cleanup",vec![23,24,30,31,32]),("",vec![18,19]),("Plugin windows",vec![33,34])],
   _=>vec![("",(0..all.len()).collect())],
  };
@@ -1281,6 +1285,26 @@ pub fn clock_popup(s: &State, x: f32, y: f32) -> crate::playlist::Popup {
 
 #[cfg(test)] mod cleanup_tests {
  use super::*;
+ #[test] fn ai_assistant_options_entry_opens_mcp_while_local_ai_on_hold() {
+    let mut app = crate::app::App::new(None);
+    let rows = organized_items(&app.state, OPTIONS_MENU);
+    let settings = rows.iter().find(|row| row.label == "Settings").unwrap();
+    let ai = settings.children.iter().find(|row| row.label == "AI assistant settings").expect("AI settings must survive menu filtering");
+    assert!(ai.enabled);
+    assert_eq!(ai.cmd, crate::playlist::Cmd::MainMenu(OPTIONS_MENU, OPT_AI_ASSISTANT));
+    for (index, label) in [(4,"File settings"),(OPT_THEME,"Theme settings"),(6,"Manage plugins"),(OPT_INFO,"Project info")] {
+        assert_eq!(item_at(OPTIONS_MENU,index).unwrap().label,label);
+    }
+    app.menu_item(OPTIONS_MENU, OPT_AI_ASSISTANT);
+    assert!(matches!(app.state.dialogs.last().unwrap().body, crate::dialog::Body::Ai));
+    assert!(app.voice_session.is_none());
+    let mut canvas = os_ui::Canvas::new(1280,720,1.).unwrap();
+    app.paint(&mut canvas,None);
+    for button in [crate::voice_assistant::Button::Local, crate::voice_assistant::Button::External] {
+        assert!(!app.hits.iter().any(|hit| hit.action == Action::Dlg(crate::dialog::DHit::Voice(button))));
+    }
+ }
+
  #[test] fn options_selects_classic_and_compact_toolbar_meter(){
     let mut app=crate::app::App::new(None);
     let old=crate::settings_file::flag("toolbar_cpu_classic",false);

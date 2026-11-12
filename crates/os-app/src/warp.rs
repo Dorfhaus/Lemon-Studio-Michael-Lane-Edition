@@ -61,6 +61,9 @@ pub struct Form {
     initial_points: Vec<(f64, f64)>,
     preview: preview::Preview,
     pub sample: Arc<os_engine::Sample>,
+    pub source_hash: String,
+    imported_pitch:Option<os_model::vocal::Edit>,
+    legacy_notice:bool,
     pub selected: Option<usize>,
     pub select_mode: bool,
     pub selection: Vec<f64>,
@@ -220,6 +223,8 @@ pub fn open(app: &mut App, i: usize) -> Result<(), String> {
         return Err("Wait for audio timing to finish applying".into());
     }
     app.drag = None;
+    crate::audio_edits::isolate(&mut app.state,i);
+    crate::audio_edits::attach(&mut app.state,i,true);
     let clip = pl::clips(&app.state)
         .get(i)
         .cloned()
@@ -248,7 +253,7 @@ pub fn open(app: &mut App, i: usize) -> Result<(), String> {
     // A trimmed render is a new source window; keep that audio intact rather than
     // incorrectly mapping its milliseconds onto the earlier unwarped source.
     let resolved = crate::plugins::resolve_sample(path);
-    let saved = app
+    let mut saved = app
         .state
         .project
         .audio_warps
@@ -258,6 +263,17 @@ pub fn open(app: &mut App, i: usize) -> Result<(), String> {
                 && (w.rendered == path || crate::plugins::resolve_sample(&w.rendered) == resolved)
         })
         .cloned();
+    if let Some(d)=crate::vocal::doc(&app.state,i) {
+        let (a,b)=pl::window(&app.state,&clip);let(a,b)=(a/1000.,b/1000.);
+        let end=clip.length as f64/app.state.project.ppq.max(1) as f64;
+        let (lo,hi)=(d.original(a),d.original(b));
+        let mut points=vec![(lo,0.)];
+        points.extend(d.timing.iter().filter(|p|p.0>lo&&p.0<hi).map(|&(x,y)|(x,(y-a)/(b-a)*end)));
+        points.push((hi,end));
+        saved=Some(AudioWarp{source:d.source.clone(),rendered:d.rendered.clone(),points});
+    }
+    let imported_pitch=if crate::vocal::doc(&app.state,i).is_none(){saved.as_ref().and_then(|w|app.state.project.vocal_edits.iter().find(|d|!d.source_hash.is_empty()&&crate::plugins::resolve_sample(&d.rendered)==crate::plugins::resolve_sample(&w.source)).cloned())}else{None};
+    let legacy_notice=crate::vocal::doc(&app.state,i).is_none()&&imported_pitch.is_none()&&saved.as_ref().is_some_and(|w|app.state.project.vocal_edits.iter().any(|d|crate::plugins::resolve_sample(&d.rendered)==crate::plugins::resolve_sample(&w.source))||app.state.project.audio_warps.iter().any(|old|old.rendered==w.source));
     let tempo = app.state.project.tick_tempo(app.state.tempo);
     let ppq = app.state.project.ppq;
     let arrangement = app.state.project.arrangement_index();
@@ -270,7 +286,14 @@ pub fn open(app: &mut App, i: usize) -> Result<(), String> {
         job: done.clone(),
     });
     std::thread::spawn(move || {
-        let result = prepare(i, clip, ch, saved, tempo, ppq, arrangement);
+        let result = (||{
+            let mut saved=saved;
+            if let (Some(w),Some(d))=(&mut saved,&imported_pitch){
+                if crate::vocal::file_hash(&d.source)?!=d.source_hash{return Err("The original tuned recording changed; the existing rendered audio has been preserved".into());}
+                for p in &mut w.points{p.0=d.original(p.0);}w.source=d.source.clone();
+            }
+            let mut form=prepare(i,clip,ch,saved,tempo,ppq,arrangement)?;form.imported_pitch=imported_pitch;form.legacy_notice=legacy_notice;Ok(form)
+        })();
         if let Ok(mut out) = done.lock() {
             *out = Some(result);
         }
@@ -323,7 +346,7 @@ fn prepare(
     {
         return Err("This saved warp has invalid anchors".into());
     }
-    edit.source = source;
+    edit.source = source.clone();
     let scale = end / edit.points.last().unwrap().1;
     for p in &mut edit.points {
         p.1 *= scale;
@@ -343,6 +366,8 @@ fn prepare(
         initial_points: edit.points.clone(),
         preview: preview::Preview::default(),
         edit,
+        imported_pitch:None,legacy_notice:false,
+        source_hash: crate::vocal::file_hash(&source)?,
         sample,
         selected: None,
         select_mode: false,
@@ -359,6 +384,7 @@ fn prepare(
 }
 pub fn command(app: &mut App, c: Command) {
     run(app, c, false);
+    if !matches!(app.drag,Some(crate::app::Drag::WarpMarker{..})){commit(app);}
 }
 
 pub(crate) fn confirm_apply(app: &mut App) {
@@ -371,7 +397,7 @@ pub(crate) fn confirm_apply(app: &mut App) {
     }
 }
 
-fn run(app: &mut App, c: Command, confirmed: bool) {
+fn run(app: &mut App, c: Command, _confirmed: bool) {
     if applying(&app.state) {
         return;
     }
@@ -431,6 +457,10 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
             app.state.message = open(app, i).err();
         }
         app.invalidate();
+        return;
+    }
+    if matches!(c,Command::Undo|Command::Redo){
+        if let Some(ch)=app.state.playlist.warp.as_ref().map(|f|f.channel.index){crate::audio_edits::history(app,ch,true,c==Command::Redo);refresh(app);}
         return;
     }
     let x = app.mouse.0;
@@ -540,7 +570,7 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
             }
             f.edit.points = points;
             f.selected = None;
-            f.message = format!("{count} points quantized. Apply to hear, or Undo to compare.");
+            f.message = format!("{count} points quantized. Updates automatically; Undo to compare.");
         }
         Command::Source => {
             if f.select_mode {
@@ -637,71 +667,8 @@ fn run(app: &mut App, c: Command, confirmed: bool) {
             f.selected = None;
         }
         Command::Snap => f.snap = !f.snap,
-        Command::Apply => {
-            if !f.has_edits() {
-                f.message =
-                    "No timing changes to apply. Drag a marker or use Quantize first.".into();
-                app.invalidate();
-                return;
-            }
-            let warning = &crate::messages::WARP_BAKES_VOCAL_TUNING;
-            let bakes_vocal_tuning = app.state.project.vocal_edits.iter().any(|edit| {
-                edit.channel == f.channel.index
-                    && !edit.rendered.is_empty()
-                    && edit.rendered != edit.source
-                    && crate::plugins::resolve_sample(&edit.rendered) == f.edit.source
-            });
-            if !confirmed && crate::messages::on(warning) && bakes_vocal_tuning {
-                use crate::dialog::{Answer, Kind, Msg, Then, spans};
-                let mut message = Msg::new(
-                    Kind::Warning,
-                    "Apply audio timing?",
-                    spans(&["Applying audio timing will bake the clip's vocal tuning into the new audio. You can still undo the warp to return to the editable tuned clip.\n\nCheck Don't show again to skip this warning next time."]),
-                    &[Answer::Yes, Answer::Cancel],
-                    Then::WarpApply,
-                ).labelled(&["Apply", "Cancel"]);
-                message.focus = 1;
-                message.remember = Some((warning, false));
-                app.show_msg(message);
-                return;
-            }
-            let points = f.frame_points();
-            let sample = f.sample.clone();
-            let previewed = f.preview.sample(&f.edit.points);
-            let (send, receive) = mpsc::channel();
-            f.pending = Some(receive);
-            f.message = "Applying audio timing...".into();
-            let dir = crate::pattern_render::folder(&app.state).join("Warped");
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let rendered = match previewed {
-                        Some(rendered) => rendered,
-                        None => preview::render(&sample, &points)?,
-                    };
-                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                    let stamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos();
-                    let path = dir.join(format!("Warp-{stamp}.wav"));
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&path)
-                        .map_err(|e| e.to_string())?;
-                    let stereo: Vec<_> = rendered
-                        .left
-                        .iter()
-                        .zip(&rendered.right)
-                        .flat_map(|(&l, &r)| [l, r])
-                        .collect();
-                    os_engine::wav::write_f32_stereo(&mut file, sample.rate, &stereo)
-                        .map_err(|e| e.to_string())?;
-                    Ok(path)
-                })();
-                let _ = send.send(result);
-            });
-        }
+        Command::Apply => { crate::vocal::history_changed(&mut app.state); }
+
     }
     app.invalidate();
 }
@@ -764,7 +731,28 @@ pub fn poll(app: &mut App) {
             app.state.playlist.warp_loading = None;
             match result {
                 Ok(form) => {
+                    let mut form=form;
+                    let ch=form.channel.index;
+                    if !app.state.project.vocal_edits.iter().any(|d|d.channel==ch){
+                        let duration=form.sample.frames()as f64/form.sample.rate as f64;
+                        let mut d=os_model::vocal::Edit{channel:ch,source:form.edit.source.clone(),source_hash:form.source_hash.clone(),rendered:form.channel.sample_path.clone().unwrap_or_default(),render_key:String::new(),rate:form.sample.rate,frames:form.sample.frames()as u32,f0:vec![0.;(duration/os_model::vocal::STEP).floor()as usize+1].into(),notes:vec![],curve:vec![],timing:vec![(0.,0.),(duration,duration)],enabled:true,strength:1.,formant:0.};
+                        let analyzed=form.imported_pitch.is_some();
+                        if let Some(mut original)=form.imported_pitch.take(){original.channel=ch;original.rendered=d.rendered.clone();original.render_key=String::new();original.timing=d.timing.clone();d=original;}
+                        if !d.valid(){app.state.message=Some("This source exceeds the editable audio limits".into());return;}
+                        if !form.edit.rendered.is_empty(){
+                            let(a,b)=form.range();let end=form.end();
+                            if b<=a{return;}
+                            pl::arr_mut(&mut app.state).clips[form.clip].window=Some((a*1000.,b*1000.));
+                            if let Some(c)=app.state.project.channels.iter_mut().find(|c|c.index==ch){crate::loop_fit::set_fitted_time(&mut c.sound,end*duration/(b-a));form.channel=c.clone();}
+                            form.original=pl::clips(&app.state)[form.clip].clone();
+                        }
+
+                        app.state.project.vocal_edits.push(d);
+                        crate::audio_edits::attach(&mut app.state,form.clip,analyzed);
+                        form.initial_points=vec![];
+                    }
                     app.state.playlist.warp = Some(form);
+                    commit(app);
                     command(app, Command::Analyze);
                     command(app, Command::Fit);
                 }
@@ -773,133 +761,57 @@ pub fn poll(app: &mut App) {
             app.invalidate();
         }
     }
-    if app.state.playlist.warp.as_ref().is_some_and(|f| {
-        f.arrangement != app.state.project.arrangement_index()
-            || pl::clips(&app.state).get(f.clip) != Some(&f.original)
-            || app.state.project.channel(f.channel.index) != Some(&f.channel)
-    }) {
-        if applying(&app.state) {
-            app.state.message = Some(
-                "The clip or its source changed during rendering. Audio timing was not applied."
-                    .into(),
-            );
-        }
-        clear_form(app);
-        app.invalidate();
-        return;
+    if !matches!(app.drag,Some(crate::app::Drag::WarpMarker{..})){refresh(app);}
+    let updating=app.state.playlist.warp.as_ref().is_some_and(|f|crate::vocal::doc(&app.state,f.clip).is_some_and(|d|crate::audio_edits::changed(d)&&d.render_key!=crate::vocal::key(d)));
+    let Some(f)=app.state.playlist.warp.as_mut()else{return};
+    if let Some(times)=f.analysis.as_ref().and_then(|j|j.lock().ok()?.take()){
+        f.transients=times;f.analysis=None;
     }
-    preview::poll(app);
-    let Some(f) = app.state.playlist.warp.as_mut() else {
-        return;
-    };
-    let detected = f.analysis.as_ref().and_then(|job| job.lock().ok()?.take());
-    if let Some(times) = detected {
-        f.transients = times;
-        f.analysis = None;
-        if f.pending.is_none() {
-            f.message = format!(
-                "{} transients detected. Drag markers or Quantize. Apply to keep your edits.",
-                f.transients.len()
-            );
-        }
-        app.invalidate();
+    f.message=if app.state.playlist.vocal.message.starts_with("Vocal tuning:"){app.state.playlist.vocal.message.clone()}else if updating{"Updating audio timing...".into()}else{"Ready. Timing edits update automatically after each gesture.".into()};
+    if f.legacy_notice{f.message.push_str(" Earlier processing is baked into this legacy source; its separate controls could not be recovered.");}
+}
+
+/// Commit parameters once per completed gesture; rendering belongs to the project, not this view.
+pub(crate) fn commit(app:&mut App){
+    let Some(f)=app.state.playlist.warp.as_ref()else{return};
+    if f.edit.points==f.initial_points{return;}
+    let(ci,ch,points,end)=(f.clip,f.channel.index,f.edit.points.clone(),f.end());
+    let Some(i)=app.state.project.vocal_edits.iter().position(|d|d.channel==ch)else{return};
+    let d=&app.state.project.vocal_edits[i];let duration=d.frames as f64/d.rate as f64;
+    let (a,b)=pl::window(&app.state,&pl::clips(&app.state)[ci]);let(a,b)=(a/1000.,b/1000.);
+    let mut timing=d.timing.clone();let(lo,hi)=(points[0].0,points.last().unwrap().0);
+    timing.retain(|p|p.0<lo||p.0>hi);
+    timing.extend(points.iter().map(|&(x,y)|(x,a+y/end*(b-a))));
+    timing.sort_by(|a,b|a.0.total_cmp(&b.0));
+    if timing.first().is_none_or(|p|p.0>0.){timing.insert(0,(0.,0.));}
+    if timing.last().is_none_or(|p|p.0<duration){timing.push((duration,duration));}
+    let mut next=d.clone();next.timing=timing;
+    if !next.valid()||!crate::vocal::timing_valid(&next){app.state.message=Some("This timing adjustment exceeds the stretch limits".into());refresh(app);return;}
+    if next.timing!=d.timing{
+        crate::audio_edits::snapshot(&mut app.state,"Edit clip timing");
+        app.state.project.vocal_edits[i]=next;crate::audio_edits::finish(&mut app.state);
+        app.state.piano.dirty=true;
     }
-    let Some(f) = app.state.playlist.warp.as_mut() else {
-        return;
-    };
-    let result = f.pending.as_ref().and_then(|job| match job.try_recv() {
-        Ok(result) => Some(result),
-        Err(mpsc::TryRecvError::Empty) => None,
-        Err(mpsc::TryRecvError::Disconnected) => {
-            Some(Err("The render worker stopped. Try Apply again.".into()))
-        }
-    });
-    let Some(result) = result else { return };
-    f.pending = None;
-    let path = match result {
-        Ok(p) => p,
-        Err(e) => {
-            f.message = format!("Could not apply audio timing: {e}");
-            app.state.message = Some(f.message.clone());
-            app.invalidate();
-            return;
-        }
-    };
-    let Some(mut f) = app.state.playlist.warp.take() else {
-        return;
-    };
-    if app.state.project.arrangement_index() != f.arrangement
-        || pl::clips(&app.state).get(f.clip) != Some(&f.original)
-    {
-        app.state.message = Some("The clip changed; warp was rendered but not applied".into());
-        return;
-    }
-    let Some(index) = app
-        .state
-        .project
-        .channels
-        .iter()
-        .map(|c| c.index)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-    else {
-        app.state.message = Some("No channel IDs available".into());
-        return;
-    };
-    let row = app.state.project.channels.len();
-    let before = crate::history::Snap::Several(vec![
-        if usize::from(index) == row
-            && app
-                .state
-                .project
-                .channels
-                .iter()
-                .enumerate()
-                .all(|(row, channel)| usize::from(channel.index) == row)
-        {
-            crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(&app.state, row)))
-        } else {
-            crate::history::Snap::Rows(Box::new(crate::history::Rows::now(
-                &app.state,
-                false,
-                vec![row],
-                vec![],
-            )))
-        },
-        crate::history::Snap::AudioWarps(app.state.project.audio_warps.clone()),
-    ]);
-    pl::snapshot_with(&mut app.state, "Warp audio", before);
-    f.channel.index = index;
-    f.channel.sample_path = Some(path.to_string_lossy().into_owned());
-    f.channel.plugin_state = None;
-    f.channel.plugin = None;
-    f.channel.kind = os_model::ChannelKind::AudioClip;
-    let end = f.end();
-    f.channel.sound.stretch[0] = 0;
-    f.channel.sound.stretch[2] = 0;
-    crate::loop_fit::set_fitted_time(&mut f.channel.sound, end);
-    f.channel.name = Some(format!(
-        "{} (warped)",
-        f.channel.name.as_deref().unwrap_or("Audio")
-    ));
-    // Imported projects may carry sparse IDs. Keep the ID written into the clip.
-    app.state.project.channels.push(f.channel);
-    crate::rack::autosize(&mut app.state);
-    f.edit.rendered = path.to_string_lossy().into_owned();
-    app.state.project.audio_warps.push(f.edit.clone());
-    let ppq = app.state.project.ppq.max(1);
-    if let Some(c) = pl::arr_mut(&mut app.state).clips.get_mut(f.clip) {
-        c.source = ClipSource::Channel(index);
-        c.length = (end * ppq as f64).round().max(1.) as u32;
-        c.window = None;
-    }
-    app.state.piano.dirty = true;
-    app.state.message = Some(
-        "Warp applied. Reopen Audio timing to edit; Ctrl+Z restores the original clip.".into(),
-    );
+    if let Some(f)=app.state.playlist.warp.as_mut(){f.initial_points=points;}
     app.invalidate();
 }
+pub(crate) fn refresh(app:&mut App){
+    let Some(f)=app.state.playlist.warp.as_ref()else{return};
+    let ci=pl::clips(&app.state).iter().position(|c|c.id()==f.original.id());
+    let Some(ci)=ci.filter(|_|f.arrangement==app.state.project.arrangement_index())else{clear_form(app);return};
+    let Some(d)=crate::vocal::doc(&app.state,ci)else{clear_form(app);return};
+    let c=pl::clips(&app.state)[ci].clone();let ch=app.state.project.channel(d.channel).unwrap().clone();
+    let(a,b)=pl::window(&app.state,&c);let(a,b)=(a/1000.,b/1000.);if b<=a{return;}
+    let(lo,hi)=(d.original(a),d.original(b));let end=c.length as f64/app.state.project.ppq.max(1)as f64;
+    let mut points=vec![(lo,0.)];points.extend(d.timing.iter().filter(|p|p.0>lo&&p.0<hi).map(|&(x,y)|(x,(y-a)/(b-a)*end)));points.push((hi,end));
+    let tempo=app.state.project.tick_tempo(app.state.tempo);let offset=c.position as f64/app.state.project.ppq.max(1)as f64;
+    let f=app.state.playlist.warp.as_mut().unwrap();f.tempo=tempo;f.offset=offset;f.clip=ci;f.original=c;f.channel=ch;f.edit.points=points.clone();f.initial_points=points;
+}
+pub(crate) fn cancel_drag(app:&mut App)->bool{
+    if !matches!(app.drag,Some(crate::app::Drag::WarpMarker{..})){return false;}
+    app.drag=None;if let Some(f)=app.state.playlist.warp.as_mut(){f.edit.points=f.initial_points.clone();}app.invalidate();true
+}
+
 pub fn key_input(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> bool {
     if !crate::workspace_visibility::shown("visible_playlist-warp") {
         return false;
@@ -913,14 +825,8 @@ pub fn key_input(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: boo
         return false;
     }
     let action = match key {
-        Key::Named(NamedKey::Escape) => Some(Command::Close),
+        Key::Named(NamedKey::Escape) => {if cancel_drag(app){return true;}Some(Command::Close)},
         Key::Named(NamedKey::Delete | NamedKey::Backspace) if !ctrl => Some(Command::Delete),
-        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => Some(if app.shift {
-            Command::Redo
-        } else {
-            Command::Undo
-        }),
-        Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => Some(Command::Redo),
         _ => None,
     };
     if let Some(action) = action {
@@ -942,7 +848,7 @@ pub fn head(ui: &mut Ui, s: &State, row: u16, r: Rect) {
         "Audio timing: detect transients and warp this track",
     );
     editor_style::track_button_face(ui, r, on, hot);
-    let color = if on { ui.t.glyph } else { ui.t.text_faint };
+    let color = crate::attached_mixer::lane_icon(s,row,hot).unwrap_or(if on { ui.t.glyph } else { ui.t.text_faint });
     let r = if ui.t.style.vintage_2005 {
         r.inset(2.)
     } else {
@@ -1048,6 +954,7 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
         (Command::Redo, Icon::Redo, "Redo timing edit", false),
     ];
     for (cmd, icon, hint, on) in tools {
+        if matches!(cmd,Command::Undo|Command::Redo)&&!crate::workspace_visibility::shown("visible_clip-edit-history"){continue;}
         let r = editor_style::toolbar_slot(area, &mut x, &mut top, 28.);
         let hot = !applying && ui.hit(r, Action::Warp(cmd), hint);
         editor_style::control_face(ui, r, on, hot);
@@ -1064,30 +971,12 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
         }
     }
 
-    let apply =
-        editor_style::toolbar_slot(area, &mut x, &mut top, if applying { 88. } else { 51. });
-    let apply_hot = !applying && ui.hit(apply, Action::Warp(Command::Apply), "Apply timing edits");
-    let face = if apply_hot {
-        ui.t.accent.mix(Color::rgb(0xffffff), 0.18)
-    } else {
-        ui.t.accent
-    };
-    if vintage {
-        crate::vintage::metal(ui.c, apply, face);
-    } else {
-        ui.c.fill_rrect(apply, 4., face);
+    if s.playlist.vocal.message.starts_with("Vocal tuning:") {
+        let retry=editor_style::toolbar_slot(area,&mut x,&mut top,60.);
+        let hot=ui.hit(retry,Action::Vocal(crate::vocal::Command::Retry),"Retry rendering audio edits");
+        editor_style::control_face(ui,retry,false,hot);
+        ui.c.text_center(editor_style::font(vintage,11),retry,ui.t.text,"Retry");
     }
-    let ink = Color::rgb(0x000000);
-    let (label_rect, label) = if applying {
-        crate::loading::activity_icon(ui.c, apply.x + 11., apply.cy(), ink);
-        (
-            Rect::new(apply.x + 16., apply.y, apply.w - 16., apply.h),
-            "Applying...",
-        )
-    } else {
-        (apply, "Apply")
-    };
-    ui.c.text_center(editor_style::font(vintage, 11), label_rect, ink, label);
     let close = editor_style::toolbar_slot(area, &mut x, &mut top, 28.);
     let hot = !applying && ui.hit(close, Action::Warp(Command::Close), "Close timing editor");
     editor_style::control_face(ui, close, false, hot);
@@ -1399,6 +1288,7 @@ mod tests {
             f.edit.points[2].1 += 0.04;
             f.selection = vec![f.edit.points[2].0];
         }
+        commit(&mut app);
         let selected_before = app
             .state
             .playlist
@@ -1530,215 +1420,44 @@ mod tests {
         crate::settings_file::write("visible_playlist-warp", "1");
         assert!(expanded(&app.state, 0));
         command(&mut app, Command::Close);
-        assert_eq!(app.state.project, before);
+        assert_ne!(app.state.project, before);
+        assert!(!app.state.project.audio_edits[0].timing.undo.is_empty());
         assert!(app.state.playlist.warp.is_none());
     }
     #[test]
+    fn legacy_tuned_warp_recovers_original_controls(){
+        let(mut app,dir,ci)=crate::audio_edits::tests::fixture("legacy");
+        app.state.project.vocal_edits[0].notes[0].shift=2.;crate::audio_edits::finish(&mut app.state);crate::audio_edits::tests::render(&mut app);
+        let tuned=app.state.project.vocal_edits[0].clone();let sample=os_engine::sample::load_shared(std::path::Path::new(&tuned.rendered)).unwrap();
+        let audio=preview::render(&sample,&[(0,0),(24000,12000),(48000,48000)]).unwrap();let path=dir.join("legacy.wav");crate::vocal::incremental::write_audio(&path,&audio).unwrap();
+        let new=pl::make_unique(&mut app.state,ci).unwrap();app.state.project.audio_edits.retain(|d|d.channel!=new);app.state.project.vocal_edits.retain(|d|d.channel!=new);
+        app.state.project.channels.iter_mut().find(|c|c.index==new).unwrap().sample_path=Some(path.to_string_lossy().into_owned());
+        app.state.project.audio_warps.push(AudioWarp{source:tuned.rendered.clone(),rendered:path.to_string_lossy().into_owned(),points:vec![(0.,0.),(1.,1.),(2.,4.)]});
+        open(&mut app,ci).unwrap();wait_loaded(&mut app);let d=crate::vocal::doc(&app.state,ci).unwrap();
+        assert_eq!(d.source,tuned.source);assert_eq!(d.notes,tuned.notes);assert_ne!(d.timing,tuned.timing);
+        crate::audio_edits::tests::render(&mut app);let p=os_flp::project::load(&os_flp::project::create(&app.state.project).unwrap()).unwrap();let live:Vec<_>=app.state.project.audio_edits.iter().filter(|d|crate::audio_edits::alive(&app.state.project,d.channel)).cloned().collect();assert_eq!(p.audio_edits,live);
+    }
+
+    #[test]
     fn community_warp_roundtrip_undo_and_render() {
-        let dir = std::env::temp_dir().join(format!("lemon-warp-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("source.wav");
-        let rate = 8000u32;
-        let audio: Vec<f32> = (0..16000)
-            .flat_map(|i| {
-                let x = (i as f32 * 440. * std::f32::consts::TAU / rate as f32).sin() * 0.2;
-                [x, x]
-            })
-            .collect();
-        os_engine::wav::write_f32_stereo(
-            &mut std::fs::File::create(&source).unwrap(),
-            rate,
-            &audio,
-        )
-        .unwrap();
-        let original_bytes = std::fs::read(&source).unwrap();
-        let mut app = App::new(None);
-        app.state.project = crate::app::test_project();
-        app.state
-            .project
-            .arrangements
-            .push(os_flp::project::default_arrangement());
-        app.state.tempo = 120.;
-        app.state.project.data_folder = Some(os_model::DataFolder {
-            choice: 2,
-            folder: dir.to_string_lossy().into_owned(),
-        });
-        let ch = &mut app.state.project.channels[0];
-        ch.sample_path = Some(source.to_string_lossy().into_owned());
-        ch.index = 42;
-        let id = ch.index;
-        let ppq = app.state.project.ppq;
-        pl::arr_mut(&mut app.state).clips.push(os_model::Clip::new(
-            0,
-            ppq as u32 * 4,
-            0,
-            ClipSource::Channel(id),
-        ));
-        let original_vocal = dir.join("original-vocal.wav");
-        std::fs::copy(&source, &original_vocal).unwrap();
-        app.state.project.vocal_edits.push(os_model::vocal::Edit {
-            channel: id,
-            source: original_vocal.to_string_lossy().into_owned(),
-            source_hash: String::new(),
-            rendered: source.to_string_lossy().into_owned(),
-            render_key: String::new(),
-            rate: 16000,
-            frames: 32000,
-            f0: vec![440.; 401],
-            notes: vec![],
-            curve: vec![(1, 0.5)],
-            timing: vec![(0., 0.), (2., 2.)],
-            enabled: true,
-            strength: 1.,
-            formant: 0.,
-        });
-        let before = app.state.project.clone();
-        app.state.z = vec![crate::app::Win::Playlist];
-        app.state.song_mode = true;
-        crate::settings_file::set_flag(PREVIEW_VISIBILITY, true);
-        open(&mut app, 0).unwrap();
-        wait_loaded(&mut app);
-        command(&mut app, Command::Apply);
-        assert!(
-            app.state
-                .playlist
-                .warp
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("No timing changes")
-        );
-        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
-        let Some(f) = app.state.playlist.warp.as_mut() else {
-            panic!()
-        };
-        f.edit.points.insert(1, (1., 1.5));
-        f.wave.set(Rect::new(0., 0., 400., 100.));
-        f.moved(1, 200.);
-        assert_eq!(f.edit.points[1].1, 2.);
-        f.edit.points[1].1 = 1.5;
-        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-            let mut c = os_ui::Canvas::new(1280, 900, 1.).unwrap();
-            app.paint(&mut c, None);
-            c.pixmap
-                .save_png(std::path::PathBuf::from(dir).join("warp-editor.png"))
-                .unwrap();
-        }
-        // Several attacks snap to the same grid line. The result must still render.
-        let f = app.state.playlist.warp.as_mut().unwrap();
-        f.analysis = None;
-        f.transients = vec![0.49, 0.5, 0.51, 0.510001];
-        command(&mut app, Command::Quantize);
-
-        // A normal global Play waits for the latest warp, including when starting inside the clip.
-        app.state.playlist.pos = u32::from(ppq);
-        app.act(Action::Play);
-        assert!(!app.transport.playing());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !app.transport.playing() && std::time::Instant::now() < deadline {
-            poll(&mut app);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(app.transport.playing() && app.transport.song());
-        app.act(Action::Stop);
-        assert_eq!(
-            app.state.project, before,
-            "audition must preserve the project"
-        );
-        assert!(
-            !dir.join("Warped").exists(),
-            "preview creates no render file"
-        );
-        let mut p = crate::rack::play_project(&app.state);
-        let preview = playback(&app.state, &mut p).unwrap();
-        let clip = &p.arrangement().unwrap().clips[0];
-        let ClipSource::Channel(preview_id) = clip.source else {
-            panic!()
-        };
-        assert_ne!(preview_id, id);
-        assert_eq!(p.channel(id), before.channel(id));
-        assert_eq!(
-            p.channel(preview_id).unwrap().sample_path.as_deref(),
-            Some(PREVIEW_PATH)
-        );
-        let mut library = os_engine::SampleLibrary::new(None);
-        library.replace_buffer(PREVIEW_PATH, Some(preview.clone()));
-        let mut engine = os_engine::Engine::new(&p, &mut library, rate, os_engine::PlayMode::Song);
-        engine.seek_tick(u64::from(ppq));
-        let mut audible = [0.; 1024];
-        engine.process(&mut audible);
-        assert!(
-            audible.iter().any(|v| v.abs() > 0.005),
-            "seek into the warped buffer must sound"
-        );
-
-        crate::settings_file::set_flag(PREVIEW_VISIBILITY, false);
-        let mut original = crate::rack::play_project(&app.state);
-        assert!(playback(&app.state, &mut original).is_none());
-        assert_eq!(
-            original.arrangement().unwrap().clips[0].source,
-            ClipSource::Channel(id)
-        );
-        crate::settings_file::set_flag(PREVIEW_VISIBILITY, true);
-
-        use crate::dialog::DHit;
-        let warning = &crate::messages::WARP_BAKES_VOCAL_TUNING;
-        command(&mut app, Command::Apply);
-        assert!(
-            app.top_message()
-                .unwrap()
-                .1
-                .contains("bake the clip's vocal tuning")
-        );
-        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
-        app.dialog_click(DHit::Remember);
-        app.dialog_click(DHit::Button(1));
-        assert!(crate::messages::on(warning));
-        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_none());
-
-        command(&mut app, Command::Apply);
-        assert!(app.modal_open());
-        app.dialog_click(DHit::Remember);
-        app.dialog_click(DHit::Button(0));
-        assert!(!crate::messages::on(warning));
-        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_some());
-        assert!(app.animating());
-        command(&mut app, Command::Close);
-        assert!(app.state.playlist.warp.as_ref().unwrap().pending.is_some());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while app.state.playlist.warp.is_some() && std::time::Instant::now() < deadline {
-            poll(&mut app);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let (mut app,_,ci)=crate::audio_edits::tests::fixture("warp");
+        let original=app.state.project.vocal_edits[0].source.clone();
+        let bytes=std::fs::read(&original).unwrap();
+        open(&mut app,ci).unwrap();wait_loaded(&mut app);
+        let before=app.state.project.vocal_edits[0].timing.clone();
+        let f=app.state.playlist.warp.as_mut().unwrap();let end=f.end();f.edit.points.insert(1,(1.,end*0.35));
+        commit(&mut app);
+        assert_ne!(app.state.project.vocal_edits[0].timing,before);
+        let mut canvas=os_ui::Canvas::new(1280,900,1.).unwrap();app.state.z=vec![crate::app::Win::Playlist];app.paint(&mut canvas,None);
+        assert!(!app.hits.iter().any(|h|h.action==Action::Warp(Command::Apply)));
+        command(&mut app,Command::Close);
+        crate::audio_edits::tests::render(&mut app);
+        assert_eq!(std::fs::read(&original).unwrap(),bytes);
         assert!(app.state.playlist.warp.is_none());
-        assert_eq!(std::fs::read(&source).unwrap(), original_bytes);
-        let after = app.state.project.clone();
-        let warped = &after.audio_warps[0];
-        let ClipSource::Channel(rendered_id) = pl::clips(&app.state)[0].source else {
-            panic!()
-        };
-        assert_eq!(rendered_id, 43);
-        assert_eq!(
-            after.channel(rendered_id).unwrap().sample_path.as_deref(),
-            Some(warped.rendered.as_str())
-        );
-        let rendered =
-            os_engine::sample::load_shared(std::path::Path::new(&warped.rendered)).unwrap();
-        assert_eq!(rendered.frames(), 16000);
-        assert_eq!(preview.left, rendered.left);
-        assert_eq!(preview.right, rendered.right);
-        let file = os_flp::project::create(&after).unwrap();
-        let loaded = os_flp::project::load(&file).unwrap();
-        assert_eq!(loaded.audio_warps, after.audio_warps);
-        crate::history::undo(&mut app.state);
-        assert_eq!(app.state.project, before);
-        crate::history::redo(&mut app.state);
-        assert_eq!(app.state.project, after);
-        open(&mut app, 0).unwrap();
-        wait_loaded(&mut app);
-        let Some(f) = app.state.playlist.warp.as_ref() else {
-            panic!()
-        };
-        assert_eq!(f.edit.points, warped.points);
+        let p=os_flp::project::load(&os_flp::project::create(&app.state.project).unwrap()).unwrap();
+        assert_eq!(p.audio_edits,app.state.project.audio_edits);
+        app.state.project=p;open(&mut app,ci).unwrap();wait_loaded(&mut app);
+        command(&mut app,Command::Undo);assert_eq!(app.state.project.vocal_edits[0].timing,before);
+        command(&mut app,Command::Redo);assert_ne!(app.state.project.vocal_edits[0].timing,before);
     }
 }

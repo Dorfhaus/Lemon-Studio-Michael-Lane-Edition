@@ -15,7 +15,8 @@ pub fn normalize(frame: &mut [f32]) {
     }
 }
 pub fn draw(frame: &mut [f32], from: (f32, f32), to: (f32, f32)) {
-    let index = |p: f32| (p.clamp(0., 1.) * (SIZE - 1) as f32).round() as usize;
+    let size = frame.len();
+    let index = |p: f32| (p.clamp(0., 1.) * (size - 1) as f32).round() as usize;
     let (a, b) = (index(from.0), index(to.0));
     for i in a.min(b)..=a.max(b) {
         let t = if a == b {
@@ -28,14 +29,14 @@ pub fn draw(frame: &mut [f32], from: (f32, f32), to: (f32, f32)) {
 }
 pub fn spectrum(frame: &[f32]) -> (Vec<f64>, Vec<f64>) {
     let mut re: Vec<_> = frame.iter().map(|x| *x as f64).collect();
-    let mut im = vec![0.; SIZE];
+    let mut im = vec![0.; frame.len()];
     fft(&mut re, &mut im, false);
     (re, im)
 }
 pub fn amplitudes(frame: &[f32]) -> Vec<f32> {
     let (r, i) = spectrum(frame);
     (1..=64)
-        .map(|h| (2. * r[h].hypot(i[h]) / SIZE as f64) as f32)
+        .map(|h| (2. * r[h].hypot(i[h]) / frame.len() as f64) as f32)
         .collect()
 }
 pub fn harmonic(frame: &mut [f32], h: usize, amplitude: f32) {
@@ -46,21 +47,23 @@ pub fn harmonic(frame: &mut [f32], h: usize, amplitude: f32) {
     } else {
         i[h].atan2(r[h])
     };
-    let a = amplitude.clamp(0., 1.) as f64 * SIZE as f64 / 2.;
+    let size = frame.len();
+    let a = amplitude.clamp(0., 1.) as f64 * size as f64 / 2.;
     r[h] = a * phase.cos();
     i[h] = a * phase.sin();
-    r[SIZE - h] = r[h];
-    i[SIZE - h] = -i[h];
+    r[size - h] = r[h];
+    i[size - h] = -i[h];
     fft(&mut r, &mut i, true);
-    let peak = r.iter().fold(SIZE as f64, |a, x| a.max(x.abs()));
+    let peak = r.iter().fold(size as f64, |a, x| a.max(x.abs()));
     for (n, x) in frame.iter_mut().enumerate() {
         *x = (r[n] / peak) as f32;
     }
 }
 pub fn smooth(frame: &mut [f32]) {
     let old = frame.to_vec();
-    for i in 0..SIZE {
-        frame[i] = (old[(i + SIZE - 1) % SIZE] + 2. * old[i] + old[(i + 1) % SIZE]) * 0.25;
+    let size = frame.len();
+    for i in 0..size {
+        frame[i] = (old[(i + size - 1) % size] + 2. * old[i] + old[(i + 1) % size]) * 0.25;
     }
 }
 pub fn extract(
@@ -115,7 +118,7 @@ pub fn extract(
         .chars()
         .take(100)
         .collect();
-    let source = Source { name, samples };
+    let source = Source::new(name, samples);
     source.validate()?;
     Ok(source)
 }

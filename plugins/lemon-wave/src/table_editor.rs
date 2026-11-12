@@ -336,6 +336,10 @@ impl Extension for TableEditor {
                 if let Some(choice) = browser.click(x, y) {
                     use crate::sound_browser::Choice;
                     match &choice {
+                        Choice::PlasmaLibrary => {
+                            browser.plasma(o);
+                            return true;
+                        }
                         Choice::Category(k) => {
                             match k {
                                 0 | 1 => browser.sounds(o, *k, ""),
@@ -378,6 +382,10 @@ impl Extension for TableEditor {
                             sources.samples[o] = None;
                             Ok(())
                         }
+                        Choice::Plasma(i) => crate::plasma_wavetables::load(i).map(|source| {
+                            sources.oscillators[o] = Some(source);
+                            sources.samples[o] = None;
+                        }),
                         Choice::Bank(i) => {
                             sources.oscillators[o] = None;
                             sources.samples[o] = None;
@@ -530,6 +538,54 @@ impl Extension for TableEditor {
 #[cfg(test)]
 mod user_table_tests {
     use super::*;
+    #[test]
+    fn plasma_library_loads_on_both_oscillators_and_recalls_exact_frames() {
+        use nih_plug::prelude::Params;
+        let params = Arc::new(WaveParams::default());
+        let editor = TableEditor::new(params.clone());
+        let click = |x, y| assert!(editor.click(x, y, None));
+        let row = |i: usize, next: bool| {
+            let rect = editor.browser.lock().unwrap().menu.as_ref().unwrap().rect();
+            click(if next { rect.right() - 12. } else { rect.x + 12. },
+                  rect.y + 4. + i as f32 * 26. + 12.);
+        };
+        for (osc, index) in [(0, 0), (1, 21)] {
+            let button = crate::sound_browser::button(osc);
+            click(button.cx(), button.cy());
+            let library = editor.browser.lock().unwrap().menu.as_ref().unwrap().items.iter()
+                .position(|(_, choice)| matches!(choice, crate::sound_browser::Choice::PlasmaLibrary))
+                .unwrap();
+            row(library, false);
+            if osc == 0 {
+                row(1, false);
+            } else {
+                row(14, true);
+                row(index + 1 - 14, false);
+            }
+            let source = params.sources().oscillators[osc].clone().unwrap();
+            let expected = crate::plasma_wavetables::load(index).unwrap();
+            assert_eq!(source.name, expected.name);
+            assert_eq!(source.frame_size, 2048);
+            assert_eq!(source.samples, expected.samples);
+        }
+        let recalled = WaveParams::default();
+        recalled.deserialize_fields(&params.serialize_fields());
+        let before = params.sources();
+        let after = recalled.sources();
+        for (a, b) in before.oscillators.iter().zip(&after.oscillators) {
+            let (a, b) = (a.as_ref().unwrap(), b.as_ref().unwrap());
+            assert_eq!((a.name.as_str(), a.frame_size), (b.name.as_str(), b.frame_size));
+            assert_eq!(a.samples, b.samples);
+        }
+        let tables = recalled.tables.read().unwrap();
+        let table = tables.oscillators[0].as_ref().unwrap();
+        let playback = |position| (0..256).map(|i| table.sample(position, i as f32 / 256., 130., 48000.))
+            .collect::<Vec<_>>();
+        let (first, last) = (playback(0.), playback(1.));
+        assert!(first.iter().chain(&last).all(|v| v.is_finite()));
+        assert!(first.iter().zip(&last).any(|(&a, &b)| (a - b).abs() > 0.25));
+    }
+
     #[test]
     fn categorized_preset_save_init_and_user_recall() {
         use crate::{controls::*,instrument_view::{PRESET_FIELD,PRESET_INIT}};

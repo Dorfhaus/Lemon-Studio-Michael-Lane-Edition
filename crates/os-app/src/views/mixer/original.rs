@@ -87,7 +87,7 @@ pub(super) fn lamp(ui: &mut Ui, x: f32, y: f32, on: bool, col: Color, r: f32) {
     );
 }
 pub(super) fn button(ui: &mut Ui, r: Rect, on: bool, hover: bool, col: Color) -> Color {
-    ui.c.fill_rrect(Rect::new(r.x, r.y + 1., r.w, r.h), 3., Color::rgb(0x070808));
+    ui.c.fill_rrect(Rect::new(r.x, r.y + 1., r.w, (r.h - 1.).max(0.)), 3., Color::rgb(0x070808));
     ui.c.fill_rrect(r, 3., Color::rgb(0x101211));
     let face = r.inset(1.5);
     let base = if on {

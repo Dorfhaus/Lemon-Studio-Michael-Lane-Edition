@@ -445,6 +445,7 @@ enum Cmd {
     Export(Box<Project>, PlayMode, u32, Box<crate::export::Job>),
     /// The audio settings changed: move the playback to a new stream, close the live and preview streams.
     Reopen,
+    PlaybackSettings,
     /// Auto close (`Transport::close_device`): every stream closes; the playback keeps its place for `Open`.
     Close,
     /// The output may be used again (`Transport::open_device`).
@@ -588,6 +589,11 @@ impl Transport {
         let _ = self.tx.send(Cmd::Reopen);
     }
 
+    /// Rebuild live processing at the current audible position using the new preferences.
+    pub fn playback_settings_changed(&self) {
+        let _ = self.tx.send(Cmd::PlaybackSettings);
+    }
+
     /// Lets go of the output device (Audio ▸ Auto close, `crate::auto_close`): playback, previews and live notes close
     /// their streams after their fade. A playback (pause it first) keeps its place; until `open_device` nothing opens
     /// a stream (previews and live notes go unheard), except a new `play`.
@@ -668,9 +674,16 @@ impl Transport {
     }
 
     pub(crate) fn update_with_warp(&self, project: &Project, warp: WarpBuffer) {
+        self.update_owned(project.clone(), warp);
+    }
+
+    pub(crate) fn update_owned(&self, mut project: Project, warp: WarpBuffer) {
+        // Playback consumes rendered sources. Persistent editor histories stay with the UI.
+        project.audio_edits.clear();
+        project.vocal_edits.clear();
         // Keep the clip routing and its buffer in the same update.
         if let Ok(mut slot) = self.latest.lock() {
-            *slot = Some((project.clone(), warp));
+            *slot = Some((project, warp));
         }
         let _ = self.tx.send(Cmd::Update);
     }
@@ -1250,12 +1263,13 @@ struct FeedThread {
 impl FeedThread {
     fn spawn(mut feeder: Feeder) -> FeedThread {
         let stop = Arc::new(AtomicBool::new(false));
+        let priority = crate::prefs::index(&crate::prefs::AUDIO_PRIORITY);
         let handle = std::thread::Builder::new()
             .name("lemonstudio-feeder".into())
             .spawn({
                 let stop = stop.clone();
                 move || {
-                    raise_priority();
+                    set_feeder_priority(priority);
                     while !stop.load(Ordering::Acquire) {
                         feeder.fill(0);
                         std::thread::park_timeout(Duration::from_millis(5));
@@ -1293,24 +1307,32 @@ impl Drop for FeedThread {
 
 /// The feeder renders for the device: it runs above the UI.
 #[cfg(windows)]
-fn raise_priority() {
-    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL};
+fn set_feeder_priority(priority: usize) {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
+    };
+    let priority = [THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_TIME_CRITICAL][priority.min(2)];
     unsafe {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        SetThreadPriority(GetCurrentThread(), priority);
     }
 }
 
 /// macOS: the user-interactive class keeps the feeder on the performance cores.
 #[cfg(target_os = "macos")]
-fn raise_priority() {
+fn set_feeder_priority(priority: usize) {
+    let qos = [
+        libc::qos_class_t::QOS_CLASS_DEFAULT,
+        libc::qos_class_t::QOS_CLASS_USER_INITIATED,
+        libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+    ][priority.min(2)];
     // SAFETY: changes the calling thread's own QoS class.
     unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+        libc::pthread_set_qos_class_self_np(qos, 0);
     }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn raise_priority() {}
+fn set_feeder_priority(_priority: usize) {}
 
 /// The sample library for engines whose sampler channels Lemon Sampler instances play. They stretch for themselves
 /// (spec: audio/time-stretch.md), and of a sample one of them plays the engine keeps only the length and rate Lemon
@@ -1339,7 +1361,13 @@ fn engine(project: &Project, library: &mut SampleLibrary, rate: u32, mode: PlayM
         eprintln!("[transport] attach {} instrument(s), {} effect(s)", list.len(), fx.len());
     }
     let mut e = Engine::with_instruments(project, library, rate, mode, &list);
-    e.set_interpolation(16);
+    use crate::prefs;
+    e.set_interpolation(prefs::playback_resampling_points());
+    e.set_processing_threads(prefs::check(&prefs::THREADED_GENERATORS), prefs::check(&prefs::THREADED_MIXER));
+    e.set_worker_limit(prefs::audio_worker_limit());
+    e.set_smart_disable(prefs::check(&prefs::SMART_DISABLE));
+    e.set_worker_priority(prefs::index(&prefs::AUDIO_PRIORITY), set_feeder_priority);
+    e.set_playback_delay_compensation(prefs::check(&prefs::PLAYBACK_PDC));
     crate::project_plugins::attach_effects(&mut e, project, fx);
     e
 }
@@ -1584,7 +1612,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         // Pattern audition owns the existing instruments until another stream needs them.
         if matches!(&command, Ok(Cmd::Play(..) | Cmd::Resume | Cmd::NoteOn(..) | Cmd::Midi(..) |
             Cmd::TapClick(..) | Cmd::Audition(..) | Cmd::Preview(..) | Cmd::VocalStart(..) |
-            Cmd::Reopen | Cmd::Export(..) | Cmd::Instruments)) {
+            Cmd::Reopen | Cmd::PlaybackSettings | Cmd::Export(..) | Cmd::Instruments)) {
             stop_pattern(&mut picker_previews, &mut closing);
         }
         match command {
@@ -1818,22 +1846,24 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     }
                 }
             }
-            Ok(Cmd::Reopen) => {
+            Ok(cmd @ (Cmd::Reopen | Cmd::PlaybackSettings)) => {
+                let reopen = matches!(cmd, Cmd::Reopen);
                 picker_previews.clear();
                 live = None;
                 listen_retry = true;
-                open_asio = Some((Instant::now(), 0));
                 preview = None;
                 preview_until = None;
                 closing.clear();
-                // The next stream opens the device with the new settings; a device that failed is tried with them at
-                // once. Until one opens, the page says so rather than show the device let go of.
-                device.close();
-                if let Ok(mut o) = shared.opened.lock() {
-                    *o = None;
-                }
-                if let Some(l) = lost.as_mut() {
-                    (l.next, l.tries) = (Instant::now(), 0);
+                if reopen {
+                    open_asio = Some((Instant::now(), 0));
+                    // Device changes reopen the stream. Playback settings reuse it.
+                    device.close();
+                    if let Ok(mut o) = shared.opened.lock() {
+                        *o = None;
+                    }
+                    if let Some(l) = lost.as_mut() {
+                        (l.next, l.tries) = (Instant::now(), 0);
+                    }
                 }
                 if let Some(old) = session.take() {
                     let at = At { preview_loop: false, tick: f64::from_bits(shared.tick.load(Ordering::Relaxed)), paused: old.paused(), truncated: old.truncated, count_in: 0 };
@@ -2743,6 +2773,20 @@ mod tests {
     #[test]
     #[ignore = "sustained synthetic callback test, no audio device"]
     fn sustained_low_buffer_stress() {
+        let routed = std::env::var_os("LEMON_STRESS_ROUTED_MIXER").is_some();
+        struct BusWork(Arc<std::sync::atomic::AtomicUsize>);
+        impl os_engine::HostedEffect for BusWork {
+            fn process_fx(&mut self, _: u32, l: &mut [f32], r: &mut [f32]) {
+                if std::thread::current().name().is_some_and(|n| n.starts_with("Lemon mixer")) {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+                for s in l.iter_mut().chain(r) {
+                    let mut x = *s;
+                    for _ in 0..160 { x = std::hint::black_box(x * 0.99991); }
+                    *s = x * 0.5;
+                }
+            }
+        }
         struct Signal { phase: f32 }
         impl os_engine::engine::MixerInput for Signal {
             fn render(&mut self, rate: u32, tracks: &mut [Vec<f32>]) {
@@ -2762,7 +2806,21 @@ mod tests {
             p.mixer[1].channel_layout = 1;
             p.mixer[1].strip = [12000, 14000, 0, 0, 10000, 0, 0];
             p.mixer[1].eq[1][0] = 600;
+            if routed {
+                p.mixer[1].routes = vec![2, 3, 4, 5];
+                for t in 2..6 { p.mixer[t].routes = vec![(t + 4) as u16]; }
+            }
             let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+            let worker_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            if routed {
+                e.set_processing_threads(false, true);
+                e.set_worker_limit(4);
+                e.set_worker_priority(crate::prefs::index(&crate::prefs::AUDIO_PRIORITY), set_feeder_priority);
+                for t in 2..10 {
+                    e.set_effect(t, 0, Arc::new(Mutex::new(BusWork(worker_calls.clone()))));
+                    e.set_effect_ports(t, 0, 0, 1);
+                }
+            }
             e.clear_schedule(); e.set_awake(true);
             e.set_mixer_input(Box::new(Signal { phase: 0.0 }));
             let (mut r, ctl, shared) = renderer(e);
@@ -2817,7 +2875,7 @@ mod tests {
                 }
                 count
             });
-            raise_priority();
+            set_feeder_priority(2);
             let start = Instant::now();
             let period = Duration::from_secs_f64(size as f64 / 48000.0);
             let mut due = Instant::now(); let mut block = vec![0.0; size * 2];
@@ -2838,6 +2896,11 @@ mod tests {
             }
             stop.store(true, Ordering::Release); let edits = editor.join().unwrap(); feed.halt();
             let underruns = shared.underruns.load(Ordering::Relaxed);
+            if routed {
+                let calls = worker_calls.load(Ordering::Relaxed);
+                println!("ROUTED MIXER size={size} worker_calls={calls}");
+                assert!(calls > 0, "stress test must exercise the dependency scheduler");
+            }
             println!("STRESS size={size} seconds={seconds} callbacks={callbacks} edits={edits} underruns={underruns} gaps={gaps} invalid={invalid} scheduler_late={late} worst_callback_us={}", worst.as_micros());
             assert_eq!(invalid, 0);
             assert_eq!(gaps, 0);

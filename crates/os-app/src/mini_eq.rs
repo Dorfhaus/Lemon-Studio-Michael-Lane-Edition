@@ -185,6 +185,10 @@ pub fn toggle_bypass(app: &mut App) {
     app.invalidate();
 }
 pub fn draw(ui:&mut Ui,s:&State,r:Rect) {
+    draw_with_scope(ui,s,r,Live::MixerEqSpectrum);
+}
+pub fn draw_attached(ui:&mut Ui,s:&State,r:Rect){draw_with_scope(ui,s,r,Live::AttachedEqSpectrum);}
+fn draw_with_scope(ui:&mut Ui,s:&State,r:Rect,scope:Live){
     let t=s.selected_mixer;
     let m=mixer::track(s,t);
     let pre=m.is_some_and(|m|m.parametric_pre);
@@ -213,7 +217,7 @@ pub fn draw(ui:&mut Ui,s:&State,r:Rect) {
     }
     if r.h<55. {return;}
     let g=Rect::new(r.x,r.y+24.,r.w,(r.h-38.).max(20.));
-    ui.live(Live::MixerEqSpectrum, g.outset(2.0));
+    ui.live(scope, g.outset(2.0));
     ui.hit(g,Action::Mix(MHit::EqGraph),mixer::eq_graph_hint(s,g,ui.mouse.0));
     ui.c.fill_rrect(g,3.,ui.t.s(0x1c2427));
     ui.c.push_clip(g.inset(1.));
@@ -239,7 +243,8 @@ pub fn draw(ui:&mut Ui,s:&State,r:Rect) {
         let db=curve.db(eq::freq_hz(p)) as f32;
         (g.x+i as f32,g.cy()-db.clamp(-18.,18.)/18.*(g.h/2.-4.))
     }).collect();
-    ui.c.polyline(&pts,1.6,Color::rgb(if active{0xe4dca3}else{0x73797a}));
+    let response_color = if active { os_theme::design::lemon::MAIN } else { Color::rgb(0x73797a) };
+    ui.c.polyline(&pts, 1.6, response_color);
     for (i,b) in settings.bands.iter().enumerate() {
         let x=g.x+1.+b.freq as f32*(g.w-2.);
         let y=g.cy()-b.db as f32/18.*(g.h/2.-4.);

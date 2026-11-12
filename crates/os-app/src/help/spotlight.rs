@@ -158,7 +158,7 @@ impl Target {
             (AudioDevice, Action::Settings(SAct::Combo(settings::OUTPUT_DEVICE, ..))) => {
                 (1, "Choose the audio output device here.")
             }
-            (AudioBuffer, Action::Settings(SAct::Combo(settings::BUFFER_LENGTH, ..))) => {
+            (AudioBuffer, Action::Settings(SAct::Combo(settings::BUFFER_LENGTH | settings::LATENCY_PRESET, ..))) => {
                 (2, "Adjust the audio buffer here.")
             }
             (AudioBuffer, Action::Settings(SAct::Button(settings::SHOW_ASIO_PANEL))) => {

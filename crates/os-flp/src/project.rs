@@ -847,10 +847,12 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_mixer_locks(file, &mut p);
     read_track_folders(file,&mut p);read_track_heights(file,&mut p);
     read_comp_groups(file, &mut p);
+    read_attached_lanes(file, &mut p);
     read_frozen_tracks(file, &mut p);
     read_extra_fx(file, &mut p);
     read_audio_warps(file,&mut p);
     read_vocals(file,&mut p);
+    read_audio_edits(file,&mut p);
     read_rack_strips(file,&mut p);
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
@@ -1670,6 +1672,7 @@ fn load_pl_track(events: &[Event], t: &PlTrackLoc, enc: TextEnc) -> PlaylistTrac
         folder:false,
         frozen: None,
         comp: None,
+        attached_mixer: None,
         number: r.get(0..4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap())),
         name: t.name.and_then(|i| events[i].data()).map(|d| decode_text(d, enc)),
         color: r
@@ -3290,10 +3293,12 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_mixer_locks(project, file);
     write_track_folders(project,file);write_track_heights(project,file);
     write_comp_groups(project, file);
+    write_attached_lanes(project, file);
     write_frozen_tracks(project, file);
     write_extra_fx(project, file);
     write_audio_warps(project,file);
     write_vocals(project,file);
+    write_audio_edits(project,file);
     write_rack_strips(project,file);
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
@@ -3832,10 +3837,12 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_mixer_locks(project, &mut file);
     write_track_folders(project,&mut file);write_track_heights(project,&mut file);
     write_comp_groups(project, &mut file);
+    write_attached_lanes(project, &mut file);
     write_frozen_tracks(project, &mut file);
     write_extra_fx(project, &mut file);
     write_audio_warps(project,&mut file);
     write_vocals(project,&mut file);
+    write_audio_edits(project,&mut file);
     write_rack_strips(project,&mut file);
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
@@ -6454,7 +6461,9 @@ fn read_instrument_lanes(file:&FlpFile,p:&mut Project) {
         for r in d[1..].chunks_exact(8) {
             let v=|i|u16::from_le_bytes([r[i],r[i+1]]);
             let (ch,arr,lane,pat)=(v(0),v(2),v(4),v(6));
-            if lane<500 && p.channels.iter().any(|c|c.index==ch) && p.pattern(pat).is_some() && p.arrangements.iter().any(|a|a.number==arr) {
+            // Empty patterns can be omitted by FLP serialization. The instrument's
+            // track binding must survive saving before its first note is entered.
+            if lane<500 && p.channels.iter().any(|c|c.index==ch) && p.arrangements.iter().any(|a|a.number==arr) {
                 p.instrument_lanes.push((ch,arr,lane,pat));
             }
         }
@@ -6981,7 +6990,9 @@ fn read_mpe(file:&FlpFile,p:&mut Project){
 
 fn write_vocals(p:&Project,file:&mut FlpFile){
  file.chunks.retain(|c|c.tag!=Tag(*b"LSVT"));
- if !p.vocal_edits.is_empty(){if let Ok(data)=serde_json::to_vec(&p.vocal_edits){file.chunks.push(Chunk{tag:Tag(*b"LSVT"),body:ChunkBody::Raw(data)});}}
+ // Older readers must play the finished cache, not reinterpret the new independent layers.
+ let legacy:Vec<_>=p.vocal_edits.iter().filter(|v|!p.audio_edits.iter().any(|h|h.channel==v.channel&&live_audio_edit(p,h))).collect();
+ if !legacy.is_empty(){if let Ok(data)=serde_json::to_vec(&legacy){file.chunks.push(Chunk{tag:Tag(*b"LSVT"),body:ChunkBody::Raw(data)});}}
 }
 fn read_vocals(file:&FlpFile,p:&mut Project){
  for c in &file.chunks{if c.tag!=Tag(*b"LSVT"){continue;}let ChunkBody::Raw(data)=&c.body else{continue};
@@ -6989,9 +7000,58 @@ fn read_vocals(file:&FlpFile,p:&mut Project){
   if let Ok(edits)=serde_json::from_slice::<Vec<os_model::vocal::Edit>>(data){
    let mut channels=std::collections::HashSet::new();
    p.vocal_edits=edits.into_iter().take(1000).filter(|v|v.valid()&&p.channels.iter().any(|c|c.index==v.channel)&&channels.insert(v.channel)).collect();
+   for i in 0..p.vocal_edits.len(){if let Some(j)=(0..i).find(|&j|p.vocal_edits[j].source_hash==p.vocal_edits[i].source_hash&&p.vocal_edits[j].source==p.vocal_edits[i].source&&p.vocal_edits[j].f0==p.vocal_edits[i].f0){p.vocal_edits[i].f0=p.vocal_edits[j].f0.clone();}}
+
   }
  }
 }
 
 fn read_track_heights(file:&FlpFile,p:&mut Project){for c in &file.chunks{if c.tag!=Tag(*b"LSTH"){continue;}let ChunkBody::Raw(d)=&c.body else{continue};if d.first()!=Some(&1){continue;}for r in d[1..].chunks_exact(8){let arr=u16::from_le_bytes([r[0],r[1]]);let row=u16::from_le_bytes([r[2],r[3]])as usize;let h=f32::from_le_bytes(r[4..8].try_into().unwrap());if h.is_finite()&&(16.0..=600.).contains(&h){if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==arr).and_then(|a|a.tracks.get_mut(row)){t.height=Some(h);}}}}}
 fn write_track_heights(p:&Project,file:&mut FlpFile){file.chunks.retain(|c|c.tag!=Tag(*b"LSTH"));let mut d=vec![1];for a in &p.arrangements{for(i,t)in a.tracks.iter().enumerate(){if let Some(h)=t.height{d.extend(a.number.to_le_bytes());d.extend((i as u16).to_le_bytes());d.extend(h.to_le_bytes());}}}if d.len()>1{file.chunks.push(Chunk{tag:Tag(*b"LSTH"),body:ChunkBody::Raw(d)});}}
+
+fn live_audio_edit(p:&Project,d:&os_model::audio_edit::Document)->bool{
+ p.arrangements.iter().any(|a|a.number==d.arrangement&&a.clips.iter().any(|c|c.id()==d.clip&&c.source==ClipSource::Channel(d.channel)))
+}
+fn write_audio_edits(p:&Project,file:&mut FlpFile){
+ file.chunks.retain(|c|c.tag!=Tag(*b"LSAE"));
+ let docs:Vec<_>=p.audio_edits.iter().filter(|d|live_audio_edit(p,d)).collect();
+ if docs.is_empty(){return;}
+ let mut analysis:Vec<std::sync::Arc<Vec<f32>>>=vec![];let mut edits=vec![];
+ for d in p.vocal_edits.iter().filter(|d|docs.iter().any(|h|h.channel==d.channel)){
+  let index=analysis.iter().position(|f|std::sync::Arc::ptr_eq(f,&d.f0)||f==&d.f0).unwrap_or_else(||{analysis.push(d.f0.clone());analysis.len()-1});
+  let mut v=d.clone();v.f0=Vec::new().into();edits.push((v,index));
+ }
+ // Version 2 shares immutable analysis once per project, including copies and slices.
+ if let Ok(data)=serde_json::to_vec(&(2u32,&docs,&edits,&analysis)){file.chunks.push(Chunk{tag:Tag(*b"LSAE"),body:ChunkBody::Raw(data)});}
+}
+fn read_audio_edits(file:&FlpFile,p:&mut Project){
+ type Stored=(u32,Vec<os_model::audio_edit::Document>,Vec<(os_model::vocal::Edit,usize)>,Vec<std::sync::Arc<Vec<f32>>>);
+ for c in &file.chunks{if c.tag!=Tag(*b"LSAE"){continue;}let ChunkBody::Raw(data)=&c.body else{continue};
+  if data.len()>64*1024*1024{continue;}
+  let docs=if let Ok((2,docs,edits,analysis))=serde_json::from_slice::<Stored>(data){
+   let mut channels=std::collections::HashSet::new();
+   for(mut edit,index)in edits.into_iter().take(1000){let Some(f0)=analysis.get(index)else{continue};edit.f0=f0.clone();
+    if edit.valid()&&p.channels.iter().any(|c|c.index==edit.channel)&&docs.iter().any(|d|d.channel==edit.channel&&live_audio_edit(p,d))&&channels.insert(edit.channel){p.vocal_edits.retain(|old|old.channel!=edit.channel);p.vocal_edits.push(edit);}
+   }docs
+  }else if let Ok((1,docs))=serde_json::from_slice::<(u32,Vec<os_model::audio_edit::Document>)>(data){docs}else{continue};
+  let mut seen=std::collections::HashSet::new();
+  p.audio_edits=docs.into_iter().take(1000).filter(|d|p.vocal_edits.iter().any(|v|d.valid(v))&&live_audio_edit(p,d)&&seen.insert(d.channel)).collect();
+ }
+}
+
+// Optional versioned lane associations. Older readers retain ordinary clips and routing.
+const ATTACHED_LANES:Tag=Tag(*b"LSAM");
+fn read_attached_lanes(file:&FlpFile,p:&mut Project) {
+    for c in &file.chunks {if c.tag!=ATTACHED_LANES {continue;}let ChunkBody::Raw(d)=&c.body else{continue};
+        if d.first()!=Some(&1) || (d.len()-1)%6!=0 {continue;}
+        for r in d[1..].chunks_exact(6){let v=|i|u16::from_le_bytes([r[i],r[i+1]]);
+            if v(4)==0 || !p.mixer.iter().any(|m|m.index==v(4)&&!m.clip_fx){continue;}
+            if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==v(0)).and_then(|a|a.tracks.get_mut(v(2) as usize)){t.attached_mixer=Some(v(4));}
+        }
+    }
+}
+fn write_attached_lanes(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=ATTACHED_LANES);let mut d=vec![1];
+    for a in &p.arrangements {for (r,t) in a.tracks.iter().enumerate(){if let Some(m)=t.attached_mixer{for n in [a.number,r as u16,m]{d.extend(n.to_le_bytes());}}}}
+    if d.len()>1{file.chunks.push(Chunk{tag:ATTACHED_LANES,body:ChunkBody::Raw(d)});}
+}

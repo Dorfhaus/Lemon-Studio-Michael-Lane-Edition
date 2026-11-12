@@ -29,6 +29,7 @@ pub mod sample;
 pub mod included_library;
 mod sound_browser;
 pub mod visibility;
+mod plasma_wavetables;
 use lemon_small_fx::Shared;
 #[cfg(test)]
 mod import_tests;

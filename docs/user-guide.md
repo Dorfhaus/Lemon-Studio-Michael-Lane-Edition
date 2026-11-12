@@ -35,7 +35,7 @@ Install compatible plugin formats before opening a project that uses third-party
 ### Undo and redo
 history revert mistake ctrl z
 Use Edit > Undo or Undo history to step back through project edits. Redo restores edits that were undone if you have not made a new conflicting edit.
-Editors with their own Undo, such as the timing editor, may operate on their draft. Applying an edit can create a separate project undo step.
+Playlist pitch and timing editors offer separate Undo/Redo controls for the active clip. Ctrl+Z and Ctrl+Y use project history. Each completed gesture, reset, or clip-history action is one project undo step.
 
 ## Audio and recording
 ### Set up an audio device
@@ -85,7 +85,9 @@ Hide the setup controls under Settings > General > Workspace Visibility > Input 
 ### Use MIDI, typing keyboard and step entry
 step edit typing keyboard controllers performance
 Guide: typing
-Enable Typing keyboard to piano in the toolbar to play from computer keys. Turn it off if those keys should trigger editing shortcuts.
+Enable Typing keyboard to piano in the toolbar or press Ctrl+T. ML Studio remembers the switch in your profile when you quit and reopen. Notes go to the selected instrument. Use numpad + and - to shift the keyboard by octaves.
+Right-click the toolbar button to choose Key and Scale or Follow Piano Roll typing snap. For a selected scale, the letter rows play successive scale notes and each row starts one octave above the previous row. On a German QWERTZ keyboard, the bottom row runs from Y through minus and the home row from A through Ä. The corresponding QWERTY ranges are Z through slash and A through apostrophe. Choose Chromatic for the staggered piano-key layout with black keys on the row above.
+Turn typing off to use the same unmodified keys for editing shortcuts. Text fields take text normally and modified keyboard shortcuts keep their own bindings.
 Use Step Edit with playback stopped to enter notes one step at a time. Check the selected channel, current position and snap before entering notes.
 Use MIDI settings to configure enabled devices and controller inputs. Save a small test project before setting up a complex controller mapping.
 
@@ -194,7 +196,17 @@ Guide: warp
 1. Click the timing-pin button on the Playlist track, or open Edit audio timing from an audio clip's menu. The editor detects transients in the clip.
 2. Click a detected line to create a timing marker. Drag anywhere along a movable marker line to adjust timing. Use Snap to follow the selected grid.
 3. Choose Select and drag across several points. Shift-drag adds more. Use Quantize to move the selection toward the grid, and choose Grid and Strength before quantizing.
-4. Use Ctrl + wheel to zoom time, Alt + wheel to scale the waveform display, and Fit to see the whole clip. Click Apply to render the change. Close to discard the draft or use Undo to reverse a change.
+4. Use Ctrl + wheel to zoom time, Alt + wheel to scale the waveform display, and Fit to see the whole clip. Changes render automatically after you release a drag or finish a command. Close keeps completed edits; Escape during a drag cancels that gesture. Updating means the last successful audio is still playing until the new render is ready.
+
+### Fit a loop or use its detected tempo
+detect sample tempo loop bpm stretch fit make it fit project tempo
+Open an audio clip's menu and choose Detect sample tempo. The dialog displays the detected BPM. Choose Yes to set the project tempo to that value, or Cancel to keep the current tempo. The tempo change supports project Undo.
+To keep the project tempo and fit the clip to it, use the Stretch / fit options. Compare automatic fitting against half-time, double-time, a known source BPM, or a specified number of bars or beats. Check both the start and end of the loop against the grid.
+
+### Separate stems from a clip
+stem separation vocals drums bass other model download retry
+Open a Playlist audio clip's menu and choose Stem separation. Select the stems you want to create. On first use, confirm the download of the optional engine and model. Setup requires an internet connection and several gigabytes of space. Processing runs locally after setup.
+The finished stems are separate audio files and Playlist tracks. Keep the project data folder with the session when sharing it. If setup fails, choose Stem separation again to retry. Details are written to setup.log in the Stem separation folder.
 
 ### Align multiple performances
 vocal align vocalign dub guide timing takes imported vocals instruments
@@ -206,7 +218,9 @@ Use a guide that already has the timing you want. Check sustained, quiet or poor
 pitch correction vocal tuning melody notes formant tune
 Guide: vocal
 Click the microphone icon on the track with the vocal clip to expand the tuning editor. Let it detect notes, then use the editing tools to select notes and adjust pitch or timing where supported.
-Compare corrections with the original and use Undo if you move the wrong note. Closing the editor keeps existing corrections. Workspace Visibility can hide its button without removing tuning.
+Pitch edits and timing share the original recording and remain independently editable. Use Undo/Redo pitch edits or Undo/Redo timing for the active clip, or Ctrl+Z/Ctrl+Y for project history. Copies and slices inherit edits and then become independent. Undo timing on a slice keeps its timeline boundaries fixed. Up to 64 steps per layer are saved with the project. Closing an editor keeps completed edits; Escape cancels the current drag. Workspace Visibility can hide editor and clip-history controls without changing playback.
+
+Fresh playback, export, and consolidation wait for current audio edits. A failed update retains previous audio and offers Retry. Existing rendered projects remain playable; older baked edits can only be recovered when their original sources and metadata are available.
 
 ### Comp and organize takes
 take lanes comping record vocals alternatives
@@ -231,6 +245,7 @@ Group related clips when they should move together. Use time markers to label se
 mixer volume pan master signal flow insert route
 Guide: mixer-level
 Route a Channel Rack instrument or audio clip to a named Mixer insert. Use its fader and pan controls to balance it, and check its meter.
+Right-click a Mixer channel to rename it or choose Change color > Custom color. The custom swatches accept six-digit hex colors. Settings > General > Input offers optional double-click reset for faders and knobs and opening main menus on hover. Both start off.
 Effects in the insert's slots run in order. Check that the track reaches Master through a direct route or a bus. Avoid clipping the Master if you are exporting a mix.
 
 ### Route audio with the miniature Mixer picker
@@ -252,11 +267,28 @@ Guide: mixer-layout
 Use the Mixer view buttons to choose Full or Traditional. In Full Mixer, right-click an insert and choose Channel layout > Custom strip to see its built-in EQ, Low Cut, Gate, Drive, Comp and Tame. Vox adds vocal controls.
 Standard (FL-style) emphasizes the meter. The overall Mixer view and each insert's channel layout are separate choices.
 
+### Attach the Mixer to the Playlist
+attach detach integrated mixer inspector instrument track recording bus arrangement
+Guide: mixer-layout
+Click Attach to Playlist at the top left of the Mixer. The Playlist opens at its current size, with source lanes in mixer order and a compact inspector for the selected channel. Settings > Visibility > Playlist has separate controls for the inspector and the Mixer’s Attach to Playlist button. Buses and Master stay in the inspector instead of occupying recording lanes. The separate Mixer stays open. Switch between Mixer and Playlist with the workspace buttons when their windows overlap. Both views control the same channels and effects.
+The larger red button beside each source lane's mute/solo light arms that track. Instrument lanes arm MIDI notes; audio lanes use their chosen input. Right-click the red button to choose an audio input, then press transport Play to record. Selecting or arming a lane does not start recording by itself. Vocal tuning and Time Warper remain on each lane.
+Attached lanes use their mixer channel colors. Every source lane has a Piano Roll icon: left-click opens its instrument's Piano Roll (an empty lane gets an empty sampler); right-click opens the instrument menu for that mixer channel. Enable Keyboard right-click opens Plugin Picker in that menu or in Playlist Options for direct access to the picker. The choice applies to attached and ordinary Playlist track controls. The inspector lists outgoing sends in their destination colors below the effects. Adjust a send with its knob and use the arrow to inspect the destination. A mixer track receiving audio from another insert is treated as a bus. Separators mark visual groups.
+On enables or mutes the entire mixer channel; FX bypasses only its effects. The Playlist lane mute controls the clips on that lane, so it can differ from muting the mixer channel and everything routed through it.
+The attached inspector defaults to the Traditional bottom-fader layout for every Mixer view. Right-click the inspector button or open Mixer Options > Attached inspector layout > Inspector style to choose Full channel strip. The choice is saved in your profile. Both include the same editable parametric EQ used by the Mixer, with Open EQ for its full editor. Changing views never creates another EQ instance or changes channel processing. Use the small panel button beside + above the track headers to hide or show the inspector. Drag the grip below EQ, Insert Effects, or Sends to resize it. The fader and strip fill the remaining height. Short windows can temporarily reduce the space given to the upper sections. Click the selected channel name to choose another channel, including Master. Click the Insert Effects or Sends heading to collapse it, and click again to restore its size. Drag the scrollbar thumb or wheel over either list when it overflows. Right-click the inspector button or open Mixer Options > Attached inspector layout to change section order, show controls, or reset the layout. Sizes, order, and collapsed sections save automatically for each mixer view and apply to every channel. Settings > Visibility > Attached mixer inspector has the same show/hide controls. Theme Editor > Attached mixer inspector controls the background, grips, scroll thumbs, and Traditional fader color. Send names use the destination colors. Clicking a send name keeps the current channel selected; use its arrow to inspect that destination. The native Full Mixer VU switches between VU and peak when clicked; the Traditional inspector uses a stereo peak meter. Both the layout choice and visibility are saved per profile. The Mixer EQ visibility setting also controls the inspector EQ.
+Use the + above the track headers to insert an instrument. This creates its mixer channel and routes the instrument to it, as one Undo action. Existing routed instruments appear automatically. Mixed-instrument patterns and mixed-output rows remain ordinary arrangement lanes; attaching does not split or reroute them.
+Detach from Playlist restores the previous Playlist row order while retaining new recordings and edits. A project created in the attached view keeps its arrangement when detached. Saving remembers the attached layout and new lane assignments. Settings > Visibility > Playlist can hide the inspector or track record buttons without changing routing, recordings or arming.
+To use these track controls without attaching the Mixer, enable Settings > Visibility > Playlist > Playlist record and instrument buttons (off by default). The red button arms an instrument for notes or opens the audio input selector; right-click it to choose an audio input explicitly. Press transport Play to record. The piano button opens the track's Piano Roll, creating an empty sampler if needed; right-click it to choose an instrument. A new instrument or audio recording track gets its own mixer channel when needed. Cancelling a picker creates nothing. Track bindings survive save/reopen and hiding the buttons; instrument insertion and recording-track creation support project Undo/Redo.
+
 ### Lock a Mixer channel
 lock padlock fader protect routing effects
 Guide: mixer-lock
 Click the padlock on a Mixer channel to protect its configuration from accidental manual changes. Click it again when you want to edit the channel.
 Playback and existing automation continue while it is locked. If the icon is missing, look under Settings > Visibility > Mixer.
+
+### Rename, color and group mixer channels
+rename mixer channel custom color hex separator channels
+Right-click an insert and choose Rename or Change color. In the color menu, choose a swatch or open Custom color to enter a six-digit hex color. Attached Playlist lanes use their corresponding mixer channel colors.
+Use separators to mark mixer sections visually. The mixer shortcuts scroll to the corresponding sections. Use buses to sum audio and sends to feed parallel effects.
 
 ### Add, reorder and bypass effects
 plugin picker effects slot vst eq insert replace bypass
@@ -329,6 +361,11 @@ synth oscillator wavetable modulation lfo envelope unassign
 Add Lemon Wave as an instrument and choose a preset as a starting point. Change oscillator and filter settings while playing a few notes, then shape the sound with the envelope.
 Assign an LFO or envelope to a control to add movement. Right-click a modulated control to manage or remove its assignment. Save a new preset before changing patches.
 
+### Design sounds with ML Plasma
+ml plasma gridline wavetable synthesizer oscillator modulation preset
+Add ML Plasma from the instrument picker. Use its oscillator and wavetable controls to shape the source, then use the filter, envelopes, and modulation to shape the movement and tone.
+Save the project to keep the synth state. Use the instrument's preset controls when you want to reuse a sound in another project.
+
 ### Use Lemon Trio and Citrus
 trio synthesizer oscillator citrus sytrus fm presets
 Use Lemon Trio when you want to layer three oscillators. Start with one oscillator, then add detuned or octave layers and adjust the filter and envelope.
@@ -381,12 +418,22 @@ In Settings > Controls, use Append to build a sequence of compatible editing act
 Use Export to back up controls. Import accepts a controls JSON file or a portable .lsa action script. Portable scripts run supported ML Studio actions and do not execute system commands.
 
 ## Themes, workspace and sharing
+### Browse or search the User Guide
+offline help manual collapsible sections topics find
+Open Help > Search User Guide. Click a section title to expand or collapse its topics. Open an article and choose Back to return to the same list position.
+Type a feature, shortcut, or task in the search field to search every section. Enter opens the first match. Where available, Show me where points to the matching control in the workspace. Esc returns to the list, clears the search, or closes the guide.
+
 ### Show or hide interface features
 workspace visibility remove button toolbar settings tabs clip picker
 Guide: visibility
 Open Settings > General > Workspace Visibility, or choose the Visibility tab. Expand a section or search for the control, then toggle it.
 These choices save to your profile and follow you between projects. Use the Playlist menu's Show clip picker panel switch to open or close the picker itself.
 Restore default visibility brings back the default show/hide choices. Existing toolbar layout settings still apply.
+
+### Move the Options menu and Settings window
+options menu move drag position title header floating settings
+Open Options in the main menu bar and drag the Options header to move the dropdown. Click an entry or submenu from its new position. The menu returns to its usual anchor the next time you open it.
+The Settings window has its own draggable title bar. To hide the dropdown handle, use Settings > Visibility > Workspace > Options menu drag handle.
 
 ### Customize menus
 menu layout arrange submenu hide items piano roll channel rack mixer
@@ -414,7 +461,8 @@ Use the sample preview controls to audition files before placing them. Open Help
 ### Export a finished song, stems or MIDI
 export render wav mp3 stems multitrack midi
 Guide: export
-Choose Song mode and confirm the arrangement and time range. Use File > Export and choose a format, destination and quality settings.
+Choose Song mode and confirm the arrangement. Use File > Export to open the export form.
+Export audio opens in Easy mode with 24-bit WAV and 320 kbps MP3 options. Pick either or both. Easy uses stereo and the standard render settings. The Advanced tab has additional formats, source range, quality, effects, and split mixer tracks. Advanced export choices save separately.
 Use WAV for a full-quality mix, MP3 when a smaller listening copy is useful, and MIDI for notes and timing. Use split Mixer tracks when you need separate audio stems.
 Listen to the exported file and verify its start, end, levels and effects before sending it.
 
@@ -423,6 +471,16 @@ share project pack zipped audio samples collaborate
 Guide: export
 Use File's ZIP project export to gather the project and its referenced audio files. Open a copy of the archive to check that it contains what the recipient needs.
 Tell the recipient which third-party plugins and formats the project uses. For a collaborator without those plugins, include audio renders of important tracks.
+
+### Collaborate on a project
+live collaboration host join invite network transport follow recovery
+Choose File > Collaborate. Save the project, stop playback, and host on a reachable address. Share the invitation privately. Your collaborator opens the same dialog and joins with that invitation. Both users need compatible ML Studio builds and their own copies of the plugins used in the project.
+Reopen Collaborate for session status, playback following, conflict resolution, recovery files, and End or Leave. Each computer renders its own audio. Use a LAN or shared private VPN for direct connections.
+
+### Connect an external assistant with MCP
+AI assistant external MCP tools working orb approval
+Open AI assistant and enable AI control for the session. Save the setup to the Desktop and configure it in a compatible MCP client. Approve the named client in ML Studio when it connects. Disable AI control in ML Studio to revoke access.
+The blue Working orb shows when an approved MCP command is running. Hide it under Settings > Visibility > Editor feedback > MCP activity orb.
 
 ### Report a problem and check for updates
 report bug build update restart troubleshooting support
@@ -438,6 +496,7 @@ Click the star beside a plugin to save it to your profile's download favorites. 
 
 Direct downloads are checked against the catalog checksum before opening. Cancel stops the current download. Downloads opens the package folder. Hide the discovery controls under Settings > Visibility > Browser > Plugin Downloads filters and favorites. Hiding them shows the unfiltered category browser and preserves your saved favorites and choices. Hiding the whole tab does not remove any installed plugins.
 
+## Built-in audio effects and editors
 ### Tesla time stretch and pitch shift
 Tesla audio editor duration pitch semitones Signalsmith stretch
 
@@ -485,3 +544,65 @@ Cleanup uses the current source file. Previously rendered vocal tuning or audio 
 Tesla also works separately as a **VST3** plugin in FL Studio and other VST3 hosts. Load or drag an audio file into Tesla, use the same cleanup controls, then **Apply cleanup** and **File > Save sample as**. Saved plugin state includes the edited audio. Automatic **Apply to track** is a ML Studio connection; external hosts use Tesla's normal save or drag-out workflow. This is an audio editor that processes the loaded sample, not a live noise gate or an automatic multitrack editor.
 
 This spectral tool targets steady noise such as hiss, fans and hum. It does not separate competing voices or reliably remove individual clicks. Strong settings can damage wanted audio, so compare before applying. Supports mono/stereo, 8–384 kHz, up to 20 minutes and 120 million samples. Noise profiles are not saved across editor sessions. Hide its toolbar tool and Playlist menu action through **Settings > General > Workspace Visibility > Choose what to show > Toolbar extras > Tesla audio cleanup / Playlist cleanup action**; hiding does not change existing audio.
+
+## Settings reference
+### Audio device and latency
+settings audio normal advanced driver output device mode sample rate hz buffer length latency show asio panel reset underruns auto close
+Open Settings > Audio. Normal shows Output device and Latency. Use a shorter buffer when playing live and a larger buffer if playback clicks or drops out. Advanced exposes the device's sample rate (Hz) and buffer length. Under ASIO, Show ASIO panel opens the driver's own controls. Shared or Exclusive mode is shown for supported Windows and Linux devices.
+Use the status and underrun counters to check that the selected settings took effect. Reset underruns clears the counter so you can check a new configuration. Available options depend on your driver and platform. Greyed controls show when a choice is unavailable.
+
+### Audio processing and recording settings
+settings cpu generator mixer audio worker limit priority smart disable pdc resampling metronome preview recording format recording offset
+Under Audio > Advanced > CPU, Multithreaded generator processing and Multithreaded mixer processing distribute eligible work. Audio worker limit sets the size of the worker pool. Audio processing priority selects the thread priority on supported platforms. Smart disable lets eligible idle effects sleep. Use its per-plugin override if a plugin needs continuous processing.
+Mixer contains Plugin delay compensation during playback, playback Resampling quality, Browser preview track, Metronome track, and transport options. A preview or metronome route of 0 uses Master. Play truncated notes on transport controls whether sustained notes can be heard when starting mid-note. Available controls are enabled in the app.
+Recording offers 32-bit float, 24-bit PCM, or 16-bit PCM. Recording offset moves recorded audio on the timeline. Positive values place it later. Measure against a reference before compensating for a hardware round trip.
+
+### MIDI devices, controller type and sync
+settings midi input output external sync ports master sync offsets curve velocity release pickup mcu generic transport learn monitor pedal
+Enable the devices you use under MIDI > Input or Output. Match ports for plugins that listen to a particular port. Choose a Controller type per input. Use Generic MIDI for keys and the DAW port in MCU mode for compatible mixer and transport hardware. Use MIDI Monitor or Refresh device list to verify input. DAW MIDI Learn assigns actions to hardware buttons.
+Velocity and release links and curves control how incoming dynamics are mapped. Pickup (takeover mode) helps avoid value jumps. Auto accept detected controller, Foot pedal controls note off, and Toggle on release adjust input handling. Omni preview MIDI channel, Song marker jump MIDI channel and Generator muting MIDI channel assign channels to those functions.
+Set Sync type and Master sync offset for an enabled output that sends clock or sync, and External sync and its offset when following another device. Check the status before recording to a synced timeline.
+
+### General display and language
+settings general display ppi scaling high visibility smoothing transparent animations colorful waveforms thick lines force refreshes language note names black notes
+General > Display contains Main GUI scaling, display PPI, Pop-ups scaling and Toolbars scaling. These controls let you match the workspace to the monitor and adjust menus and toolbars separately. Animations, Animation refresh rate and Smoothing adjust visual motion. Transparent windows, Transparent menus, Force refreshes, Thick lines, High visibility and Colorful waveforms adjust presentation.
+General > Language offers English, French, Spanish, German, Brazilian Portuguese and Italian. Translation coverage varies by surface and plugins can use their own language. Note names and Black notes independently choose English, Germanic or solfege notation and sharps or flats.
+
+### General input and Undo
+settings general input mouse optimize for double click reset hover menus piano zoom keys undo warnings max levels
+Under General > Input, Manage shortcuts opens Controls. Choose Optimize for, Piano Roll zoom keys, Vertical scrolling speed and Horizontal scrolling speed. Click-and-hold & special gesture functions, Use both mouse buttons in step sequencer and Invert pencil buttons adjust editor gestures. Double-click resets faders and knobs and Open main menus on hover are optional and off by default.
+Under Undo history, set Maximum undo levels and choose Undo knob tweaks, Alternate undo mode, Put undone recordings in the recycle bin, Show undo history in the browser when undoing changes, and Show recent changes at the top. The clip editors also offer their own pitch and timing history within project Undo.
+Manage messages restores or suppresses individual confirmations. Project data size warning controls when the app warns about large project data. System file association and Updates controls depend on your platform and installation.
+
+### General startup and editor defaults
+settings general miscellaneous advanced startup default template plugin windows focus meters sample read loading
+Use Startup project and Default template to choose what opens on launch. Show startup splash screen and Silent startup control startup presentation. Auto name channels, Auto name effect slots, Auto zip empty channels and Auto-route Channel Rack samples to mixer inserts affect new channels or slots.
+Auto select linked modules links selection across views. Auto-scroll mixer while routing keeps destinations reachable. Restore previous state after solo brings back the prior mute state. Alternate meter scale, Auto zoom in piano roll and Small scrollbars in editors change their displays. Monophonic painting in piano roll and Select first channel with notes when the pattern changes adjust editing.
+Detach all new plugins, Open detached plugins with the main window, Hide plugin window toolbar by default, Disable typing keyboard priority by default and Limit the number of open plugin editors set editor behavior. Create automation clips at the playback position chooses where new automation starts.
+Under Advanced, read sample tempo information and Read sample root note use embedded metadata when present. Fast sample preview, Auto keep long audio on disk, Threaded project sample loading and Initialize controls automatically govern loading and initial behavior. Don't limit windows to screen, Cursors scaling and Legacy scaling adjust layout and sizing. Greyed controls depend on platform or availability.
+
+### File, backups and sample libraries
+settings file autosave location maximum user data folder factory folder browser extra search folders repair optional features reset browser cache
+File > Backup sets Autosave frequency, Location and Maximum retained backups. Use the Browser's backup area to reopen an earlier revision. Save deliberately before relying on an autosave as a transfer copy.
+File shows the User data folder and the factory content location. Add or remove Browser extra search folders to find sample libraries. Changing a search root changes where ML Studio looks for files. File > Troubleshooting offers Repair optional features and Reset browser cache.
+
+### Plugin manager and plugin editors
+settings plugins formats search folder find new plugins rescan all rescan plugins with errors combine formats prefer vst clap hide favorite
+In Settings > Plugins, enable the folders you want scanned. Add a folder for an installation outside the standard locations. Find new plugins scans additions and Rescan all rebuilds scan results. Use Rescan plugins with errors when retrying failed scans.
+Combine formats of the same plugin and the format preference affect which variants appear in the picker. Use the table to filter, favorite, or hide plugins. Use the plugin window's D control to detach or attach its editor. Projects keep the plugin identity and still need a compatible installation on each computer.
+
+### Themes, icons, cursor and mixer design
+settings theme appearance skins adjustments theme editor mixer skin designer icons fonts cursor packs note colors brightness
+Settings > Theme lets you choose a skin and theme and adjust colors and brightness. Audio and automation clips use note colors changes how clip colors are derived. The Playlist scrollbar style is also adjustable when its visibility option is enabled.
+Open Theme Editor for individual color and shape settings or Mixer Skin Designer for mixer-specific appearance. Icons & Fonts lets you choose icon and cursor packs independently, override individual glyphs, and change the interface font. Save a preset or export the theme to reuse the appearance.
+
+### Project data, time and credits
+settings project data folder ask copy used samples ppq timebase signature division panning law crossfades info debug about licence
+Project > Data folder controls where project audio is stored. Choose when to ask for a data folder and whether to Copy used samples to the project folder. Time settings sets Timebase (PPQ) and a time signature or time division. Changing the signature changes the bar grid. Use the tempo control to change BPM.
+Project > Advanced includes Panning law and Play truncated notes in clips. Playlist contains Automatic crossfades and the default for new projects. The Info tab saves the title, author, genre, comments, web link, and Show info on opening. It also shows working time, with a reset control.
+About shows version, licence and product links. Debug can be enabled in Workspace Visibility for diagnostics. Debug details can help when describing a reproducible problem.
+
+### Workspace visibility, menus and controls
+settings visibility choose what to show menus customize controls bindings portable action shortcuts theme toolbar
+Visibility lists the current show/hide controls by workspace area. Search for an exact label to find its switch. Open it directly from Settings > Visibility or through General > Workspace. The settings apply per profile, and Restore default visibility restores the shipped choices.
+Menus lets you organize menu entries and restore their structure. Controls manages keyboard shortcuts, mouse bindings, action sequences, and toolbar buttons. Back up your controls with Export and import a supported controls file or portable action script when moving profiles.

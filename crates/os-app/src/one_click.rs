@@ -249,6 +249,7 @@ impl App {
         if !editor {
             let mixer=self.state.selected_mixer;
             self.set_audio_destination(crate::mixer_recording::Destination {
+                attached:false,
                 mixer, row:crate::playlist::free_track(&self.state,0,start_tick,start_tick.saturating_add(1)), start:start_tick, length:1,
                 name:crate::mixer::name(&self.state,mixer), color:crate::mixer::track(&self.state,mixer).and_then(|m|m.color),
             });
@@ -305,6 +306,8 @@ impl App {
             } else {
                 capture().frames() as i64
             };
+            let offset = (crate::prefs::recording_offset_ms() * f64::from(rate) / 1000.0).round() as i64;
+            let head = if r.timed_est.1 > 0 || r.est.1 > 0 { head - offset } else { head };
             capture::stop_group();
             r.stream = None;
             for extra in &r.others {
@@ -366,13 +369,16 @@ impl App {
         let tempo = p.tick_tempo(s.tempo.max(1.0));
         let len = (frames as f64 / f64::from(rate) * tempo / 60.0 * f64::from(p.ppq.max(1))).ceil() as u32;
         let end=loop_span.filter(|&(a,b)|b>a&&start>=a&&start<b).map_or(start.saturating_add(len.max(1)),|r|r.1);
-        let track = destination.and_then(|d|crate::comping::recording_target(s,d.mixer,start,end)).unwrap_or_else(|| {
+        let track = destination.and_then(|d|crate::comping::recording_target(s,d.mixer,start,end).or_else(||
+            (d.attached&&!crate::playlist::clips(s).iter().any(|c|c.track==d.row)&&crate::playlist::track_info(s,d.row).is_none_or(|t|!t.locked&&!t.grouped&&t.frozen.is_none())).then_some(d.row)).or_else(||
+            crate::attached_mixer::lane(s,d.mixer).filter(|row|crate::playlist::track_info(s,*row).is_none_or(|t|!t.locked&&t.frozen.is_none())))).unwrap_or_else(|| {
             (0..crate::playlist::TRACKS).find(|&r| !crate::playlist::clips(s).iter().any(|c|c.track==r) && crate::playlist::track_info(s,r).is_none_or(|t| !t.locked && !t.grouped && t.comp.is_none())).unwrap_or_else(||crate::playlist::free_track(s,0,start,start+len.max(1)))
         });
         let text = path.to_string_lossy();
         match crate::playlist::add_audio_clip_as(s, &text, track, start, RECORDED) {
             Some(i) => {
                 if let Some(d)=destination {
+                    if d.attached||crate::attached_mixer::active(s){crate::attached_mixer::bind(s,track,d.mixer);}
                     let source=crate::playlist::clips(s)[i].source;
                     if let os_model::ClipSource::Channel(ch)=source {
                         if let Some(c)=s.project.channels.iter_mut().find(|c|c.index==ch){c.mixer_track=d.mixer;c.color=d.color;c.name=Some(format!("{} - take",d.name));}
@@ -458,7 +464,7 @@ mod tests {
         app.toggle_typing();assert!(app.typing_on());app.toggle_typing();
         let path=std::env::temp_dir().join(format!("lemon-continuation-{}.wav",std::process::id()));
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&path).unwrap(),48000,&vec![0.25;96000]).unwrap();
-        let d=crate::mixer_recording::Destination{mixer:1,row:0,start:0,length:1,name:"Vocal".into(),color:None};
+        let d=crate::mixer_recording::Destination{attached:false,mixer:1,row:0,start:0,length:1,name:"Vocal".into(),color:None};
         app.place_take(&path,48000,48000,0,Some(&d),None);
         let first=crate::playlist::clips(&app.state)[0].clone();let row=first.track;
         app.place_take(&path,48000,48000,first.end(),Some(&d),None);

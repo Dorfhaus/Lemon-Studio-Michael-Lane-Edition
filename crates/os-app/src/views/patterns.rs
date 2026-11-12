@@ -130,7 +130,8 @@ pub fn paint(ui: &mut Ui, s: &State) {
         // The colour tab: patterns and channels (spec: ui/channel-rack.md §13).
         let audio = matches!(b.target, BoxTarget::AudioClip(_))
             && crate::workspace_visibility::shown("visible_playlist-custom-swatches");
-        let tabbed = named || audio || matches!(b.target, BoxTarget::Rack(crate::rack::RBox::Channel(_)));
+        let mixer = matches!(b.target, BoxTarget::MixerTrack(_));
+        let tabbed = named || audio || mixer || matches!(b.target, BoxTarget::Rack(crate::rack::RBox::Channel(_)));
         let field = Rect::new(r.x + 4.0, r.y + 4.0, r.w - if !tabbed { 8.0 } else if lemon { 34.0 } else { 30.0 }, 22.0);
         if lemon {
             ui.c.fill_rrect(field, 4.0, t.tempo_box);
@@ -164,6 +165,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         ui.c.fill_rrect(no, rb, if hov { t.menu_pop_hi } else { t.menu_pop });
         cross(ui, no, t.glyph);
         let caption = match b.target {
+            BoxTarget::MixerTrack(n) => format!("Mixer track {n}"),
             BoxTarget::AudioClip(_) => "Audio clip name".into(),
             BoxTarget::Name(n) => format!("Pattern {n} name"),
             BoxTarget::Transpose(_) => "Semitones".to_string(),
@@ -171,6 +173,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
         };
         ui.c.text_clip(Font::new(12), x + 44.0, row + 2.0, r.right() - x - 74.0, t.glyph_dim, &caption);
         let tab_col = match b.target {
+            BoxTarget::MixerTrack(n) => Some(crate::mixer::track(s, n).and_then(|track| track.color)),
             BoxTarget::AudioClip(i) if audio => Some(crate::playlist::clips(s).get(i).and_then(|c| c.color.or_else(|| crate::playlist::clip_tint(s, c.source)))),
             BoxTarget::Name(n) => Some(s.project.pattern(n).and_then(|p| p.color)),
             BoxTarget::Rack(crate::rack::RBox::Channel(r)) => Some(s.project.channels.get(r).and_then(|c| c.color)),
@@ -208,7 +211,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
             }
         }
         if b.palette {
-            let custom = crate::workspace_visibility::shown("visible_playlist-custom-swatches");
+            let custom = mixer || crate::workspace_visibility::shown("visible_playlist-custom-swatches");
             let w = SW * 10. + 2.;
             let h = SW * 2. + 2. + if !custom { 0. } else if b.custom.is_some() { 68. } else { 43. };
             let y = if r.bottom() + h > s.screen.1 && r.y >= h { r.y - h } else { r.bottom() };

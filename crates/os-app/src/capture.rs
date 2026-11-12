@@ -435,6 +435,7 @@ impl Recorder {
         let head = Arc::new(AtomicI64::new(0));
         let rate = Arc::new(AtomicU32::new(rate));
         let (s, h, r) = (stop.clone(), head.clone(), rate.clone());
+        let bits = [32, 24, 16][crate::prefs::index(&crate::prefs::RECORD_FORMAT)];
         let thread = std::thread::Builder::new()
             .name("audio recorder".into())
             .spawn(move || {
@@ -458,7 +459,7 @@ impl Recorder {
                 drop(raw);
                 let frames = samples / 2;
                 let head = h.load(Ordering::Acquire);
-                let n = to_wav(&part, &file, r.load(Ordering::Acquire), head, frames).map_err(|e| format!("{e}; captured audio kept at {}",part.display()))?;
+                let n = to_wav(&part, &file, r.load(Ordering::Acquire), head, frames, bits).map_err(|e| format!("{e}; captured audio kept at {}",part.display()))?;
                 let _ = std::fs::remove_file(&part);
                 Ok((file, n))
             })
@@ -496,17 +497,30 @@ impl Drop for Recorder {
     }
 }
 
-/// Makes WAV `wav` (32-bit float stereo at `rate`) of the raw frames in `part` from frame `head` on; returns its frames.
-fn to_wav(part: &Path, wav: &Path, rate: u32, head: i64, frames: u64) -> std::io::Result<u64> {
+/// Makes a stereo WAV of the raw float frames in `part` from frame `head` on.
+fn to_wav(part: &Path, wav: &Path, rate: u32, head: i64, frames: u64, bits: u16) -> std::io::Result<u64> {
     let skip = head.max(0) as u64;
     let pad = (-head).max(0) as u64;
     let n = frames.saturating_sub(skip) + pad;
     let mut out = BufWriter::new(std::fs::OpenOptions::new().write(true).create_new(true).open(wav)?);
-    os_engine::wav::write_f32_stereo_header(&mut out, rate, n)?;
-    out.write_all(&vec![0u8; (pad * 8) as usize])?;
+    os_engine::wav::write_stereo_header(&mut out, rate, n, bits)?;
+    let bytes = usize::from(bits / 8);
+    std::io::copy(&mut std::io::repeat(0).take(pad * bytes as u64 * 2), &mut out)?;
     let mut r = std::fs::File::open(part)?;
     r.seek(SeekFrom::Start(skip.min(frames) * 8))?;
-    std::io::copy(&mut r.take(frames.saturating_sub(skip) * 8), &mut out)?;
+    let remaining = frames.saturating_sub(skip);
+    if bits == 32 {
+        std::io::copy(&mut r.take(remaining * 8), &mut out)?;
+    } else {
+        let mut r = std::io::BufReader::new(r);
+        let scale = 1i32 << (bits - 1);
+        let mut sample = [0; 4];
+        for _ in 0..remaining * 2 {
+            r.read_exact(&mut sample)?;
+            let value = (f32::from_le_bytes(sample) * scale as f32).round() as i32;
+            out.write_all(&value.clamp(-scale, scale - 1).to_le_bytes()[..bytes])?;
+        }
+    }
     out.flush()?;
     Ok(n)
 }
@@ -561,15 +575,26 @@ mod tests {
         let raw: Vec<u8> = (0..8).flat_map(|i| (i as f32).to_le_bytes()).collect();
         std::fs::write(&part, raw).unwrap();
         let wav = dir.join("t.wav");
-        assert_eq!(to_wav(&part, &wav, 48000, 1, 4).unwrap(), 3);
+        assert_eq!(to_wav(&part, &wav, 48000, 1, 4, 32).unwrap(), 3);
         let b = std::fs::read(&wav).unwrap();
         let data: Vec<f32> = b[44..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
         assert_eq!(data, [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
         let wav=dir.join("padded.wav");
-        assert_eq!(to_wav(&part, &wav, 48000, -1, 4).unwrap(), 5);
+        assert_eq!(to_wav(&part, &wav, 48000, -1, 4, 32).unwrap(), 5);
         let b = std::fs::read(&wav).unwrap();
         assert_eq!(b.len(), 44 + 5 * 8);
         assert_eq!(&b[44..52], &[0u8; 8]);
+        for (bits, positive) in [(16, &[0xff, 0x7f][..]), (24, &[0xff, 0xff, 0x7f][..])] {
+            let wav = dir.join(format!("take-{bits}.wav"));
+            assert_eq!(to_wav(&part, &wav, 48000, -1, 4, bits).unwrap(), 5);
+            let b = std::fs::read(wav).unwrap();
+            let bytes = usize::from(bits / 8);
+            assert_eq!(&b[20..22], &1u16.to_le_bytes());
+            assert_eq!(&b[34..36], &bits.to_le_bytes());
+            assert_eq!(b.len(), 44 + 10 * bytes);
+            assert!(b[44..44 + 3 * bytes].iter().all(|&x| x == 0));
+            assert_eq!(&b[44 + 3 * bytes..44 + 4 * bytes], positive);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

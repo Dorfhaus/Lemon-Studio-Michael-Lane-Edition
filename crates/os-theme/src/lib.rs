@@ -309,6 +309,9 @@ tokens! {
     meter_low = 0x6cc04a, "Meter, low level.";
     meter_high = 0xe8d040, "Meter, high level.";
     meter_clip = 0xf05040, "Meter, clipping.";
+    inspector_panel = 0x313436, "Attached mixer inspector background.";
+    inspector_grip = 0x7e8386, "Attached mixer inspector resize grips and scroll thumbs.";
+    inspector_fader = 0xd5d9de, "Attached Traditional mixer fader cap.";
     rack_row_box = 0x2a2d2e, "Channel rack mixer-track box.";
     name_button = 0x2e3132, "Channel name button.";
     name_button_sel = 0x485156, "Selected channel name button.";

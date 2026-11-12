@@ -6,7 +6,7 @@
 //! user folder (`audio.txt`) and every stream the transport opens uses them; a device that is gone, a rate it does not
 //! offer or a buffer length it refuses falls back to the system's default device and that device's own rate and buffer.
 //! The device is a Windows (ALSA, Core Audio) one or, on Windows, an ASIO driver (`asio`). For ASIO, an unspecified
-//! or unsupported rate means the driver's own. Its buffer size is set in its panel; legacy overrides are ignored. A Windows
+//! or unsupported rate means the driver's own. Its buffer size defaults to the driver panel; an explicit asio_buffer selects a supported override. A Windows
 //! device plays in shared mode, or in exclusive mode (`exclusive`, `device::wasapi`) with the device to itself. On
 //! Linux shared mode plays through the sound server (PulseAudio, or PipeWire through pipewire-pulse) as other programs
 //! do, and exclusive mode opens an ALSA device directly, the sound server's hold on it or not (`host`).
@@ -27,6 +27,7 @@ pub struct AudioCfg {
     /// Sample rate, Hz.
     pub rate: Option<u32>,
     /// Buffer length, frames (`SMALLEST`: the device's smallest period, in exclusive mode).
+    /// For ASIO, `None` uses the driver panel and a value requests a supported override.
     pub buffer: Option<u32>,
     /// A Windows device in exclusive mode (Lemon Studio alone on it), on Linux an ALSA device opened directly; ignored
     /// for an ASIO driver and on macOS.
@@ -86,7 +87,10 @@ impl AudioCfg {
                 if self.asio { self.buffer = DEFAULT_BUFFER; }
                 (self.asio, self.device) = (false, d);
             },
-            Set::Asio(d) => (self.asio, self.device) = (true, Some(d)),
+            Set::Asio(d) => {
+                if self.asio_driver() != Some(d.as_str()) { self.buffer = None; }
+                (self.asio, self.device) = (true, Some(d));
+            },
             Set::Rate(r) => self.rate = r,
             Set::Buffer(b) => self.buffer = b,
             Set::Mode(on) => {
@@ -97,7 +101,6 @@ impl AudioCfg {
                 self.exclusive = on;
             }
         }
-        if self.asio { self.buffer = None; }
         self
     }
 
@@ -115,6 +118,7 @@ impl AudioCfg {
     /// `rate`, `buffer` (`device`: the device's own; `smallest`: `SMALLEST`); anything else is ignored.
     pub fn parse(text: &str) -> AudioCfg {
         let mut c = AudioCfg::default();
+        let mut asio_buffer = None;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
@@ -123,13 +127,14 @@ impl AudioCfg {
                 "mode" => c.exclusive = v.eq_ignore_ascii_case("exclusive"),
                 "device" if !v.is_empty() => c.device = Some(v.to_string()),
                 "rate" => c.rate = v.parse().ok().filter(|&r| r >= 8000),
+                "asio_buffer" => asio_buffer = v.parse().ok().filter(|&b| b > 0),
                 "buffer" if v == "device" => c.buffer = None,
                 "buffer" if v == "smallest" => c.buffer = Some(SMALLEST),
                 "buffer" => c.buffer = v.parse().ok().filter(|&b| b > 0).or(c.buffer),
                 _ => {}
             }
         }
-        if c.asio { c.buffer = None; }
+        if c.asio { c.buffer = asio_buffer; }
         c
     }
 
@@ -149,6 +154,7 @@ impl AudioCfg {
         }
         match self.buffer {
             Some(SMALLEST) => s += "buffer=smallest\n",
+            Some(b) if self.asio => s += &format!("asio_buffer={b}\n"),
             Some(b) => s += &format!("buffer={b}\n"),
             // The device's own length, where the default is another (Linux).
             None if DEFAULT_BUFFER.is_some() => s += "buffer=device\n",
@@ -379,6 +385,10 @@ mod tests {
         let a = AudioCfg::default().with(Set::Asio("FL Studio ASIO".into()));
         assert!(a.text().starts_with("host=asio\ndevice=FL Studio ASIO\n"), "{}", a.text());
         assert_eq!(AudioCfg::parse(&a.text()), a);
+        assert_eq!(AudioCfg::parse("host=asio\ndevice=FL Studio ASIO\nbuffer=64\n"), a);
+        let explicit = a.clone().with(Set::Buffer(Some(128)));
+        assert_eq!(AudioCfg::parse(&explicit.text()), explicit);
+        assert_eq!(explicit.clone().with(Set::Asio("Different ASIO".into())).buffer, None);
         assert!(!AudioCfg::parse("device=FL Studio ASIO\n").asio);
         assert_eq!(a.clone().with(Set::Device(None)), AudioCfg::default(), "a Windows device again");
         assert_eq!(a.asio_driver(), cfg!(windows).then_some("FL Studio ASIO"));

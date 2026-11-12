@@ -287,6 +287,8 @@ struct Voice {
     /// Frames left of the crossfade from the plain reading to the stretcher (a voice that starts stretching while it
     /// plays).
     xf: u32,
+    edit_last:(f32,f32),
+    edit_transition:Option<((f32,f32),u32,u32)>,
     /// The host's gain on the voice (CLAP volume expression: an audio clip's fades and gain), once it gives one.
     vol: Option<HostGain>,
     /// Where it reads a sample kept on disk, and frames left of its fade back in after its frames came late.
@@ -556,6 +558,12 @@ impl Engine {
         self.disk = disk;
     }
 
+    /// Adopt a completed edit while retaining voice positions and envelopes.
+    pub fn replace_sample(&mut self,sample:Option<Arc<Sample>>){
+        let changed=match (&self.sample,&sample){(Some(a),Some(b))=>!Arc::ptr_eq(a,b),_=>false};
+        if changed{let frames=(self.rate as f64*0.005).round().max(1.)as u32;for v in &mut self.voices{v.edit_transition=Some((v.edit_last,frames,frames));}}
+        self.sample=sample;
+    }
     pub fn disk(&self) -> Option<&Arc<Played>> {
         self.disk.as_ref()
     }
@@ -718,6 +726,7 @@ impl Engine {
             pan: (1.0, 1.0),
             rt,
             xf: 0,
+            edit_last:(0.,0.),edit_transition:None,
             vol: None,
             feed,
             gap: 0,
@@ -1031,6 +1040,8 @@ fn render_voice(
                     }
                 },
             };
+            if let Some((old,left,total))=v.edit_transition.as_mut(){let mix=*left as f32 / *total as f32;l+=(old.0-l)*mix;r+=(old.1-r)*mix;*left-=1;if *left==0{v.edit_transition=None;}}
+            v.edit_last=(l,r);
             if v.drive>0. {let gain=1.+15.*v.drive;l=(l*gain).clamp(-1.,1.);r=(r*gain).clamp(-1.,1.);}
             l = v.filt.run(0, j, l);
             r = v.filt.run(1, j, r);
@@ -1286,6 +1297,18 @@ mod tests {
     fn ramp(n: usize) -> Sample {
         let left: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
         Sample { rate: 48000, right: left.clone(), left }
+    }
+
+    #[test]
+    fn audio_edit_sample_swap_keeps_voice_position_and_smooths_transition(){
+        let mut e=Engine::new(48000.);let b=Block::default();
+        e.sample=Some(Arc::new(Sample{rate:48000,left:vec![0.25;48000],right:vec![0.25;48000]}));
+        e.note_on(60,100./128.,&b);e.render(&mut vec![0.;1024],&mut vec![0.;1024],&b);
+        let pos=e.voices[0].pos;let age=e.voices[0].age;
+        e.replace_sample(Some(Arc::new(Sample{rate:48000,left:vec![-0.25;48000],right:vec![-0.25;48000]})));
+        assert_eq!(e.voices[0].pos,pos);assert_eq!(e.voices[0].age,age);
+        let(mut l,mut r)=(vec![0.;512],vec![0.;512]);e.render(&mut l,&mut r,&b);
+        assert!((l[0]-0.25).abs()<1e-6);assert!((l[300]+0.25).abs()<1e-6);assert!(l.windows(2).all(|w|(w[1]-w[0]).abs()<0.003));assert_eq!(e.voices.len(),1);
     }
 
     #[test]

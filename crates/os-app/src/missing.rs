@@ -101,6 +101,7 @@ pub fn missing_samples(s: &State) -> Vec<(usize, String)> {
         .iter()
         .enumerate()
         .filter_map(|(row, ch)| Some((row, ch.sample_path.clone().filter(|p| !p.trim().is_empty())?)))
+        .chain(s.project.vocal_edits.iter().filter_map(|d|s.project.channels.iter().position(|c|c.index==d.channel).map(|row|(row,d.source.clone()))))
         .filter(|(_, p)| !Path::new(&crate::plugins::resolve_sample(p)).is_file())
         .collect()
 }

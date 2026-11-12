@@ -101,6 +101,7 @@ pub type ClipPx = (i32, i32, i32, i32);
 
 pub struct TextEngine {
     theme_font: Option<portable::Fd>,
+    theme_bold: Option<portable::Fd>,
     mute_theme: bool,
     theme_font_id: u8,
     theme_font_data: Option<std::sync::Arc<[u8]>>,
@@ -122,6 +123,7 @@ impl TextEngine {
         };
         Ok(TextEngine {
             theme_font: None,
+            theme_bold: None,
             mute_theme: false,
             theme_font_id: 0,
             theme_font_data: None,
@@ -157,11 +159,24 @@ impl TextEngine {
             _ => None,
         };
         self.theme_font = bytes.and_then(|bytes| portable::Fd::from_bytes(bytes).ok());
+        // Studio's bundled family has a real semibold face. Pixel dilation closes
+        // the counters of small labels and adds an artificial pixel to every advance.
+        self.theme_bold = if id == 2 {
+            portable::Fd::from_bytes(include_bytes!("../fonts/Barlow/BarlowSemiCondensed-SemiBold.ttf")).ok()
+        } else { None };
+    }
+
+    fn theme_face(&mut self, f: Font) -> Option<(&mut portable::Fd, Font)> {
+        if self.mute_theme || f.face != Face::Ui { return None; }
+        if f.bold && let Some(font) = &mut self.theme_bold {
+            return Some((font, Font { bold: false, ..f }));
+        }
+        self.theme_font.as_mut().map(|font| (font, f))
     }
 
     /// (width, cell height) of `s` in device pixels.
     pub fn extent(&mut self, f: Font, scale: f32, s: &str) -> (i32, i32) {
-        if !self.mute_theme && f.face == Face::Ui && let Some(font) = &mut self.theme_font { return font.extent(f, scale, s); }
+        if let Some((font, f)) = self.theme_face(f) { return font.extent(f, scale, s); }
         #[cfg(windows)]
         if let Some(g) = &mut self.gdi {
             return g.extent(f, scale, s);
@@ -175,7 +190,7 @@ impl TextEngine {
 
     /// Cell height and ascent (device pixels).
     pub fn metrics(&mut self, f: Font, scale: f32) -> (i32, i32) {
-        if !self.mute_theme && f.face == Face::Ui && let Some(font) = &mut self.theme_font { return font.metrics(f, scale); }
+        if let Some((font, f)) = self.theme_face(f) { return font.metrics(f, scale); }
         #[cfg(windows)]
         if let Some(g) = &mut self.gdi {
             return g.metrics(f, scale);
@@ -194,7 +209,7 @@ impl TextEngine {
         if s.is_empty() || c.a == 0 {
             return;
         }
-        if !self.mute_theme && f.face == Face::Ui && let Some(font) = &mut self.theme_font {
+        if let Some((font, f)) = self.theme_face(f) {
             return font.draw(pix, clip, f, scale, x, y, c, s, vertical);
         }
         #[cfg(windows)]
@@ -742,6 +757,30 @@ mod portable {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn studio_bold_uses_the_bundled_face_for_metrics_and_pixels() {
+            let mut engine = super::super::TextEngine::new().unwrap();
+            engine.set_theme_font(2, None);
+            let mut real = Fd::from_bytes(include_bytes!("../fonts/Barlow/BarlowSemiCondensed-SemiBold.ttf")).unwrap();
+            let mut synthetic = Fd::from_bytes(include_bytes!("../fonts/Barlow/BarlowSemiCondensed-Regular.ttf")).unwrap();
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let font = Font::new(13);
+                let text = "SONG WAV FLAC MP3";
+                assert_eq!(engine.extent(font.bold(), scale, text), real.extent(font, scale, text));
+                assert_eq!(engine.metrics(font.bold(), scale), real.metrics(font, scale));
+                let mut actual = Pixmap::new(320, 48).unwrap();
+                let mut expected = actual.clone();
+                let mut dilated = actual.clone();
+                engine.draw(&mut actual, (0,0,320,48), font.bold(), scale, 2, 2, Color::rgb(0xffffff), text, false);
+                real.draw(&mut expected, (0,0,320,48), font, scale, 2, 2, Color::rgb(0xffffff), text, false);
+                synthetic.draw(&mut dilated, (0,0,320,48), font.bold(), scale, 2, 2, Color::rgb(0xffffff), text, false);
+                assert_eq!(actual.data(), expected.data());
+                assert_ne!(actual.data(), dilated.data());
+            }
+            engine.set_theme_font(3, None);
+            assert!(engine.theme_bold.is_none(), "switching families drops the old face");
+        }
 
         #[test]
         fn cell_and_baseline_follow_the_win_metrics() {

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{f64::consts::TAU, path::Path};
 pub const SIZE: usize = 1024;
 pub const MIPS: usize = 9;
+pub const PLASMA_SIZE: usize = 2048;
 pub const MAX_FRAMES: usize = 128;
 pub const MAX_FILE: usize = 16 * 1024 * 1024;
 pub const CYCLES: [usize; 7] = [64, 128, 256, 512, 1024, 2048, 4096];
@@ -14,13 +15,23 @@ pub struct Source {
     pub name: String,
     /// Canonical periodic frames, independent of the original file and its sample rate.
     pub samples: Vec<f32>,
+    #[serde(default = "default_frame_size", skip_serializing_if = "is_default_frame_size")]
+    pub frame_size: usize,
 }
+fn default_frame_size() -> usize { SIZE }
+fn is_default_frame_size(size: &usize) -> bool { *size == SIZE }
+
 impl Source {
+    pub fn new(name: String, samples: Vec<f32>) -> Self {
+        Self { name, samples, frame_size: SIZE }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.name.len() > 256
+        if !matches!(self.frame_size, SIZE | PLASMA_SIZE)
+            || self.name.len() > 256
             || self.samples.is_empty()
-            || self.samples.len() % SIZE != 0
-            || self.samples.len() > MAX_FRAMES * SIZE
+            || self.samples.len() % self.frame_size != 0
+            || self.samples.len() > MAX_FRAMES * self.frame_size
             || self
                 .samples
                 .iter()
@@ -31,7 +42,12 @@ impl Source {
         Ok(())
     }
     pub fn frames(&self) -> usize {
-        self.samples.len() / SIZE
+        self.samples.len() / self.frame_size
+    }
+
+    pub fn frame(&self, index: usize) -> &[f32] {
+        let start = index * self.frame_size;
+        &self.samples[start..start + self.frame_size]
     }
 }
 
@@ -200,7 +216,7 @@ pub fn decode(bytes: &[u8], cycle: usize, name: String) -> Result<Source, String
     for x in &mut samples {
         *x /= peak.max(1.);
     }
-    let source = Source { name, samples };
+    let source = Source::new(name, samples);
     source.validate()?;
     Ok(source)
 }
@@ -208,43 +224,53 @@ pub fn decode(bytes: &[u8], cycle: usize, name: String) -> Result<Source, String
 pub struct Table {
     pub source: Source,
     data: Vec<f32>,
+    mips: usize,
+    frames: usize,
 }
 impl Table {
     pub fn compile(source: Source) -> Result<Self, String> {
         source.validate()?;
-        let mut data = Vec::with_capacity(source.frames() * SIZE * MIPS);
-        for frame in source.samples.chunks_exact(SIZE) {
+        let size = source.frame_size;
+        let mips = if size == SIZE { MIPS } else { 11 };
+        let frames = source.frames();
+        let mut data = Vec::with_capacity(frames * size * mips);
+        let mut r = vec![0.; size];
+        let mut t = vec![0.; size];
+        let mut im = vec![0.; size];
+        for frame in source.samples.chunks_exact(size) {
             let mut re: Vec<_> = frame.iter().map(|x| *x as f64).collect();
-            let mut im = vec![0.; SIZE];
+            im.fill(0.);
             fft(&mut re, &mut im, false);
-            for mip in 0..MIPS {
-                let mut r = vec![0.; SIZE];
-                let mut t = vec![0.; SIZE];
-                for h in 1..=1 << mip {
-                    for j in [h, SIZE - h] {
-                        r[j] = re[j] / SIZE as f64;
-                        t[j] = im[j] / SIZE as f64;
+            for mip in 0..mips {
+                r.fill(0.);
+                t.fill(0.);
+                for h in 1..=(1 << mip).min(size / 2 - 1) {
+                    for j in [h, size - h] {
+                        r[j] = re[j] / size as f64;
+                        t[j] = im[j] / size as f64;
                     }
                 }
                 fft(&mut r, &mut t, true);
-                data.extend(r.into_iter().map(|x| x as f32));
+                data.extend(r.iter().map(|&x| x as f32));
             }
         }
-        Ok(Self { source, data })
+        Ok(Self { source, data, mips, frames })
     }
     pub fn sample(&self, position: f32, phase: f32, freq: f32, rate: f32) -> f32 {
         let safe = (rate * 0.45 / freq.max(1.)).max(1.);
-        let mip = safe.log2().floor().clamp(0., (MIPS - 1) as f32) as usize;
+        let mip = safe.log2().floor().clamp(0., (self.mips - 1) as f32) as usize;
         let blend = (safe / (1 << mip) as f32 - 1.).clamp(0., 1.);
-        let f = position.clamp(0., 1.) * (self.source.frames() - 1) as f32;
+        let f = position.clamp(0., 1.) * (self.frames - 1) as f32;
         let a = f.floor() as usize;
-        let b = (a + 1).min(self.source.frames() - 1);
-        let p = phase.rem_euclid(1.) * SIZE as f32;
-        let i = p as usize % SIZE;
+        let b = (a + 1).min(self.frames - 1);
+        let size = self.source.frame_size;
+        let p = phase.rem_euclid(1.) * size as f32;
+        let i = p as usize & (size - 1);
+        let j = (i + 1) & (size - 1);
         let t = p - p.floor();
         let read = |f, m| {
-            let start = (f * MIPS + m) * SIZE;
-            self.data[start + i] * (1. - t) + self.data[start + (i + 1) % SIZE] * t
+            let start = (f * self.mips + m) * size;
+            self.data[start + i] * (1. - t) + self.data[start + j] * t
         };
         let frame = |f| {
             if mip == 0 {

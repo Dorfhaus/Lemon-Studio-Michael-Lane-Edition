@@ -50,6 +50,8 @@ pub(super) struct Job {
     pub until: Option<Instant>,
     pub wait: Duration,
     pub export: bool,
+    pub smart_disable: bool,
+    pub priority: super::mix_workers::Priority,
 }
 impl Job {
     pub fn render(&mut self, inst: &mut dyn Instrument) {
@@ -61,6 +63,7 @@ impl Job {
         right.resize(self.frames, 0.);
         left.fill(0.);
         right.fill(0.);
+        inst.set_smart_disable(self.smart_disable && !self.export);
         inst.process(self.rate, left, right);
         self.delay = inst.reported_delay();
         self.active = inst.active();

@@ -17,6 +17,8 @@ pub const VOICE_GAIN_FRAMES: u32 = 32;
 
 /// A note-driven stereo generator.
 pub trait Instrument: Send {
+    /// Opt-in idle processing suppression. Unsupported instruments keep running.
+    fn set_smart_disable(&mut self, _enabled: bool) {}
     /// Whether processing can move between persistent audio workers between blocks.
     /// Native integrations and adapters opt in only when their threading contract permits it.
     fn parallel_processing(&self) -> bool { false }
@@ -366,6 +368,8 @@ impl fmt::Debug for Slot {
 /// sound through unchanged).
 // spec: ui/mixer.md §7 (effect slots)
 pub trait HostedEffect: Send {
+    /// Opt-in idle processing suppression. The host still delivers timing and parameters.
+    fn set_smart_disable_fx(&mut self, _enabled: bool) {}
     /// Processes `left.len()` frames at `rate` in place.
     fn process_fx(&mut self, rate: u32, left: &mut [f32], right: &mut [f32]);
     /// `process_fx` with the slot's sidechain input `key` (left, right; as long as `left`) for the plugin's first

@@ -17,6 +17,9 @@ use crate::plugin_db::{self as db, Entry, MenuView, Mode};
 /// What a plugin menu entry does (`Cmd::Plugin`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlugCmd {
+    AttachedInstrument(usize),
+    PlaylistInstrument {index:usize,row:u16},
+    LaneInstrument {index:usize,mixer:u16,row:u16},
     /// Generator `index` (into `Plugins::available`): a new channel at the bottom of the rack, or right below row
     /// `after`.
     Generator { index: usize, after: Option<usize> },
@@ -30,6 +33,7 @@ pub enum PlugCmd {
     /// Find new plugins (a background scan).
     Find,
     Picker(Target),
+    TogglePlaylistKeyboardPicker,
     /// Settings > Plugins.
     Manage,
     OpenFolder(bool),
@@ -39,6 +43,9 @@ pub enum PlugCmd {
 /// Which plugins a menu lists and where a pick goes (spec §1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Target {
+    AttachedInstrument,
+    PlaylistInstrument(u16),
+    LaneInstrument(u16,u16),
     /// F8, the toolbar button, VIEW / ADD > Plugin picker: generators and effects.
     All,
     /// Generators: a new channel at the bottom (`None`) or right below row `r`.
@@ -53,6 +60,9 @@ pub enum Target {
 
 fn pick(target: Target, effect: bool, index: usize) -> Cmd {
     Cmd::Plugin(match (target, effect) {
+        (Target::AttachedInstrument,false)=>PlugCmd::AttachedInstrument(index),
+        (Target::PlaylistInstrument(row),false)=>PlugCmd::PlaylistInstrument{index,row},
+        (Target::LaneInstrument(mixer,row),false)=>PlugCmd::LaneInstrument{index,mixer,row},
         (Target::ClipFx(channel,slot),_)=>PlugCmd::ClipFx{channel,slot,index},
         (Target::Fx(slot), _) => PlugCmd::Effect { index, slot },
         (_, true) => PlugCmd::Effect { index, slot: None },
@@ -322,7 +332,7 @@ pub fn items(s: &State, target: Target, nested: bool) -> Vec<PItem> {
             v.push(PItem::head("Effects"));
             v.extend(section(s, true, target, nested));
         }
-        Target::Gen(_) | Target::Replace(_) | Target::Stack(_) => v.extend(section(s, false, target, nested)),
+        Target::AttachedInstrument | Target::PlaylistInstrument(_) | Target::LaneInstrument(..) | Target::Gen(_) | Target::Replace(_) | Target::Stack(_) => v.extend(section(s, false, target, nested)),
         Target::Fx(_) | Target::ClipFx(..) => v.extend(section(s, true, target, nested)),
     }
     v.extend(footer(s));
@@ -371,7 +381,15 @@ impl App {
 /// Runs a plugin menu command. Returns a status message.
 pub fn run(app: &mut App, c: PlugCmd) -> Option<String> {
     let m = match c {
+        PlugCmd::LaneInstrument{index,mixer,row}=>crate::attached_mixer::insert_on_lane(app,index,mixer,row),
+        PlugCmd::AttachedInstrument(index)=>crate::attached_mixer::add_instrument(app,index),
+        PlugCmd::PlaylistInstrument{index,row}=>crate::playlist_tracks::insert(app,index,row),
         PlugCmd::Picker(target) => { crate::plugin_picker::open(app,target); None },
+        PlugCmd::TogglePlaylistKeyboardPicker => {
+            let preference = &crate::playlist_tracks::KEYBOARD_PICKER;
+            crate::prefs::set_check(preference, !crate::prefs::check(preference));
+            None
+        }
         PlugCmd::Generator { index, after } => add_generator(app, index, after),
         PlugCmd::ClipFx{channel,slot,index}=>crate::clip_effects::add(app,channel,slot,index),
         PlugCmd::Stack{index,row}=>crate::instrument_stack::add(app,row,index),

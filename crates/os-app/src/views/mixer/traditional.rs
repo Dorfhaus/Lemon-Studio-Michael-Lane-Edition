@@ -614,10 +614,11 @@ fn plugin_list(ui:&mut Ui,s:&State,n:u16,r:Rect) {
     for i in 0..rows {
         let k=mx::visible_user_slot(s,n,i);
         let b=Rect::new(r.x,r.y+i as f32*19.,r.w,18.);
-        let name=mx::track(s,n).and_then(|t|t.slots[k as usize].as_ref()).map(crate::project_plugins::slot_title).unwrap_or_else(||format!("Slot {}",i+1));
-        ui.c.fill_rrect(b,2.,ui.t.sunken);
-        let font = label_font(ui.c, Font::new(10), &name, b.w - 6.);
-        ui.c.text_clip(font,b.x+3.,b.y+3.,b.w-6.,ui.t.text,&name);
-        ui.hit(b,Action::Mix(MHit::TrackSlot(n,k)),name);
+        let plugin = mx::slot_name(s, n, k);
+        ui.c.fill_rrect(b, 2.0, ui.t.sunken);
+        let text = Rect::new(b.x + 3.0, b.y, b.w - 6.0, b.h);
+        paint_slot_label(ui, text, plugin.as_deref(), i + 1, 12, 3.0);
+        let hint = plugin.unwrap_or_else(|| format!("Slot {}", i + 1));
+        ui.hit(b, Action::Mix(MHit::TrackSlot(n, k)), hint);
     }
 }

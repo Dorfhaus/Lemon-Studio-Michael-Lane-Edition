@@ -111,6 +111,7 @@ pub enum Hit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoxTarget {
     AudioClip(usize),
+    MixerTrack(u16),
     Name(u16),
     Transpose(u16),
     /// The channel rack's boxes (spec: ui/channel-rack.md §13, §17, §21).
@@ -309,7 +310,7 @@ pub(crate) fn random_color(seed: u64) -> Rgb {
 
 /// Open the name box for pattern `n` at `at`.
 pub fn open_name_box(s: &mut State, target: BoxTarget, at: (f32, f32)) {
-    let at = if matches!(target, BoxTarget::AudioClip(_)) {
+    let at = if matches!(target, BoxTarget::AudioClip(_) | BoxTarget::MixerTrack(_)) {
         (at.0.clamp(0., (s.screen.0 - BOX_W).max(0.)),
          at.1.clamp(0., (s.screen.1 - BOX_H).max(0.)))
     } else {
@@ -317,6 +318,7 @@ pub fn open_name_box(s: &mut State, target: BoxTarget, at: (f32, f32)) {
     };
     let text = match target {
         BoxTarget::Name(n) => name_of(s, n),
+        BoxTarget::MixerTrack(n) => crate::mixer::name(s, n),
         BoxTarget::AudioClip(i) => crate::playlist::clips(s).get(i).map_or_else(String::new, |c| crate::playlist::clip_name(s, c).into_owned()),
         BoxTarget::Transpose(_) => String::new(),
         BoxTarget::Rack(b) => crate::rack::box_text(s, b),
@@ -521,6 +523,7 @@ pub fn accept(s: &mut State) {
     let Some(b) = s.pat_ui.name_box.take() else { return };
     match b.target {
         BoxTarget::AudioClip(i) => crate::playlist::set_audio_clip_name(s, i, &b.text),
+        BoxTarget::MixerTrack(n) => crate::mixer::rename_track(s, n, &b.text),
         BoxTarget::Name(n) => {
             let text = b.text.trim().to_string();
             let name = (!text.is_empty() && text != format!("Pattern {n}")).then_some(text.clone());
@@ -582,8 +585,12 @@ pub fn set_color(s: &mut State, i: usize) {
 fn apply_swatch(s: &mut State, c: u32) {
     let target = s.pat_ui.name_box.as_ref().map(|b| b.target);
     let color = Some(Rgb::new((c >> 16) as u8, (c >> 8) as u8, c as u8));
-    if let Some(BoxTarget::AudioClip(i)) = target {
-        crate::playlist::set_audio_clip_color(s, i, color);
+    if matches!(target, Some(BoxTarget::AudioClip(_) | BoxTarget::MixerTrack(_))) {
+        match target {
+            Some(BoxTarget::AudioClip(i)) => crate::playlist::set_audio_clip_color(s, i, color),
+            Some(BoxTarget::MixerTrack(n)) => crate::mixer::set_track_color(s, n, color),
+            _ => unreachable!(),
+        }
         if let Some(b) = &mut s.pat_ui.name_box {
             b.palette = false;
             b.custom = None;
@@ -634,6 +641,10 @@ fn save_swatch(s: &mut State, clear: bool) {
         crate::prefs::set_text(&format!("clip_custom_swatch_{i}"), "");
     } else if let Some(color) = hex_color(&field.text) {
         crate::prefs::set_text(&format!("clip_custom_swatch_{i}"), &format!("{color:06X}"));
+        if matches!(b.target, BoxTarget::MixerTrack(_)) {
+            apply_swatch(s, color);
+            return;
+        }
     } else {
         s.message = Some("Enter six hex digits, for example FF8844".into());
         return;

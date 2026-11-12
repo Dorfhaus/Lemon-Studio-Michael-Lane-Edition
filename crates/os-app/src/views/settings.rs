@@ -24,6 +24,7 @@ use crate::plugin_db::{self as db, Col, Prefer};
 pub enum SAct {
     /// The window body (swallows clicks, wheel scrolls the page).
     Body,
+    DragTitle,
     VisibilitySearch,
     Help(crate::help::Hit),
     MenuLayout(crate::menu_layout::Action),
@@ -31,6 +32,7 @@ pub enum SAct {
     ThemeEditor(crate::advanced_theme::Hit),
     Close,
     Tab(usize),
+    AudioView(bool),
     /// A working check (radio LED) by its label (`LIVE`).
     Check(&'static str),
     /// A collapsible group header by its title.
@@ -163,6 +165,7 @@ pub enum Plug {
 #[derive(Debug, Default)]
 pub struct SettingsUi {
     pub open: bool,
+    pub position: Option<(f32, f32)>,
     pub tab: usize,
     /// Page scroll in pixels.
     pub scroll: f32,
@@ -324,12 +327,70 @@ fn live(key: &str) -> bool {
 }
 
 /// The combos that work (they open a menu of choices, `App::audio_menu`).
-pub const LIVE_COMBOS: [&str; 5] = [OUTPUT_DEVICE, MODE, SAMPLE_RATE, BUFFER_LENGTH, ANIMATIONS];
+pub const LIVE_COMBOS: &[&str] = &[OUTPUT_DEVICE, MODE, SAMPLE_RATE, BUFFER_LENGTH, LATENCY_PRESET, ANIMATIONS];
 /// General ▸ Display: "Entertain me" simulates the mixer's cables, "Off" hangs them still (crate::cable).
 pub const ANIMATIONS: &str = "Animations";
 pub const OUTPUT_DEVICE: &str = "Output device";
 pub const SAMPLE_RATE: &str = "Sample rate (Hz)";
 pub const BUFFER_LENGTH: &str = "Buffer length";
+pub const LATENCY_PRESET: &str = "Latency";
+pub const AUDIO_ADVANCED_VISIBILITY: &str = "visible_audio-advanced";
+pub const AUDIO_ADVANCED_KEY: &str = "audio_advanced";
+
+fn audio_advanced() -> bool {
+    crate::workspace_visibility::shown(AUDIO_ADVANCED_VISIBILITY)
+        && crate::settings_file::flag(AUDIO_ADVANCED_KEY, false)
+}
+
+impl SettingsUi {
+    pub(crate) fn asio_sizes(&self) -> &[u32] {
+        self.driver.as_ref().map_or(&[], |driver| &driver.sizes)
+    }
+
+    pub(crate) fn latency_presets(&self) -> Vec<(&'static str, Option<u32>)> {
+        use crate::audio_cfg::{BUFFERS, SMALLEST};
+        let asio = self.audio.asio_driver().is_some();
+        let rate = self.rate.unwrap_or(44100);
+        let mut sizes = if asio {
+            self.asio_sizes().to_vec()
+        } else if let Some(p) = &self.periods {
+            let exclusive = self.audio.exclusive();
+            let mut sizes = p.sizes(exclusive, rate);
+            if exclusive && p.exclusive_frames(rate).1 > 0 {
+                sizes.push(SMALLEST);
+            }
+            sizes
+        } else {
+            BUFFERS.to_vec()
+        };
+        sizes.sort_unstable();
+        sizes.dedup();
+        let mut presets = vec![("Automatic", None)];
+        if sizes.is_empty() { return presets; }
+        let actual = |b| if b == SMALLEST {
+            self.periods.as_ref().map_or(0, |p| p.exclusive_frames(rate).1)
+        } else { b };
+        // In shared mode the first supported custom size can be larger than Automatic.
+        let own = self.periods.as_ref().filter(|_| !asio).map(|p| {
+            if self.audio.exclusive() { p.own(true, rate) } else { p.shared_buffer.max(p.shared_period()) }
+        });
+        for (label, target) in [("Low latency", 128_u32), ("Balanced", 512), ("Large buffer", 1024)] {
+            let candidates = sizes.iter().enumerate().filter(|&(_, b)| {
+                let frames = actual(*b);
+                match label {
+                    "Low latency" => own.is_none_or(|own| frames < own),
+                    "Balanced" => own.is_none_or(|own| frames <= own.max(512)),
+                    _ => own.is_none_or(|own| frames > own),
+                }
+            });
+            if let Some((i, &frames)) = candidates.min_by_key(|&(_, b)| actual(*b).abs_diff(target)) {
+                presets.push((label, Some(frames)));
+                sizes.drain(..=i);
+            }
+        }
+        presets
+    }
+}
 /// Windows devices: shared mode, or exclusive mode with the device to Lemon Studio alone (spec:
 /// audio/wasapi-low-latency.md 4.2); its menu's two choices; its hint under an ASIO driver, which has no such mode.
 /// Linux: shared mode plays through the sound server (PulseAudio or PipeWire), exclusive mode opens an ALSA device
@@ -481,8 +542,11 @@ const GW: f32 = 608.0;
 pub fn rect(s: &State) -> Rect {
     let (sw, sh) = s.screen;
     let h = 900.0_f32.min(sh - 20.0).max(200.0);
-    let y = 70.0_f32.min(sh - h - 10.0).max(0.0);
-    Rect::new(((sw - W) / 2.0).max(0.0).round(), y, W, h)
+    let (x, y) = s.settings.position.unwrap_or((
+        ((sw - W) / 2.0).round(),
+        70.0_f32.min(sh - h - 10.0),
+    ));
+    Rect::new(x.clamp(0.0, (sw - W).max(0.0)), y.clamp(0.0, (sh - h).max(0.0)), W, h)
 }
 
 /// One control row. Labels double as keys (unique per page).
@@ -698,6 +762,28 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             // Device, rate and buffer length work (spec: ui/settings.md "Audio"); a choice of "the device's own" shows
             // what that is.
             // Under an ASIO driver its own rate and buffer length are the "Driver" ones (spec: audio/devices.md).
+            if !audio_advanced() {
+                let presets = st.latency_presets();
+                let preset = presets.iter().find(|(_, b)| *b == st.audio.buffer).map_or("Custom", |(label, _)| *label);
+                let mut rows = vec![combo(&st.device, 360.0, OUTPUT_DEVICE)];
+                if presets.len() > 1 {
+                    rows.push(combo(preset, 190.0, LATENCY_PRESET));
+                    rows.push(txt("Shorter buffers respond faster. Larger buffers help with clicks during playback."));
+                    if let (Some(wanted), Some(actual)) = (st.audio.buffer, st.driver.as_ref().and_then(|d| d.fixed))
+                        && st.asio_open && wanted != actual
+                    {
+                        rows.push(Text(format!("Your driver is using {} frames.", actual), true));
+                    }
+                } else if st.audio.asio_driver().is_some() {
+                    rows.push(Buttons(vec![(SHOW_ASIO_PANEL, 136.0)]));
+                    rows.push(txt("Adjust latency in your audio driver's panel."));
+                }
+                if cfg!(windows) {
+                    rows.push(Row::AsioLogo);
+                }
+                rows.extend(st.instead.iter().map(|i| Text(i.clone(), true)));
+                return vec![g("Audio setup", rows)];
+            }
             let rate = st.rate.unwrap_or(44100);
             let asio = st.audio.asio_driver().is_some();
             let rate_text = match st.audio.rate {
@@ -713,6 +799,9 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     Some(p) => format!("Smallest ({})", buffer_text(p.exclusive_frames(rate).1, rate)),
                     None => "Smallest".into(),
                 },
+                Some(b) if asio && st.driver.as_ref().and_then(|d| d.fixed).is_some_and(|actual| actual != b) => {
+                    format!("Requested {}", buffer_text(b, rate))
+                }
                 Some(b) => buffer_text(b, rate),
                 None if asio => match st.driver.as_ref().and_then(|d| d.fixed.map(|b| buffer_text(b, d.rate))) {
                     Some(b) => format!("Driver ({b})"),
@@ -746,7 +835,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     },
                     vec![
                         combo(&rate_text, 120.0, SAMPLE_RATE),
-                        if asio {
+                        if asio && st.asio_sizes().is_empty() {
                             Text(st.driver.as_ref().and_then(|d| d.fixed.map(|b| format!("Buffer: {} - set in ASIO panel", buffer_text(b, d.rate)))).unwrap_or_else(|| "Buffer: controlled by ASIO panel".into()), true)
                         } else { combo(&buffer, 190.0, BUFFER_LENGTH) },
                         Check("Auto close", false),
@@ -762,25 +851,32 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     } else {
                         Vec::new()
                     },
-                    vec![
-                        List(vec![("Output devices", 0.0)], listed.map(|d| vec![d]).collect(), 4),
-                        txt("Audio processing priority: high (automatic)"),
-                        txt("Driver callbacks feed the output buffers automatically."),
-                    ],
+                    vec![List(vec![("Output devices", 0.0)], listed.map(|d| vec![d]).collect(), 4)],
                 ]
                 .into_iter()
                 .flatten()
                 .collect()),
                 g("CPU", vec![
-                    txt("Independent mixer effects use multiple cores automatically."),
-                    txt("Generators run in order. Smart disable is off."),
+                    Check(crate::prefs::THREADED_GENERATORS.label, true),
+                    Check(crate::prefs::THREADED_MIXER.label, true),
+                    if crate::workspace_visibility::shown("visible_smart-disable") { Check(crate::prefs::SMART_DISABLE.label, true) } else { Gap(0.0) },
+                    combo(crate::prefs::choice(&crate::prefs::AUDIO_WORKERS), 190.0, crate::prefs::AUDIO_WORKERS.label),
+                    if cfg!(any(windows, target_os = "macos")) {
+                        combo(crate::prefs::choice(&crate::prefs::AUDIO_PRIORITY), 190.0, crate::prefs::AUDIO_PRIORITY.label)
+                    } else { Gap(0.0) },
                 ]),
                 g("Mixer", vec![
-                    txt("Playback: 16-point sinc. Export default: 512-point sinc."),
+                    Check(crate::prefs::PLAYBACK_PDC.label, true),
+                    combo(crate::prefs::choice(&crate::prefs::RESAMPLING_QUALITY), 190.0, crate::prefs::RESAMPLING_QUALITY.label),
                     Value(crate::prefs::number_text(&crate::prefs::BROWSER_PREVIEW_TRACK), "Browser preview track"),
                     Value(crate::prefs::number_text(&crate::prefs::METRONOME_TRACK), "Metronome track"),
                     Check("Play truncated notes on transport", true),
                     Check("Reset plugins on transport", false),
+                ]),
+                g("Recording", vec![
+                    combo(crate::prefs::choice(&crate::prefs::RECORD_FORMAT), 190.0, crate::prefs::RECORD_FORMAT.label),
+                    Value(crate::prefs::recording_offset_text(), crate::prefs::RECORD_OFFSET.label),
+                    txt("Positive offset places recorded audio later."),
                 ]),
             ]
         }
@@ -830,6 +926,12 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                 if crate::workspace_visibility::shown("visible_piano-zoom-keys") {
                     let keys = &crate::prefs::PIANO_ZOOM_KEYS;
                     rows.push(combo(crate::prefs::choice(keys), 174., keys.label));
+                }
+                if crate::workspace_visibility::shown("visible_double-click-reset") {
+                    rows.push(Check(crate::prefs::DOUBLE_CLICK_RESET.label, false));
+                }
+                if crate::workspace_visibility::shown("visible_hover-main-menus") {
+                    rows.push(Check(crate::prefs::HOVER_MENUS.label, false));
                 }
                 rows.extend([
                     Check("Click-and-hold & special gesture functions", false),
@@ -1262,6 +1364,7 @@ fn paint_window(ui: &mut Ui, s: &State) {
     let r = rect(s);
     let t = ui.t;
     ui.hit(r, Action::Settings(SAct::Body), "");
+    ui.hit(Rect::new(r.x, r.y, r.w, 28.0), Action::Settings(SAct::DragTitle), "Drag Settings");
     // Shadow, frame, title bar.
     let lemon = super::lemon(ui);
     if lemon {
@@ -1285,7 +1388,9 @@ fn paint_window(ui: &mut Ui, s: &State) {
     let hov = ui.hit(x, Action::Settings(SAct::Close), "Close");
     crate::icons::draw(ui.c, crate::icons::Icon::Close, x.inset(3.0), if hov { t.glyph } else { t.text });
     if st.tab == MIDI {
-        super::midi_page::paint_view_switch(ui, x, s.midi.advanced);
+        super::midi_page::paint_view_switch(ui, x, s.midi.advanced, |mode| SAct::Midi(super::midi_page::MAct::View(mode)));
+    } else if st.tab == AUDIO && crate::workspace_visibility::shown(AUDIO_ADVANCED_VISIBILITY) {
+        super::midi_page::paint_view_switch(ui, x, audio_advanced(), SAct::AudioView);
     }
     // Tabs (spec §2): active text coloured by group.
     let font = Font::new(13);

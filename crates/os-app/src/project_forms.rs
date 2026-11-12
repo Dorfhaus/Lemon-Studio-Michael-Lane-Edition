@@ -46,6 +46,7 @@ pub enum FHit {
     /// Export: a segment (row, segment) of a segmented row, a format's tile (Import MIDI data: a MIDI channel's).
     Seg(u8, u8),
     Tile(u8),
+    ExportAdvanced(bool),
 }
 
 /// Rename project (spec: ui/data-folder.md §6): the project's name; Rename data folder, with the folder's name; Use
@@ -143,7 +144,7 @@ impl App {
                     f.focus = 0;
                 }
             }
-            FHit::Check(_) | FHit::Skip | FHit::Auto | FHit::Folder | FHit::Combo(_) | FHit::Item(_) | FHit::Fold | FHit::Shut | FHit::Seg(..) | FHit::Tile(_) => {}
+            FHit::Check(_) | FHit::Skip | FHit::Auto | FHit::Folder | FHit::Combo(_) | FHit::Item(_) | FHit::Fold | FHit::Shut | FHit::Seg(..) | FHit::Tile(_) | FHit::ExportAdvanced(_) => {}
             FHit::Main => return self.form_accept(),
         }
         self.invalidate();

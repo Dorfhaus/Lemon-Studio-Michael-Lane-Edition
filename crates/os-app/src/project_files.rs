@@ -247,6 +247,7 @@ impl App {
             used.extend(self.plugins.sampler_path(row).filter(|p| !p.is_empty()).map(PathBuf::from));
             used.extend(ch.sample_path.as_deref().filter(|p| !p.is_empty()).map(|p| PathBuf::from(crate::plugins::resolve_sample(p))));
         }
+        used.extend(self.state.project.vocal_edits.iter().flat_map(|d|[&d.source,&d.rendered]).filter(|p|!p.is_empty()).map(|p|PathBuf::from(crate::plugins::resolve_sample(p))));
         used.extend(self.state.project.audio_warps.iter().flat_map(|w| [&w.source,&w.rendered]).filter(|p|!p.is_empty()).map(|p|PathBuf::from(crate::plugins::resolve_sample(p))));
         used
     }

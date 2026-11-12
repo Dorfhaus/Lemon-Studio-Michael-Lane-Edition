@@ -528,10 +528,10 @@ fn capture_window(args: &[String]) -> Result<(), String> {
 
 /// Kill only this worker and its descendants if Lemon exits during setup/inference.
 #[cfg(windows)]
-struct ProcessGroup(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct ProcessGroup(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 impl ProcessGroup {
-    fn attach(child: &std::process::Child) -> Option<Self> {
+    pub(crate) fn attach(child: &std::process::Child) -> Option<Self> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::{Foundation::CloseHandle, System::JobObjects::*};
         unsafe {

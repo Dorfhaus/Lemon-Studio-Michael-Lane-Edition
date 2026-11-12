@@ -15,6 +15,8 @@ pub struct Setup {
 }
 #[derive(Clone)]
 pub struct Destination {
+    /// Keep the chosen lane even if the attached view closes before the file is ready.
+    pub attached: bool,
     pub mixer: u16,
     pub row: u16,
     pub start: u32,
@@ -126,10 +128,15 @@ impl App {
         self.state.song_mode=true;
         let start=self.selection_loop().filter(|&(a,b)|self.state.playlist.pos<a||self.state.playlist.pos>=b).map_or(self.state.playlist.pos,|r|r.0);
         let rows=pl::Rows::new(&self.state);
-        let _row=(0..pl::TRACKS).find(|&row|rows.height(row)>0.&&!pl::track_info(&self.state,row).is_some_and(|t|t.locked)&&!pl::clips(&self.state).iter().any(|c|c.track==row)).ok_or("There is no free playlist track for this take")?;
+        crate::attached_mixer::clear(&self.state);
         let armed: Vec<u16> = self.state.mixer.recording.armed.iter().copied().collect();
         if armed.len() > 64 { return Err("Up to 64 mixer inputs can be recorded together".into()); }
-        let free: Vec<u16> = (0..pl::TRACKS).filter(|&r| !self.state.project.instrument_lanes.iter().any(|v|self.state.project.arrangement().is_some_and(|a|v.1==a.number) && v.2==r) && rows.height(r)>0. && !pl::track_info(&self.state,r).is_some_and(|t|t.locked) && !pl::clips(&self.state).iter().any(|c|c.track==r)).take(armed.len()).collect();
+        let mut free=Vec::new();
+        for &n in &armed {
+            let bound=crate::attached_mixer::lane(&self.state,n).filter(|r|!free.contains(r)&&pl::track_info(&self.state,*r).is_none_or(|t|!t.locked&&t.frozen.is_none()));
+            let row=bound.or_else(||(0..pl::TRACKS).find(|r|!free.contains(r)&&!self.state.project.instrument_lanes.iter().any(|v|self.state.project.arrangement().is_some_and(|a|v.1==a.number)&&v.2==*r)&&rows.height(*r)>0.&&pl::track_info(&self.state,*r).is_none_or(|t|!t.locked&&!t.grouped&&t.frozen.is_none())&&!pl::clips(&self.state).iter().any(|c|c.track==*r)));
+            if let Some(row)=row{free.push(row);}
+        }
         if free.len()!=armed.len() { return Err("Not enough empty Playlist tracks for the armed inputs".into()); }
         let mut tracks = Vec::new();
         for (t,row) in armed.into_iter().zip(free) {
@@ -138,7 +145,7 @@ impl App {
             let channels = if selected.asio { self.transport.opened().map(|d| d.inputs) } else { stream.as_ref().map(|s|s.channels).or_else(||self.input_monitor.channels()) };
             if channels.is_some_and(|n| selected.first+u16::from(selected.stereo)>=n) { return Err(format!("{}: input unavailable",crate::mixer::name(&self.state,t))); }
             let color=crate::mixer::track(&self.state,t).and_then(|m|m.color);
-            tracks.push((selected,Destination { mixer:t,row,start,length:1,name:crate::mixer::name(&self.state,t),color }));
+            tracks.push((selected,Destination { attached:crate::attached_mixer::active(&self.state),mixer:t,row,start,length:1,name:crate::mixer::name(&self.state,t),color }));
         }
         self.begin_mixer_group(tracks,stream)?;
         self.invalidate();Ok(())

@@ -23,6 +23,7 @@ pub mod bundle;
 pub mod guard;
 mod guarded;
 mod meter;
+mod smart_disable;
 #[cfg(unix)]
 pub mod runloop;
 
@@ -208,6 +209,13 @@ pub type EditorJob = Box<dyn FnOnce() -> Result<(u32, u32), String>>;
 /// A plugin instance, whatever its format.
 /// Main-thread calls (everything except the `Instrument` / `HostedEffect` methods) come from the UI thread only.
 pub trait Plugin: Instrument + HostedEffect + Send {
+    /// Finite tail in frames for Smart Disable, queried on the processing thread.
+    /// None keeps processing: unknown/infinite tails, autonomous playback, an open
+    /// editor, queued events or reconfiguration. This query must never block.
+    fn smart_disable_tail(&self) -> Option<u64> { None }
+    /// Advance host clocks and consume this block's transport without calling DSP.
+    /// Only called after smart_disable_tail permits suspension.
+    fn advance_silent(&mut self, _rate: u32, _frames: usize) {}
     fn editor_job(&mut self, _action: EditorAction) -> Option<EditorJob> { None }
     /// MPE delivery path: 0 unavailable, 1 channel MIDI (instrument mode required),
     /// 2 native per-note expressions. This does not promise patch mappings.

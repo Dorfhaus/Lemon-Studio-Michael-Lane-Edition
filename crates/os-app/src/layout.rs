@@ -338,7 +338,7 @@ pub fn project_snapshot(s:&State,plugins:&crate::plugins::Plugins)->serde_json::
     #[cfg(not(windows))] let _=plugins;
     let detached:Vec<_>=DETACHABLE.iter().map(|(w,_)|s.native_detached.contains(w)).collect();
     let frames:Vec<_>=DETACHABLE.iter().map(|(w,_)|s.native_frames.iter().find(|(k,_)|k==w).map(|(_,f)|serde_json::json!([f.pos.0,f.pos.1,f.size.0,f.size.1,f.max]))).collect();
-    serde_json::json!({"version":1,"windows":wins,"rack":[s.rack_pos.0,s.rack_pos.1,s.rack_size.0,s.rack_size.1,s.shown(Win::ChannelRack)],"editors":editors,"detached":detached,"frames":frames})
+    serde_json::json!({"version":1,"attached_mixer":s.playlist.attached,"windows":wins,"rack":[s.rack_pos.0,s.rack_pos.1,s.rack_size.0,s.rack_size.1,s.shown(Win::ChannelRack)],"editors":editors,"detached":detached,"frames":frames})
 }
 pub fn write_project_layout(file:&mut os_flp::FlpFile,value:serde_json::Value){
     file.chunks.retain(|c|c.tag!=PROJECT_LAYOUT_TAG);
@@ -352,7 +352,9 @@ fn project_layout(s:&State)->Option<serde_json::Value>{
     (v["version"]==1).then_some(v)
 }
 pub fn restore_project_layout(s:&mut State){
+    s.playlist.attached=None;
     let Some(v)=project_layout(s)else{return};
+    s.playlist.attached=serde_json::from_value(v["attached_mixer"].clone()).ok();
     if let Some(flags)=v["detached"].as_array().filter(|a|a.len()==WINS.len() || a.len()==DETACHABLE.len()) {
         s.native_layout_generation=s.native_layout_generation.wrapping_add(1);
         s.native_detached=DETACHABLE.iter().zip(flags).filter(|(_,on)|on.as_bool()==Some(true)).map(|((w,_),_)|*w).collect();

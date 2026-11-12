@@ -12,10 +12,11 @@ pub(crate) const PREVIEW_PATH: &str = "lemon-internal://audio-timing-preview";
 type Points = Vec<(f64, f64)>;
 type Audio = Result<Arc<Sample>, String>;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Play {
     Start(u32),
     Seek(u32),
+    Resume,
 }
 
 #[derive(Default)]
@@ -84,6 +85,7 @@ impl Preview {
 }
 
 pub(crate) fn cancel_play(app: &mut App) -> bool {
+    if app.state.playlist.vocal.waiting.take().is_some(){app.invalidate();return true;}
     let cancelled = app
         .state
         .playlist
@@ -99,6 +101,7 @@ pub(crate) fn cancel_play(app: &mut App) -> bool {
 /// A fresh playback request waits for the latest edit, so Play never quietly
 /// auditions the previous warp while a new version is being rendered.
 pub(crate) fn wait_for_play(app: &mut App, play: Play) -> bool {
+    if crate::audio_edits::pending(&app.state.project){app.state.playlist.vocal.waiting=Some(play);app.state.message=Some("Preparing current audio edits before playback...".into());app.invalidate();return true;}
     if !usable(&app.state) || !app.state.song_mode {
         return false;
     }
@@ -124,6 +127,7 @@ pub(crate) fn mark_started(app: &mut App, sample: Option<&Arc<Sample>>) {
 }
 
 pub(crate) fn resume(app: &mut App) {
+    if crate::audio_edits::pending(&app.state.project){wait_for_play(app,Play::Resume);return;}
     let restart = app.state.song_mode
         && app.transport.song()
         && app.state.playlist.warp.as_ref().is_some_and(|f| {
@@ -206,6 +210,7 @@ pub(super) fn poll(app: &mut App) {
         match request {
             Play::Start(bars) => app.start_playback_counted(bars),
             Play::Seek(tick) => app.play_song_from(tick),
+            Play::Resume => resume(app),
         }
     }
 }

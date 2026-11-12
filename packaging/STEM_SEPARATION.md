@@ -15,7 +15,7 @@ The DAW embeds only its own worker/bootstrap code and constraints, not Python, m
 - uv 0.9.5: https://github.com/astral-sh/uv (MIT OR Apache-2.0). Platform archive SHA-256 values are pinned before extraction/execution.
 - Managed CPython 3.11.14 via uv: https://github.com/astral-sh/python-build-standalone (Python PSF and bundled component licences).
 - PyTorch/torchaudio 2.5.1: https://pytorch.org/ (BSD-style licences). Windows/Linux select CPU wheels; macOS uses its platform wheels.
-- Demucs 4.0.1 and official HTDemucs weights: https://github.com/facebookresearch/demucs (MIT). The model `955717e8-8726e21a.th` is downloaded from Meta's official host and checked against full SHA-256 `8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4` before loading.
+- Demucs 4.0.1 and official HTDemucs weights: https://github.com/facebookresearch/demucs (MIT). The model `955717e8-8726e21a.th` is downloaded from Meta's official host, with a pinned Hugging Face mirror as a fallback. Downloads from either host must match SHA-256 `8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4` before loading.
 - NumPy 1.26.4 and SoundFile 0.13.1; other runtime dependencies are constrained to the tested versions in `stem_constraints.txt`. Downloaded distributions retain their licence metadata.
 
 CPU processing is intentional for this initial version; no CUDA/AMD GPU acceleration is promised. The source includes platform bootstrap choices for Windows x64, Linux x64 and macOS ARM64. Windows installation and inference are tested; macOS/Linux runtime verification is still required before describing those platforms as tested. Intel Mac and other unsupported architectures show an availability message before offering any download.

@@ -9,6 +9,7 @@
 // spec: plugins/plugin-parameters.md §2 (automation playback), §3 (targets)
 
 use os_model::target::Target;
+use std::collections::{HashMap, HashSet};
 
 use super::{Engine, Fx, FxSlot};
 
@@ -42,9 +43,9 @@ pub(super) struct ParamAuto {
     /// This block's events, in frame order.
     pub events: Vec<ParamEvent>,
     /// Last value sent per target (a value is only sent again when it changes).
-    last: Vec<(Target, f64)>,
+    last: HashMap<Target, f64>,
     /// Scratch: targets already handled at the current step.
-    done: Vec<Target>,
+    done: HashSet<Target>,
     /// The playlist has clips on plugin parameters at all.
     pub any: bool,
     /// This tick's values for plugins that take one value per tick (`Instrument::tick_params`): the walked value the
@@ -52,18 +53,18 @@ pub(super) struct ParamAuto {
     /// "Parameters", audio/automation.md "When a clip acts").
     pub ticks: Vec<ParamEvent>,
     /// Last per-tick value handed on per target (`Round(level * 2^30)`).
-    last_tick: Vec<(Target, i64)>,
+    last_tick: HashMap<Target, i64>,
 }
 
 impl ParamAuto {
     pub fn new(any: bool) -> Self {
         ParamAuto {
             events: Vec::with_capacity(256),
-            last: Vec::with_capacity(16),
-            done: Vec::with_capacity(16),
+            last: HashMap::with_capacity(256),
+            done: HashSet::with_capacity(256),
             any,
             ticks: Vec::with_capacity(16),
-            last_tick: Vec::with_capacity(16),
+            last_tick: HashMap::with_capacity(256),
         }
     }
 
@@ -81,10 +82,10 @@ impl ParamAuto {
             Target::SlotParam(t, s, k) => (Dest::Slot(usize::from(t), usize::from(s)), k),
             _ => return,
         };
-        match self.last_tick.iter_mut().find(|(t, _)| *t == target) {
-            Some((_, last)) if *last == n => return,
-            Some((_, last)) => *last = n,
-            None => self.last_tick.push((target, n)),
+        match self.last_tick.get_mut(&target) {
+            Some(last) if *last == n => return,
+            Some(last) => *last = n,
+            None => { self.last_tick.insert(target, n); },
         }
         self.ticks.push(ParamEvent { dest, offset: 0, index: u32::from(index), value: n as f64 / 1_073_741_824.0 });
     }
@@ -108,8 +109,8 @@ impl ParamAuto {
             // A busy instance misses these values: they are sent again at the next step.
             let Ok(mut h) = h.try_lock() else {
                 let mine = |tg: &Target| matches!(*tg, Target::SlotParam(a, b, _) if usize::from(a) == t && usize::from(b) == fx.slot);
-                self.last.retain(|(tg, _)| !mine(tg));
-                self.last_tick.retain(|(tg, _)| !mine(tg));
+                self.last.retain(|tg, _| !mine(tg));
+                self.last_tick.retain(|tg, _| !mine(tg));
                 continue;
             };
             let list = if h.tick_params_fx() { &self.ticks } else { &self.events };
@@ -131,8 +132,8 @@ impl ParamAuto {
     /// A busy instrument missed channel `c`'s values: send them again at the next step.
     pub fn resend_channel(&mut self, c: usize) {
         let mine = |tg: &Target| matches!(*tg, Target::ChannelParam(ch, _) if usize::from(ch) == c);
-        self.last.retain(|(tg, _)| !mine(tg));
-        self.last_tick.retain(|(tg, _)| !mine(tg));
+        self.last.retain(|tg, _| !mine(tg));
+        self.last_tick.retain(|tg, _| !mine(tg));
     }
 }
 
@@ -170,7 +171,7 @@ impl Engine {
                     if g < a.start as f64 || g >= a.end as f64 {
                         continue;
                     }
-                    pa.done.push(target);
+                    pa.done.insert(target);
                     // One tick ahead, as every automation target (spec: audio/automation.md "When a clip acts").
                     let v = match value {
                         Some((at, v)) if at == g => v,
@@ -181,10 +182,10 @@ impl Engine {
                         }
                     };
                     let Some(v) = v else { continue };
-                    match pa.last.iter_mut().find(|(t, _)| *t == target) {
-                        Some((_, last)) if (*last - v).abs() < 1e-7 => continue,
-                        Some((_, last)) => *last = v,
-                        None => pa.last.push((target, v)),
+                    match pa.last.get_mut(&target) {
+                        Some(last) if (*last - v).abs() < 1e-7 => continue,
+                        Some(last) => *last = v,
+                        None => { pa.last.insert(target, v); },
                     }
                     let (dest, index) = match target {
                         Target::ChannelParam(c, k) => (Dest::Channel(usize::from(c)), k),
@@ -272,6 +273,34 @@ mod tests {
             plugin_state: None,
             misc: Default::default(), sound: Default::default(),
         }
+    }
+
+    #[test]
+    #[ignore = "synthetic dense automation benchmark"]
+    fn dense_parameter_lookup_benchmark() {
+        use super::{ParamAuto, Target};
+        use std::{hint::black_box, time::Instant};
+        let targets: Vec<_> = (0..1024).map(|i| Target::ChannelParam(0, i)).collect();
+        let mut reference = Vec::new();
+        let start = Instant::now();
+        for tick in 0..1000 {
+            for &target in &targets {
+                match reference.iter_mut().find(|(t, _)| *t == target) {
+                    Some((_, value)) => *value = black_box(tick),
+                    None => reference.push((target, black_box(tick))),
+                }
+            }
+        }
+        let linear = start.elapsed();
+        let mut indexed = ParamAuto::new(true);
+        let start = Instant::now();
+        for tick in 0..1000 {
+            indexed.ticks.clear();
+            for &target in &targets { indexed.tick_value(target, black_box(tick)); }
+        }
+        let hashed = start.elapsed();
+        for (target, value) in reference { assert_eq!(indexed.last_tick[&target], value); }
+        eprintln!("1024 targets x 1000 ticks: linear lookup {:?}, indexed dispatch {:?}", linear, hashed);
     }
 
     /// A ramp 0 -> 1 over 4 beats on `target`, its clip at tick 0 for 4 beats (PPQ 96, 120 BPM at 48 kHz = 24000

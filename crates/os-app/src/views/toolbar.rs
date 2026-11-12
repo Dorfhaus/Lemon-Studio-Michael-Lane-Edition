@@ -209,7 +209,7 @@ impl ActionSizes {
             if shown(key) { canvas.text_width(font, label).ceil() + 18.0 } else { 0.0 }
         };
         Self {
-            ai: if ai_active || shown("visible_ai") { 43.0 } else { 0.0 },
+            ai: if ai_active || shown("visible_ai") { 119.0 } else { 0.0 },
             update: button(canvas, "visible_update", font, "Update"),
             tesla: if shown("visible_tesla") && crate::settings_file::flag("toolbar_tesla", false) { 30.0 } else { 0.0 },
             donate: button(canvas, "visible_donate", font, "Donate"),
@@ -355,7 +355,9 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
         let mut x = cr.x + if native_vintage { 0.0 } else { sizes.meters_width() };
         if sizes.ai > 0.0 {
             let ai = Rect::new(x, 8.0, sizes.ai - 6.0, 24.0);
-            let hover = ui.hit(ai, Action::Ai, if !s.ai.enabled {"AI control is off — connect an assistant"} else if s.ai.client.is_empty() {"AI control enabled — waiting for an approved assistant"} else {"AI assistant connected — manage or disconnect"});
+            let hover = ui.hit(ai, Action::Ai, if !s.ai.enabled && crate::voice_assistant::available() {
+                "AI assistant"
+            } else if !s.ai.enabled {"AI control is off — connect an assistant"} else if s.ai.client.is_empty() {"AI control enabled — waiting for an approved assistant"} else {"AI assistant connected — manage or disconnect"});
             let face = if hover { t.button_hi } else { t.sunken };
             if studio { studio_tile(ui, ai, face); } else { ui.c.fill_rrect(ai, 3.0, face); }
             let chip = Rect::new(ai.x + 6.0, ai.y + 7.0, 10.0, 10.0);
@@ -365,7 +367,7 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo, width: f32) {
                 ui.c.line(chip.x - 2.0, chip.y + d, chip.x, chip.y + d, 1.0, ink);
                 ui.c.line(chip.right(), chip.y + d, chip.right() + 2.0, chip.y + d, 1.0, ink);
             }
-            ui.c.text_clip(action_font, ai.x + 22.0, ai.y + 5.0, 20.0, t.text, "AI");
+            ui.c.text_clip(action_font, ai.x + 22.0, ai.y + 5.0, ai.w - 26.0, t.text, "AI assistant");
             if !s.ai.client.is_empty() {
                 ui.c.fill_circle(ai.right() - 3.0, ai.y + 3.0, 2.0, t.accent);
             }
@@ -599,9 +601,9 @@ fn transport(ui: &mut Ui, c: &Ctx) {
     let mode_font = if s.vintage_2005 {
         Font::vintage(9)
     } else {
-        (8..=11).rev().map(|size| Font::new(size).bold())
+        (9..=12).rev().map(Font::new)
             .find(|&font| ui.c.text_width(font, "SONG") <= song.w - 4.0 && ui.c.line_height(font) <= song.h)
-            .unwrap_or(Font::new(8).bold())
+            .unwrap_or(Font::new(9))
     };
     for (r, label, active) in [(pat, "PAT", !s.song_mode), (song, "SONG", s.song_mode)] {
         if t.style.vintage_2005 {

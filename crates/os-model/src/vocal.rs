@@ -15,7 +15,7 @@ impl Note{pub fn new(start:u32,end:u32,base:f32)->Self{Self{start,end,base,shift
 #[derive(Debug,Clone,PartialEq,Serialize,Deserialize)]
 pub struct Edit{
  pub channel:u16,pub source:String,pub source_hash:String,pub rendered:String,pub render_key:String,
- pub rate:u32,pub frames:u32,pub f0:Vec<f32>,pub notes:Vec<Note>,
+ pub rate:u32,pub frames:u32,pub f0:std::sync::Arc<Vec<f32>>,pub notes:Vec<Note>,
  pub curve:Vec<(u32,f32)>,pub timing:Vec<(f64,f64)>,
  pub enabled:bool,pub strength:f32,pub formant:f32,
 }
@@ -23,8 +23,8 @@ pub const STEP:f64=0.005;
 impl Edit{
  pub fn valid(&self)->bool{
   let duration=self.frames as f64/self.rate.max(1) as f64;
-  (16000..=192000).contains(&self.rate)&&self.frames>0&&duration<=600.&&self.source.len()<32768&&self.rendered.len()<32768
-  && self.f0.len()==(duration/STEP).floor() as usize+1 && self.f0.iter().all(|v|v.is_finite()&&(*v==0.||(40.0..=2000.).contains(v)))
+  self.frames>0&&self.source.len()<32768&&self.rendered.len()<32768
+  && (((16000..=192000).contains(&self.rate)&&duration<=600.&&self.f0.len()==(duration/STEP).floor()as usize+1)||((8000..=384000).contains(&self.rate)&&duration<=1200.&&self.f0.len()==(duration/STEP).floor()as usize+1&&self.f0.iter().all(|v|*v==0.)&&self.notes.is_empty()&&self.curve.is_empty()&&self.formant==0.)) && self.f0.iter().all(|v|v.is_finite()&&(*v==0.||(40.0..=2000.).contains(v)))
   && self.notes.len()<=20000&&self.notes.iter().all(|n|n.start<n.end&&n.end as usize<=self.f0.len()&&n.base.is_finite()&&(12.0..=120.).contains(&n.base)&&n.shift.is_finite()&&n.shift.abs()<=24.&&n.variation.is_finite()&&(-1.0..=2.).contains(&n.variation)&&n.drift.is_finite()&&(-1.0..=2.).contains(&n.drift)&&n.transition.is_finite()&&(0.0..=1.).contains(&n.transition)&&n.formant.is_finite()&&n.formant.abs()<=12.&&n.gain.is_finite()&&(-60.0..=24.).contains(&n.gain))
   && self.notes.windows(2).all(|w|w[0].end<=w[1].start)
   && self.curve.len()<=self.f0.len()&&self.curve.iter().all(|(i,v)|(*i as usize)<self.f0.len()&&v.is_finite()&&v.abs()<=24.)&&self.curve.windows(2).all(|w|w[0].0<w[1].0)
@@ -64,6 +64,6 @@ fn map(points:&[(f64,f64)],at:f64,reverse:bool)->f64{
  use super::*;
  #[test]fn vocal_drift_and_modulation_are_independent(){
   let n=Note::new(0,201,57.);
-  let f0:Vec<f32>=(0..201).map(|i|{let t=i as f32/200.;440.*2f32.powf((57.+(t-0.5)*1.5+0.2*(t*std::f32::consts::TAU*7.).sin()-69.)/12.)}).collect();let mut d=Edit{channel:0,source:"x".into(),source_hash:String::new(),rendered:String::new(),render_key:String::new(),rate:16000,frames:16000,f0,notes:vec![n],curve:vec![],timing:vec![(0.,0.),(1.,1.)],enabled:true,strength:1.,formant:0.};let dry=d.pitches();d.notes[0].drift=0.;let vibrato=d.pitches();assert!((vibrato[150]-vibrato[50]).abs()<(dry[150]-dry[50]).abs());d.notes[0].variation=0.;let flat=d.pitches();assert!(flat.iter().all(|v|(*v-57.).abs()<0.0001));d.notes[0].gain=-6.;assert!(d.valid());assert!(d.changed());
+  let f0:Vec<f32>=(0..201).map(|i|{let t=i as f32/200.;440.*2f32.powf((57.+(t-0.5)*1.5+0.2*(t*std::f32::consts::TAU*7.).sin()-69.)/12.)}).collect();let mut d=Edit{channel:0,source:"x".into(),source_hash:String::new(),rendered:String::new(),render_key:String::new(),rate:16000,frames:16000,f0:f0.into(),notes:vec![n],curve:vec![],timing:vec![(0.,0.),(1.,1.)],enabled:true,strength:1.,formant:0.};let dry=d.pitches();d.notes[0].drift=0.;let vibrato=d.pitches();assert!((vibrato[150]-vibrato[50]).abs()<(dry[150]-dry[50]).abs());d.notes[0].variation=0.;let flat=d.pitches();assert!(flat.iter().all(|v|(*v-57.).abs()<0.0001));d.notes[0].gain=-6.;assert!(d.valid());assert!(d.changed());
  }
 }

@@ -451,7 +451,7 @@ fn open(cfg: &AudioCfg, xruns: &Arc<AtomicU64>, wait: bool) -> Result<Open, Stri
             Err(e) if wait => return Err(format!("Couldn't open {name}: {e}")),
             Err(e) => e,
         };
-        let system = AudioCfg { asio: false, device: None, exclusive: false, ..cfg.clone() };
+        let system = AudioCfg { asio: false, device: None, exclusive: false, buffer: audio_cfg::DEFAULT_BUFFER, ..cfg.clone() };
         let mut o = open_system(&system, xruns).map_err(|f| format!("Couldn't open {name}: {e} (nor the default device: {f})"))?;
         let instead = format!("Couldn't open {name}: {e}; using {}", o.info.name);
         say_instead(&mut o, instead);
@@ -559,11 +559,12 @@ fn queues(xruns: &Arc<AtomicU64>) -> (Arc<Queue>, Arc<Queue>, Errors) {
     (Arc::new(Queue::new(MAX_SOURCES)), Arc::new(Queue::new(MAX_SOURCES)), errors)
 }
 
-/// Opens ASIO driver `name` at the requested rate and the buffer size set in its own panel.
+/// Opens ASIO driver `name` at the requested rate and buffer, falling back to the driver's own settings.
 #[cfg(windows)]
 fn open_asio(name: &str, cfg: &AudioCfg, xruns: &Arc<AtomicU64>) -> Result<Open, String> {
     let (inbox, outbox, errors) = queues(xruns);
-    let a = asio::open(name, cfg.rate, None, Mix::new(inbox.clone(), outbox.clone()), errors.clone())?;
+    let open = |buffer| asio::open(name, cfg.rate, buffer, Mix::new(inbox.clone(), outbox.clone()), errors.clone());
+    let a = open(cfg.buffer).or_else(|error| if cfg.buffer.is_some() { open(None) } else { Err(error) })?;
     let (fixed, buffers) = (Some(a.frames), Some(a.buffers));
     let info = DeviceInfo { host: ASIO, name: name.to_string(), rate: a.rate, fixed, buffers, channels: a.channels, inputs: a.inputs, input_latency: a.input_latency, rates: a.rates, sizes: a.sizes, latency: a.latency, instead: None };
     Ok(Open { _stream: Stream::Asio(a.out), inbox, outbox, info, note: None, failed: errors.failed, fault: errors.fault })

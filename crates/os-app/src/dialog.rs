@@ -58,6 +58,7 @@ pub enum Then {
     MidiControllerPreset(String, bool),
     VocalDownload(u16),
     WarpApply,
+    SetDetectedProjectTempo(f64),
     ResetMixerTracks(Vec<u16>),
     VocalReanalyse(u16),
     TrashBrowserSample(PathBuf),
@@ -233,6 +234,7 @@ pub enum Body {
     StripSilence(crate::strip_silence::Form),
     VocalAlign(crate::vocal_align::Form),
     Ai,
+    VoiceAssistant,
     Headphones(crate::headphones::Form),
     RoutePicker(crate::route_picker::Form),
     MixerInsert(crate::mixer::InsertTracks),
@@ -275,6 +277,7 @@ pub enum DHit {
     AiRemember,
     AiForget,
     AiSetup,
+    Voice(crate::voice_assistant::Button),
     Headphone(usize),
     HeadphoneToggle,
     HeadphonePage(bool),
@@ -516,6 +519,7 @@ impl App {
         }
         self.modal_changed();
         let then = match m.body {
+            Body::VoiceAssistant => { crate::voice_assistant::close(self); return; }
             Body::VocalAlign(_) => { crate::vocal_align::closed(self); return; }
             Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..)=>{self.drag=None;return;},
             Body::Msg(m) => {
@@ -569,14 +573,14 @@ impl App {
             Body::File(_) => Reply::File(None),
             Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Shortcuts(_) => Reply::Button(Answer::Cancel),
             Body::TimeSig(_) => Reply::Button(Answer::Cancel),
-            Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => Reply::Button(Answer::Cancel),
+            Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai | Body::VoiceAssistant => Reply::Button(Answer::Cancel),
         })
     }
 
     fn top_file(&mut self) -> Option<&mut FileDlg> {
         match &mut self.state.dialogs.last_mut()?.body {
             Body::File(f) => Some(f),
-            Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
+            Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::Msg(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai | Body::VoiceAssistant => None,
         }
     }
 
@@ -621,6 +625,7 @@ impl App {
             DHit::AiRemember=>self.state.ai.remember=!self.state.ai.remember,
             DHit::AiForget=>crate::ai_control::forget(self),
             DHit::AiSetup=>crate::ai_control::setup(self),
+            DHit::Voice(button) => crate::voice_assistant::button(self, button),
             DHit::RoutePick(t)=>{
                 let row=if let Body::RoutePicker(f)=&m.body {Some(f.row)} else {None};
                 if let Some(row)=row {self.answer(Reply::Button(Answer::Ok));self.route_sample_to(row,t);}
@@ -655,7 +660,7 @@ impl App {
             DHit::Button(i) => {
                 let a = match &m.body {
                     Body::Msg(msg) => msg.buttons.get(i).copied().filter(|a| !(*a==Answer::Ok && matches!(msg.then,Then::StemChoose(_,0)))),
-                    Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
+                    Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai | Body::VoiceAssistant => None,
                 };
                 if let Some(a) = a {
                     self.answer(Reply::Button(a));
@@ -779,7 +784,9 @@ impl App {
             Body::Normalize(_)=>{crate::clip_normalize::key(self,key,ctrl,alt);}
             Body::StripSilence(_)=>{crate::strip_silence::key(self,key,ctrl,alt);}
             Body::VocalAlign(_) => { if matches!(key, Key::Named(NamedKey::Escape)) { self.answer(Reply::Button(Answer::Cancel)); } }
-            Body::ClipFx(..) | Body::Ai=>{if matches!(key,Key::Named(NamedKey::Escape)){self.answer(Reply::Button(Answer::Cancel));}}
+            Body::ClipFx(..) | Body::Ai | Body::VoiceAssistant => {
+                if matches!(key, Key::Named(NamedKey::Escape)) { self.answer(Reply::Button(Answer::Cancel)); }
+            }
             Body::MixerInsert(form) => match key {
                 Key::Named(NamedKey::Escape) => self.answer(Reply::Button(Answer::Cancel)),
                 Key::Named(NamedKey::Enter) if form.count().is_some() => self.answer(Reply::Button(Answer::Ok)),
@@ -922,7 +929,7 @@ impl App {
     pub fn top_message(&self) -> Option<(String, String)> {
         match &self.state.dialogs.last()?.body {
             Body::Msg(m) => Some((m.title.clone(), m.plain())),
-            Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai => None,
+            Body::Collaboration(_) | Body::NoteProperties(_) | Body::Normalize(_) | Body::StripSilence(_) | Body::ClipFx(..) | Body::VocalAlign(_) | Body::File(_) | Body::Shortcuts(_) | Body::TimeSig(_) | Body::Project(_) | Body::Headphones(_) | Body::RoutePicker(_) | Body::MixerInsert(_) | Body::Ai | Body::VoiceAssistant => None,
         }
     }
 }

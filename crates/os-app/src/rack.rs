@@ -881,6 +881,7 @@ pub fn remap_project(p: &mut Project, map: &[Option<usize>]) {
     let idx: BTreeMap<u16, u16> =
         p.channels.iter().enumerate().filter_map(|(pos, c)| map.get(pos).copied().flatten().map(|n| (c.index, n as u16))).collect();
     p.mpe.channels.retain_mut(|v|map.get(usize::from(v.0)).copied().flatten().map(|id|v.0=id as u16).is_some());
+    p.audio_edits.retain_mut(|d|idx.get(&d.channel).map(|ch|d.channel=*ch).is_some());
     p.clip_fx_channels=p.clip_fx_channels.iter().filter_map(|c|idx.get(c).copied()).collect();
     p.vocal_edits.retain_mut(|d|idx.get(&d.channel).map(|&id|d.channel=id).is_some());
     let mut chans: Vec<(usize, os_model::Channel)> =

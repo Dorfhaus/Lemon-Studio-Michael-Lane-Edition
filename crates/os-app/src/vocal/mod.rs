@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Inline monophonic vocal editor. Original audio is immutable; renders preserve source duration.
-mod engine;
-mod incremental;
+pub(crate) mod engine;
+pub(crate) mod incremental;
 pub mod audition;
 pub(crate) mod view;
 mod editing;
@@ -19,36 +19,61 @@ static NEXT_CACHE_FILE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]pub enum Field{Pitch,Modulation,Drift,Transition,Formant,Amplitude,Strength}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]pub enum Command{
  Toggle(u16),Analyze,Download(u16),Cancel,Tool(Tool),Note(usize,usize),Grid(usize),Correct,Join,Reset,ResetNote,Bypass,
- Strength(i8),Variation(i8),Formant(i8),Key,Scale,Zoom(i8),Pan(i8),Undo,Redo,
+ Strength(i8),Variation(i8),Formant(i8),Key,Scale,Zoom(i8),Pan(i8),Undo,Redo,UndoTiming,RedoTiming,ResetTiming,
  Param(Field),Boundary(usize,usize),Surface,Nav(navigation::Kind),Fit,XZoom(i8),Mute,Snap,SelectAll,SelectNone,Retry,
 }
 #[derive(Debug,Clone)]pub struct View{
+ pub active:Option<u16>,
+ pub epoch:Arc<()>,
+ pub waiting:Option<crate::warp::Play>,
+ pub pending_output:Option<crate::audio_edits::Output>,
  pub row:Option<u16>,pub tool:Tool,pub selected:Vec<(u16,usize)>,pub low:f32,pub span:f32,
  pub key:u8,pub scale:u8,pub message:String,pub busy:bool,pub ready:Option<bool>,pub last_edit:Instant,
  pub palette:Option<(f32,f32)>,pub snap:bool,pub marquee:Option<os_ui::Rect>,pub click:Option<(u16,usize,Tool,Instant)>,
  contours:std::cell::RefCell<std::collections::HashMap<u16,(String,bool,Arc<Vec<f32>>)>>,
  observed:std::collections::HashMap<u16,String>,
+ source_poll: Instant,
  failed:HashSet<String>,
 }
-impl Default for View{fn default()->Self{Self{row:None,tool:Tool::Main,selected:vec![],low:48.,span:18.,key:0,scale:0,message:"Choose a vocal clip to edit".into(),busy:false,ready:None,last_edit:Instant::now(),palette:None,snap:true,marquee:None,click:None,contours:Default::default(),observed:Default::default(),failed:HashSet::new()}}}
-pub struct Job{rx:mpsc::Receiver<Result<Done,String>>,cancel:Arc<AtomicBool>,expected:Option<Edit>,source:u16,path:String,row:u16,key:String}
+impl Default for View{fn default()->Self{Self{active:None,epoch:Arc::new(()),waiting:None,pending_output:None,row:None,tool:Tool::Main,selected:vec![],low:48.,span:18.,key:0,scale:0,message:"Choose a vocal clip to edit".into(),busy:false,ready:None,last_edit:Instant::now(),palette:None,snap:true,marquee:None,click:None,contours:Default::default(),observed:Default::default(),source_poll:Instant::now(),failed:HashSet::new()}}}
+pub struct Job{epoch:Arc<()>,rx:mpsc::Receiver<Result<Done,String>>,cancel:Arc<AtomicBool>,expected:Option<Edit>,source:u16,path:String,row:u16,key:String}
 impl Drop for Job{fn drop(&mut self){self.cancel.store(true,Ordering::Relaxed);}}
 enum Done{Installed,Analyzed(Edit,Arc<os_engine::Sample>),Rendered(PathBuf,Arc<os_engine::Sample>)}
 #[derive(Debug,Clone)]pub struct Gesture{pub clip:usize,pub note:Option<usize>,pub before:Arc<Edit>,pub selected:Vec<usize>,pub x:f32,pub y:f32,pub last:Option<(u32,f32)>,pub tool:Tool,pub edge:i8,pub axis:i8,pub field:Option<Field>,pub related:Vec<(u16,usize,Note)>,pub strengths:Vec<(u16,f32)>}
 pub const EXTRA:f32=354.;
 pub fn expanded(s:&State,row:u16)->bool{s.playlist.vocal.row==Some(row)}
 pub fn doc(s:&State,clip:usize)->Option<&Edit>{let ClipSource::Channel(ch)=pl::clips(s).get(clip)?.source else{return None};s.project.vocal_edits.iter().find(|d|d.channel==ch&&owns(s,d))}
-fn owns(s:&State,d:&Edit)->bool{s.project.channel(d.channel).and_then(|c|c.sample_path.as_deref()).is_some_and(|p|p==d.source||p==d.rendered)}
-pub fn clone_source(s:&mut State,from:u16,to:u16){if let Some(mut d)=s.project.vocal_edits.iter().find(|d|d.channel==from).cloned(){d.channel=to;s.project.vocal_edits.push(d);}}
+fn owns(s:&State,d:&Edit)->bool{crate::audio_edits::owns(&s.project,d)}
+pub fn clone_source(s:&mut State,from:u16,to:u16){crate::audio_edits::clone_channel(s,from,to);if let Some(mut d)=s.project.vocal_edits.iter().find(|d|d.channel==from).cloned(){d.channel=to;s.project.vocal_edits.push(d);}}
 fn contour(s:&State,d:&Edit)->Arc<Vec<f32>>{let k=key(d);let mut cache=s.playlist.vocal.contours.borrow_mut();if let Some((old,on,p))=cache.get(&d.channel){if *old==k&&*on==d.enabled{return p.clone();}}let p=Arc::new(d.pitches());if cache.len()>=8{cache.clear();}cache.insert(d.channel,(k,d.enabled,p.clone()));p}
 fn doc_index(s:&State,clip:usize)->Option<usize>{let id=doc(s,clip)?.channel;s.project.vocal_edits.iter().position(|d|d.channel==id)}
-fn snapshot(s:&mut State,label:&'static str){
- let mut snaps=vec![crate::history::Snap::Vocals(s.project.vocal_edits.clone())];
- for d in &s.project.vocal_edits{if let Some(r)=s.project.channels.iter().position(|c|c.index==d.channel){if let Some(v)=crate::history::Snap::sample(s,r){snaps.push(v);}}}
- crate::history::record(s,label,crate::history::Snap::Several(snaps));
+fn snapshot(s:&mut State,label:&'static str){crate::audio_edits::snapshot(s,label);}
+pub(crate) fn timing_valid(d:&Edit)->bool{engine::timing_valid(d)}
+pub(crate) fn key(d: &Edit) -> String {
+    type Controls = (bool, String, String, u32, u32, Vec<Note>, Vec<(u32, f32)>, Vec<(f64, f64)>, f32, f32);
+    thread_local! {
+        static KEYS: std::cell::RefCell<std::collections::HashMap<u16, (Controls, String)>> = Default::default();
+    }
+    KEYS.with(|keys| {
+        let mut keys = keys.borrow_mut();
+        if let Some((c, key)) = keys.get(&d.channel) {
+            if c.0 == d.enabled && c.1 == d.source && c.2 == d.source_hash
+                && c.3 == d.rate && c.4 == d.frames && c.5 == d.notes
+                && c.6 == d.curve && c.7 == d.timing && c.8 == d.strength && c.9 == d.formant {
+                return key.clone();
+            }
+        }
+        let key = format!("{:x}", Sha256::digest(serde_json::to_vec(&(
+            "clip-edits-v3", d.enabled, &d.source, &d.source_hash, d.rate, d.frames,
+            &d.notes, &d.curve, &d.timing, d.strength, d.formant,
+        )).unwrap_or_default()));
+        if keys.len() >= 256 && !keys.contains_key(&d.channel) { keys.clear(); }
+        keys.insert(d.channel, ((d.enabled, d.source.clone(), d.source_hash.clone(), d.rate,
+            d.frames, d.notes.clone(), d.curve.clone(), d.timing.clone(), d.strength, d.formant), key.clone()));
+        key
+    })
 }
-pub(crate) fn key(d:&Edit)->String{format!("{:x}",Sha256::digest(serde_json::to_vec(&("regional-v2",&d.source,&d.source_hash,d.rate,d.frames,&d.notes,&d.curve,&d.timing,d.strength,d.formant)).unwrap_or_default()))}
-fn file_hash(path:&str)->Result<String,String>{
+pub(crate) fn file_hash(path:&str)->Result<String,String>{
  use std::io::Read;use std::sync::{Mutex,OnceLock};type Entry=(u64,Option<std::time::SystemTime>,String);static HASHES:OnceLock<Mutex<std::collections::HashMap<String,Entry>>>=OnceLock::new();
  let resolved=crate::plugins::resolve_sample(path);let meta=std::fs::metadata(&resolved).map_err(|e|e.to_string())?;let stamp=(meta.len(),meta.modified().ok());let cache=HASHES.get_or_init(Default::default);
  if let Ok(map)=cache.lock(){if let Some((len,time,hash))=map.get(&resolved){if (*len,*time)==stamp&&time.is_some(){return Ok(hash.clone());}}}
@@ -60,7 +85,7 @@ fn source(app:&App,row:u16)->Result<(u16,String),String>{
  let clip=pl::clips(&app.state).iter().find(|c|c.track==row&&pl::source_kind(&app.state,c.source)==pl::PickKind::Audio).ok_or("Add a vocal audio clip to this track first")?;
  let ClipSource::Channel(id)=clip.source else{return Err("Choose an audio clip".into())};let c=app.state.project.channel(id).ok_or("Missing audio channel")?;
  if crate::ara::is(c){return Err("Remove the attached ARA editor before using inline vocal tuning".into());}
- if c.sound.start_offset()!=0.||c.sound.fx.start()!=0.||c.sound.fx.length()!=1.||c.sound.fx.trim!=0||c.sound.fx.flags&os_model::SampleFx::REVERSE!=0||c.pitch_cents!=0||c.misc.fine!=0||c.sound.stretch_cents()!=0.{return Err("Render this clip's trim, reverse or pitch processing to audio before tuning".into());}
+ if c.sound.start_offset()!=0.||c.sound.fx.start()!=0.||c.sound.fx.length()!=1.||c.sound.fx.trim!=0||c.sound.fx.flags&os_model::SampleFx::REVERSE!=0{return Err("Render this clip's sampler trim or reverse processing to audio before tuning".into());}
  Ok((id,c.sample_path.clone().ok_or("This channel has no source audio")?))
 }
 fn message(app:&mut App,text:String){app.state.message=Some(text.clone());app.state.playlist.vocal.message=text;app.invalidate();}
@@ -73,7 +98,7 @@ pub fn toggle(app:&mut App,row:u16){
  if app.state.playlist.vocal.row==Some(row){app.state.playlist.vocal.row=None;app.invalidate();return;}
  if let Err(e)=source(app,row){message(app,e);return;}
  app.state.playlist.warp=None;app.state.playlist.warp_loading=None;
- app.state.playlist.vocal.row=Some(row);app.state.playlist.vocal.selected.clear();
+ app.state.playlist.vocal.row=Some(row);app.state.playlist.vocal.active=None;app.state.playlist.vocal.selected.clear();
  if app.state.playlist.vocal.ready.is_none(){app.state.playlist.vocal.ready=Some(engine::ready());}
  if app.state.playlist.vocal.ready==Some(false){ask_download(app,row);}else{ensure(app,row);}
  app.invalidate();
@@ -86,25 +111,28 @@ fn ask_download(app:&mut App,row:u16){
 pub fn download(app:&mut App,row:u16){
  if app.vocal_job.is_some(){return;}
  let(tx,rx)=mpsc::channel();let cancel=Arc::new(AtomicBool::new(false));let stop=cancel.clone();
- app.vocal_job=Some(Job{rx,cancel,expected:None,source:0,path:String::new(),row,key:String::new()});app.state.playlist.vocal.busy=true;
+ app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel,expected:None,source:0,path:String::new(),row,key:String::new()});app.state.playlist.vocal.busy=true;
  message(app,"Downloading and verifying vocal tuning...".into());
  std::thread::spawn(move||{let result=engine::install().map(|_|Done::Installed);if !stop.load(Ordering::Relaxed){let _=tx.send(result);}});
 }
 fn ensure(app:&mut App,row:u16){
  if app.vocal_job.is_some(){return;}
+ let placements:Vec<_>=pl::clips(&app.state).iter().enumerate().filter(|(_,c)|c.track==row&&matches!(c.source,ClipSource::Channel(_))).map(|(i,_)|i).collect();
+ for ci in placements{crate::audio_edits::isolate(&mut app.state,ci);crate::audio_edits::attach(&mut app.state,ci,true);}
+
  let ids:Vec<u16>=pl::clips(&app.state).iter().filter(|c|c.track==row).filter_map(|c|if let ClipSource::Channel(id)=c.source{app.state.project.channel(id).filter(|c|c.kind.is_sampler()&&!crate::ara::is(c)).map(|_|id)}else{None}).collect();
- let next=ids.iter().find(|id|!app.state.project.vocal_edits.iter().any(|d|d.channel==**id&&owns(&app.state,d))).copied();
+ let next=ids.iter().find(|id|!crate::audio_edits::analyzed(&app.state,**id)||!app.state.project.vocal_edits.iter().any(|d|d.channel==**id&&owns(&app.state,d))).copied();
  let Some(id)=next else{if let Some(path)=ids.iter().find_map(|id|app.state.project.vocal_edits.iter().find(|d|d.channel==*id).map(|d|d.source.clone())){audition::preload(app,&path);}message(app,"Drag notes to tune. Edits survive slicing, trimming and moving clips.".into());return;};
  let Some(c)=app.state.project.channel(id)else{return};
  if crate::ara::is(c)||!c.kind.is_sampler(){return;}
- let Some(path)=c.sample_path.clone()else{return};
- if c.sound.start_offset()!=0.||c.sound.fx.start()!=0.||c.sound.fx.length()!=1.||c.sound.fx.trim!=0||c.sound.fx.flags&os_model::SampleFx::REVERSE!=0||c.pitch_cents!=0||c.misc.fine!=0||c.sound.stretch_cents()!=0.{message(app,"Render the clip's trim, reverse or pitch processing to audio before tuning".into());return;}
+ let Some(path)=app.state.project.vocal_edits.iter().find(|d|d.channel==id&&owns(&app.state,d)).map(|d|d.source.clone()).or_else(||c.sample_path.clone())else{return};
+ if c.sound.start_offset()!=0.||c.sound.fx.start()!=0.||c.sound.fx.length()!=1.||c.sound.fx.trim!=0||c.sound.fx.flags&os_model::SampleFx::REVERSE!=0{message(app,"Render the clip's sampler trim or reverse processing to audio before tuning".into());return;}
  let(tx,rx)=mpsc::channel();let cancel=Arc::new(AtomicBool::new(false));let stop=cancel.clone();
- app.vocal_job=Some(Job{rx,cancel,expected:None,source:id,path:path.clone(),row,key:String::new()});app.state.playlist.vocal.busy=true;message(app,"Analysing the vocal's notes and pitch...".into());
+ app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel,expected:None,source:id,path:path.clone(),row,key:String::new()});app.state.playlist.vocal.busy=true;message(app,"Analysing the vocal's notes and pitch...".into());
  std::thread::spawn(move||{let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
   let sample=os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(&path))).map_err(|e|e.to_string())?;
   let source_hash=file_hash(&path)?;let f0=engine::Engine::load()?.analyze(&sample)?;let notes=segment(&f0);let duration=sample.frames()as f64/sample.rate as f64;
-  Ok(Done::Analyzed(Edit{channel:id,source:path,source_hash,rendered:String::new(),render_key:String::new(),rate:sample.rate,frames:sample.frames()as u32,f0,notes,curve:vec![],timing:vec![(0.,0.),(duration,duration)],enabled:true,strength:1.,formant:0.},sample))
+  Ok(Done::Analyzed(Edit{channel:id,source:path,source_hash,rendered:String::new(),render_key:String::new(),rate:sample.rate,frames:sample.frames()as u32,f0:f0.into(),notes,curve:vec![],timing:vec![(0.,0.),(duration,duration)],enabled:true,strength:1.,formant:0.},sample))
  })).unwrap_or_else(|_|Err("Vocal processing stopped unexpectedly. Previous audio retained; retry is available.".into()));if !stop.load(Ordering::Relaxed){let _=tx.send(result);}});
 }
 pub fn segment(f0:&[f32])->Vec<Note>{
@@ -119,22 +147,28 @@ fn set_source(app:&mut App,id:u16,path:&str){
  if let Some(row)=app.state.project.channels.iter().position(|c|c.index==id){if app.state.project.channels[row].sample_path.as_deref()!=Some(path){app.state.project.channels[row].sample_path=Some(path.into());app.state.sample_loads.push((row,crate::plugins::resolve_sample(path)));app.state.piano.dirty=true;}}
 }
 pub fn tick(app:&mut App){
+ crate::audio_edits::reconcile(&mut app.state);
  audition::tick(app);
  // A failed state is blocked only until the next edit/Undo/Redo, never for the whole session.
  let revisions:Vec<_>=app.state.project.vocal_edits.iter().map(|d|(d.channel,format!("{}:{}",key(d),d.enabled))).collect();
+ let revisions_changed = revisions.iter().any(|(ch, revision)| app.state.playlist.vocal.observed.get(ch) != Some(revision));
  for(ch,revision)in revisions{if app.state.playlist.vocal.observed.get(&ch)!=Some(&revision){if let Some(d)=app.state.project.vocal_edits.iter().find(|d|d.channel==ch){app.state.playlist.vocal.failed.remove(&key(d));}app.state.playlist.vocal.observed.insert(ch,revision);}}
 
- if app.vocal_job.as_ref().is_some_and(|j|j.expected.as_ref().is_some_and(|old|!app.state.project.vocal_edits.iter().any(|d|d==old))){app.vocal_job=None;app.state.playlist.vocal.busy=false;}
+ let stale=app.vocal_job.as_ref().is_some_and(|j|!Arc::ptr_eq(&j.epoch,&app.state.playlist.vocal.epoch)||j.cancel.load(Ordering::Relaxed)||j.expected.as_ref().is_some_and(|old|!app.state.project.vocal_edits.iter().any(|d|d==old&&owns(&app.state,d)&&crate::audio_edits::alive(&app.state.project,d.channel))));
+ if stale{if let Some(j)=&app.vocal_job{j.cancel.store(true,Ordering::Relaxed);}}
+
  let done=app.vocal_job.as_ref().and_then(|j|match j.rx.try_recv(){Ok(r)=>Some(r),Err(mpsc::TryRecvError::Disconnected)=>Some(Err("Vocal worker stopped unexpectedly. Retry this correction.".into())),Err(mpsc::TryRecvError::Empty)=>None});
+ let render_finished = done.is_some();
  if let Some(result)=done{
   let job=app.vocal_job.take().unwrap();app.state.playlist.vocal.busy=false;
+  if stale{app.invalidate();return;}
   match result{
    Err(e)=>{if !job.key.is_empty(){app.state.playlist.vocal.failed.insert(job.key.clone());}message(app,format!("Vocal tuning: {e}. Previous audio retained."));},
    Ok(Done::Installed)=>{app.state.playlist.vocal.ready=Some(true);ensure(app,job.row);},
    Ok(Done::Analyzed(mut d,sample))=>{
     audition::remember(app,d.source.clone(),sample);
-    if app.state.project.channel(job.source).and_then(|c|c.sample_path.as_deref())!=Some(job.path.as_str())||!pl::clips(&app.state).iter().any(|c|c.track==job.row&&c.source==ClipSource::Channel(job.source)){return;}
-    let row=app.state.project.channels.len();let before=crate::history::Snap::Several(vec![crate::history::Snap::Vocals(app.state.project.vocal_edits.clone()),crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(&app.state,row)))]);
+    if !app.state.project.channel(job.source).is_some_and(|c|c.sample_path.as_deref()==Some(job.path.as_str())||app.state.project.vocal_edits.iter().any(|d|d.channel==job.source&&d.source==job.path))||!pl::clips(&app.state).iter().any(|c|c.track==job.row&&c.source==ClipSource::Channel(job.source)){return;}
+    let row=app.state.project.channels.len();let before=crate::history::Snap::Several(vec![crate::history::Snap::AudioEdits(app.state.project.audio_edits.clone()),crate::history::Snap::Vocals(app.state.project.vocal_edits.clone()),crate::history::Snap::Rack(Box::new(crate::history::RackSide::now(&app.state,row)))]);
     pl::snapshot_with(&mut app.state,"Analyse vocal",before);
     if pl::clips(&app.state).iter().any(|c|c.source==ClipSource::Channel(d.channel)&&c.track!=job.row){
      let Some(next)=app.state.project.channels.iter().map(|c|c.index).max().unwrap_or(0).checked_add(1)else{return};
@@ -143,34 +177,46 @@ pub fn tick(app:&mut App){
      crate::rack::push_channel(&mut app.state,c);d.channel=next;
     }
     if !d.notes.is_empty(){let lo=d.notes.iter().map(|n|n.base).fold(128f32,f32::min);let hi=d.notes.iter().map(|n|n.base).fold(0f32,f32::max);app.state.playlist.vocal.span=(hi-lo+8.).clamp(12.,36.);app.state.playlist.vocal.low=(lo-4.).clamp(0.,128.-app.state.playlist.vocal.span);}
-    d.render_key=key(&d);d.rendered=d.source.clone();app.state.project.vocal_edits.retain(|old|old.channel!=d.channel);app.state.project.vocal_edits.push(d);app.state.piano.dirty=true;
+    if let Some(old)=app.state.project.vocal_edits.iter().find(|v|v.channel==d.channel&&v.source==d.source){d.timing=old.timing.clone();d.rendered=old.rendered.clone();d.render_key=old.render_key.clone();}else{d.render_key=key(&d);d.rendered=d.source.clone();}
+    let analyzed_channel=d.channel;
+    if app.state.project.vocal_edits.iter().any(|old|old.channel==d.channel&&old.source!=d.source){app.state.project.audio_edits.retain(|h|h.channel!=d.channel);}
+    app.state.project.vocal_edits.retain(|old|old.channel!=d.channel);app.state.project.vocal_edits.push(d);app.state.piano.dirty=true;
+    if let Some(ci)=pl::clips(&app.state).iter().position(|c|c.source==ClipSource::Channel(analyzed_channel)){crate::audio_edits::attach(&mut app.state,ci,true);}
+    crate::audio_edits::analysis_ready(&mut app.state,analyzed_channel);
     ensure(app,job.row);
    },
    Ok(Done::Rendered(path,audio))=>{
+    if job.expected.as_ref().is_some_and(|d|file_hash(&d.source).as_deref()!=Ok(d.source_hash.as_str())){app.state.playlist.vocal.failed.insert(job.key.clone());message(app,"Vocal tuning: the original recording changed before the render was ready. Previous audio retained.".into());return;}
     os_engine::sample::remember_shared(&path,audio.clone());app.vocal_audio=Some(audio);
-    if let Some(expected)=job.expected.as_ref(){if let Some(i)=app.state.project.vocal_edits.iter().position(|d|d==expected&&owns(&app.state,d)){let d=&mut app.state.project.vocal_edits[i];d.rendered=path.to_string_lossy().into_owned();d.render_key=job.key.clone();let(id,path)=(d.channel,d.rendered.clone());set_source(app,id,&path);message(app,"Vocal tuning ready. Split and move clips normally; corrections remain attached to the source.".into());}}
+    if let Some(expected)=job.expected.as_ref(){if let Some(i)=app.state.project.vocal_edits.iter().position(|d|d==expected&&owns(&app.state,d)){let d=&mut app.state.project.vocal_edits[i];d.rendered=path.to_string_lossy().into_owned();d.render_key=job.key.clone();let(id,path)=(d.channel,d.rendered.clone());set_source(app,id,&path);message(app,"Ready. Pitch and timing edits remain independently editable.".into());}}
    },
   }
   app.invalidate();
  }
  // Bypass/Undo changes the channel source on the next tick without touching any clip windows.
- let paths:Vec<_>=app.state.project.vocal_edits.iter().filter(|d|owns(&app.state,d)).filter_map(|d|if !d.changed(){Some((d.channel,d.source.clone()))}else if d.render_key==key(d)&&std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file(){Some((d.channel,d.rendered.clone()))}else if !std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file(){Some((d.channel,d.source.clone()))}else{None}).collect();
+ if revisions_changed || render_finished || app.state.playlist.vocal.source_poll.elapsed() >= Duration::from_millis(500) {
+ app.state.playlist.vocal.source_poll = Instant::now();
+ let paths:Vec<_>=app.state.project.vocal_edits.iter().filter(|d|owns(&app.state,d)).filter_map(|d|if !crate::audio_edits::changed(d){Some((d.channel,d.source.clone()))}else if d.render_key==key(d)&&std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file(){Some((d.channel,d.rendered.clone()))}else if !std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file(){Some((d.channel,d.source.clone()))}else{None}).collect();
  for(id,path)in paths{set_source(app,id,&path);}
+ }
+ crate::audio_edits::poll_requests(app);
+ if app.vocal_job.is_none()&&app.state.playlist.vocal.ready==Some(true){if let Some(row)=app.state.playlist.vocal.row{if pl::clips(&app.state).iter().any(|c|c.track==row&&matches!(c.source,ClipSource::Channel(ch)if !crate::audio_edits::analyzed(&app.state,ch))){ensure(app,row);}}}
  if app.vocal_job.is_some()||matches!(app.drag,Some(Drag::Vocal(_)))||app.state.playlist.vocal.last_edit.elapsed()<Duration::from_millis(15){return;}
- let next=app.state.project.vocal_edits.iter().find(|d|owns(&app.state,d)&&d.changed()&&(d.render_key!=key(d)||!std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file())&&!app.state.playlist.vocal.failed.contains(&key(d))&&app.state.project.channels.iter().any(|c|c.index==d.channel)).cloned();
+ let next=app.state.project.vocal_edits.iter().find(|d|owns(&app.state,d)&&crate::audio_edits::alive(&app.state.project,d.channel)&&crate::audio_edits::changed(d)&&(d.render_key!=key(d)||!std::path::Path::new(&crate::plugins::resolve_sample(&d.rendered)).is_file())&&!app.state.playlist.vocal.failed.contains(&key(d))&&app.state.project.channels.iter().any(|c|c.index==d.channel)).cloned();
  let Some(d)=next else{return};
  if app.state.playlist.vocal.ready.is_none(){app.state.playlist.vocal.ready=Some(engine::ready());}
- if app.state.playlist.vocal.ready==Some(false){return;}
+ if crate::audio_edits::pitch_changed(&d)&&app.state.playlist.vocal.ready==Some(false){message(app,"Vocal tuning: the verified vocal engine is required. Open Vocal Tuning to install it, then Retry. Previous audio retained.".into());return;}
  let output=crate::pattern_render::folder(&app.state).join("Vocal tuning");let k=key(&d);
  let(tx,rx)=mpsc::channel();let cancel=Arc::new(AtomicBool::new(false));let stop=cancel.clone();
- app.vocal_job=Some(Job{rx,cancel,expected:Some(d.clone()),source:d.channel,path:d.source.clone(),row:app.state.playlist.vocal.row.unwrap_or(0),key:k.clone()});app.state.playlist.vocal.busy=true;
- message(app,"Applying vocal tuning...".into());
+ app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel,expected:Some(d.clone()),source:d.channel,path:d.source.clone(),row:app.state.playlist.vocal.row.unwrap_or(0),key:k.clone()});app.state.playlist.vocal.busy=true;
+ message(app,"Updating audio edits...".into());
  std::thread::spawn(move||{let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
   let sample=os_engine::sample::load_shared(std::path::Path::new(&crate::plugins::resolve_sample(&d.source))).map_err(|e|e.to_string())?;
   if file_hash(&d.source)?!=d.source_hash{return Err("The original recording changed on disk; reanalyse before applying its tuning".into());}
   std::fs::create_dir_all(&output).map_err(|e|e.to_string())?;let path=output.join(format!("Vocal-{}-{k}.wav",d.channel));
   if path.is_file(){let audio=os_engine::sample::load_shared(&path).map_err(|e|e.to_string())?;return Ok(Done::Rendered(path,audio));}
-  let(l,r)=incremental::render(&engine::Engine::load()?,sample,&d,&stop)?;
+  let(l,r)=render_edit(sample,&d,&stop)?;
+  if file_hash(&d.source)?!=d.source_hash{return Err("The original recording changed during rendering".into());}
   if stop.load(Ordering::Relaxed){return Err("Superseded vocal edit".into());}
   let audio=Arc::new(os_engine::Sample{rate:d.rate,left:l,right:r});
   if !path.is_file(){let pending=output.join(format!("Vocal-{}-{k}-{}-{}.part",d.channel,std::process::id(),NEXT_CACHE_FILE.fetch_add(1,Ordering::Relaxed)));incremental::write_audio(&pending,&audio)?;std::fs::rename(pending,&path).map_err(|e|e.to_string())?;}
@@ -180,11 +226,15 @@ pub fn tick(app:&mut App){
 pub(crate) fn history_changed(s:&mut State){s.playlist.vocal.failed.clear();if s.playlist.vocal.message.starts_with("Vocal tuning:"){s.playlist.vocal.message="Vocal edit restored; editing is available.".into();}}
 pub fn context(app:&mut App){app.state.playlist.vocal.palette=Some(app.mouse);app.invalidate();}
 pub fn command(app:&mut App,c:Command){
+ command_inner(app,c);
+ if !matches!(app.drag,Some(Drag::Vocal(_)))&&!matches!(c,Command::Undo|Command::Redo|Command::UndoTiming|Command::RedoTiming){crate::audio_edits::finish(&mut app.state);}
+}
+fn command_inner(app:&mut App,c:Command){
  app.state.playlist.vocal.palette=None;
  match c{
   Command::Retry=>{app.state.playlist.vocal.failed.clear();message(app,"Retrying vocal correction...".into());return;},
   Command::Toggle(row)=>return toggle(app,row),Command::Download(row)=>return download(app,row),
-  Command::Cancel=>{if let Some(j)=&app.vocal_job{if !j.key.is_empty(){app.state.playlist.vocal.failed.insert(j.key.clone());}}app.vocal_job=None;app.state.playlist.vocal.ready=None;app.state.playlist.vocal.busy=false;message(app,"Vocal operation cancelled; previous audio retained".into());return;},
+  Command::Cancel=>{if let Some(j)=&app.vocal_job{if !j.key.is_empty(){app.state.playlist.vocal.failed.insert(j.key.clone());}}if let Some(j)=&app.vocal_job{j.cancel.store(true,Ordering::Relaxed);}app.state.playlist.vocal.waiting=None;app.state.playlist.vocal.pending_output=None;app.state.playlist.vocal.ready=None;app.state.playlist.vocal.busy=false;message(app,"Audio update cancelled; previous audio retained. Retry is available.".into());return;},
   Command::Analyze=>{if let Some(row)=app.state.playlist.vocal.row{if app.state.playlist.vocal.ready!=Some(true){ask_download(app,row);}else if pl::clips(&app.state).iter().any(|c|c.track==row&&matches!(c.source,ClipSource::Channel(id) if app.state.project.vocal_edits.iter().any(|d|d.channel==id))){
    use crate::dialog::{Msg,Kind,Answer,Then,spans};app.show_msg(Msg::new(Kind::Question,"Reanalyse vocal?",spans(&["Analyse the original vocal recording again? Existing corrections for these sources will be reset. Undo restores them."]),&[Answer::Yes,Answer::No],Then::VocalReanalyse(row)));
   }else{app.state.playlist.vocal.failed.clear();ensure(app,row);}}return;},
@@ -193,7 +243,7 @@ pub fn command(app:&mut App,c:Command){
   Command::Scale=>{app.state.playlist.vocal.scale=(app.state.playlist.vocal.scale+1)%3;app.invalidate();return;},
   Command::Zoom(n)=>{app.state.playlist.vocal.span=(app.state.playlist.vocal.span-n as f32*6.).clamp(12.,48.);app.invalidate();return;},
   Command::Pan(n)=>{app.state.playlist.vocal.low=(app.state.playlist.vocal.low+n as f32*6.).clamp(0.,120.-app.state.playlist.vocal.span);app.invalidate();return;},
-  Command::Undo=>{crate::history::undo(&mut app.state);app.invalidate();return;},Command::Redo=>{crate::history::redo(&mut app.state);app.invalidate();return;},
+  Command::Undo|Command::Redo|Command::UndoTiming|Command::RedoTiming=>{if let Some(ch)=crate::audio_edits::active(&app.state){crate::audio_edits::history(app,ch,matches!(c,Command::UndoTiming|Command::RedoTiming),matches!(c,Command::Redo|Command::RedoTiming));}return;},
   Command::Nav(k)=>{navigation::begin(app,k);return;},
   Command::Surface=>{navigation::begin(app,match app.state.playlist.vocal.tool{Tool::Hand=>navigation::Kind::Pan,Tool::Zoom=>navigation::Kind::Zoom,_=>navigation::Kind::Box});return;},
   Command::Fit=>{navigation::fit(app,false);return;},
@@ -205,7 +255,8 @@ pub fn command(app:&mut App,c:Command){
   Command::Boundary(ci,n)=>{editing::boundary(app,ci,n);return;},
   Command::Note(clip,n)=>{begin(app,clip,Some(n));return;},Command::Grid(clip)=>{begin(app,clip,None);return;},_=>{}
  }
- let ids:Vec<_>=app.state.project.vocal_edits.iter().enumerate().filter(|(_,d)|owns(&app.state,d)&&pl::clips(&app.state).iter().any(|clip|Some(clip.track)==app.state.playlist.vocal.row&&clip.source==ClipSource::Channel(d.channel))).map(|(i,_)|i).collect();
+ let active=crate::audio_edits::active(&app.state);
+ let ids:Vec<_>=app.state.project.vocal_edits.iter().enumerate().filter(|(_,d)|(Some(d.channel)==active||app.state.playlist.vocal.selected.iter().any(|p|p.0==d.channel))&&owns(&app.state,d)&&pl::clips(&app.state).iter().any(|clip|Some(clip.track)==app.state.playlist.vocal.row&&clip.source==ClipSource::Channel(d.channel))).map(|(i,_)|i).collect();
  if ids.is_empty(){return;}
  snapshot(&mut app.state,"Edit vocal tuning");
  let selected=app.state.playlist.vocal.selected.clone();let(root,scale)=(app.state.playlist.vocal.key,app.state.playlist.vocal.scale);
@@ -214,7 +265,8 @@ pub fn command(app:&mut App,c:Command){
    Command::Bypass=>d.enabled=!d.enabled,
    Command::Strength(n)=>d.strength=(d.strength+n as f32*0.1).clamp(0.,1.),
    Command::Formant(n)=>d.formant=(d.formant+n as f32*0.5).clamp(-12.,12.),
-   Command::Reset=>{d.curve.clear();d.timing=vec![(0.,0.),(d.frames as f64/d.rate as f64,d.frames as f64/d.rate as f64)];d.formant=0.;d.strength=1.;for n in &mut d.notes{n.reset();}},
+   Command::Reset=>crate::audio_edits::reset_pitch(d),
+   Command::ResetTiming=>{let duration=d.frames as f64/d.rate as f64;d.timing=vec![(0.,0.),(duration,duration)];if let Some(h)=app.state.project.audio_edits.iter().find(|h|h.channel==d.channel){let (a,b)=h.source_range;let(x,y)=h.output_range;if a>0.{d.timing.push((a,x));}if b<duration{d.timing.push((b,y));}d.timing.sort_by(|a,b|a.0.total_cmp(&b.0));}},
    Command::Join=>{if chosen.len()>=2{let a=*chosen.iter().min().unwrap();let b=*chosen.iter().max().unwrap();if b<d.notes.len(){let end=d.notes[b].end;d.notes[a].end=end;d.notes.drain(a+1..=b);}}},
    _=>{for(n,note)in d.notes.iter_mut().enumerate(){if !chosen.is_empty()&&!chosen.contains(&n){continue;}match c{
     Command::Correct=>{let target=nearest(note.base,root,scale);note.shift=target-note.base;},
@@ -238,7 +290,7 @@ pub fn reanalyse(app:&mut App,row:u16){
  snapshot(&mut app.state,"Reanalyse vocal");
  let sources:Vec<_>=app.state.project.vocal_edits.iter().filter(|d|ids.contains(&d.channel)&&owns(&app.state,d)).map(|d|(d.channel,d.source.clone())).collect();
  for(id,path)in sources{set_source(app,id,&path);}
- app.state.project.vocal_edits.retain(|d|!ids.contains(&d.channel));app.state.playlist.vocal.selected.clear();app.state.playlist.vocal.failed.clear();ensure(app,row);
+ for h in &mut app.state.project.audio_edits{if ids.contains(&h.channel){h.analyzed=false;}}app.state.playlist.vocal.selected.clear();app.state.playlist.vocal.failed.clear();ensure(app,row);
 }
 
 pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->bool{
@@ -256,8 +308,9 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   app.state.playlist_bar_w=480.;let ci=pl::add_audio_clip(&mut app.state,&source.to_string_lossy(),2,0).unwrap();
   let ClipSource::Channel(id)=pl::clips(&app.state)[ci].source else{panic!()};
   let mut f0=vec![0.;401];for(i,hz)in f0.iter_mut().enumerate(){*hz=if i<50{220.}else if (80..160).contains(&i){261.626}else if (210..300).contains(&i){329.628}else{0.};}
-  let notes=segment(&f0);let mut d=Edit{channel:id,source:source.to_string_lossy().into_owned(),source_hash:file_hash(&source.to_string_lossy()).unwrap(),rendered:source.to_string_lossy().into_owned(),render_key:String::new(),rate,frames:rate*2,f0,notes,curve:vec![],timing:vec![(0.,0.),(2.,2.)],enabled:true,strength:1.,formant:0.};assert!(d.valid());d.render_key=key(&d);app.state.project.vocal_edits.push(d);
+  let notes=segment(&f0);let mut d=Edit{channel:id,source:source.to_string_lossy().into_owned(),source_hash:file_hash(&source.to_string_lossy()).unwrap(),rendered:source.to_string_lossy().into_owned(),render_key:String::new(),rate,frames:rate*2,f0:f0.into(),notes,curve:vec![],timing:vec![(0.,0.),(2.,2.)],enabled:true,strength:1.,formant:0.};assert!(d.valid());d.render_key=key(&d);app.state.project.vocal_edits.push(d);
   app.state.playlist.vocal.ready=Some(true);app.state.playlist.vocal.row=Some(2);app.state.playlist.vocal.low=48.;app.state.playlist.vocal.span=24.;app.state.screen=(1280.,900.);app.state.raise(Win::Playlist);if let Some(i)=Win::Playlist.slot(){app.state.wins[i].maxed=true;}
+  crate::audio_edits::attach(&mut app.state,ci,true);
   (app,dir,ci)
  }
  fn paint(app:&mut App,c:&mut Canvas){app.paint(c,None);}
@@ -282,7 +335,8 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   assert!(app.state.project.vocal_edits[0].timing.len()>2);assert!(app.state.project.vocal_edits[0].valid());crate::history::undo(&mut app.state).unwrap();
   let before=app.state.project.vocal_edits.clone();pl::snapshot(&mut app.state);let c=pl::clips(&app.state)[ci].clone();let split=pl::split(&mut app.state,ci,c.position+c.length/2).unwrap();
   pl::arr_mut(&mut app.state).clips[split].position+=192;
-  assert_eq!(doc(&app.state,ci),doc(&app.state,split));assert_eq!(app.state.project.vocal_edits,before);
+  assert_ne!(doc(&app.state,ci).unwrap().channel,doc(&app.state,split).unwrap().channel);assert_eq!([doc(&app.state,ci).unwrap().notes.clone(),doc(&app.state,split).unwrap().notes.clone()].concat(),before[0].notes);
+  let before=app.state.project.vocal_edits.clone();
   let file=os_flp::project::create(&app.state.project).unwrap();let loaded=os_flp::project::load(&file).unwrap();assert_eq!(loaded.vocal_edits,app.state.project.vocal_edits);assert_eq!(loaded.arrangement().unwrap().clips.len(),pl::clips(&app.state).len());for(a,b)in loaded.arrangement().unwrap().clips.iter().zip(pl::clips(&app.state)){assert_eq!((a.position,a.length,a.track,a.source,a.window),(b.position,b.length,b.track,b.source,b.window));}
   command(&mut app,Command::Toggle(2));assert_eq!(app.state.playlist.vocal.row,None);assert_eq!(pl::Rows::new(&app.state).height(2),old);assert_eq!(app.state.project.vocal_edits,before);
   command(&mut app,Command::Toggle(2));assert_eq!(app.state.playlist.vocal.row,Some(2));
@@ -383,10 +437,30 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   if let Some(dir)=std::env::var_os("OS_SHOT_DIR"){std::fs::create_dir_all(&dir).unwrap();let mut c=Canvas::new(780,170,1.).unwrap();c.clear(os_ui::Color::rgb(0x202b31));for(j,t)in TOOLS.into_iter().enumerate(){let x=10.+j as f32*59.;c.icon_stroke(&tool_icon(t),os_ui::Rect::new(x,15.,24.,24.),os_ui::Color::rgb(0xffdc85),1.45);c.icon_stroke(&tool_icon(t),os_ui::Rect::new(x,65.,44.,44.),os_ui::Color::rgb(0xddebf0),1.7);c.text(os_ui::Font::new(10),x,132.,os_ui::Color::rgb(0xddebf0),&format!("{:?}",t));}c.pixmap.save_png(PathBuf::from(dir).join("vocal-tool-icons.png")).unwrap();}
  }
 
+ #[test]fn audio_edits_escape_and_history_visibility(){
+  let(mut app,_,ci)=fixture();let mut canvas=Canvas::new(1280,900,1.).unwrap();paint(&mut app,&mut canvas);let r=hit(&app,Action::Vocal(Command::Note(ci,1)));
+  let before=app.state.project.vocal_edits.clone();let histories=app.state.project.audio_edits.clone();let steps=app.state.history.done();
+  app.mouse_move(r.cx(),r.cy());app.mouse_down();app.mouse_move(r.cx(),r.cy()-30.);assert_ne!(app.state.project.vocal_edits,before);assert!(cancel_drag(&mut app));assert_eq!(app.state.project.vocal_edits,before);assert_eq!(app.state.project.audio_edits,histories);assert_eq!(app.state.history.done(),steps);
+  for vintage in [false,true]{app.state.vintage_2005=vintage;paint(&mut app,&mut canvas);assert!(app.hits.iter().any(|h|h.action==Action::Vocal(Command::UndoTiming)));crate::settings_file::write("visible_clip-edit-history","0");paint(&mut app,&mut canvas);assert!(!app.hits.iter().any(|h|matches!(h.action,Action::Vocal(Command::UndoTiming|Command::RedoTiming|Command::Undo|Command::Redo))));assert_eq!(app.state.project.audio_edits,histories);crate::settings_file::write("visible_clip-edit-history","1");}
+ }
+ #[test]fn audio_edits_reject_stale_deleted_and_previous_project_results(){
+  let(mut app,_,_)=fixture();app.state.playlist.vocal.ready=Some(false);
+  for mode in 0..3 {
+   let before=app.state.project.vocal_edits[0].clone();let path=app.state.project.channels.iter().find(|c|c.index==before.channel).unwrap().sample_path.clone();let placements=pl::clips(&app.state).to_vec();
+   let(tx,rx)=mpsc::channel();let cancel=Arc::new(AtomicBool::new(false));
+   app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel:cancel.clone(),expected:Some(before.clone()),source:before.channel,path:before.source.clone(),row:2,key:key(&before)});
+   if mode==0{app.state.project.vocal_edits[0].notes[0].shift+=1.;}else if mode==1{pl::arr_mut(&mut app.state).clips.clear();}else{app.state.playlist.vocal.epoch=Arc::new(());}
+   tick(&mut app);assert!(cancel.load(Ordering::Relaxed));assert!(app.vocal_job.is_some(),"superseded worker retains its bounded slot until completion");
+   tx.send(Ok(Done::Rendered(PathBuf::from("stale-must-not-apply.wav"),Arc::new(os_engine::Sample{rate:24000,left:vec![0.;10],right:vec![0.;10]})))).unwrap();drop(tx);
+   tick(&mut app);assert!(app.vocal_job.is_none());assert_eq!(app.state.project.channels.iter().find(|c|c.index==before.channel).unwrap().sample_path,path);
+   app.state.project.vocal_edits=vec![before];pl::arr_mut(&mut app.state).clips=placements;
+  }
+ }
+
  #[test]fn vocal_failure_disconnect_undo_redo_and_retry_recover(){
-  let(mut app,_,_)=fixture();app.state.playlist.vocal.ready=Some(false);command(&mut app,Command::Formant(1));tick(&mut app);let k=key(&app.state.project.vocal_edits[0]);let(tx,rx)=mpsc::channel();tx.send(Err("injected failure".into())).unwrap();drop(tx);app.vocal_job=Some(Job{rx,cancel:Arc::new(AtomicBool::new(false)),expected:None,source:0,path:String::new(),row:2,key:k.clone()});tick(&mut app);assert!(app.vocal_job.is_none());assert!(app.state.playlist.vocal.failed.contains(&k));
+  let(mut app,_,_)=fixture();app.state.playlist.vocal.ready=Some(false);command(&mut app,Command::Formant(1));tick(&mut app);let k=key(&app.state.project.vocal_edits[0]);let(tx,rx)=mpsc::channel();tx.send(Err("injected failure".into())).unwrap();drop(tx);app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel:Arc::new(AtomicBool::new(false)),expected:None,source:0,path:String::new(),row:2,key:k.clone()});tick(&mut app);assert!(app.vocal_job.is_none());assert!(app.state.playlist.vocal.failed.contains(&k));
   crate::history::undo(&mut app.state).unwrap();crate::history::redo(&mut app.state).unwrap();tick(&mut app);assert!(!app.state.playlist.vocal.failed.contains(&k),"redo must not remain blacklisted");
-  let(tx,rx)=mpsc::channel();drop(tx);app.vocal_job=Some(Job{rx,cancel:Arc::new(AtomicBool::new(false)),expected:None,source:0,path:String::new(),row:2,key:k.clone()});tick(&mut app);assert!(app.vocal_job.is_none(),"disconnected worker must not freeze the scheduler");assert!(app.state.playlist.vocal.message.contains("unexpectedly"));command(&mut app,Command::Retry);assert!(app.state.playlist.vocal.failed.is_empty());
+  let(tx,rx)=mpsc::channel();drop(tx);app.vocal_job=Some(Job{epoch:app.state.playlist.vocal.epoch.clone(),rx,cancel:Arc::new(AtomicBool::new(false)),expected:None,source:0,path:String::new(),row:2,key:k.clone()});tick(&mut app);assert!(app.vocal_job.is_none(),"disconnected worker must not freeze the scheduler");assert!(app.state.playlist.vocal.message.contains("unexpectedly"));command(&mut app,Command::Retry);assert!(app.state.playlist.vocal.failed.is_empty());
  }
  #[test]fn vocal_compressed_timing_handle_is_safe(){
   let(mut app,_,ci)=fixture();app.state.project.vocal_edits[0].timing=vec![(0.,0.),(0.4,0.5),(0.8,0.505),(2.,2.)];command(&mut app,Command::Tool(Tool::Attack));let mut c=Canvas::new(1280,900,1.).unwrap();paint(&mut app,&mut c);let r=hit(&app,Action::Vocal(Command::Note(ci,1)));app.mouse_move(r.cx(),r.cy());app.mouse_down();app.mouse_move(r.cx()+30.,r.cy());app.mouse_up();assert!(app.drag.is_none());
@@ -397,4 +471,19 @@ pub fn key_input(app:&mut App,key:&winit::keyboard::Key,ctrl:bool,alt:bool)->boo
   for k in 0..24{paint(&mut app,&mut c);let r=hit(&app,Action::Vocal(Command::Boundary(ci,1)));app.mouse_move(r.cx(),r.cy());app.mouse_down();app.mouse_move(r.cx()+if k%2==0{5000.}else{-5000.},r.cy());app.mouse_up();assert!(engine::timing_valid(&app.state.project.vocal_edits[0]));crate::history::undo(&mut app.state);crate::history::redo(&mut app.state);assert!(engine::timing_valid(&app.state.project.vocal_edits[0]));}
  }
 
+}
+
+pub(crate) fn render_edit(sample:Arc<os_engine::Sample>,d:&Edit,stop:&AtomicBool)->Result<(Vec<f32>,Vec<f32>),String>{
+ static SLOT:std::sync::Mutex<()>=std::sync::Mutex::new(());
+ let _slot=loop{if stop.load(Ordering::Relaxed){return Err("Superseded audio edit".into());}match SLOT.try_lock(){Ok(g)=>break g,Err(std::sync::TryLockError::Poisoned(e))=>break e.into_inner(),Err(std::sync::TryLockError::WouldBlock)=>std::thread::sleep(Duration::from_millis(2))}};
+
+ let (l,r)=if crate::audio_edits::pitch_changed(d){let mut pitch=d.clone();let dur=d.frames as f64/d.rate as f64;pitch.timing=vec![(0.,0.),(dur,dur)];incremental::render(&engine::Engine::load()?,sample.clone(),&pitch,stop)?}else{(sample.left.clone(),sample.right.clone())};
+ if stop.load(Ordering::Relaxed){return Err("Superseded audio edit".into());}
+ if crate::audio_edits::timing_changed(d){let end=d.frames as usize;let mut points=vec![(0,0)];for &(a,b) in &d.timing{let p=((a*d.rate as f64).round()as usize,(b*d.rate as f64).round()as usize);let last=*points.last().unwrap();if p.0>last.0&&p.1>last.1&&p.0<end&&p.1<end{points.push(p);}}points.push((end,end));os_dsp::stretch::clip_warp(&l,&r,d.rate,&points)}else{Ok((l,r))}
+}
+pub(crate) fn cancel_drag(app:&mut App)->bool{
+ let Some(Drag::Vocal(g))=app.drag.take()else{return false};
+ if let Some(i)=doc_index(&app.state,g.clip){app.state.project.vocal_edits[i]=(*g.before).clone();}
+ for h in &app.state.project.audio_edits{if let Some(d)=app.state.project.vocal_edits.iter_mut().find(|d|d.channel==h.channel){h.restore(d);}}
+ crate::history::settle(&mut app.state);audition::stop(app);app.invalidate();true
 }

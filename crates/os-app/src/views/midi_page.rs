@@ -126,7 +126,7 @@ fn act(m: MAct) -> Action {
 }
 
 /// Normal / Advanced stays in the title bar while the settings page scrolls.
-pub(super) fn paint_view_switch(ui: &mut Ui, close: Rect, advanced: bool) {
+pub(super) fn paint_view_switch(ui: &mut Ui, close: Rect, advanced: bool, action: impl Fn(bool) -> SAct) {
     let t = ui.t;
     let language = Language::current();
     let right = close.x - 8.0;
@@ -136,7 +136,7 @@ pub(super) fn paint_view_switch(ui: &mut Ui, close: Rect, advanced: bool) {
     ] {
         let r = Rect::new(x, close.y - 1.0, w, 22.0);
         let on = mode == advanced;
-        let hov = !on && ui.hit(r, act(MAct::View(mode)), language.text(label));
+        let hov = !on && ui.hit(r, Action::Settings(action(mode)), language.text(label));
         let ink = if on {
             lk::lit_in(ui.c, t, r, lk::r_btn(t), false);
             lk::ink_on_lit(t)

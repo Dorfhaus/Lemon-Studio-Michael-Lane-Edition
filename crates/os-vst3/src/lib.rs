@@ -1392,6 +1392,22 @@ impl NoteIds {
 }
 
 impl os_host::Plugin for Plugin {
+    fn advance_silent(&mut self, _rate: u32, frames: usize) {
+        let song = self.song.take();
+        self.set_context(song);
+        self.steady = self.steady.saturating_add(frames as i64);
+    }
+    fn smart_disable_tail(&self) -> Option<u64> {
+        if self.ara.is_some() || self.rate == 0 || !self.queue.is_empty()
+            || !self.mpe_queue.is_empty() || !self.auto.is_empty()
+            || self.shared.restart.load(Ordering::Acquire) != 0
+            || self.wanted_rate.load(Ordering::Acquire) != 0
+            || !self.shared.to_processor.try_lock().is_ok_and(|q| q.is_empty())
+            || !self.editor_state.try_lock().is_ok_and(|editor| !editor.editor) { return None; }
+        // VST3 getTailSamples is an audio-thread query; parameters may change it.
+        let tail = unsafe { self.processor.get_tail_samples() };
+        (tail != INFINITE_TAIL).then_some(u64::from(tail))
+    }
     fn programs(&self)->Vec<(u32,u32,String)>{
         let Some(c)=&self.controller else{return Vec::new()};
         let units=c.cast::<dyn IUnitInfo>();

@@ -73,16 +73,23 @@ fn exact(st: &mut Stretch, input: &[f32], out: &mut [f32]) {
 /// Piecewise pitch-preserving warp. Anchors are source and destination frame positions.
 /// Neighboring segments share short context and overlap, avoiding hard joins at anchors.
 pub fn warp(left:&[f32],right:&[f32],rate:u32,points:&[(usize,usize)])->Result<(Vec<f32>,Vec<f32>),String>{
-    warp_segments(left, right, rate, points, false)
+    warp_segments(left, right, rate, points, false, true)
 }
 
 /// Vocal timing warp with longer cosine joins. Unity-ratio attack islands are copied
 /// at their original pitch and shape, using the same joins as stretched material.
 pub fn vocal_warp(left: &[f32], right: &[f32], rate: u32, points: &[(usize, usize)]) -> Result<(Vec<f32>, Vec<f32>), String> {
-    warp_segments(left, right, rate, points, true)
+    warp_segments(left, right, rate, points, true, true)
 }
 
-fn warp_segments(left: &[f32], right: &[f32], rate: u32, points: &[(usize, usize)], vocal: bool) -> Result<(Vec<f32>, Vec<f32>), String> {
+/// Historical slice maps are normalized to fixed clip boundaries. Their local ratios may
+/// exceed the interactive limit even when both original edits were valid. Keep the same
+/// bounded output and ordered-anchor validation, and render this composed map only once.
+pub fn clip_warp(left:&[f32],right:&[f32],rate:u32,points:&[(usize,usize)])->Result<(Vec<f32>,Vec<f32>),String>{
+    warp_segments(left,right,rate,points,false,false)
+}
+
+fn warp_segments(left: &[f32], right: &[f32], rate: u32, points: &[(usize, usize)], vocal: bool, interactive_limits: bool) -> Result<(Vec<f32>, Vec<f32>), String> {
     let n=left.len().min(right.len());
     if points.len()<2||points.len()>1024||points[0].1!=0||points.last().unwrap().0>n||points.windows(2).any(|w|w[1].0<=w[0].0||w[1].1<=w[0].1){return Err("Warp anchors must stay in order and inside the sample".into());}
     let frames=points.last().unwrap().1;
@@ -94,7 +101,7 @@ fn warp_segments(left: &[f32], right: &[f32], rate: u32, points: &[(usize, usize
         let ((a,x),(b,y))=(pair[0],pair[1]);
         if !vocal && a==x&&b==y{for j in a..b{l[j]+=left[j];r[j]+=right[j];weights[j]+=1.;}continue;}
         let ratio=(y-x) as f64/(b-a) as f64;
-        if !(0.0625..=16.).contains(&ratio){return Err("Keep each warp segment between 1/16 and 16 times its original duration".into());}
+        if interactive_limits && !(0.0625..=16.).contains(&ratio){return Err("Keep each warp segment between 1/16 and 16 times its original duration".into());}
         let pad=(rate as usize / if vocal { 40 } else { 100 }).min((b-a)/4).max(1);
         let lo=a.saturating_sub(pad);let hi=(b+pad).min(n);
         let before=((a-lo) as f64*ratio).round() as usize;let after=((hi-b) as f64*ratio).round() as usize;

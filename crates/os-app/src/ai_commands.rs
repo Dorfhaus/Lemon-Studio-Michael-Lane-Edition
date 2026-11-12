@@ -17,6 +17,10 @@ fn number(v: &Value, k: &str, min: f64, max: f64) -> Result<f64> {
         .filter(|n| n.is_finite() && *n >= min && *n <= max)
         .ok_or_else(|| format!("{k} must be between {min} and {max}"))
 }
+pub(crate) fn set_tempo(app: &mut App, arguments: &Value) -> Result<()> {
+    app.set_tempo(number(arguments, "value", 10.0, 522.0)?);
+    Ok(())
+}
 fn index(v: &Value, k: &str, max: usize) -> Result<usize> {
     v[k].as_u64()
         .filter(|n| *n < max as u64)
@@ -39,6 +43,7 @@ fn blocked(a: &Action) -> bool {
     matches!(
         a,
         Action::Ai
+            | Action::Voice(_)
             | Action::PianoKeys
             | Action::PianoGrid
             | Action::PianoNote(_)
@@ -67,6 +72,7 @@ fn blocked(a: &Action) -> bool {
                     | crate::dialog::DHit::AiRemember
                     | crate::dialog::DHit::AiForget
                     | crate::dialog::DHit::AiSetup
+                    | crate::dialog::DHit::Voice(_)
             )
     )
 }
@@ -106,7 +112,7 @@ fn state(app: &App) -> Value {
  "hosted_plugins":app.plugins.hosted.iter().map(|(k,p)|json!({"key":k,"name":p.name})).collect::<Vec<_>>(),"dialog_open":app.modal_open(),"message":s.message,"limitations":["Native plugin editor controls require host-exposed parameters","No AI model or autonomous audio listening is bundled","Use Make Unique to route shared audio clips independently"]})
 }
 pub fn call(app: &mut App, name: &str, a: &Value) -> Result<Value> {
-    let result = execute(app, name, a);
+    let result = execute(app, name, a, false);
     let read = matches!(name, "lemon_state" | "lemon_controls")
         || matches!(name, "lemon_parameter" | "lemon_clips" | "lemon_notes") && a["op"] == "read"
         || name == "lemon_plugins" && a["op"] == "list";
@@ -121,14 +127,133 @@ pub fn call(app: &mut App, name: &str, a: &Value) -> Result<Value> {
     }
     result
 }
-fn execute(app: &mut App, name: &str, a: &Value) -> Result<Value> {
-    if app.ai_runtime.is_none() {
+/// Local voice uses the same semantic validators without enabling the network MCP server.
+pub fn voice_tools() -> Vec<Value> {
+    let mut tools: Vec<_> = tools().into_iter().filter(|t| !matches!(t["name"].as_str(),
+        Some("lemon_controls" | "lemon_action" | "lemon_value"))).collect();
+    tools.push(json!({"name":"lemon_instrument","description":"Load a named installed instrument into a NEW channel (mode load), or open the unique existing instance (mode open; creates it if absent). Resolves built-in and third-party names from the installed catalog. Returns the actual row. The following route command can use row=last.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"mode":{"enum":["load","open"]}},"required":["name","mode"],"additionalProperties":false}}));
+    tools.push(json!({"name":"lemon_effect","description":"Load or open a named installed built-in or third-party effect on a mixer track. Open reuses a unique existing instance, otherwise uses an empty insert. Never replaces an occupied insert.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"track":{"type":"integer","minimum":0},"mode":{"enum":["load","open"]}},"required":["name","track","mode"],"additionalProperties":false}}));
+    tools.push(json!({"name":"lemon_eq","description":"Open the existing dedicated parametric EQ on the specified mixer track, creating its built-in instance only if absent. Does not overwrite any insert slots.","inputSchema":{"type":"object","properties":{"track":{"type":"integer","minimum":0}},"required":["track"],"additionalProperties":false}}));
+    tools.push(json!({"name":"lemon_named_action","description":"Invoke an available main-menu command by its exact discovered label in menu_commands. Uses normal DAW forms for file operations. Never guess a command name.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}}));
+    tools
+}
+fn voice_menu_commands(app: &App) -> Vec<(usize,usize,String)> {
+    use crate::views::menus;
+    let mut out=Vec::new();
+    for menu in 0..menus::MENUS.len() {
+        for index in 0..256 {
+            let Some(item)=menus::item_at(menu,index) else { break; };
+            if item.kind == menus::Kind::Item && !item.sub && menus::works(menu,item)
+                && menus::active(&app.state,menu,item) && item.label != "AI assistant settings" {
+                out.push((menu,index,item.label.to_owned()));
+            }
+        }
+    }
+    out
+}
+pub fn instrument_index(app: &App, name: &str) -> Result<usize> {
+    let normalize=|name:&str| name.to_lowercase().chars().filter(|c|c.is_alphanumeric()).collect::<String>();
+    let key=normalize(name);
+    let matches:Vec<_>=app.plugins.available.iter().enumerate().filter(|(_,p)|normalize(&p.desc.name)==key).map(|(i,_)|i).collect();
+    match matches.as_slice() { [index]=>Ok(*index), []=>Err(format!("I cannot find the installed instrument {name}.")), _=>Err(format!("More than one installed instrument is named {name}. Choose its format in the plugin picker.")) }
+}
+pub fn voice_context(app: &mut App) -> Value {
+    let mut snapshot = state(app);
+    if let Some(object) = snapshot.as_object_mut() {
+        object.remove("limitations");
+        for value in object.values_mut() {
+            if let Some(list) = value.as_array_mut() { list.truncate(32); }
+        }
+    }
+    if let Some(mixer) = snapshot["mixer"].as_array_mut() {
+        for track in mixer { if let Some(obj)=track.as_object_mut() {
+            obj.retain(|k,_| matches!(k.as_str(),"track"|"name"|"volume"|"pan"|"enabled"));
+        }}
+    }
+    let plugins = execute(app,"lemon_plugins",&json!({"op":"list"}),true).unwrap_or(Value::Null);
+
+    let app_ref: &App = app;
+    snapshot["exposed_parameters"] = json!(app_ref.state.params.lists.iter().flat_map(|(key,list)| {
+        list.params.iter().enumerate().filter(|(_,p)|!p.hidden).map(move |(index,p)|json!({"hosted_key":key,"plugin":app_ref.plugins.hosted.get(key).map(|h|h.name.as_str()),"index":index,"name":p.name,"value":crate::params::param_value(&app_ref.state,*key,index)}))
+    }).collect::<Vec<_>>());
+    snapshot["function_catalog"] = json!(voice_tools().iter().map(|t|json!({"name":t["name"],"description":t["description"]})).collect::<Vec<_>>());
+    snapshot["available_plugins"] = plugins;
+    snapshot["menu_commands"] = json!(voice_menu_commands(app).iter().map(|(_,_,name)|name).collect::<Vec<_>>());
+    snapshot
+}
+pub fn call_voice(app: &mut App, name: &str, args: &Value) -> Result<Value> {
+    if !voice_tools().iter().any(|t| t["name"] == name) { return Err("That action is not available through local voice yet.".into()); }
+    if !args.is_object() { return Err("Invalid command arguments.".into()); }
+    if app.project_loading().is_some() || app.state.collaborating { return Err("Wait until a local project is ready.".into()); }
+    if app.modal_open() && !matches!(name,"lemon_text"|"lemon_state") { return Err("Complete the open dialog first.".into()); }
+    let result = match name {
+        "lemon_instrument" => {
+            let name=text(args,"name")?;
+            let index=instrument_index(app,name)?;
+            let mode=text(args,"mode")?;
+            if !matches!(mode,"open"|"load") { return Err("Unknown instrument operation".into()); }
+            if app.state.pending_plugin.is_some() { return Err("Wait for the instrument currently loading.".into()); }
+            let existing:Vec<_>=app.state.project.channels.iter().enumerate().filter(|(row,c)| c.name.as_deref().is_some_and(|n|n.eq_ignore_ascii_case(name)) || app.plugins.descriptor(*row).is_some_and(|d|d.name.eq_ignore_ascii_case(name))).map(|(r,_)|r).collect();
+            let row=if mode=="open" && !existing.is_empty() {
+                if existing.len()!=1 {return Err(format!("There are several {name} channels. Specify which one."));}
+                let row=existing[0]; app.focus_channel(row);
+                if app.state.hosted_rows.contains(&row) { app.state.pending_open=Some(row); }
+                else { app.open_channel_window(row); }
+                row
+            } else {
+                let row=app.state.project.channels.len();
+                crate::plugin_menu::add_generator(app,index,None);
+                if app.state.project.channels.len()!=row+1 {return Err(format!("Could not add {name}."));}
+                row
+            };
+            app.state.raise(Win::ChannelRack);
+            Ok(json!({"row":row,"channel":app.state.project.channels[row].index,"name":name}))
+        }
+        "lemon_effect" => {
+            let name=text(args,"name")?; let t=track(app,args,"track")?; let mode=text(args,"mode")?;
+            if !matches!(mode,"load"|"open") {return Err("Unknown effect operation.".into());}
+            let matches:Vec<_>=app.plugins.effects.iter().enumerate().filter(|(_,p)|p.desc.name.eq_ignore_ascii_case(name)).map(|(i,_)|i).collect();
+            if matches.len()!=1 {return Err(format!("The installed effect name {name} is missing or ambiguous."));}
+            let existing:Vec<_>=crate::mixer::track(&app.state,t).unwrap().slots.iter().enumerate().filter(|(_,p)|p.as_ref().is_some_and(|p|crate::plugins::slot_label(&p.name).eq_ignore_ascii_case(name))).map(|(i,_)|i as u8).collect();
+            app.state.selected_mixer=t; app.state.mixer.sel.clear(); app.state.raise(Win::Mixer);
+            let slot=if mode=="open" && !existing.is_empty() {
+                if existing.len()!=1 {return Err("Several matching effects are on this track. Specify a slot.".into());}
+                existing[0]
+            } else {
+                let slot=(0..crate::mixer::user_slot_capacity(&app.state,t)).map(|i|crate::mixer::visible_user_slot(&app.state,t,i)).find(|&slot|crate::mixer::track(&app.state,t).unwrap().slots[slot as usize].is_none()).ok_or("There is no empty effect slot.")?;
+                crate::mixer::run(app,crate::mixer::MCmd::AddEffect(slot,matches[0]));
+                slot
+            };
+            Ok(json!({"hosted_key":crate::plugins::fx_key(t,slot),"track":t,"slot":slot}))
+        }
+        "lemon_eq" => {
+            let track=track(app,args,"track")?;
+            app.state.selected_mixer=track; app.state.mixer.sel.clear(); app.state.raise(Win::Mixer);
+            let slot=crate::mini_eq::ensure(app,track).ok_or("Could not open this track's EQ.")?;
+            app.open_fx(track,slot);
+            Ok(json!({"track":track,"slot":slot,"opened":true}))
+        }
+        "lemon_named_action" => {
+            let name=text(args,"name")?;
+            let matches:Vec<_>=voice_menu_commands(app).into_iter().filter(|(_,_,label)|label.eq_ignore_ascii_case(name)).collect();
+            if matches.len()!=1 { return Err("That menu command is unavailable or ambiguous.".into()); }
+            app.menu_item(matches[0].0,matches[0].1);
+            Ok(json!({"invoked":name}))
+        }
+        _ => execute(app,name,args,true),
+    };
+    if result.is_ok() { history::settle(&mut app.state); app.sync_live(); app.invalidate(); }
+    result
+}
+
+fn execute(app: &mut App, name: &str, a: &Value, local: bool) -> Result<Value> {
+    if !local && app.ai_runtime.is_none() {
         return Err("AI control is off".into());
     }
     let read = matches!(name, "lemon_state" | "lemon_controls")
         || matches!(name, "lemon_parameter" | "lemon_clips" | "lemon_notes") && a["op"] == "read"
         || name == "lemon_plugins" && a["op"] == "list";
-    if !read && app.state.dialogs.iter().any(|m| matches!(m.body, Body::Ai)) {
+    if !read && app.state.dialogs.iter().any(|m| matches!(m.body, Body::Ai | Body::VoiceAssistant)) {
         return Err("The human AI-control panel is open. Only the user may approve access or close that panel.".into());
     }
     if !read && app.modal_open() && !matches!(name, "lemon_action" | "lemon_value" | "lemon_text") {
@@ -249,10 +374,7 @@ fn execute(app: &mut App, name: &str, a: &Value) -> Result<Value> {
                 app.state.pattern = p;
                 app.act(Action::PatSong(false));
             }
-            "tempo" => {
-                let bpm = number(a, "value", 10., 522.)?;
-                app.set_tempo(bpm);
-            }
+            "tempo" => set_tempo(app, a)?,
             "show" => {
                 let w = match text(a, "window")? {
                     "mixer" => Win::Mixer,

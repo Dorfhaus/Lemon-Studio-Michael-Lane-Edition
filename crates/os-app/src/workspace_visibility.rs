@@ -33,6 +33,9 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Touch Controller shortcut", "visible_win-touch"),
     ]),
     ("Editor feedback", &[
+        ("MCP activity orb", crate::ai_control::ACTIVITY_ORB_VISIBILITY),
+        ("Selected effect sidechain source", crate::mixer::SIDECHAIN_SOURCE_VISIBILITY),
+        ("Detected sample tempo dialog", crate::loop_fit::TEMPO_RESULT_VISIBILITY),
         ("Elastic scrollbars", crate::elastic_scroll::VISIBILITY),
         ("Adaptive horizontal scrollbars", crate::elastic_scroll::ADAPTIVE),
     ]),
@@ -41,6 +44,8 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Input customization", &[
         ("MIDI controller setup", crate::controller::VISIBILITY),
+        ("Smart disable setting", "visible_smart-disable"),
+        ("Advanced audio settings", crate::views::settings::AUDIO_ADVANCED_VISIBILITY),
         ("Custom action buttons", "visible_custom-actions"),
         ("Ctrl/Cmd+Shift drag range selection", crate::playlist_tools::RANGE_SELECTION_VISIBILITY),
     ]),
@@ -50,6 +55,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Vintage output scope", "visible_vintage_scope"),
         ("Vintage sync and MIDI lights", "visible_vintage_activity"),
         ("AI control button when inactive", "visible_ai"),
+        ("Local Voice Assistant", crate::voice_assistant::VISIBILITY),
         ("Tesla shortcut", "visible_tesla"),
         ("Lemon Tape in plugin menus", "visible_plugin-tape"),
         ("Lemon Hall in plugin menus", "visible_plugin-hall"),
@@ -67,10 +73,16 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Sample preview panel", "visible_browser-preview"),
         ("File information panel", "visible_browser-info"),
     ]),
+    ("Attached mixer inspector", crate::attached_mixer::INSPECTOR_VISIBILITY),
     ("Playlist", &[
         (crate::theme_adjust::PLAYLIST_BRIGHTNESS, crate::theme_adjust::PLAYLIST_BRIGHTNESS_VISIBILITY),
         ("Vocal tuning button", "visible_playlist-vocal-tuning"),
         ("Audio warp editor", "visible_playlist-warp"),
+        ("Attached mixer inspector", crate::attached_mixer::VISIBILITY),
+        ("Attach to Playlist button in Mixer", crate::attached_mixer::BUTTON_VISIBILITY),
+        ("Attached track record buttons", crate::attached_mixer::RECORD_VISIBILITY),
+        ("Playlist record and instrument buttons", crate::playlist_tracks::VISIBILITY),
+        ("Clip pitch and timing history", "visible_clip-edit-history"),
         ("Drag audio clip routing to Mixer", crate::playlist::CLIP_ROUTE_DRAG_VISIBILITY),
         ("Preview audio timing in Playlist playback", crate::warp::PREVIEW_VISIBILITY),
         ("Arrangement mini-map", "visible_playlist-map"),
@@ -130,6 +142,10 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Mini EQ bypass button", crate::mini_eq::BYPASS_VISIBILITY),
     ]),
     ("Workspace", &[
+        (crate::prefs::DOUBLE_CLICK_RESET.label, "visible_double-click-reset"),
+        (crate::prefs::HOVER_MENUS.label, "visible_hover-main-menus"),
+        ("Options menu drag handle", crate::views::menus::OPTIONS_DRAG_VISIBILITY),
+        ("Advanced Export tab", crate::export_form::ADVANCED_VISIBILITY),
         ("Search User Guide menu item", crate::help::VISIBILITY),
         (crate::change_log::LABEL, crate::change_log::VISIBILITY),
         ("User Guide: Show me where", crate::help::SPOTLIGHT_VISIBILITY),
@@ -153,6 +169,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ("ML Wave", &[
         ("Right-click modulation controls", lemon_wave::visibility::MODULATION_MENU),
         ("Phase FM and ring modulation controls", lemon_wave::visibility::HARMONIC_CONTROLS),
+        ("Plasma wavetable library", lemon_wave::visibility::PLASMA_WAVETABLES),
     ]),
 ];
 
@@ -164,7 +181,7 @@ pub(crate) fn key(label: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn shown(key: &str) -> bool {
-    settings_file::flag(key, key != "visible_settings-debug")
+    settings_file::flag(key, key != "visible_settings-debug"&&key!=crate::playlist_tracks::VISIBILITY)
 }
 
 pub(crate) fn toggle(key: &str) {

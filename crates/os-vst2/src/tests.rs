@@ -35,6 +35,29 @@ fn clear() {
 }
 
 #[test]
+fn smart_disable_checks_pending_work_and_keeps_vst2_host_time() {
+    let (_m, mut p) = gain(); assert!(p.activate(1000));
+    assert_eq!(p.smart_disable_tail(), Some(0));
+    p.advance_silent(1000, 5000);
+    p.process_fx(1000, &mut [0.; 16], &mut [0.; 16]);
+    assert_eq!(probe(|p| p.times.last().unwrap().3), 5000.);
+    assert_eq!(p.steady, 5016);
+    p.param_fx(5, 0, 0.5); assert_eq!(p.smart_disable_tail(), None);
+    p.process_fx(1000, &mut [0.; 16], &mut [0.; 16]);
+    // VST2's minimum automation split can carry this edit into the next block.
+    assert_eq!(p.smart_disable_tail(), None);
+    p.process_fx(1000, &mut [0.; 16], &mut [0.; 16]);
+    assert_eq!(p.smart_disable_tail(), Some(0));
+    let editor = p.editor_state.lock().unwrap();
+    assert_eq!(p.smart_disable_tail(), None, "busy editor never blocks audio"); drop(editor);
+    p.inst.shared.io_changed.store(true, Ordering::Release);
+    assert_eq!(p.smart_disable_tail(), None);
+    let (_m, mut synth) = synth(); assert!(synth.activate(1000));
+    assert_eq!(synth.smart_disable_tail(), Some(4800));
+    synth.note_on(5000, 60, 1.); assert_eq!(synth.smart_disable_tail(), None);
+}
+
+#[test]
 fn a_plugin_file_lists_its_plugin_and_hands_the_describing_instance_on() {
     let m = module(mock::gain_main, "Mock Gain.dll");
     let d = &m.plugins()[0];

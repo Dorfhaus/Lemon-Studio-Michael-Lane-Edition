@@ -347,6 +347,12 @@ impl Engine {
                 for port in 0..self.pdc.aux_pad[c].len() {let t=ch.insert+port+1;if t<n {ins[t].chan=ins[t].chan.max(d);}}
             }
         }
+        let compensate = self.compensate_playback || self.exporting;
+        if !compensate {
+            for track in &mut ins {
+                (track.out, track.inp, track.chan, track.slots) = (0., 0., 0, 0);
+            }
+        }
         let l = lateness(&ins, &self.order, self.rate);
         let runs: Vec<bool> = (0..n).map(|t| self.slots_run(t)).collect();
         let on: Vec<bool> = (0..n).map(|t| self.slots_on(t)).collect();
@@ -388,7 +394,7 @@ impl Engine {
                 };
                 let (src, main) = (pick(fx.key_input()), pick(if hosted { fx.ports[0] } else { 0 }));
                 let late = |s: Option<usize>| s.map_or(0, |s| (self.pdc.slot_late[t][fx.slot] - l.leaving[s]).max(0) as usize);
-                let (len, main_len) = (late(src), late(main));
+                let (len, main_len) = if compensate { (late(src), late(main)) } else { (0, 0) };
                 let fx = &mut self.tracks[t].effects[i];
                 fx.key = src;
                 fx.key_pad.set_len(len);
@@ -406,11 +412,11 @@ impl Engine {
             }
         }
         for (c, ch) in self.channels.iter().enumerate() {
-            let len = if ch.instrument.0.is_some() { l.channel_pad(ch.insert, self.pdc.chan_delay.get(c).copied().unwrap_or(0)) } else { 0 };
+            let len = if compensate && ch.instrument.0.is_some() { l.channel_pad(ch.insert, self.pdc.chan_delay.get(c).copied().unwrap_or(0)) } else { 0 };
             if let Some(p) = self.pdc.chan_pad.get_mut(c) {
                 p.set_len(len);
             }
-            for (port,p) in self.pdc.aux_pad[c].iter_mut().enumerate() {let t=ch.insert+port+1;p.set_len(if t<n {l.channel_pad(t,self.pdc.chan_delay[c])}else{0});}
+            for (port,p) in self.pdc.aux_pad[c].iter_mut().enumerate() {let t=ch.insert+port+1;p.set_len(if compensate && t<n {l.channel_pad(t,self.pdc.chan_delay[c])}else{0});}
         }
         self.pdc.reach = (0..n).map(|t| l.leaving[t].max(l.arriving[t]) + l.extra[t]).max().unwrap_or(0).max(0) as u64;
         if self.pdc.fresh {
@@ -835,6 +841,20 @@ mod tests {
         e.seek_tick(96);
         let (n, tick) = e.next_tick().map(|(s, t, ..)| (s.len() / 2, t)).unwrap();
         assert_eq!((n, tick), (TICK - 100, 96.0));
+    }
+
+    #[test]
+    fn disabling_live_delay_compensation_keeps_export_aligned() {
+        let p = project(&[1, 2], 3);
+        let mut live = engine(&p, vec![(1, 0, Late::new(100))], false);
+        live.set_playback_delay_compensation(false);
+        let block = live.next_tick().unwrap().0;
+        assert_eq!(block.len(), 2 * TICK, "live playback skips no compensated frames");
+        assert_eq!(onset(block), 0, "the undelayed route plays immediately");
+
+        let mut offline = engine(&p, vec![(1, 0, Late::new(100))], false);
+        offline.set_playback_delay_compensation(false);
+        assert!(offline.render_all(0) == export(&p, vec![(1, 0, Late::new(0))]));
     }
 
     #[test]

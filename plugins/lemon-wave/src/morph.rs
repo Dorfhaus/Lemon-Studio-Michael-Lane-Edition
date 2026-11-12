@@ -181,31 +181,31 @@ pub fn build(points: &[Point], blend: Blend, name: &str) -> Result<Source, Strin
         }
     }
     samples.extend_from_slice(&points.last().unwrap().cycle);
-    let source = Source {
-        name: format!("{} morph", name.chars().take(48).collect::<String>()),
+    let source = Source::new(
+        format!("{} morph", name.chars().take(48).collect::<String>()),
         samples,
-    };
+    );
     source.validate()?;
     Ok(source)
 }
 
 // Produce a short pitched audition from a single frame or a complete table sweep.
-pub fn audition(samples: &[f32], sweep: bool) -> Vec<f32> {
-    let frames = samples.len() / SIZE;
+pub fn audition(samples: &[f32], size: usize, sweep: bool) -> Vec<f32> {
+    let frames = samples.len() / size;
     if frames == 0 {
         return Vec::new();
     }
     // Band-limit the C4 audition before sampling the periodic frame at 24 kHz.
     let mut filtered = Vec::with_capacity(samples.len());
-    for frame in samples.chunks_exact(SIZE) {
+    for frame in samples.chunks_exact(size) {
         let mut real: Vec<_> = frame.iter().map(|&v| v as f64).collect();
-        let mut imag = vec![0.; SIZE];
+        let mut imag = vec![0.; size];
         crate::wavetable::fft(&mut real, &mut imag, false);
         let limit = (PREVIEW_RATE * 0.48 / 261.625565) as usize;
-        real[limit + 1..SIZE - limit].fill(0.);
-        imag[limit + 1..SIZE - limit].fill(0.);
+        real[limit + 1..size - limit].fill(0.);
+        imag[limit + 1..size - limit].fill(0.);
         crate::wavetable::fft(&mut real, &mut imag, true);
-        filtered.extend(real.iter().map(|v| (v / SIZE as f64) as f32));
+        filtered.extend(real.iter().map(|v| (v / size as f64) as f32));
     }
     let samples = &filtered;
     let length = if sweep { 48000 } else { 10800 };
@@ -216,11 +216,11 @@ pub fn audition(samples: &[f32], sweep: bool) -> Vec<f32> {
             } else {
                 0.
             };
-            let phase = (i as f64 * 261.625565 / PREVIEW_RATE).fract() * SIZE as f64;
+            let phase = (i as f64 * 261.625565 / PREVIEW_RATE).fract() * size as f64;
             let read = |f: usize| {
                 let k = phase as usize;
-                let a = samples[f * SIZE + k];
-                let b = samples[f * SIZE + (k + 1) % SIZE];
+                let a = samples[f * size + k];
+                let b = samples[f * size + (k + 1) % size];
                 a + (b - a) * phase.fract() as f32
             };
             let a = read(pos as usize);
@@ -355,7 +355,7 @@ mod tests {
         let p = analyze(&vowels(), 0.5).unwrap();
         let bus = PreviewBus::default();
         let mut voice = PreviewVoice::default();
-        bus.play(audition(&p.cycle, false));
+        bus.play(audition(&p.cycle, p.cycle.len(), false));
         let mut l = [0.; 4096];
         let mut r = l;
         voice.mix(&bus, 48000., &mut l, &mut r);

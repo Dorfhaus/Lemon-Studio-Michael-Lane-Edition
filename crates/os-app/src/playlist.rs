@@ -6,6 +6,9 @@
 //! Playlist state and editing: tools, clips, tracks, time markers, automation points, undo.
 // spec: ui/playlist.md; flp/events/playlist.md (clips, windows, markers); flp/events/automation.md
 
+#[path = "playlist_wave.rs"]
+mod wave_cache;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -621,6 +624,7 @@ impl Wave {
 /// automation data and the channels' stretch settings.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RowLinks {
+    audio:Option<(Vec<os_model::Channel>,Vec<os_model::vocal::Edit>,Vec<os_model::audio_edit::Document>)>,
     pub(crate) selected: u16,
     last: HashMap<u16,u16>,
     samplers: HashMap<usize,u16>,
@@ -642,6 +646,8 @@ pub(crate) struct PlacementEdge {
 }
 
 pub struct PlaylistState {
+    pub attached: Option<crate::attached_mixer::Attached>,
+    pub(crate) inspector_layouts: crate::attached_mixer::InspectorLayouts,
     pub(crate) placement_edge: Option<PlacementEdge>,
     pub warp: Option<crate::warp::Form>,
     pub warp_loading: Option<crate::warp::Loading>,
@@ -718,11 +724,14 @@ pub struct PlaylistState {
     pub tones: RefCell<HashMap<String, Option<Rc<os_dsp::tone::Tones>>>>,
     /// A project is loading and its files decode off the UI thread: waveforms wait (spec: ui/project-loading.md).
     pub wave_wait: bool,
+    wave_jobs: RefCell<wave_cache::Jobs>,
 }
 
 impl Default for PlaylistState {
     fn default() -> Self {
         PlaylistState {
+            attached: None,
+            inspector_layouts: Default::default(),
             placement_edge: None,
             warp: None,
             warp_loading: None,
@@ -770,6 +779,7 @@ impl Default for PlaylistState {
             waves: RefCell::new(HashMap::new()),
             tones: RefCell::new(HashMap::new()),
             wave_wait: false,
+            wave_jobs: Default::default(),
         }
     }
 }
@@ -797,25 +807,8 @@ impl PlaylistState {
         }
         // The decode is shared with the sampler playing the file (decoded once, while the project loaded).
         let file = crate::plugins::resolve_sample(path);
-        let w = os_engine::sample::load_shared(std::path::Path::new(&file)).ok().map(|s| {
-            let per = 64usize;
-            let peaks = s
-                .left
-                .chunks(per)
-                .zip(s.right.chunks(per))
-                .map(|(l, r)| {
-                    // The chunk's own range (a DC sample is one value, not a band from zero; §9a signed waveforms).
-                    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-                    for (a, b) in l.iter().zip(r) {
-                        let v = (a + b) * 0.5;
-                        lo = lo.min(v);
-                        hi = hi.max(v);
-                    }
-                    (lo, hi)
-                })
-                .collect();
-            Rc::new(Wave { fine: RefCell::new(None), rate: s.rate, frames: s.frames(), per, peaks })
-        });
+        let w = os_engine::sample::load_shared(std::path::Path::new(&file)).ok()
+            .map(|s| Rc::new(wave_cache::peaks(&s)));
         self.waves.borrow_mut().insert(path.to_string(), w.clone());
         w
     }
@@ -829,12 +822,8 @@ impl PlaylistState {
         if self.wave_wait {
             return None;
         }
-        let file = crate::plugins::resolve_sample(path);
-        let t = os_engine::sample::load_shared(std::path::Path::new(&file))
-            .ok()
-            .map(|s| Rc::new(os_dsp::tone::Tones::analyse_stereo(&s.left, &s.right, s.rate)));
-        self.tones.borrow_mut().insert(path.to_string(), t.clone());
-        t
+        self.wave_jobs.borrow_mut().request(path, wave_cache::Kind::Tones);
+        None
     }
 }
 
@@ -850,6 +839,9 @@ pub const STRIP_H: f32 = 6.0;
 pub struct Rows {
     top: Vec<f32>,
     base:Vec<f32>,
+    heights:Vec<f32>,
+    pub order:Vec<u16>,
+    rank:Vec<u16>,
     pub row_h: f32,
 }
 
@@ -887,7 +879,12 @@ impl Rows {
             y += if folded { 0.0 } else if grouped && collapsed { 0.0 } else { height+if crate::warp::expanded(s,t as u16){crate::warp::EXTRA}else if crate::vocal::expanded(s,t as u16){crate::vocal::EXTRA}else{0.} };
         }
         top.push(y);
-        Rows { top,base,row_h }
+        let heights:Vec<_>=top.windows(2).map(|p|p[1]-p[0]).collect();
+        let order=if crate::attached_mixer::active(s){crate::attached_mixer::projection(s).order.clone()}else{(0..TRACKS).collect()};
+        let mut rank=vec![0;TRACKS as usize];let mut y=0.;
+        for (i,&row) in order.iter().enumerate(){rank[row as usize]=i as u16;top[i]=y;y+=heights[row as usize];}
+        top[TRACKS as usize]=y;
+        Rows { top,base,heights,order,rank,row_h }
     }
 
     /// A clip's height: its row less the 3 px gap.
@@ -898,12 +895,12 @@ impl Rows {
     }
 
     pub fn top(&self, t: u16) -> f32 {
-        self.top[usize::from(t.min(TRACKS))]
+        self.top[if t>=TRACKS{TRACKS as usize}else{self.rank[t as usize] as usize}]
     }
 
     pub fn height(&self, t: u16) -> f32 {
         let i = usize::from(t.min(TRACKS - 1));
-        self.top[i + 1] - self.top[i]
+        self.heights[i]
     }
 
     /// A collapsed group's member: drawn as a strip.
@@ -913,9 +910,12 @@ impl Rows {
 
     /// The track at content height `y`.
     pub fn at(&self, y: f32) -> u16 {
-        self.top.partition_point(|&v| v <= y).saturating_sub(1).min(usize::from(TRACKS) - 1) as u16
+        self.order[self.top.partition_point(|&v| v <= y).saturating_sub(1).min(usize::from(TRACKS) - 1)]
     }
 
+    pub fn rank(&self,row:u16)->u16{self.rank[row.min(TRACKS-1) as usize]}
+    pub fn row(&self,index:i32)->u16{self.order[index.clamp(0,i32::from(TRACKS)-1) as usize]}
+    pub fn between(&self,row:u16,a:u16,b:u16)->bool{let (a,b)=(self.rank(a),self.rank(b));(a.min(b)..=a.max(b)).contains(&self.rank(row))}
     pub fn total(&self) -> f32 {
         self.top[usize::from(TRACKS)]
     }
@@ -1185,6 +1185,7 @@ pub fn track_on(s: &State, t: u16) -> bool {
 }
 
 pub fn track_name(s: &State, t: u16) -> String {
+    if !track_info(s,t).is_some_and(|r|r.grouped){if let Some(n)=crate::attached_mixer::owner(s,t){return format!("{n}  {}",crate::attached_mixer::lane_name(s,n));}}
     if let Some(l)=s.mixer.recording.live.iter().find(|l|l.row==t){return l.name.clone();}
     let name=track_info(s, t).and_then(|t| t.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Track {}", t + 1));
     if track_info(s,t).is_some_and(|t|t.frozen.is_some()) {format!("{name} - FROZEN")} else if track_info(s,t).is_some_and(|t|t.comp.is_some()) {format!("{name} - COMP")}else{name}
@@ -1492,12 +1493,13 @@ pub fn snapshot_with(s: &mut State, name: &'static str, extra: crate::history::S
 pub(crate) fn capture(s: &State) -> Snapshot {
     let (clips, markers, tracks) = s.project.arrangement().map(|a| (a.clips.clone(), a.markers.clone(), a.tracks.clone())).unwrap_or_default();
     let stretch = s.project.channels.iter().map(|c| c.sound.stretch).collect();
-    (clips, markers, tracks, s.project.automations.clone(), stretch, s.playlist.original_values.clone(),s.project.instrument_lanes.clone(), RowLinks {selected:s.playlist.track,last:s.playlist.automation_last.clone(),samplers:s.playlist.sampler_rows.clone(),views:s.playlist.automation_views.clone(),owners:s.playlist.automation_owners.clone(),solo:s.playlist.solo.clone(),picker_order:s.project.clip_picker_order.clone()})
+    (clips, markers, tracks, s.project.automations.clone(), stretch, s.playlist.original_values.clone(),s.project.instrument_lanes.clone(), RowLinks {audio:(!s.project.audio_edits.is_empty()).then(||(s.project.channels.clone(),s.project.vocal_edits.clone(),s.project.audio_edits.clone())),selected:s.playlist.track,last:s.playlist.automation_last.clone(),samplers:s.playlist.sampler_rows.clone(),views:s.playlist.automation_views.clone(),owners:s.playlist.automation_owners.clone(),solo:s.playlist.solo.clone(),picker_order:s.project.clip_picker_order.clone()})
 }
 
 /// Puts an undo state back (undo and redo, `crate::history`).
 pub(crate) fn restore(s: &mut State, (c, m, t, a, st, references, lanes, links): Snapshot) {
     s.playlist_motion.borrow_mut().clear();
+    if let Some((channels,vocals,docs))=links.audio{ s.project.channels=channels;s.project.vocal_edits=vocals;s.project.audio_edits=docs; }
     let arr = arr_mut(s);
     arr.clips = c;
     arr.markers = m;
@@ -1650,12 +1652,13 @@ pub fn place(s: &mut State, track: u16, tick: u32) -> usize {
 /// The same consecutive lanes are used for the drag preview and the actual drop.
 pub(crate) fn picker_drop_rows(
     s: &State, rows: &Rows, items: &[ClipSource], track: u16, tick: u32,
-) -> Result<std::ops::Range<u16>, &'static str> {
+) -> Result<std::vec::IntoIter<u16>, &'static str> {
     let end = u16::try_from(items.len()).ok()
-        .and_then(|count| track.checked_add(count))
+        .and_then(|count| rows.rank(track).checked_add(count))
         .filter(|&end| end <= TRACKS)
         .ok_or("There are too few Playlist tracks below the drop point")?;
-    for row in track..end {
+    let destinations:Vec<_>=(rows.rank(track)..end).map(|i|rows.row(i.into())).collect();
+    for &row in &destinations {
         if rows.strip(row) || s.playlist.automation_views.contains_key(&row)
             || track_info(s, row).is_some_and(|t| t.locked || t.frozen.is_some() || t.folder || t.comp.is_some())
         {
@@ -1665,7 +1668,7 @@ pub(crate) fn picker_drop_rows(
     if items.iter().any(|&source| tick.checked_add(picker_source_len(s, source)).is_none()) {
         return Err("A clip would extend past the last usable Playlist tick");
     }
-    Ok(track..end)
+    Ok(destinations.into_iter())
 }
 
 /// Place a picker selection on separate tracks at the same timeline position.
@@ -1984,6 +1987,8 @@ pub fn split(s: &mut State, i: usize, tick: u32) -> Option<usize> {
     if tick <= c.position || tick >= c.end() {
         return None;
     }
+    if crate::audio_edits::channel(s,i).is_some_and(|ch|s.project.audio_edits.iter().any(|h|h.channel==ch)){crate::audio_edits::isolate(s,i);}
+    let c=clips(s)[i].clone();
     let (w0, w1) = window(s, &c);
     let left_len = tick - c.position;
     let cut = clip_to_src(s, &c, f64::from(left_len));
@@ -1999,6 +2004,9 @@ pub fn split(s: &mut State, i: usize, tick: u32) -> Option<usize> {
     a.clips[i] = left;
     a.clips.push(right);
     let n = a.clips.len();
+    if crate::audio_edits::channel(s,i).is_some_and(|ch|s.project.audio_edits.iter().any(|d|d.channel==ch)){
+        crate::audio_edits::isolate(s,n-1);crate::audio_edits::restrict(s,n-1);crate::audio_edits::restrict(s,i);
+    }
     s.piano.dirty = true;
     Some(n - 1)
 }
@@ -2011,7 +2019,7 @@ pub fn slice(s: &mut State, tick: u32, t0: u16, t1: u16) -> usize {
         if c.position>=tick || c.end()<=tick {return false;}
         let is_auto=source_kind(s,c.source)==PickKind::Automation;
         let Some(row) = g.displayed_track(c) else { return false };
-        row>=t0 && row<=t1 && !track_info(s,row).is_some_and(|t|t.locked || t.frozen.is_some())
+        g.rows.between(row,t0,t1) && !track_info(s,row).is_some_and(|t|t.locked || t.frozen.is_some())
             && (is_auto || !g.automation_views.contains_key(&row))
     }).map(|(i, _)| i).collect();
     hit.iter().filter(|&&i| split(s, i, tick).is_some()).count()
@@ -2217,29 +2225,30 @@ pub fn delete_space(s: &mut State) -> bool {
 /// Shift+Up / Down: move the selected clips' tracks (or the selected track) and their clips by `d`, swapping with
 /// the neighbours (track names, colours and states go along).
 pub fn shift_tracks(s: &mut State, d: i32) {
+    let rows=Rows::new(s);
     let sel = s.playlist.sel.clone();
     if !sel.is_empty() {
         let arr = arr_mut(s);
-        let lo = sel.iter().filter_map(|&i| arr.clips.get(i)).map(|c| i32::from(c.track)).min().unwrap_or(0);
-        let hi = sel.iter().filter_map(|&i| arr.clips.get(i)).map(|c| i32::from(c.track)).max().unwrap_or(0);
+        let lo = sel.iter().filter_map(|&i| arr.clips.get(i)).map(|c| i32::from(rows.rank(c.track))).min().unwrap_or(0);
+        let hi = sel.iter().filter_map(|&i| arr.clips.get(i)).map(|c| i32::from(rows.rank(c.track))).max().unwrap_or(0);
         if lo + d < 0 || hi + d >= i32::from(TRACKS) {
             return;
         }
         for &i in &sel {
             if let Some(c) = arr.clips.get_mut(i) {
-                c.track = (i32::from(c.track) + d) as u16;
+                c.track = rows.row(i32::from(rows.rank(c.track))+d);
             }
         }
         s.piano.dirty = true;
         return;
     }
-    let t = i32::from(s.playlist.track);
+    let t = i32::from(rows.rank(s.playlist.track));
     let u = t + d;
     if u < 0 || u >= i32::from(TRACKS) {
         return;
     }
-    swap_tracks(s, t as u16, u as u16);
-    s.playlist.track = u as u16;
+    swap_tracks(s, rows.row(t), rows.row(u));
+    s.playlist.track = rows.row(u);
 }
 
 /// Move a track family as one block, retaining clip identity, routing and automation links.
@@ -2303,6 +2312,7 @@ fn apply_track_order(s:&mut State,order:&[u16],root:u16,family:&[u16],automation
 
 /// Swap two tracks with their clips.
 pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
+    crate::attached_mixer::clear(s);
     s.playlist.vocal.row=s.playlist.vocal.row.map(|r|if r==a{b}else if r==b{a}else{r});
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let number=arr_mut(s).number;
@@ -2323,6 +2333,7 @@ pub fn swap_tracks(s: &mut State, a: u16, b: u16) {
 
 /// Insert an empty track at `t` (the rest move down; the last track's clips stay on it).
 pub fn insert_track(s: &mut State, t: u16) {
+    crate::attached_mixer::clear(s);
     s.playlist.header_selection.clear();s.playlist.header_anchor=None;
     let shift = |r:u16| if r>=t {r.saturating_add(1).min(TRACKS-1)} else {r};
     s.playlist.vocal.row=s.playlist.vocal.row.map(shift);
@@ -2352,6 +2363,7 @@ pub fn insert_track(s: &mut State, t: u16) {
 
 /// Delete track `t` with its clips (the rest move up).
 pub fn delete_track(s: &mut State, t: u16) {
+    crate::attached_mixer::clear(s);
     // Deleting a folder header preserves unselected children without joining the preceding group.
     if is_group_track(s,t)&&track_info(s,t+1).is_some_and(|r|r.grouped){arr_mut(s).tracks[t as usize+1].grouped=false;}
     if s.playlist.solo.as_ref().is_some_and(|(row,_)|*row==t){end_solo(s);}
@@ -2713,8 +2725,9 @@ pub fn add_audio_clip_as(s: &mut State, path: &str, track: u16, tick: u32, name:
     snapshot_as(s, name);
     let index = s.project.channels.iter().map(|c| c.index + 1).max().unwrap_or(0);
     let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Audio".into());
-    // New samples stay on Master until the user explicitly routes them.
-    let mixer_track = 0;
+    // New samples use the attached source lane; ordinary Playlist drops retain Master routing.
+    let mixer_track = crate::attached_mixer::owner(s,track).unwrap_or(0);
+    if mixer_track>0 {crate::attached_mixer::bind(s,track,mixer_track);}
     s.project.channels.push(Channel {
         index,
         kind: ChannelKind::AudioClip,
@@ -3014,7 +3027,7 @@ pub(crate) fn default_options_menu(s: &State, x: f32, y: f32) -> Popup {
         take("Edit"),take("Select"),take("Group"),PItem::sep(),take("Tool"),take("Snap"),
         PItem::sub("Clip options",vec![take("Audio clip options"),take("Automation editing"),take("Pattern note colors")]),
         PItem::sub("View",vec![take("Zoom"),take("Visible clip controls"),PItem::sub("Waveform detail when zoomed",["Standard","High","Maximum (sample detail)"].iter().enumerate().map(|(i,label)|PItem::new(*label,Cmd::WaveDetail(i as u8)).mark(Mark::Radio(detail==i as u8))).collect())]),
-        take("Time markers"),PItem::sep(),take("Tools"),PItem::sub("Track cleanup",vec![take("Reset empty playlist tracks")]),
+        take("Time markers"),PItem::sep(),crate::playlist_tracks::keyboard_picker_item(),take("Tools"),PItem::sub("Track cleanup",vec![take("Reset empty playlist tracks")]),
     ];
     Popup { x, y, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
 }
@@ -3652,6 +3665,7 @@ pub fn press_grid(app: &mut App, grid: Rect, right: bool) {
     s.playlist.popup = None;
     let g = PGeom::new(s, grid);
     let track = g.track_at(y);
+    crate::attached_mixer::select_lane(s,track);
     let tick = g.tick_at(x).max(0.0);
     let hit = clip_at(s, &g, x, y);
     let tool = s.playlist.tool;
@@ -4149,6 +4163,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             }
         }
         PlDrag::Track {row,y0,started} => {
+            if crate::attached_mixer::active(s){return;}
             if !started && (y-y0).abs()<5. {return;}
             let target=g.track_at(y.clamp(grid.y,grid.bottom()-1.));
             s.playlist.drop_folder=folder_target(s,target);
@@ -4169,8 +4184,8 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
             let mut dt=orig.first().map_or(0,|(_,c)|snap_edge(s,&g,c.position,(x-x0+g.scroll_x-scroll_x)/g.ppt,alt,&skip));
             let min_pos = orig.iter().map(|(_, c)| i64::from(c.position)).min().unwrap_or(0);
             dt = dt.max(-min_pos);
-            let dk = i32::from(g.track_at(y)) - i32::from(track0);
-            let starting_row = |c: &Clip| i32::from(g.automation_overlay_row(c).unwrap_or(c.track));
+            let dk = i32::from(g.rows.rank(g.track_at(y))) - i32::from(g.rows.rank(track0));
+            let starting_row = |c: &Clip| i32::from(g.rows.rank(g.automation_overlay_row(c).unwrap_or(c.track)));
             let lo = orig.iter().map(|(_, c)| starting_row(c)).min().unwrap_or(0);
             let hi = orig.iter().map(|(_, c)| starting_row(c)).max().unwrap_or(0);
             let mut dk = dk.clamp(-lo, i32::from(TRACKS) - 1 - hi);
@@ -4178,7 +4193,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 matches!(clip.source, ClipSource::Channel(ch) if s.project.automation(ch).is_some())
             };
             if dk != 0 && orig.iter().any(|(_, clip)| {
-                let row = (starting_row(clip) + dk) as u16;
+                let row = g.rows.row(starting_row(clip) + dk);
                 is_automation(clip) && (g.rows.strip(row)
                     || track_info(s, row).is_some_and(|t| t.locked || t.frozen.is_some()))
             }) {
@@ -4192,7 +4207,7 @@ pub fn drag_move(app: &mut App, d: PlDrag, grid: Rect) {
                 let i = *i;
                 if let Some(c) = arr.clips.get_mut(i) {
                     c.position = (i64::from(o.position) + dt) as u32;
-                    c.track = if dk == 0 { o.track } else { (starting_row(o) + dk) as u16 };
+                    c.track = if dk == 0 { o.track } else { g.rows.row(starting_row(o) + dk) };
                     c.independent_automation = independent;
                 }
             }
@@ -4482,6 +4497,7 @@ pub fn drag_end(app: &mut App, d: PlDrag, grid: Rect) {
     }
     match d {
         PlDrag::Track{row,started:true,..}=>{
+            if crate::attached_mixer::active(s){return;}
             let target=g.track_at(app.mouse.1.clamp(grid.y,grid.bottom()-1.));
             s.playlist.drop_folder=None;
             if app.mouse.1>=grid.y && app.mouse.1<grid.bottom(){
@@ -4618,12 +4634,12 @@ pub fn zoom_on(s: &mut State, grid: (f32, f32), idx: &[usize]) {
     let span = ((b - a) as f32 / bar).max(1.0);
     s.playlist_bar_w = (grid.0 / span).clamp(4.0, zoom_limit(s));
     s.playlist_scroll.0 = a as f32 / bar * s.playlist_bar_w;
-    let top = cs.iter().map(|c| c.track).min().unwrap_or(0);
+    let rows=Rows::new(s);let top=cs.iter().map(|c|rows.rank(c.track)).min().unwrap_or(0);
     // The selected tracks fill the view's height, on FL's 2 px height steps (§5; FL measured only at the maximum).
-    let n = f32::from(cs.iter().map(|c| c.track).max().unwrap_or(0) - top + 1);
+    let n = f32::from(cs.iter().map(|c|rows.rank(c.track)).max().unwrap_or(0) - top + 1);
     let fit = ROW_MIN + ((grid.1 / n - ROW_MIN) / 2.0).floor() * 2.0;
     s.playlist.row_h = fit.clamp(ROW_MIN, ROW_MAX);
-    s.playlist_scroll.1 = Rows::new(s).top(top);
+    s.playlist_scroll.1 = Rows::new(s).top(rows.row(top.into()));
 }
 
 /// The current arrangement's name.
@@ -4801,7 +4817,8 @@ fn move_into_folder(s:&mut State,t:u16,folder:u16)->Option<String>{
 }
 
 fn select_header_range(s: &mut State, anchor: u16, target: u16, mut base: Vec<u16>, contents: bool) {
-    for row in anchor.min(target)..=anchor.max(target) {
+    let rows=Rows::new(s);
+    for row in rows.order.iter().copied().filter(|r|rows.between(*r,anchor,target)) {
         if !base.contains(&row) {
             base.push(row);
         }
@@ -4815,8 +4832,8 @@ fn select_header_range(s: &mut State, anchor: u16, target: u16, mut base: Vec<u1
 }
 
 fn header_range_band(s: &mut State, g: &PGeom, anchor: u16, target: u16) {
-    let top = g.y_of(anchor.min(target));
-    let bottom = g.y_of(anchor.max(target)) + g.rows.height(anchor.max(target));
+    let top = g.y_of(anchor).min(g.y_of(target));
+    let bottom = (g.y_of(anchor)+g.rows.height(anchor)).max(g.y_of(target)+g.rows.height(target));
     s.playlist.overlay = Some(Overlay::Marquee(Rect::new(g.grid.x, top, g.grid.w, bottom - top)));
 }
 
@@ -4825,6 +4842,7 @@ pub fn press_header(app: &mut App, t: u16, right: bool, at: (f32, f32)) {
     let grid = app.pl_grid();
     let s = &mut app.state;
     s.playlist.popup = None;
+    crate::attached_mixer::select_lane(s,t);
     if right {
         if !s.playlist.header_selection.is_empty() && !s.playlist.header_selection.contains(&t){
             s.playlist.header_selection=vec![t];s.playlist.header_anchor=Some(t);
@@ -4895,6 +4913,10 @@ pub fn start_edit(s: &mut State, target: EditTarget, at: (f32, f32)) {
 /// Enter in the text box.
 pub fn commit_edit(s: &mut State) {
     let Some(e) = s.playlist.edit.take() else { return };
+    if let EditTarget::MixerName(n) = e.target {
+        crate::mixer::rename_track(s, n, &e.text);
+        return;
+    }
     if e.target == EditTarget::Tempo {
         let text = e.text.trim();
         if let Ok(bpm) = text.parse::<f64>() {
@@ -4944,13 +4966,7 @@ pub fn commit_edit(s: &mut State) {
                 move_point(s, ch, i, beat, v);
             }
         }
-        EditTarget::MixerName(n) => {
-            if crate::mixer::locked(s, n) { return; }
-            let def = if n == 0 { "Master".to_string() } else { format!("Insert {n}") };
-            if let Some(m) = s.project.mixer.iter_mut().find(|m| m.index == n) {
-                m.name = (!text.is_empty() && text != def).then_some(text);
-            }
-        }
+        EditTarget::MixerName(_) => unreachable!(),
         EditTarget::SlotName(t, k) => {
             if crate::mixer::locked(s, t) { return; }
             if text.is_empty() {
@@ -6010,6 +6026,7 @@ pub fn quantize_starts(s: &mut State) -> String {
 /// from the song's start, into `Rendered/<project> tracks` next to the project file (the temp folder for a new
 /// project): "<NN> <track name>.wav", 44.1 kHz float, at least as long as the song so the files line up.
 pub fn export_tracks(app: &mut App) -> String {
+    if crate::audio_edits::pending(&app.state.project){app.state.playlist.vocal.pending_output=Some(crate::audio_edits::Output::Tracks(app.state.project.clone()));return "Preparing current audio edits before track export...".into();}
     let s = &app.state;
     let audible: Vec<Clip> = clips(s).iter().filter(|c| !c.muted && track_on(s, c.track)).cloned().collect();
     let Some(end) = audible.iter().map(|c| c.end()).max() else { return "Export tracks: the playlist has no clips to play".into() };
@@ -6055,6 +6072,7 @@ pub fn export_tracks(app: &mut App) -> String {
 }
 
 pub fn consolidate(app: &mut App) -> String {
+    if crate::audio_edits::pending(&app.state.project){app.state.playlist.vocal.pending_output=Some(crate::audio_edits::Output::Consolidate(app.state.project.clone(),app.state.playlist.sel.clone(),app.state.playlist.range));return "Preparing current audio edits before consolidation...".into();}
     let s = &mut app.state;
     let sel = s.playlist.sel.clone();
     let (a, b) = match (s.playlist.range, sel.is_empty()) {
@@ -6233,13 +6251,15 @@ pub fn key(app: &mut App, key: &winit::keyboard::Key, ctrl: bool, alt: bool) -> 
         Key::Named(NamedKey::ArrowDown) if shift => Cmd::ShiftTracks(1),
         Key::Named(NamedKey::ArrowUp) if ctrl => {
             let s = &mut app.state;
-            s.playlist.track = s.playlist.track.saturating_sub(1);
+            let rows=Rows::new(s);s.playlist.track=rows.row(i32::from(rows.rank(s.playlist.track))-1);
+            crate::attached_mixer::select_lane(s,s.playlist.track);
             app.invalidate();
             return true;
         }
         Key::Named(NamedKey::ArrowDown) if ctrl => {
             let s = &mut app.state;
-            s.playlist.track = (s.playlist.track + 1).min(TRACKS - 1);
+            let rows=Rows::new(s);s.playlist.track=rows.row(i32::from(rows.rank(s.playlist.track))+1);
+            crate::attached_mixer::select_lane(s,s.playlist.track);
             app.invalidate();
             return true;
         }

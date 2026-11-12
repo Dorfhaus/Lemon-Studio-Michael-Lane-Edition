@@ -811,7 +811,7 @@ impl Canvas {
     }
 
     pub fn stroke_rrect(&mut self, r: Rect, radius: f32, width: f32, c: Color) {
-        if radius <= 2.5 && c.a == 255 && (r.w > 40.0 || r.h > 40.0) {
+        if radius <= 0.0 && c.a == 255 && (r.w > 40.0 || r.h > 40.0) {
             // Square-cornered outline from four native rects.
             self.fill_rect(Rect::new(r.x, r.y, r.w, width), c);
             self.fill_rect(Rect::new(r.x, r.bottom() - width, r.w, width), c);
@@ -820,7 +820,7 @@ impl Canvas {
             return;
         }
         let r = r.inset(width / 2.0);
-        if let Some(path) = rrect_path(r, radius) {
+        if let Some(path) = rrect_path(r, (radius - width / 2.0).max(0.0)) {
             self.stroke(&path, width, c);
         }
     }
@@ -2047,6 +2047,32 @@ mod tests {
         assert!(resample(16, 1, &px, 8, 1).iter().all(|&v| v == 0x808080 || v == 0x7f7f7f), "box average");
         assert_eq!(resample(1, 1, &[0x102030], 3, 2), vec![0x102030; 6]);
         assert_eq!(resample(0, 0, &[], 2, 1), vec![0, 0]);
+    }
+
+    #[test]
+    fn rounded_outlines_keep_their_corners_and_stay_inside_bounds() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let mut c = Canvas::new(240, 100, scale).unwrap();
+            c.clear(Color::rgb(0));
+            // Widths on both sides of the old square-corner fast path threshold.
+            for w in [30.0, 64.0] {
+                let r = Rect::new(8.0, 8.0, w, 24.0);
+                c.clear(Color::rgb(0));
+                c.stroke_rrect(r, 2.5, 1.0, Color::rgb(0xffffff));
+                let x = (r.x * scale) as usize;
+                let y = (r.y * scale) as usize;
+                let px = c.pixmap.pixels();
+                assert!(px[y * 240 + x].red() < 128, "rounded outer corner at {scale}, {w}");
+                assert!(px[y * 240 + x + (10.0 * scale) as usize].red() > 200);
+                for yy in 0..100usize {
+                    for xx in 0..240usize {
+                        if xx < x || yy < y || xx >= (r.right()*scale).ceil() as usize || yy >= (r.bottom()*scale).ceil() as usize {
+                            assert_eq!(px[yy*240+xx].red(), 0, "outline escapes at {scale}, {xx}, {yy}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -301,6 +301,8 @@ pub fn paint(ui: &mut Ui, s: &State, f: &FrameInfo) -> usize {
     if !crate::plugin_picker::floating(s) { crate::plugin_picker::paint(ui, s); }
     crate::help::paint_spotlight(ui, s);
     // Message boxes and file dialogs go over everything (spec: ui/dialogs.md).
+    dialog::paint_mcp_orb(ui, s);
+    dialog::paint_voice_dock(ui, s);
     dialog::paint(ui, s);
     if over_dialog {
         playlist::paint_overlays(ui, s);
@@ -526,6 +528,13 @@ pub fn scrollbar(ui: &mut Ui, track: Rect, vertical: bool, pos: f32, view: f32, 
             let face=Rect::new(face.x,face.y+1.,face.w,(face.h-2.).max(0.));
             ui.c.fill_rrect(face,(face.w.min(face.h)/2.).max(0.),kit::scroll_thumb(ui.t,st,kit::high_visibility()));
         } else {kit::scroll_thumb_face(ui.c,ui.t,face,true,st);}
+    } else if matches!(target, Scroll::AttachedEffects | Scroll::AttachedSends) {
+        ui.c.fill_rrect(track.inset(1.), 3., ui.t.sunken);
+        if max > 0. {
+            let face = Rect::new(track.x + 1., track.y + thumb_at, track.w - 2., thumb);
+            let ink = if hov || kit::high_visibility() { ui.t.text } else { ui.t.inspector_grip };
+            ui.c.fill_rrect(face, 3., ink);
+        }
     } else {kit::scrollbar(ui.c, ui.t, track, vertical, pos, view, total, st);}
     if target==Scroll::PlaylistY {
         for y in [track.y+draw_at+2.,track.y+draw_at+draw_len-3.] {

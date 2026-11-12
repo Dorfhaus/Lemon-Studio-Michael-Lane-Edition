@@ -266,6 +266,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("Window frames", "splitter"),
     ("Playlist", "picker"),
     ("Mixer", "mixer_bg"),
+    ("Attached mixer inspector", "inspector_panel"),
     ("Channel Rack", "rack_row_box"),
     ("Menus & dialogs", "menu_drop"),
     ("Piano Roll", "pr_row"),

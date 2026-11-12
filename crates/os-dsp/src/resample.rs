@@ -36,6 +36,10 @@ pub enum Quality {
     Exact,
     /// 16-point base window, widened at extreme downsampling ratios; table weights for live work.
     Live16,
+    /// Two-point linear interpolation for low CPU use.
+    Linear,
+    /// User-selected live sinc width, in frames on either side of the source position.
+    LiveSinc(usize),
     /// At least 512 points with exact weights for offline rendering.
     Export512,
 }
@@ -45,6 +49,11 @@ fn quality_width(ratio: f64, quality: Quality) -> usize {
         Quality::Live16 => {
             let r = ratio.abs().round_ties_even().min(1e6) as usize;
             ((r + 3) / 4 * 4).clamp(8, N_MAX)
+        }
+        Quality::Linear => 1,
+        Quality::LiveSinc(width) => {
+            let r = ratio.abs().round_ties_even().min(1e6) as usize;
+            ((r + 3) / 4 * 4).max(width).clamp(2, N_MAX)
         }
         Quality::Export512 => half_width(ratio).max(256),
         _ => half_width(ratio),
@@ -158,7 +167,11 @@ pub fn weights(f: f64, ratio: f64, n: usize, quality: Quality, w: &mut [f32]) {
                 *w = lerp(&t.sinc, u * su) * scale * lerp(&t.win, u * wu);
             }
         }
-        Quality::Exact | Quality::Export512 => {
+        Quality::Linear => {
+            w[0] = (1.0 - f) as f32;
+            w[1] = f as f32;
+        }
+        Quality::Exact | Quality::LiveSinc(_) | Quality::Export512 => {
             // sin(a u) and cos(pi u / N) stepped by one frame per tap: two rotations instead of three functions.
             let a = if ratio > 1.0 { PI / ratio } else { PI };
             let b = PI / n as f64;
@@ -298,6 +311,26 @@ pub fn read_by(len: usize, pos: f64, ratio: f64, quality: Quality, at: impl Fn(u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_resampling_choices_change_both_memory_and_streamed_reads() {
+        let source: Vec<f32> = (0..80).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let pos = 32.25;
+        for (quality, range) in [(Quality::Linear, (32, 33)), (Quality::LiveSinc(12), (21, 44))] {
+            let ram = read(&source, &source, pos, 2.0, quality);
+            assert_eq!(reach_quality(source.len(), pos, 2.0, quality), range);
+            let disk = read_by(source.len(), pos, 2.0, quality, |i| {
+                assert!((range.0..=range.1).contains(&i));
+                (source[i], source[i])
+            });
+            assert_eq!(disk, ram);
+            if quality == Quality::Linear {
+                assert_eq!(ram, (0.5, 0.5));
+            } else {
+                assert!(ram.0.abs() < 0.01, "sinc filters content above the new Nyquist");
+            }
+        }
+    }
 
     #[test]
     fn live_and_export_policy_preserves_tones_and_streamed_reads() {

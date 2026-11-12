@@ -14,6 +14,8 @@ pub struct Entry {
 #[derive(Clone)]
 pub enum Choice {
     Basic(usize),
+    PlasmaLibrary,
+    Plasma(usize),
     UserTable(std::path::PathBuf),
     Bank(usize),
     Sample(Entry),
@@ -31,6 +33,7 @@ pub struct Menu {
     pub anchor: Rect,
     pub items: Vec<(String, Choice)>,
     pub page: usize,
+    page_size: usize,
 }
 pub const BASIC: [&str; 6] = [
     "Sine",
@@ -117,6 +120,7 @@ impl Browser {
             anchor,
             items,
             page: 0,
+            page_size: 14,
         });
     }
     pub fn open(&mut self, o: usize) {
@@ -139,6 +143,17 @@ impl Browser {
         items.push(("Recordings / Mini-Moog >".into(), Choice::Category(4)));
         items.push(("Recordings / 800DV >".into(), Choice::Category(5)));
         items.push(("Reference / Saw".into(), Choice::Category(3)));
+        if crate::visibility::shown(2) {
+            items.push(("Plasma Wavetables >".into(), Choice::PlasmaLibrary));
+        }
+        self.show(o, button(o), items);
+        // Keep every source choice on the first page, with the existing rows in place.
+        self.menu.as_mut().unwrap().page_size = 15;
+    }
+    pub fn plasma(&mut self, o: usize) {
+        let mut items = vec![("< All sounds".into(), Choice::Category(6))];
+        items.extend(crate::plasma_wavetables::names().enumerate()
+            .map(|(i, name)| (name.into(), Choice::Plasma(i))));
         self.show(o, button(o), items);
     }
     pub fn user_tables(&mut self, o: usize) {
@@ -221,14 +236,14 @@ impl Browser {
             return None;
         }
         let row = ((y - r.y - 4.) / 26.).floor() as usize;
-        let n = (m.items.len() - m.page * 14).min(14);
+        let n = m.visible_rows();
         if row < n {
-            return Some(m.items[m.page * 14 + row].1.clone());
+            return Some(m.items[m.page * m.page_size + row].1.clone());
         }
-        if m.items.len() > 14 && row == n {
+        if m.items.len() > m.page_size && row == n {
             if x < r.cx() {
                 m.page = m.page.saturating_sub(1)
-            } else if (m.page + 1) * 14 < m.items.len() {
+            } else if (m.page + 1) * m.page_size < m.items.len() {
                 m.page += 1
             }
         }
@@ -240,7 +255,7 @@ impl Browser {
         crate::instrument_view::raised(c, r, 6., crate::design::color(0x283541));
         c.stroke_rrect(r, 6., 1., crate::design::color(0x789286));
         let f = Font::light(crate::design::font_size(12), 0).natural();
-        let shown = m.items.iter().skip(m.page * 14).take(14);
+        let shown = m.items.iter().skip(m.page * m.page_size).take(m.page_size);
         for (i, (label, _)) in shown.enumerate() {
             let row = Rect::new(r.x + 4., r.y + 4. + i as f32 * 26., r.w - 8., 25.);
             c.fill_rect(
@@ -265,8 +280,8 @@ impl Browser {
                 "No included sounds",
             );
         }
-        if m.items.len() > 14 {
-            let n = (m.items.len() - m.page * 14).min(14);
+        if m.items.len() > m.page_size {
+            let n = m.visible_rows();
             c.text_center(
                 f,
                 Rect::new(r.x, r.y + 4. + n as f32 * 26., r.w, 26.),
@@ -274,21 +289,20 @@ impl Browser {
                 &format!(
                     "< Previous          {} / {}          Next >",
                     m.page + 1,
-                    m.items.len().div_ceil(14)
+                    m.items.len().div_ceil(m.page_size)
                 ),
             );
         }
     }
 }
 impl Menu {
+    fn visible_rows(&self) -> usize {
+        self.items.len().saturating_sub(self.page * self.page_size).min(self.page_size)
+    }
+
     pub fn rect(&self) -> Rect {
-        let n = self
-            .items
-            .len()
-            .saturating_sub(self.page * 14)
-            .min(14)
-            .max(1);
-        let h = 8. + 26. * (n + usize::from(self.items.len() > 14)) as f32;
+        let n = self.visible_rows().max(1);
+        let h = 8. + 26. * (n + usize::from(self.items.len() > self.page_size)) as f32;
         let w = self.anchor.w.max(240.).min(390.);
         let x = self.anchor.x.min(crate::controls::SPEC.size.0 as f32 - 10. - w).max(10.);
         let y = if self.anchor.bottom() + h < crate::controls::SPEC.size.1 as f32 - 10. {
@@ -331,10 +345,7 @@ pub fn basic(index: usize) -> crate::wavetable::Source {
             }
         })
         .collect();
-    crate::wavetable::Source {
-        name: BASIC[index.min(5)].into(),
-        samples,
-    }
+    crate::wavetable::Source::new(BASIC[index.min(5)].into(), samples)
 }
 pub fn root_button(o: usize, i: usize) -> Rect {
     Rect::new(crate::instrument_view::osc_x(o)+20.+i as f32*94.,605.,90.,20.)

@@ -139,10 +139,10 @@ pub fn editable_bank(bank: usize) -> crate::wavetable::Source {
         let start = ((bank.min(3) * FRAMES + f) * MIPS + MIPS - 1) * SIZE;
         samples.extend_from_slice(&t.data[start..start + SIZE]);
     }
-    crate::wavetable::Source {
-        name: ["Basic", "Hollow", "Glass", "Vowel"][bank.min(3)].into(),
+    crate::wavetable::Source::new(
+        ["Basic", "Hollow", "Glass", "Vowel"][bank.min(3)].into(),
         samples,
-    }
+    )
 }
 
 #[derive(Clone, Copy, Default)]

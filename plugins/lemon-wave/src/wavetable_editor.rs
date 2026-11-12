@@ -2,7 +2,7 @@
 use crate::{
     assets::WaveParams,
     table_tools as tools,
-    wavetable::{MAX_FRAMES, SIZE, Source},
+    wavetable::{MAX_FRAMES, Source},
 };
 use os_ui::{Canvas, Font, Rect};
 pub const DRAW: Rect = Rect::new(32., 158., 720., 164.);
@@ -125,10 +125,12 @@ impl Workbench {
                 .into();
     }
     fn frame(&self) -> &[f32] {
-        &self.source.samples[self.selected * SIZE..(self.selected + 1) * SIZE]
+        self.source.frame(self.selected)
     }
     fn frame_mut(&mut self) -> &mut [f32] {
-        &mut self.source.samples[self.selected * SIZE..(self.selected + 1) * SIZE]
+        let size = self.source.frame_size;
+        let start = self.selected * size;
+        &mut self.source.samples[start..start + size]
     }
     fn checkpoint(&mut self) {
         if self.undo.len() == 24 {
@@ -205,11 +207,9 @@ impl Workbench {
         let frame=self.preview*(self.source.frames()-1) as f32;
         let left=frame as usize;
         let right=(left+1).min(self.source.frames()-1);
-        let cycle:Vec<_>=(0..SIZE).map(|i|{
-            let a=self.source.samples[left*SIZE+i];
-            a+(self.source.samples[right*SIZE+i]-a)*frame.fract()
-        }).collect();
-        p.audition.play(crate::morph::audition(&cycle,false));
+        let cycle: Vec<_> = self.source.frame(left).iter().zip(self.source.frame(right))
+            .map(|(&a, &b)| a + (b - a) * frame.fract()).collect();
+        p.audition.play(crate::morph::audition(&cycle, self.source.frame_size, false));
         self.last_scrub=Some(std::time::Instant::now());
     }
     pub fn move_input(&mut self,x:f32,y:f32,p:&WaveParams)->bool{
@@ -323,8 +323,8 @@ impl Workbench {
                             return Some(self.source.clone());
                         }
                     }
-                    4 => {self.selected = self.selected.saturating_sub(1);p.audition.play(crate::morph::audition(self.frame(),false));},
-                    5 => {self.selected = (self.selected + 1).min(self.source.frames() - 1);p.audition.play(crate::morph::audition(self.frame(),false));},
+                    4 => {self.selected = self.selected.saturating_sub(1);p.audition.play(crate::morph::audition(self.frame(),self.source.frame_size,false));},
+                    5 => {self.selected = (self.selected + 1).min(self.source.frames() - 1);p.audition.play(crate::morph::audition(self.frame(),self.source.frame_size,false));},
                     _ => {}
                 }
                 return None;
@@ -358,27 +358,28 @@ impl Workbench {
         }
         for i in 0..10 {
             if op(i).contains(x, y) {
+                let size = self.source.frame_size;
                 match i {
                     0 | 1 | 5 if self.source.frames() >= MAX_FRAMES => {
                         self.status = "Maximum 128 frames.".into()
                     }
                     0 => {
                         self.checkpoint();
-                        let at = (self.selected + 1) * SIZE;
-                        self.source.samples.splice(at..at, vec![0.; SIZE]);
+                        let at = (self.selected + 1) * size;
+                        self.source.samples.splice(at..at, vec![0.; size]);
                         self.selected += 1;
                     }
                     1 => {
                         self.checkpoint();
                         let copy = self.frame().to_vec();
-                        let at = (self.selected + 1) * SIZE;
+                        let at = (self.selected + 1) * size;
                         self.source.samples.splice(at..at, copy);
                         self.selected += 1;
                     }
                     2 if self.source.frames() > 1 => {
                         self.checkpoint();
-                        let at = self.selected * SIZE;
-                        self.source.samples.drain(at..at + SIZE);
+                        let at = self.selected * size;
+                        self.source.samples.drain(at..at + size);
                         self.selected = self.selected.min(self.source.frames() - 1);
                     }
                     3 if self.selected > 0 => {
@@ -391,13 +392,9 @@ impl Workbench {
                     }
                     5 if self.selected + 1 < self.source.frames() => {
                         self.checkpoint();
-                        let at = (self.selected + 1) * SIZE;
-                        let new: Vec<_> = (0..SIZE)
-                            .map(|i| {
-                                (self.source.samples[at - SIZE + i] + self.source.samples[at + i])
-                                    * 0.5
-                            })
-                            .collect();
+                        let at = (self.selected + 1) * size;
+                        let new: Vec<_> = self.frame().iter().zip(self.source.frame(self.selected + 1))
+                            .map(|(&a, &b)| (a + b) * 0.5).collect();
                         self.source.samples.splice(at..at, new);
                         self.selected += 1;
                     }
@@ -421,7 +418,7 @@ impl Workbench {
                 let frame = self.selected / 16 * 16 + i;
                 if frame < self.source.frames() {
                     self.selected = frame;
-                    p.audition.play(crate::morph::audition(self.frame(),false));
+                    p.audition.play(crate::morph::audition(self.frame(),self.source.frame_size,false));
                 }
                 return None;
             }
@@ -483,10 +480,11 @@ impl Workbench {
         None
     }
     fn swap(&mut self, other: usize) {
-        for i in 0..SIZE {
+        let size = self.source.frame_size;
+        for i in 0..size {
             self.source
                 .samples
-                .swap(self.selected * SIZE + i, other * SIZE + i);
+                .swap(self.selected * size + i, other * size + i);
         }
         self.selected = other;
     }
@@ -565,13 +563,14 @@ impl Workbench {
             1.,
             crate::design::color(0x50616b),
         );
+        let last_sample = self.source.frame_size - 1;
         let trace: Vec<_> = self
             .frame()
             .iter()
             .enumerate()
             .map(|(i, v)| {
                 (
-                    DRAW.x + DRAW.w * i as f32 / (SIZE - 1) as f32,
+                    DRAW.x + DRAW.w * i as f32 / last_sample as f32,
                     DRAW.cy() - v * DRAW.h * 0.48,
                 )
             })
@@ -617,9 +616,10 @@ impl Workbench {
             };
             let x = STACK.x + 12. + depth * 36.;
             let y = STACK.y + 50. + depth * 195.;
+            let samples = self.source.frame(frame);
             let trace: Vec<_> = (0..160)
                 .map(|i| {
-                    let v = self.source.samples[frame * SIZE + i * (SIZE - 1) / 159];
+                    let v = samples[i * last_sample / 159];
                     (x + i as f32 * 1.8, y - v * 27.)
                 })
                 .collect();
@@ -636,11 +636,11 @@ impl Workbench {
         let pos = self.preview * (frames - 1) as f32;
         let a = pos.floor() as usize;
         let b = (a + 1).min(frames - 1);
+        let (first, next) = (self.source.frame(a), self.source.frame(b));
         let trace: Vec<_> = (0..160)
             .map(|i| {
-                let k = i * (SIZE - 1) / 159;
-                let v = self.source.samples[a * SIZE + k] * (1. - pos.fract())
-                    + self.source.samples[b * SIZE + k] * pos.fract();
+                let k = i * last_sample / 159;
+                let v = first[k] * (1. - pos.fract()) + next[k] * pos.fract();
                 (
                     STACK.x + 12. + i as f32 * 1.8,
                     STACK.y + 50. + self.preview * 195. - v * 27.,
@@ -783,7 +783,7 @@ impl Workbench {
                 .map(|j| {
                     (
                         r.x + 8. + j as f32,
-                        r.cy() - self.source.samples[n * SIZE + j * (SIZE - 1) / 47] * 15.,
+                        r.cy() - self.source.frame(n)[j * last_sample / 47] * 15.,
                     )
                 })
                 .collect();
@@ -804,6 +804,28 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plasma_frames_keep_their_full_width_when_edited() {
+        let params = WaveParams::default();
+        let source = crate::plasma_wavetables::load(0).unwrap();
+        let mut workbench = Workbench { source: source.clone(), ..Default::default() };
+        let duplicate = op(1);
+        workbench.click(duplicate.cx(), duplicate.cy(), &params);
+        assert_eq!(workbench.source.frames(), source.frames() + 1);
+        assert_eq!(workbench.source.frame(1), source.frame(0));
+        let undo = op(6);
+        workbench.click(undo.cx(), undo.cy(), &params);
+        assert_eq!(workbench.source.samples, source.samples);
+        workbench.click(DRAW.right() - 0.02, DRAW.y + 1., &params);
+        workbench.release();
+        assert!(workbench.source.frame(0)[source.frame_size - 1] > 0.9);
+        let apply = top(3);
+        let edited = workbench.click(apply.cx(), apply.cy(), &params).unwrap();
+        assert_eq!(edited.frame_size, source.frame_size);
+        assert_eq!(edited.frames(), source.frames());
+        assert_eq!(edited.frame(1), source.frame(1));
+    }
+
     #[test]
     fn frame_edit_history_keyboard_and_layout() {
         let params = WaveParams::default();

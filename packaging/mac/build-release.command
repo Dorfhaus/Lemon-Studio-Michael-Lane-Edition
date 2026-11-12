@@ -22,6 +22,12 @@ case "${LEMON_MAC_ARCH:-$(uname -m)}" in
 esac
 export MACOSX_DEPLOYMENT_TARGET=12.0
 cargo build --locked --release -p os-app --target "$LEMON_APP_TARGET"
+# Guard the macOS 12 deployment target against direct imports of newer tap APIs.
+APP_IMPORTS="$(nm -u "$CARGO_TARGET_DIR/$LEMON_APP_TARGET/release/lemonstudio")"
+if grep -E '(^|[[:space:]])_AudioHardware(Create|Destroy)ProcessTap$' <<< "$APP_IMPORTS"; then
+    echo 'Core Audio process taps must be resolved at runtime for macOS 12 compatibility.' >&2
+    exit 1
+fi
 cargo run --locked --release -p bundle-app
 APP="$CARGO_TARGET_DIR/bundled/Lemon Studio.app"
 codesign --verify --deep --strict "$APP"

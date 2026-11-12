@@ -198,6 +198,7 @@ pub struct Rec {
     pub close_after_audio: bool,
     pub smart: crate::smart_recording::Smart,
     pub armed: bool,
+    pub(crate) note_record_row: Option<u16>,
     /// One-click audio recording is taking in (its button is lit; `crate::one_click`).
     pub audio: bool,
     held: Vec<Held>,
@@ -800,6 +801,15 @@ impl App {
             self.state.rec.since = self.state.rec.armed.then(|| self.state.history.done());
         }
         self.state.rec.was_live = live;
+        let note_row = if self.state.song_mode && self.rec_live(Opt::Notes) {
+            crate::smart_recording::instrument_lane(&self.state).map(|(row, _)| row)
+        } else {
+            None
+        };
+        if note_row != self.state.rec.note_record_row {
+            self.state.rec.note_record_row = note_row;
+            self.damage_win(crate::app::Win::Playlist);
+        }
     }
 
     /// TOOLS ▸ Cancel recording (spec: ui/cancel-recording.md §2): while Record is armed

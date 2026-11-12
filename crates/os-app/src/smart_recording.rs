@@ -17,6 +17,7 @@ pub(crate) fn instrument_lane(s:&crate::app::State)->Option<(u16,u16)> {
     let ch=s.project.channels.get(s.selected_channel)?.index;
     let arr=s.project.arrangement()?.number;
     s.project.instrument_lanes.iter().find(|v|v.0==ch&&v.1==arr).map(|v|(v.2,s.pattern.max(1)))
+        .or_else(||crate::attached_mixer::lane(s,s.project.channels[s.selected_channel].mixer_track).map(|row|(row,s.pattern.max(1))))
 }
 
 impl App {

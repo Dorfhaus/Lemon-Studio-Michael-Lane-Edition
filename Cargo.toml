@@ -29,3 +29,5 @@ opt-level = 3
 
 [patch.crates-io]
 mp3lame-sys = { path = "vendor/mp3lame-sys" }
+# CPAL 0.18.2 with optional Core Audio process taps for macOS 12/13.
+cpal = { path = "vendor/cpal" }

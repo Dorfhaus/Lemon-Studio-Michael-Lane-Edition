@@ -33,14 +33,24 @@ const ITEM_H: f32 = 20.0;
 
 /// Paints form `f` of dialog `m`.
 pub fn paint(ui: &mut Ui, s: &State, m: &Modal, f: &ExportForm) {
-    let r = place(s, m, W, H);
+    let advanced = f.advanced || f.to_clip;
+    let tabs = !f.to_clip && crate::workspace_visibility::shown(ef::ADVANCED_VISIBILITY);
+    let tab_space = if tabs { 32.0 } else { 0.0 };
+    let r = place(s, m, W, if advanced { H + tab_space } else { 292.0 + tab_space });
     frame(ui, r, if f.to_clip { crate::pattern_render::TITLE } else { ef::TITLE });
     let t = ui.t;
     let font = Font::new(13);
     let lh = ui.c.line_height(font);
     let mut boxes = Vec::new();
     // File: the name and the folder.
-    let g = Rect::new(r.x + 8.0, r.y + TOP, r.w - 16.0, FILE_H);
+    if tabs {
+        for (i, (caption, show_advanced)) in [("Easy", false), ("Advanced", true)].into_iter().enumerate() {
+            let b = Rect::new(r.x + 8.0 + 104.0 * i as f32, r.y + TOP, 100.0, 26.0);
+            let hovered = hit(ui, b, DHit::Form(FHit::ExportAdvanced(show_advanced)), caption);
+            kit::pill(ui.c, t, b, caption, font, kit::State::new(hovered, false, advanced == show_advanced));
+        }
+    }
+    let g = Rect::new(r.x + 8.0, r.y + TOP + tab_space, r.w - 16.0, FILE_H);
     section(ui, g, "File");
     let bx = g.x + 80.0;
     let name = Rect::new(bx, g.y + 26.0, 320.0, 24.0);
@@ -53,6 +63,11 @@ pub fn paint(ui: &mut Ui, s: &State, m: &Modal, f: &ExportForm) {
     label(ui, g.x + 12.0, fy, "Folder", true);
     ui.c.text_clip(font, bx, fy, folder.x - 8.0 - bx, t.text_dim, &f.folder.display().to_string());
     tool(ui, folder, Icon::Folder, DHit::Form(FHit::Folder), "Choose the folder the files go to", true);
+    if !advanced {
+        easy_formats(ui, f, Rect::new(g.x, g.bottom() + GAP, g.w, 108.0));
+        bottom(ui, r, f);
+        return;
+    }
     // The columns.
     let cw = ((r.w - 16.0 - GAP) / 2.0).floor();
     let (lx, rx) = (r.x + 8.0, r.x + 8.0 + cw + GAP);
@@ -67,6 +82,22 @@ pub fn paint(ui: &mut Ui, s: &State, m: &Modal, f: &ExportForm) {
         let (items, now) = f.list_items(k);
         list(ui, s, &items, now, b);
     }
+}
+
+fn easy_formats(ui: &mut Ui, f: &ExportForm, g: Rect) {
+    section(ui, g, "Formats");
+    let t = ui.t;
+    for (i, (format, caption)) in [(crate::export::WAV, "WAV · 24-bit"), (crate::export::MP3, "MP3 · 320 kbps")].into_iter().enumerate() {
+        let b = Rect::new(g.x + 12.0 + i as f32 * 165.0, g.y + 28.0, 157.0, 31.0);
+        let hovered = hit(ui, b, DHit::Form(FHit::Tile(format as u8)), ef::TILE_HINTS[format]);
+        if !f.o.formats[format] {
+            ui.c.stroke_rrect(b, 4.0, 1.0, if hovered { t.glyph_dim } else { t.text_faint });
+        }
+        kit::pill(ui.c, t, b, caption, Font::new(14), kit::State::new(hovered, false, f.o.formats[format]));
+    }
+    let source = if f.song { "Whole song" } else { "Current pattern" };
+    ui.c.text(Font::new(13), g.x + 12.0, g.y + 75.0, t.text_dim,
+        &format!("{source} · Stereo · {}", f.summary_text()));
 }
 
 /// Source: Play, Range and Tail as segmented rows, then the length and size line.
@@ -120,7 +151,7 @@ fn quality(ui: &mut Ui, f: &ExportForm, g: Rect, boxes: &mut Vec<(u8, Rect)>) {
 fn formats(ui: &mut Ui, f: &ExportForm, g: Rect, boxes: &mut Vec<(u8, Rect)>) {
     section(ui, g, "Formats");
     let t = ui.t;
-    let font = Font::new(13).bold();
+    let font = Font::new(14);
     let combos: [&[(u8, f32)]; 4] = [&[(0, 140.0)], &[(1, 90.0), (2, 90.0)], &[(3, 110.0)], &[(4, 110.0)]];
     for (i, name) in FORMATS.iter().enumerate() {
         let y = g.y + 28.0 + i as f32 * 30.0;

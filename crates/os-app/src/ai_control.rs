@@ -48,6 +48,15 @@ fn root() -> Result<PathBuf, String> {
         .map(|p| p.join("AI control"))
         .ok_or("User folder unavailable".into())
 }
+pub(crate) const ACTIVITY_ORB_VISIBILITY: &str = "visible_mcp-activity-orb";
+const ORB_LINGER: Duration = Duration::from_millis(1500);
+const ORB_FADE: Duration = Duration::from_millis(220);
+
+struct OrbActivity {
+    started: Instant,
+    last_command: Instant,
+}
+
 #[derive(Default)]
 pub struct UiState {
     pub enabled: bool,
@@ -57,6 +66,29 @@ pub struct UiState {
     pub status: String,
     pub address: String,
     pub calls: u64,
+    activity: Option<OrbActivity>,
+}
+
+impl UiState {
+    fn mark_command(&mut self, now: Instant) {
+        let activity = self.activity.get_or_insert(OrbActivity {
+            started: now,
+            last_command: now,
+        });
+        activity.last_command = now;
+    }
+
+    pub(crate) fn orb_frame(&self, now: Instant) -> Option<(f32, f32)> {
+        let activity = self.activity.as_ref()?;
+        let remaining = ORB_LINGER.checked_sub(now.duration_since(activity.last_command))?;
+        let phase = now.duration_since(activity.started).as_secs_f32() * 1.8;
+        let opacity = (remaining.as_secs_f32() / ORB_FADE.as_secs_f32()).min(1.);
+        Some((phase, opacity))
+    }
+
+    pub(crate) fn orb_active(&self) -> bool {
+        self.activity.is_some() && crate::workspace_visibility::shown(ACTIVITY_ORB_VISIBILITY)
+    }
 }
 pub struct Request {
     rpc: Value,
@@ -377,6 +409,7 @@ pub fn disable(app: &mut App) {
     app.state.ai.remember = false;
     app.ai_runtime = None;
     app.state.ai.enabled = false;
+    app.state.ai.activity = None;
     app.state.ai.client.clear();
     app.state.ai.pending.clear();
     app.state.ai.address.clear();
@@ -490,6 +523,14 @@ pub fn approve(app: &mut App, allow: bool) {
     app.invalidate();
 }
 pub fn tick(app: &mut App) {
+    let repaint_orb = app.state.ai.orb_active();
+    if app.state.ai.orb_frame(Instant::now()).is_none() {
+        app.state.ai.activity = None;
+        if repaint_orb {
+            // The previous frame may still contain orb pixels when a scroll is queued.
+            app.invalidate();
+        }
+    }
     if app.ai_runtime.is_none() {
         return;
     }
@@ -592,6 +633,7 @@ pub fn tick(app: &mut App) {
                 let args = &req.rpc["params"]["arguments"];
                 let output = crate::ai_commands::call(app, name, args);
                 app.state.ai.calls += 1;
+                app.state.ai.mark_command(Instant::now());
                 let (is_error, text) = match output {
                     Ok(v) => (false, v.to_string()),
                     Err(e) => (true, e),
@@ -604,6 +646,9 @@ pub fn tick(app: &mut App) {
             _ => Response::error(id, -32601, "Unknown MCP method"),
         };
         let _ = req.reply.send(result);
+    }
+    if repaint_orb || app.state.ai.orb_active() {
+        app.damage_rect(crate::views::dialog::mcp_orb_bounds(&app.state));
     }
 }
 /// MCP stdio adapter: starts no DAW, audio device or model. Credentials stay in the user's local profile.
@@ -798,10 +843,15 @@ mod tests {
         let h = request(url.clone(), key.clone(), "wrong".into(), rpc.clone(), false);
         assert_eq!(wait(&mut a, h).0, 404);
         assert_ne!(a.state.tempo, 123.);
+        assert!(a.state.ai.activity.is_none());
         let h = request(url.clone(), key.clone(), sid.clone(), rpc, false);
         let r = wait(&mut a, h);
         assert_eq!(r.1["result"]["isError"], false);
         assert_eq!(a.state.tempo, 123.);
+        let first_command = a.state.ai.activity.as_ref().unwrap().last_command;
+        let fade = a.state.ai.orb_frame(first_command + ORB_LINGER - ORB_FADE / 2).unwrap();
+        assert!((fade.1 - 0.5).abs() < 0.001);
+        assert!(a.state.ai.orb_frame(first_command + ORB_LINGER + ORB_FADE).is_none());
         let h = request(
             url.clone(),
             key.clone(),
@@ -816,6 +866,7 @@ mod tests {
                 .len(),
             16
         );
+        assert_eq!(a.state.ai.activity.as_ref().unwrap().last_command, first_command);
         open(&mut a);
         assert!(call(
             &mut a,
@@ -827,6 +878,7 @@ mod tests {
         let stop = a.ai_runtime.as_ref().unwrap().stop.clone();
         disable(&mut a);
         assert!(stop.load(Ordering::Acquire));
+        assert!(a.state.ai.activity.is_none());
         assert!(a.ai_runtime.is_none());
         assert!(call(
             &mut a,
@@ -940,7 +992,7 @@ mod tests {
         a.paint(&mut canvas, None);
         assert!(a.hits.iter().any(|h| h.action == Action::Ai));
         assert!(a.ai_runtime.is_none());
-        a.act(Action::Ai);
+        open(&mut a);
         a.paint(&mut canvas, None);
         assert!(a
             .hits

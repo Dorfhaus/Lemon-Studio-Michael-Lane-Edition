@@ -205,7 +205,7 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     Ok(Opened { out, rate: now.round() as u32, frames: frames as u32, buffers, channels: channels as u16, inputs, rates, sizes, latency, input_latency })
 }
 
-/// The lengths of `audio_cfg::BUFFERS` a driver takes: within its range, and a power of two or a whole number of steps
+/// The supported sizes to offer: within its range, and a power of two or a whole number of steps
 /// past its smallest as it says (`ASIOGetBufferSize`'s granularity; asio-sys gives -1, powers of two, as `Only`). A
 /// driver with one length (its smallest is its largest, or no granularity): none, its own being the one.
 fn sizes(r: &sys::BufferSizeRange) -> Vec<u32> {
@@ -218,7 +218,12 @@ fn sizes(r: &sys::BufferSizeRange) -> Vec<u32> {
     if min >= max {
         return Vec::new();
     }
-    crate::audio_cfg::BUFFERS.into_iter().filter(|&b| (min..=max).contains(&b) && takes(b)).collect()
+    match r.preferred {
+        sys::BufferPreference::Stepped { step, .. } if (max - min) / step.max(1) <= 64 => {
+            (min..=max).step_by(step.max(1) as usize).collect()
+        }
+        _ => crate::audio_cfg::BUFFERS.into_iter().filter(|&b| (min..=max).contains(&b) && takes(b)).collect(),
+    }
 }
 
 /// Opens the open driver's own settings window (the driver's panel: its buffer length, its device). A buffer length
@@ -415,7 +420,7 @@ mod tests {
         use sys::BufferPreference::*;
         let range = |min, max, preferred| sys::BufferSizeRange { min, max, preferred };
         assert_eq!(sizes(&range(64, 2048, Stepped { preferred: 512, step: 8 })), [64, 128, 256, 512, 1024, 2048]);
-        assert_eq!(sizes(&range(96, 2048, Stepped { preferred: 512, step: 32 })), [128, 256, 512, 1024, 2048]);
+        assert_eq!(sizes(&range(96, 2048, Stepped { preferred: 512, step: 32 })), (96..=2048).step_by(32).collect::<Vec<_>>());
         assert_eq!(sizes(&range(100, 1000, Only(256))), [128, 256, 512], "powers of two");
         assert_eq!(sizes(&range(512, 512, Preferred(512))), [] as [u32; 0], "its own only");
         assert_eq!(sizes(&range(256, 2048, Preferred(512))), [] as [u32; 0], "no granularity: its own only");

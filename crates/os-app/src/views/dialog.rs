@@ -47,7 +47,10 @@ pub fn paint(ui: &mut Ui, s: &State) {
     let full = Rect::new(0.0, 0.0, s.screen.0, s.screen.1);
     for m in &s.dialogs {
         ui.c.fill_rect(full, Color::rgb(0).with_alpha(80));
-        ui.hit(full, Action::Swallow, "");
+        let voice_orb = matches!(m.body, Body::VoiceAssistant) && matches!(s.voice_ui.screen,
+            crate::voice_assistant::Screen::Listening | crate::voice_assistant::Screen::Processing |
+            crate::voice_assistant::Screen::Ready | crate::voice_assistant::Screen::Result);
+        ui.hit(full, if voice_orb { Action::Dlg(DHit::Voice(crate::voice_assistant::Button::Dismiss)) } else { Action::Swallow }, "");
         match &m.body {
             Body::ClipFx(channel,page)=>{let r=place(s,m,510.,386.);frame(ui,r,"Clip Effects");crate::clip_effects::paint(ui,s,r,*channel,*page);},
             Body::Collaboration(f)=>{let r=place(s,m,594.,454.);frame(ui,r,"Collaborate - direct host");crate::collaboration::paint(ui,r,f);},
@@ -60,6 +63,7 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 crate::vocal_align::paint(ui, r, form);
             }
             Body::Ai => ai_box(ui,s,m),
+            Body::VoiceAssistant => voice_box(ui, s, m),
             Body::RoutePicker(f) => route_picker_box(ui,s,m,f),
             Body::MixerInsert(f) => mixer_insert_box(ui, s, m, f),
             Body::Headphones(f) => headphones_box(ui,s,m,f),
@@ -923,6 +927,204 @@ fn route_picker_box(ui:&mut Ui,s:&State,m:&Modal,f:&crate::route_picker::Form){
 }
 
 
+/// Projected, continuously deforming sphere. All geometry stays on the UI thread;
+/// microphone capture and inference never perform animation work.
+fn paint_voice_orb(c: &mut os_ui::Canvas, center: (f32, f32), radius: f32, time: f32, energy: f32, analyzing: bool, opacity: f32) {
+    let alpha = |value: f32| (value * opacity) as u8;
+    use std::f32::consts::{PI, TAU};
+    let speed = if analyzing { 1.7 } else { 1.05 };
+    let t = time * speed;
+    let cx = center.0 + (time*0.63).sin()*3.;
+    let cy = center.1 + (time*0.81).sin()*4.;
+    let r = radius * (1. + 0.025*time.sin() + energy*0.09);
+    let blue = Color::rgb(0x299dff);
+    for i in (1..=14).rev() {
+        c.fill_circle(cx,cy,r*(1.+i as f32*0.037),blue.with_alpha(alpha(2.+energy*2.)));
+        let f=i as f32/14.;
+        let shadow: Vec<_>=(0..=48).map(|j| {
+            let a=j as f32*TAU/48.;
+            (cx+a.cos()*r*f,center.1+r+25.+a.sin()*5.*f)
+        }).collect();
+        c.fill_polygon(&shadow,blue.with_alpha(alpha(3.)));
+    }
+    let contour = |scale: f32, offset: (f32,f32)| -> Vec<(f32,f32)> {
+        (0..=96).map(|i| {
+            let a=i as f32*TAU/96.;
+            let wave=(a*3.+t).sin()*0.075+(a*5.-t*1.3).cos()*0.04
+                +energy*(a*4.-t*2.).sin()*0.065;
+            (cx+offset.0+a.cos()*r*scale*(1.+wave),cy+offset.1+a.sin()*r*scale*(1.+wave))
+        }).collect()
+    };
+    let edge=contour(1.,(0.,0.));
+    c.fill_polygon(&edge,Color::rgb(0x031c49).with_alpha(alpha(190.)));
+    // Offset translucent contours make a continuous highlight instead of a flat disc.
+    for i in (1..=26).rev() {
+        let f=i as f32/26.;
+        c.fill_polygon(&contour(f,(-r*(1.-f)*0.28,-r*(1.-f)*0.36)),Color::rgb(0x32aafa).with_alpha(alpha(10.)));
+    }
+    c.polyline(&edge,5.,blue.with_alpha(alpha(20.)));
+    c.polyline(&edge,1.,Color::rgb(0x77ddff).with_alpha(alpha(145.)));
+    // Latitude ribbons rotate in 3D. Depth determines brightness and thickness.
+    // Draw the far hemisphere first so the near filaments read as a curved volume.
+    for front in [false,true] {
+        for band in 0..19 {
+            let latitude=-PI*0.46+band as f32*PI*0.92/18.;
+            let mut previous: Option<(f32,f32,f32)>=None;
+            for step in 0..=96 {
+                let lon=step as f32*TAU/96.;
+                let lat=latitude+0.08*(lon*3.+t+band as f32*0.32).sin()*(1.+energy);
+                let ripple=1.+0.045*(lon*3.+t*1.2+lat*4.).sin()+energy*0.06*(lon*5.-t*2.).sin();
+                let x=lat.cos()*(lon+t*0.32).cos()*r*ripple;
+                let y=lat.sin()*r*ripple;
+                let z=lat.cos()*(lon+t*0.32).sin()*r*ripple;
+                let tilt=0.42+0.18*(t*0.3).sin();
+                let yy=y*tilt.cos()-z*tilt.sin();
+                let zz=y*tilt.sin()+z*tilt.cos();
+                let roll=0.28*(t*0.4).sin();
+                let p=(cx+x*roll.cos()-yy*roll.sin(),cy+x*roll.sin()+yy*roll.cos(),zz);
+                if let Some(old)=previous {
+                    if (zz>=0.)==front && (old.2>=0.)==front {
+                        let depth=(zz/r).clamp(0.,1.);
+                        let shimmer=(lon*2.-t*1.8+latitude*3.).sin()*0.5+0.5;
+                        let brightness=if front { 65.+depth*100.+shimmer*65. } else { 18. };
+                        let ink=if shimmer>0.8 {Color::rgb(0xb3f1ff)} else {Color::rgb(0x3ab9ff)};
+                        c.line(old.0,old.1,p.0,p.1,if front {0.8+depth*0.65} else {0.6},ink.with_alpha(alpha(brightness)));
+                    }
+                }
+                previous=Some(p);
+            }
+        }
+    }
+    // Small orbiting sparks add parallax without obscuring the listening label.
+    for i in 0..14 {
+        let a=i as f32*TAU/14.+t*0.6;
+        let z=a.sin();
+        let x=cx+a.cos()*r*1.22;
+        let y=cy+z*r*0.30+(a*2.+t).sin()*7.;
+        c.fill_circle(x,y,1.+(z+1.)*0.6,Color::rgb(0xa3eaff).with_alpha(alpha(55.+(z+1.)*75.)));
+    }
+}
+
+fn voice_box(ui: &mut Ui, s: &State, modal: &Modal) {
+    use crate::voice_assistant::{Button, Screen};
+    let area = place(s, modal, 480.0_f32.min(s.screen.0 - 12.0), 416.0_f32.min(s.screen.1 - 12.0));
+    let voice = &s.voice_ui;
+    let orb = matches!(voice.screen, Screen::Listening | Screen::Processing | Screen::Ready | Screen::Result);
+    if !orb { frame(ui, area, "AI assistant"); }
+    let button = |ui: &mut Ui, rect, action, label| {
+        let hot = hit(ui, rect, DHit::Voice(action), "");
+        ui.c.fill_rrect(rect, 7.0, if hot { ui.t.button_hi } else { ui.t.s(0x263e50) });
+        ui.c.text_center(Font::new(12).bold(), rect, ui.t.text, label);
+    };
+    if voice.screen == Screen::Choose {
+        ui.c.text_center(Font::new(22).bold(), Rect::new(area.x, area.y+57., area.w, 32.), ui.t.text, "Choose your AI assistant");
+        let selected = crate::settings_file::read(|s| s.get("ai_assistant_mode").unwrap_or("").to_owned());
+        button(ui, Rect::new(area.x+28., area.y+113., area.w-56., 44.), Button::Local,
+            if selected == "local" { "Local AI assistant (selected)" } else { "Use local AI assistant" });
+        ui.c.text_center(Font::new(11), Rect::new(area.x, area.y+162., area.w, 20.), ui.t.text_dim, "One-time download. Speech stays on this computer.");
+        button(ui, Rect::new(area.x+28., area.y+201., area.w-56., 44.), Button::External,
+            if selected == "mcp" { "MCP / own assistant (selected)" } else { "Use MCP / your own assistant" });
+        ui.c.text_center(Font::new(11), Rect::new(area.x, area.y+250., area.w, 20.), ui.t.text_dim, "Change this anytime in Options > Settings > AI assistant settings.");
+        ui.c.text_center(Font::new(11), Rect::new(area.x, area.y+282., area.w, 20.), ui.t.text, &voice.status);
+        return;
+    }
+    let phase = voice.phase;
+    let energy = (voice.level * 16.0).clamp(0.0, 1.0).sqrt();
+    let center = (area.cx(), area.y + 136.0);
+    let radius = 77.0;
+    let blue = Color::rgb(0x38aaff);
+    paint_voice_orb(ui.c, center, radius, phase, energy, voice.screen == Screen::Processing, 1.);
+    if matches!(voice.screen, Screen::Listening | Screen::Ready | Screen::Result) {
+        // A stable target surrounds the moving surface, so it never slips away from a click.
+        hit(ui, Rect::new(center.0-105., center.1-105., 210., 210.),
+            DHit::Voice(if voice.screen == Screen::Listening { Button::Finish } else { Button::Listen }), "Click to finish or start listening");
+    }
+    let title = match voice.screen {
+        Screen::Choose => "Choose your assistant".into(),
+        Screen::Setup => "Download the offline assistant".into(),
+        Screen::Download => format!("Downloading... {}%", voice.progress),
+        Screen::Ready => "Ready to listen".into(),
+        Screen::Listening => "Listening".into(),
+        Screen::Processing => "Analyzing".into(),
+        Screen::Result => "Let's try again".into(),
+    };
+    ui.c.text_center(Font::new(25), Rect::new(area.x, area.y+253., area.w, 34.), Color::rgb(0xc9eaff), &title);
+    if matches!(voice.screen, Screen::Listening | Screen::Processing) {
+        for i in 0..27 {
+            let x = (i as f32 - 13.) / 13.;
+            let envelope = (1.-x*x).max(0.);
+            let movement = if voice.screen == Screen::Processing {
+                0.35 + 0.65*(phase*3.-x*5.).sin().powi(2)
+            } else { energy * (0.25 + 0.75*(phase*2.5+x*9.).sin().abs()) };
+            let height = 2. + envelope * (3.+movement*15.);
+            ui.c.fill_rrect(Rect::new(area.cx()+i as f32*5.-66.,area.y+302.-height*0.5,2.,height),1.,
+                Color::rgb(0x71ceff).with_alpha((95.+movement*140.) as u8));
+        }
+    }
+    let detail = if !voice.status.is_empty() { voice.status.as_str() } else { match voice.screen {
+        Screen::Setup => "One-time download, 745 MB. Then fully offline.",
+        Screen::Download => "Downloading and verifying your assistant",
+        Screen::Listening => "Say Set tempo to 128 BPM. Pause or click the orb to finish.",
+        Screen::Processing => "Turning your words into action",
+        _ => "Click the orb to speak again.",
+    }};
+    if !orb || !voice.status.is_empty() { ui.c.text_clip(Font::new(12), area.x+18., area.y+322., area.w-36., ui.t.text, detail); }
+    if matches!(voice.screen, Screen::Listening | Screen::Ready | Screen::Result) {
+        button(ui, Rect::new(area.cx()-66., area.y+352.,132.,28.), Button::KeepActive,
+            if voice.keep_active { "Minimize" } else { "Keep active" });
+    }
+    if voice.screen == Screen::Download {
+        let bar=Rect::new(area.x+26., area.y+349., area.w-52., 8.);
+        ui.c.fill_rrect(bar,4.,ui.t.sunken);
+        ui.c.fill_rrect(Rect::new(bar.x,bar.y,bar.w*voice.progress as f32/100.,bar.h),4.,blue);
+    }
+    if voice.screen == Screen::Setup {
+        button(ui, Rect::new(area.x+18., area.bottom()-44., 180., 28.), Button::Download, "Download and start");
+    }
+    if !orb && voice.screen != Screen::Download {
+        button(ui, Rect::new(area.right()-156., area.bottom()-44., 138., 28.), Button::Choose, "Assistant settings");
+    }
+}
+
+pub(crate) fn mcp_orb_bounds(s: &State) -> Rect {
+    let (width, height) = s.screen;
+    Rect::new((width - 132.).max(0.), (height - 140.).max(0.), 132., 140.)
+}
+
+pub(crate) fn paint_mcp_orb(ui: &mut Ui, s: &State) {
+    if s.native_view.is_some() || !s.ai.orb_active() {
+        return;
+    }
+    let Some((phase, opacity)) = s.ai.orb_frame(std::time::Instant::now()) else {
+        return;
+    };
+    let area = mcp_orb_bounds(s);
+    paint_voice_orb(ui.c, (area.cx(), area.y + 54.), 31., phase, 0., true, opacity);
+    let label = Rect::new(area.cx() - 37., area.y + 104., 74., 23.);
+    ui.c.fill_rrect(label, 9., Color::rgb(0x102437).with_alpha((220. * opacity) as u8));
+    ui.c.text_center(Font::new(12).bold(), label,
+        Color::rgb(0xc9eaff).with_alpha((255. * opacity) as u8), "Working");
+}
+
+/// Non-modal companion. Only its own controls capture clicks; the workspace stays editable.
+pub fn paint_voice_dock(ui: &mut Ui, s: &State) {
+    if !s.voice_ui.keep_active || !crate::voice_assistant::available() || !s.dialogs.is_empty() || s.native_view.is_some() {return;}
+    let r=Rect::new((s.screen.0-112.).max(0.),(s.screen.1-116.).max(0.),100.,100.);
+    let t=s.voice_ui.dock_progress.clamp(0.,1.);
+    let ease=1.-(1.-t).powi(3);
+    let origin=(s.screen.0*0.5,s.screen.1*0.5-72.);
+    let center=(origin.0+(r.cx()-origin.0)*ease,origin.1+(r.y+40.-origin.1)*ease);
+    let radius=77.+(27.-77.)*ease;
+    paint_voice_orb(ui.c,center,radius,s.voice_ui.phase,0.,false,1.);
+    if t<1. {return;}
+    ui.hit(Rect::new(r.x+12.,r.y+6.,76.,70.),Action::Ai,"AI assistant: click to speak. Microphone is off while idle.");
+    ui.c.text_center(Font::new(10),Rect::new(r.x,r.y+75.,r.w,16.),Color::rgb(0xaedbfa),"Click to speak");
+    let close=Rect::new(r.right()-18.,r.y-2.,18.,18.);
+    ui.hit(close,Action::Voice(crate::voice_assistant::Button::HideDock),"Dismiss the assistant orb");
+    ui.c.fill_rrect(close,9.,Color::rgb(0x153348).with_alpha(220));
+    ui.c.text_center(Font::new(12),close,Color::rgb(0xaedbfa),"×");
+}
+
 fn ai_box(ui:&mut Ui,s:&State,m:&Modal){
  let r=place(s,m,600f32.min(s.screen.0-12.),410f32.min(s.screen.1-12.));frame(ui,r,"AI control");
  let a=&s.ai;let ink=ui.t.text;let dim=ui.t.text_dim;
@@ -949,4 +1151,35 @@ fn ai_box(ui:&mut Ui,s:&State,m:&Modal){
  let status=Rect::new(r.x+22.,r.y+313.,r.w-44.,45.);ui.hit(status,Action::Swallow,a.status.clone());
  let mut y=status.y;let mut line=String::new();for word in a.status.split_whitespace(){let next=if line.is_empty(){word.into()}else{format!("{line} {word}")};if ui.c.text_width(Font::new(11),&next)>status.w&&!line.is_empty(){ui.c.text_clip(Font::new(11),status.x,y,status.w,ink,&line);y+=16.;line=word.into();if y>status.bottom(){break;}}else{line=next;}}if y<=status.bottom(){ui.c.text_clip(Font::new(11),status.x,y,status.w,ink,&line);}
  ui.c.text_clip(Font::new(10),r.x+22.,r.bottom()-26.,r.w-44.,dim,&format!("Local connection only  |  {} commands this session  |  MCP compatible",a.calls));
+}
+
+#[cfg(test)]
+mod voice_orb_visual {
+    #[test]
+    #[ignore = "Local AI experiment is on hold"]
+    fn renders_living_orb_states_without_microphone() {
+        let mut app = crate::app::App::new(None);
+        app.show_form(crate::dialog::Body::VoiceAssistant);
+        let mut canvas = os_ui::Canvas::new(1280, 800, 1.).unwrap();
+        let mut previous = Vec::new();
+        for (name, phase, level, state) in [
+            ("listening-quiet", 0.2, 0.0, crate::voice_assistant::Screen::Listening),
+            ("listening-voice", 2.4, 0.055, crate::voice_assistant::Screen::Listening),
+            ("analyzing", 4.8, 0.0, crate::voice_assistant::Screen::Processing),
+        ] {
+            app.state.voice_ui.phase = phase;
+            app.state.voice_ui.level = level;
+            app.state.voice_ui.screen = state;
+            app.invalidate();
+            app.paint(&mut canvas, None);
+            assert!(app.voice_session.is_none());
+            assert_ne!(previous, canvas.pixmap.data());
+            previous = canvas.pixmap.data().to_vec();
+            if let Some(out) = std::env::var_os("OS_SHOT_DIR") {
+                let out = std::path::PathBuf::from(out);
+                std::fs::create_dir_all(&out).unwrap();
+                canvas.pixmap.save_png(out.join(format!("orb-{name}.png"))).unwrap();
+            }
+        }
+    }
 }

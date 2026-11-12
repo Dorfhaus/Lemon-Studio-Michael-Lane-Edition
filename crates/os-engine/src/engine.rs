@@ -27,6 +27,7 @@ use crate::laws;
 use crate::sample::{Sample, SampleLibrary};
 
 mod mix_workers;
+mod mixer_graph;
 mod instrument_workers;
 mod layers;
 mod marks;
@@ -605,6 +606,8 @@ impl ChannelState {
 
 #[derive(Debug, Clone, Copy)]
 struct Voice {
+    edit_last:(f32,f32),
+    edit_transition:Option<((f32,f32),u32,u32)>,
     drive:f32,
     origin: Option<ClipOrigin>,
     channel: usize,
@@ -991,6 +994,75 @@ fn strip_process(track:&mut MixTrack,buf:&mut[f32]) {
  track.strip.low_cut(buf);track.strip.gate(buf);track.strip.pre(buf);track.eq.process(buf);track.strip.tame(buf);track.strip.compress(buf);track.strip.deess(buf);
 }
 
+/// Shared by serial rendering and owned graph jobs.
+fn finish_mix_audio(track: &mut MixTrack, buf: &mut [f32], frames: usize, rate: u32) {
+    let limit = os_dsp::glide::engine_limit(rate);
+    // The four gains glide to their targets: a per-sample step for this tick, at most `limit`, applied as a
+    // running sum (spec: audio/mixer.md "Gains ramp").
+    let to = track.matrix;
+    let mut ramps = [[track.gains[0][0].block(to[0][0], frames, limit), track.gains[0][1].block(to[0][1], frames, limit)], [
+        track.gains[1][0].block(to[1][0], frames, limit),
+        track.gains[1][1].block(to[1][1], frames, limit),
+    ]];
+    if ramps.iter().flatten().all(|r| r.is_flat()) {
+        let [[ll, lr], [rl, rr]] = ramps.map(|r| r.map(|g| g.first()));
+        for f in buf.chunks_exact_mut(2) {
+            let (l, r) = (f[0], f[1]);
+            f[0] = ll * l + lr * r;
+            f[1] = rr * r + rl * l;
+        }
+    } else {
+        for f in buf.chunks_exact_mut(2) {
+            let [[ll, lr], [rl, rr]] = [[ramps[0][0].next(), ramps[0][1].next()], [ramps[1][0].next(), ramps[1][1].next()]];
+            let (l, r) = (f[0], f[1]);
+            f[0] = ll * l + lr * r;
+            f[1] = rr * r + rl * l;
+        }
+    }
+    track.vu.process(&buf, rate);
+    let pk = &mut track.peak;
+    for f in buf.chunks_exact(2) {
+        pk[0] = pk[0].max(f[0].abs());
+        pk[1] = pk[1].max(f[1].abs());
+    }
+}
+
+fn send_mix_audio(track: &mut MixTrack, buf: &[f32], frames: usize, rate: u32,
+    padded: &mut Vec<f32>, add: &mut dyn FnMut(usize, &[f32])) {
+    let limit = os_dsp::glide::engine_limit(rate);
+    // Sends glide like the matrix gains; a route at 0 passes nothing.
+    for route in &mut track.routes {
+        let mut ramp = route.glide.block(route.gain, frames, limit);
+        if route.pad.len() > 0 {
+            // Delay compensation: the send's level, then its pad, which runs every tick (also at level 0).
+            padded.clear();
+            if ramp.is_flat() {
+                let g = ramp.first();
+                padded.extend(buf.iter().map(|s| *s * g));
+            } else {
+                for s in buf.chunks_exact(2) {
+                    let g = ramp.next();
+                    padded.extend([s[0] * g, s[1] * g]);
+                }
+            }
+            route.pad.run(padded);
+            add(route.dest, padded);
+        } else if !ramp.is_flat() {
+            padded.clear();
+            for s in buf.chunks_exact(2) {
+                let g = ramp.next();
+                padded.extend([s[0] * g, s[1] * g]);
+            }
+            add(route.dest, padded);
+        } else if ramp.first() != 0.0 {
+            let g = ramp.first();
+            padded.clear();
+            padded.extend(buf.iter().map(|s| *s * g));
+            add(route.dest, padded);
+        }
+    }
+}
+
 pub struct Engine {
     vocal_audition:Option<crate::vocal_audition::Voice>,
     frozen_instrument_rows: Vec<usize>,
@@ -1013,6 +1085,11 @@ pub struct Engine {
     order: Vec<usize>,
     parallel: mix_workers::State,
     instrument_workers: instrument_workers::State,
+    threaded_generators: bool,
+    worker_limit: usize,
+    smart_disable: bool,
+    worker_priority: mix_workers::Priority,
+    compensate_playback: bool,
     mpe:Vec<(usize,crate::mpe::Playback)>,
     triggers: Vec<Trigger>,
     next_trigger: usize,
@@ -1623,6 +1700,11 @@ impl Engine {
             order,
             parallel: mix_workers::State::new(),
             instrument_workers: instrument_workers::State::new(),
+            threaded_generators: mix_workers::enabled(),
+            worker_limit: usize::MAX,
+            smart_disable: false,
+            worker_priority: mix_workers::Priority::default(),
+            compensate_playback: true,
             mpe,
             triggers,
             next_trigger: 0,
@@ -2123,6 +2205,7 @@ impl Engine {
         };
         self.note_off_one(channel, key); // retrigger
         self.voices.push(Voice {
+            edit_last:(0.,0.),edit_transition:None,
             drive:0.,origin: None,
             channel,
             pos: 0.0,
@@ -2540,9 +2623,11 @@ impl Engine {
             };
             exact.or_else(trimmed).map(|i| active.remove(i))
         };
+        let changed_samples:std::collections::HashSet<_>=self.channels.iter().zip(&old.channels).enumerate().filter_map(|(i,(a,b))|match (&a.sample,&b.sample){(Some(a),Some(b))if !Arc::ptr_eq(a,b)=>Some(i),_=>None}).collect();
         for v in &mut self.voices {
             if v.origin.is_none() { continue; }
             if let Some(t) = take(&mut active, v.channel, v.origin) {
+                if changed_samples.contains(&v.channel){v.buf=t.buf;v.pos=t.from;let frames=(self.rate as f64*0.005).round().max(1.)as u32;v.edit_transition=Some((v.edit_last,frames,frames));}
                 if let (Some(shape), Some(new)) = (v.shape.as_mut(), t.shape) {
                     *shape = if v.origin == t.origin {
                         ClipShape { since: shape.since, age_origin: shape.age_origin, declick: shape.declick, ..new }
@@ -3333,6 +3418,7 @@ impl Engine {
         let gain = self.channels[t.channel].start_gain_via(t.vel, t.pan, layer);
         let serial = self.channels[t.channel].serial;
         self.voices.push(Voice {
+            edit_last:(0.,0.),edit_transition:None,
             drive:t.levels.drive,origin: t.origin,
             channel: t.channel,
             pos: t.from,
@@ -3422,7 +3508,7 @@ impl Engine {
             self.scratch.1.resize(n, 0.0);
         }
         let mut active = false;
-        let parallel = self.parallel.enabled && self.instrument_workers.ready(&self.channels);
+        let parallel = self.worker_limit > 1 && self.threaded_generators && self.instrument_workers.ready(&self.channels);
         let mut pending = 0;
         self.instrument_workers.outputs.clear();
         for (c, ch) in self.channels.iter().enumerate() {
@@ -3441,6 +3527,7 @@ impl Engine {
                 self.missed += 1;
                 continue;
             };
+            inst.set_smart_disable(self.smart_disable && !self.exporting);
             // The channel's pitch (knob, control points, automation, fine tune, root note, main pitch; a sampler
             // channel's instrument applies root and fine itself) reaches the instrument as each note's tuning, with the
             // note's fine pitch, on top of any glide; notes keep the pitch they started with. A plugin channel's
@@ -3548,10 +3635,17 @@ impl Engine {
             job.until = self.busy_until.or_else(|| Some(Instant::now() + self.busy_wait));
             job.wait = self.busy_wait;
             job.export = self.exporting;
+            job.priority = self.worker_priority;
+            job.smart_disable = self.smart_disable && !self.exporting;
             if parallel {
                 drop(inst);
                 mix_workers::submit_instrument(job, self.instrument_workers.tx.clone());
                 pending += 1;
+                if pending == self.worker_limit {
+                    let ready = self.instrument_workers.rx.recv().expect("instrument worker must return its buffers");
+                    self.instrument_workers.outputs.push(ready);
+                    pending -= 1;
+                }
             } else {
                 job.render(&mut *inst);
                 self.instrument_workers.outputs.push(job);
@@ -3784,55 +3878,33 @@ impl Engine {
     }
 
     /// Enable independent instrument and mixer effect-chain workers. Routing stays ordered.
-    pub fn set_multicore(&mut self, enabled: bool) { self.parallel.enabled = enabled; }
+    pub fn set_multicore(&mut self, enabled: bool) {
+        self.set_processing_threads(enabled, enabled);
+    }
 
-    fn parallel_insert_effects(&mut self, song: &TransportInfo) -> bool {
-        let state = &mut self.parallel;
-        state.done.clear(); state.done.resize(self.tracks.len(), false);
-        state.cost.resize(self.tracks.len(), Duration::ZERO);
-        if !state.enabled || !self.insert_fx || !mix_workers::available() { return false; }
-        state.incoming.clear(); state.incoming.resize(self.tracks.len(), false);
-        for track in &self.tracks {
-            for route in &track.routes { state.incoming[route.dest] = true; }
-        }
-        state.candidates.clear();
-        for &t in &self.order {
-            let track = &self.tracks[t];
-            if t == 0 || state.incoming[t] || !track.slots_enabled || track.effects.is_empty() { continue; }
-            if track.effects.iter().any(|f| f.key.is_some() || f.main.is_some() || !matches!(f.fx, Fx::Hosted(_))) { continue; }
-            // Shared plugin instances must retain their original invocation order, even across tracks.
-            let shared = track.effects.iter().any(|f| {
-                let Fx::Hosted(h) = &f.fx else { return false; };
-                self.tracks.iter().enumerate().any(|(n,m)| n != t && m.effects.iter().any(|other| matches!(&other.fx, Fx::Hosted(k) if Arc::ptr_eq(h,k))))
-            });
-            if !shared { state.candidates.push(t); }
-        }
-        // Learn costs in the serial path first; cheap chains avoid scheduling overhead.
-        if state.candidates.len() < 2 || state.candidates.iter().map(|&t| state.cost[t]).sum::<Duration>() < Duration::from_micros(300) { return false; }
-        let until = self.busy_until.or_else(|| Some(Instant::now() + self.busy_wait));
-        for &t in &state.candidates {
-            if !self.pdc.delivered { self.params.deliver_slots(t, &self.tracks[t].effects); }
-            let mut job = state.spare.pop().unwrap_or_default();
-            job.track = t;
-            job.effects = std::mem::take(&mut self.tracks[t].effects);
-            job.buf = std::mem::take(&mut self.bus[t]);
-            if t != 0 {strip_process(&mut self.tracks[t],&mut job.buf);}
-            job.rate = self.rate; job.song = *song;
-            job.until = until; job.wait = self.busy_wait; job.export = self.exporting;
-            mix_workers::submit(job, state.tx.clone());
-        }
-        let mut moved = false;
-        for _ in 0..state.candidates.len() {
-            let mut job = state.rx.recv().expect("audio worker must return its owned buffers");
-            let t = job.track;
-            self.tracks[t].effects = std::mem::take(&mut job.effects);
-            self.bus[t] = std::mem::take(&mut job.buf);
-            self.missed += job.missed; moved |= job.moved;
-            state.done[t] = true;
-            state.cost[t] = job.elapsed;
-            state.spare.push(job);
-        }
-        moved
+    pub fn set_processing_threads(&mut self, generators: bool, mixer: bool) {
+        let enabled = mix_workers::enabled();
+        self.threaded_generators = generators && enabled;
+        self.parallel.enabled = mixer && enabled;
+    }
+
+    /// Suspend compatible idle hosted plugins during live playback only.
+    pub fn set_smart_disable(&mut self, enabled: bool) { self.smart_disable = enabled; }
+
+    /// Limit concurrent plugin jobs without changing routing or summation order.
+    pub fn set_worker_limit(&mut self, limit: usize) {
+        self.worker_limit = limit.max(1);
+    }
+
+    /// Apply the host's feeder priority to persistent DSP workers. The setter runs
+    /// only on a worker when its requested priority changes; zero means Normal.
+    pub fn set_worker_priority(&mut self, priority: usize, setter: fn(usize)) {
+        self.worker_priority = mix_workers::Priority::new(priority, setter);
+    }
+
+    /// Choose compensation before the first block of a new live engine.
+    pub fn set_playback_delay_compensation(&mut self, enabled: bool) {
+        self.compensate_playback = enabled;
     }
 
     /// The mixer over this tick: each track's effects, then its gain / pan (ramped over the tick after an edit), then
@@ -3849,115 +3921,12 @@ impl Engine {
                 }
             }
         }
-        let limit = os_dsp::glide::engine_limit(self.rate);
-        let mut moved = self.parallel_insert_effects(song);
-        for &t in &self.order {
-            // On the first tick the slot values arrived before delay compensation was worked out.
-            if !self.pdc.delivered && !self.parallel.done[t] {
-                self.params.deliver_slots(t, &self.tracks[t].effects);
-            }
-            let mut buf = std::mem::take(&mut self.bus[t]);
-            let rate = self.rate;
-            let (dry, l, r) = (&mut self.fx_dry, &mut self.scratch.0, &mut self.scratch.1);
-            let busy = (&mut self.busy_until, self.busy_wait, self.exporting, &mut self.missed);
-            let bus = &mut self.bus;
-            let track = &mut self.tracks[t];
-            let (keys, key_buf, main_buf) = (&self.key_out, &mut self.key_buf, &mut self.main_buf);
-            // A slot runs when its own switch is on and the track's slots are enabled (spec: audio/mixer.md).
-            if t != 0 && !self.parallel.done[t] {strip_process(track,&mut buf);}
-            let fx_started = Instant::now();
-            if !self.parallel.done[t] {
-                let slots_enabled = track.slots_enabled && if t == 0 { self.master_fx } else { self.insert_fx };
-                for fx in &mut track.effects {
-                    // The dedicated mixer EQ is independent of the ten plugin slots' bypass.
-                    if fx.slot != 10 && Some(fx.slot)!=track.strip_slot && !slots_enabled { continue; }
-                    let feed = |s: Option<usize>| s.and_then(|s| keys.get(s)?.as_deref()).filter(|k| k.len() == buf.len());
-                    let key = feed(fx.key).map(|k| (k, &mut *key_buf));
-                    let main = feed(fx.main).map(|k| (k, &mut *main_buf));
-                    let extra = (t, &track.routes[..], &mut bus[..]);
-                    run_slot(fx, &mut buf, rate, limit, song, dry, l, r, (&mut *busy.0, busy.1, busy.2, &mut *busy.3), &mut moved, extra, (key, main));
-                }
-            }
-            if !self.parallel.done[t] { self.parallel.cost[t] = fx_started.elapsed(); }
-            // The four gains glide to their targets: a per-sample step for this tick, at most `limit`, applied as a
-            // running sum (spec: audio/mixer.md "Gains ramp").
-            let to = track.matrix;
-            let mut ramps = [[track.gains[0][0].block(to[0][0], frames, limit), track.gains[0][1].block(to[0][1], frames, limit)], [
-                track.gains[1][0].block(to[1][0], frames, limit),
-                track.gains[1][1].block(to[1][1], frames, limit),
-            ]];
-            if ramps.iter().flatten().all(|r| r.is_flat()) {
-                let [[ll, lr], [rl, rr]] = ramps.map(|r| r.map(|g| g.first()));
-                for f in buf.chunks_exact_mut(2) {
-                    let (l, r) = (f[0], f[1]);
-                    f[0] = ll * l + lr * r;
-                    f[1] = rr * r + rl * l;
-                }
-            } else {
-                for f in buf.chunks_exact_mut(2) {
-                    let [[ll, lr], [rl, rr]] = [[ramps[0][0].next(), ramps[0][1].next()], [ramps[1][0].next(), ramps[1][1].next()]];
-                    let (l, r) = (f[0], f[1]);
-                    f[0] = ll * l + lr * r;
-                    f[1] = rr * r + rl * l;
-                }
-            }
-            // What the track puts out, for the slots that listen to it (spec: audio/sidechain.md "Sidechain input").
-            if let Some(k) = self.key_out.get_mut(t).and_then(Option::as_mut) {
-                k.clear();
-                k.extend_from_slice(&buf);
-            }
-            self.tracks[t].vu.process(&buf, self.rate);
-            let pk = &mut self.tracks[t].peak;
-            for f in buf.chunks_exact(2) {
-                pk[0] = pk[0].max(f[0].abs());
-                pk[1] = pk[1].max(f[1].abs());
-            }
-            let capture_this = self.capture_tracks.as_ref().is_none_or(|tracks| tracks.contains(&t));
-            if let Some(c) = self.capture.as_mut().filter(|_|capture_this).and_then(|c| c.get_mut(t)) {
-                // Each track's own lateness is skipped at the start (`take_track_audio`).
-                let skip = self.pdc.cap_skip.get_mut(t).map_or(0, |s| {
-                    let k = (*s).min(frames as u64);
-                    *s -= k;
-                    k as usize
-                });
-                c.extend_from_slice(&buf[skip * 2..frames * 2]);
-            }
-            // Sends glide like the matrix gains; a route at 0 passes nothing.
-            let (tracks, bus, padded) = (&mut self.tracks, &mut self.bus, &mut self.pad_buf);
-            for route in &mut tracks[t].routes {
-                let mut ramp = route.glide.block(route.gain, frames, limit);
-                let out = &mut bus[route.dest];
-                if route.pad.len() > 0 {
-                    // Delay compensation: the send's level, then its pad, which runs every tick (also at level 0).
-                    padded.clear();
-                    if ramp.is_flat() {
-                        let g = ramp.first();
-                        padded.extend(buf.iter().map(|s| *s * g));
-                    } else {
-                        for s in buf.chunks_exact(2) {
-                            let g = ramp.next();
-                            padded.extend([s[0] * g, s[1] * g]);
-                        }
-                    }
-                    route.pad.run(padded);
-                    for (d, s) in out.iter_mut().zip(padded.iter()) {
-                        *d += *s;
-                    }
-                } else if !ramp.is_flat() {
-                    for (d, s) in out.chunks_exact_mut(2).zip(buf.chunks_exact(2)) {
-                        let g = ramp.next();
-                        d[0] += s[0] * g;
-                        d[1] += s[1] * g;
-                    }
-                } else if ramp.first() != 0.0 {
-                    let g = ramp.first();
-                    for (d, s) in out.iter_mut().zip(&buf) {
-                        *d += *s * g;
-                    }
-                }
-            }
-            self.bus[t] = buf;
-        }
+        self.parallel.done.clear(); self.parallel.done.resize(self.tracks.len(), false);
+        self.parallel.cost.resize(self.tracks.len(), Duration::ZERO);
+        let moved = match self.mix_graph(frames, song) {
+            Some(moved) => moved,
+            None => self.mix_serial(frames, song),
+        };
         for (link,env) in &mut self.peak_links {
             if let Some(buf)=self.bus.get(link.source as usize){
                 let attack=(-1000./(5.*self.rate as f32)).exp();let release=(-1000./(link.release_ms.max(10) as f32*self.rate as f32)).exp();
@@ -3969,6 +3938,70 @@ impl Engine {
         if moved {
             self.pdc.due = true;
         }
+    }
+
+    fn capture_mix_track(&mut self, t: usize, frames: usize, buf: &[f32]) {
+        let capture_this = self.capture_tracks.as_ref().is_none_or(|tracks| tracks.contains(&t));
+        if let Some(c) = self.capture.as_mut().filter(|_|capture_this).and_then(|c| c.get_mut(t)) {
+            // Each track's own lateness is skipped at the start (`take_track_audio`).
+            let skip = self.pdc.cap_skip.get_mut(t).map_or(0, |s| {
+                let k = (*s).min(frames as u64);
+                *s -= k;
+                k as usize
+            });
+            c.extend_from_slice(&buf[skip * 2..frames * 2]);
+        }
+    }
+
+    fn mix_serial(&mut self, frames: usize, song: &TransportInfo) -> bool {
+        let limit = os_dsp::glide::engine_limit(self.rate);
+        let mut moved = false;
+        for i in 0..self.order.len() {
+            let t = self.order[i];
+            // On the first tick the slot values arrived before delay compensation was worked out.
+            if !self.pdc.delivered {
+                self.params.deliver_slots(t, &self.tracks[t].effects);
+            }
+            let mut buf = std::mem::take(&mut self.bus[t]);
+            let rate = self.rate;
+            let (dry, l, r) = (&mut self.fx_dry, &mut self.scratch.0, &mut self.scratch.1);
+            let busy = (&mut self.busy_until, self.busy_wait, self.exporting, &mut self.missed);
+            let bus = &mut self.bus;
+            let track = &mut self.tracks[t];
+            let (keys, key_buf, main_buf) = (&self.key_out, &mut self.key_buf, &mut self.main_buf);
+            // A slot runs when its own switch is on and the track's slots are enabled (spec: audio/mixer.md).
+            let fx_started = Instant::now();
+            if t != 0 {strip_process(track,&mut buf);}
+            {
+                let slots_enabled = track.slots_enabled && if t == 0 { self.master_fx } else { self.insert_fx };
+                for fx in &mut track.effects {
+                    // The dedicated mixer EQ is independent of the ten plugin slots' bypass.
+                    if fx.slot != 10 && Some(fx.slot)!=track.strip_slot && !slots_enabled { continue; }
+                    let feed = |s: Option<usize>| s.and_then(|s| keys.get(s)?.as_deref()).filter(|k| k.len() == buf.len());
+                    let key = feed(fx.key).map(|k| (k, &mut *key_buf));
+                    let main = feed(fx.main).map(|k| (k, &mut *main_buf));
+                    let mut add = |dest: usize, signal: &[f32]| {
+                        for (d, s) in bus[dest].iter_mut().zip(signal) { *d += *s; }
+                    };
+                    let extra = (t, &track.routes[..], &mut add as &mut dyn FnMut(usize, &[f32]));
+                    run_slot(fx, self.smart_disable && !self.exporting, &mut buf, rate, limit, song, dry, l, r, (&mut *busy.0, busy.1, busy.2, &mut *busy.3), &mut moved, extra, (key, main));
+                }
+            }
+            finish_mix_audio(track, &mut buf, frames, self.rate);
+            // What the track puts out, for the slots that listen to it (spec: audio/sidechain.md "Sidechain input").
+            if let Some(k) = self.key_out.get_mut(t).and_then(Option::as_mut) {
+                k.clear();
+                k.extend_from_slice(&buf);
+            }
+            self.capture_mix_track(t, frames, &buf);
+            let mut add = |dest: usize, signal: &[f32]| {
+                for (d, s) in self.bus[dest].iter_mut().zip(signal) { *d += *s; }
+            };
+            send_mix_audio(&mut self.tracks[t], &buf, frames, self.rate, &mut self.pad_buf, &mut add);
+            self.parallel.cost[t] = fx_started.elapsed();
+            self.bus[t] = buf;
+        }
+        moved
     }
 
     /// The transport hosted plugins see at `frame` (spec: plugins/vst3-hosting.md Â§1): playing at the project tempo,
@@ -4234,6 +4267,9 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
             }
             (l as f32, r as f32)
         };
+        let(mut l,mut r)=(l,r);
+        if let Some((old,left,total))=v.edit_transition.as_mut(){let mix=*left as f32 / *total as f32;l+=(old.0-l)*mix;r+=(old.1-r)*mix;*left-=1;if *left==0{v.edit_transition=None;}}
+        v.edit_last=(l,r);
         let (l,r)=if v.drive>0.{let gain=1.+15.*v.drive;((l*gain).clamp(-1.,1.),(r*gain).clamp(-1.,1.))}else{(l,r)};
         if let Some(r) = glide {
             // The volume parameter glides linearly and the volume law applies to it; the pan glides linearly
@@ -4269,7 +4305,7 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
 /// dry level, which glides to its mix level by at most `limit` a sample (spec: audio/mixer.md "An effect slot", "A
 /// slot's mix level while it moves"). A slot at mix 0 still runs its effect.
 ///
-/// `(t, routes, bus)`: the slot's track, its routes and the tracks' inputs, for an own effect's extra output, which is
+/// `(t, routes, add)`: the slot's track, its routes and an ordered sink for an own effect's extra output, which is
 /// added to the input of one of the track's outputs (spec: audio/sidechain.md "Extra output"). It is not padded for
 /// delay compensation (audio/delay-compensation.md); it is connected from the first tick (the cleaner choice of
 /// audio/quirks.md for FL's late connection).
@@ -4280,6 +4316,7 @@ fn render_voice(v: &mut Voice, channels: &[ChannelState], bus: &mut [Vec<f32>], 
 #[allow(clippy::too_many_arguments)]
 fn run_slot(
     fx: &mut FxSlot,
+    smart_disable: bool,
     buf: &mut [f32],
     rate: u32,
     limit: f32,
@@ -4289,7 +4326,7 @@ fn run_slot(
     r: &mut Vec<f32>,
     (until, wait, export, missed): (&mut Option<Instant>, Duration, bool, &mut u64),
     moved: &mut bool,
-    (t, routes, bus): (usize, &[Route], &mut [Vec<f32>]),
+    (t, routes, add): (usize, &[Route], &mut dyn FnMut(usize, &[f32])),
     (key, main): (Option<(&[f32], &mut Vec<f32>)>, Option<(&[f32], &mut Vec<f32>)>),
 ) {
     let n = buf.len() / 2;
@@ -4337,15 +4374,11 @@ fn run_slot(
                 // On a track routed nowhere the extra output joins the track's own audio behind the effect, or the dry
                 // part when the slot's mix level is below 100 %.
                 let dest = output(routes, t, k);
-                let into: &mut [f32] = if dest != t {
-                    &mut bus[dest][..]
-                } else if blend {
-                    &mut dry[..]
+                if dest != t {
+                    add(dest, signal);
                 } else {
-                    &mut *buf
-                };
-                for (d, s) in into.iter_mut().zip(signal) {
-                    *d += *s;
+                    let into: &mut [f32] = if blend { &mut dry[..] } else { &mut *buf };
+                    for (d, s) in into.iter_mut().zip(signal) { *d += *s; }
                 }
             }
             e.latency() as u32
@@ -4358,6 +4391,7 @@ fn run_slot(
                 fx.fresh |= fresh;
                 return;
             };
+            h.set_smart_disable_fx(smart_disable && !export);
             if fresh {
                 h.reset_fx();
             }
@@ -6890,6 +6924,39 @@ mod tests {
     }
 
     #[test]
+    fn audio_edit_sample_swap_preserves_transport_and_other_voices(){
+        use os_model::{Clip,ClipSource};
+        let mut p=song(vec![],vec![Clip::new(0,768,0,ClipSource::Channel(0))]);p.channels[0].kind=ChannelKind::AudioClip;p.channels[0].sample_path=Some("edit-one.wav".into());
+        let mut lib=SampleLibrary::new(None);
+        lib.insert_buffer("edit-one.wav".into(),Arc::new(Sample{rate:48000,left:vec![0.25;192000],right:vec![0.25;192000]}));
+        lib.insert_buffer("edit-two.wav".into(),Arc::new(Sample{rate:48000,left:vec![-0.25;192000],right:vec![-0.25;192000]}));
+        let mut e=Engine::new(&p,&mut lib,48000,PlayMode::Song);e.process(&mut vec![0.;24000]);let tick=e.tick;let frame=e.frame;let pos=e.voices[0].pos;
+        p.channels[0].sample_path=Some("edit-two.wav".into());let mut next=Engine::new(&p,&mut lib,48000,PlayMode::Song);next.continue_from(&mut e);
+        assert_eq!(next.tick,tick);assert_eq!(next.frame,frame);assert!((next.voices[0].pos-pos).abs()<1.1);
+        let mut out=vec![0.;4096];next.process(&mut out);assert!(out[2048..].iter().all(|x|*x<0.),"new audio must become audible without restarting");assert!(out.iter().all(|x|x.is_finite()));assert_eq!(next.voices.len(),1);
+    }
+
+    #[test]
+    fn audio_edit_swap_preserves_sustained_instrument_effect_and_metronome(){
+        use os_model::{Clip,ClipSource};
+        let mut note=long_note(0,768,0);note.channel=1;
+        let mut p=song(vec![note],vec![Clip::new(0,768,0,ClipSource::Channel(0)),Clip::new(0,768,1,ClipSource::Pattern(1))]);
+        p.channels[0].kind=ChannelKind::AudioClip;p.channels[0].sample_path=Some("edit-left.wav".into());p.channels[0].pan=-1.;
+        let mut other=p.channels[0].clone();other.index=1;other.kind=ChannelKind::Plugin;other.pan=1.;other.sample_path=None;p.channels.push(other);
+        p.mixer=(0..3).map(os_model::MixerTrack::new).collect();
+        let mut lib=SampleLibrary::new(None);for(path,value)in [("edit-left.wav",0.25),("edit-new.wav",-0.25)]{lib.insert_buffer(path.into(),Arc::new(Sample{rate:48000,left:vec![value;192000],right:vec![value;192000]}));}
+        let inst=Arc::new(Mutex::new(VoicedSampler::default()));let reference_inst=Arc::new(Mutex::new(VoicedSampler::default()));
+        let resets=Arc::new(std::sync::atomic::AtomicUsize::new(0));let effect=Arc::new(Mutex::new(Emptied(resets.clone())));
+        let mut e=Engine::new(&p,&mut lib,48000,PlayMode::Song);e.set_instrument(1,inst.clone());e.set_metronome(metronome_on());e.set_effect(2,0,effect.clone());
+        let mut reference=Engine::new(&p,&mut lib,48000,PlayMode::Song);reference.set_instrument(1,reference_inst);reference.set_metronome(metronome_on());
+        e.process(&mut vec![0.;12000]);reference.process(&mut vec![0.;12000]);let reset_count=resets.load(std::sync::atomic::Ordering::Relaxed);assert_eq!(inst.lock().unwrap().started.len(),1);
+        p.channels[0].sample_path=Some("edit-new.wav".into());let mut next=Engine::new(&p,&mut lib,48000,PlayMode::Song);next.set_instrument(1,inst.clone());next.set_effect(2,0,effect);next.continue_from(&mut e);
+        let mut out=vec![0.;60000];let mut expected=vec![0.;60000];next.process(&mut out);reference.process(&mut expected);
+        assert_eq!(inst.lock().unwrap().started.len(),1,"sustained instrument must not retrigger");assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed),reset_count,"effect state must carry across the audio replacement");
+        let error=out.iter().skip(1).step_by(2).zip(expected.iter().skip(1).step_by(2)).map(|(a,b)|(a-b).abs()).fold(0f32,f32::max);assert!(error<1e-6,"unrelated right channel and metronome must stay sample aligned: {error}");
+    }
+
+    #[test]
     fn live_playlist_trim_keeps_audio_continuous() {
         use os_model::{Clip, ClipSource};
         let wav = std::env::temp_dir().join(format!("lemon-trim-{}.wav", std::process::id()));
@@ -8139,11 +8206,40 @@ mod tests {
             for (a,b) in serial.tracks.iter().zip(&parallel.tracks) {assert_eq!(a.peak,b.peak);}
         }
         if mix_workers::available() {assert!(peak.load(Ordering::SeqCst)>1,"independent chains actually overlap");}
-        // A feedback routing graph must never be reordered by the independent-chain optimization.
+        // A feedback routing graph must retain the existing serial processing order.
         parallel.tracks[1].routes.push(Route{dest:2,gain:0.0,glide:Glide::new(0.0),pad:Default::default()});
         parallel.tracks[2].routes.push(Route{dest:1,gain:0.0,glide:Glide::new(0.0),pad:Default::default()});
-        let song=parallel.transport_at(0);parallel.parallel_insert_effects(&song);
-        assert!(!parallel.parallel.done[1] && !parallel.parallel.done[2]);
+        parallel.parallel.plan.prepare(&parallel.tracks, &parallel.order);
+        assert!(!parallel.parallel.plan.valid);
+    }
+
+    #[test]
+    fn smart_disable_reaches_serial_and_worker_generators_but_never_exports() {
+        struct Observe { enabled: bool, seen: Arc<Mutex<Vec<bool>>> }
+        impl Instrument for Observe {
+            fn parallel_processing(&self) -> bool { true }
+            fn set_smart_disable(&mut self, enabled: bool) { self.enabled = enabled; }
+            fn note_on(&mut self, _: u32, _: u8, _: f32) {}
+            fn note_off(&mut self, _: u32, _: u8) {}
+            fn process(&mut self, _: u32, l: &mut [f32], r: &mut [f32]) {
+                self.seen.lock().unwrap().push(self.enabled); l.fill(0.); r.fill(0.);
+            }
+        }
+        for parallel in [false, true] {
+            let mut p = song(vec![], vec![]);
+            p.channels = (0..4).map(|i| { let mut ch = channel(); ch.index = i; ch }).collect();
+            let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+            e.set_multicore(parallel);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            for c in 0..4 { e.set_instrument(c, Arc::new(Mutex::new(Observe { enabled: false, seen: seen.clone() }))); }
+            for (enabled, export) in [(false, false), (true, false), (true, true), (false, false), (true, false)] {
+                e.set_smart_disable(enabled); e.exporting = export;
+                e.instrument_workers.cost = Duration::from_millis(5);
+                for b in &mut e.bus { b.resize(128, 0.); b.fill(0.); }
+                seen.lock().unwrap().clear(); e.render_instruments(64, &e.transport_at(0));
+                assert_eq!(*seen.lock().unwrap(), vec![enabled && !export; 4]);
+            }
+        }
     }
 
     #[test]
@@ -8186,6 +8282,7 @@ mod tests {
         };
         let mut serial=make(false);
         let mut parallel=make(true);
+        parallel.set_worker_limit(2);
         for frames in [64,128,256,31,512] {
             for e in [&mut serial,&mut parallel] {
                 e.instrument_workers.cost=Duration::from_millis(5);
@@ -8199,7 +8296,7 @@ mod tests {
             assert_eq!(serial.pdc.chan_delay,parallel.pdc.chan_delay);
             assert_eq!(serial.inst_active,parallel.inst_active);
         }
-        if mix_workers::available() { assert!(peak.load(Ordering::SeqCst)>1); }
+        if mix_workers::enabled() { assert_eq!(peak.load(Ordering::SeqCst), 2, "overlap stays within the worker limit"); }
         let shared=parallel.channels[0].instrument.0.clone().unwrap();
         parallel.set_instrument(1,shared);
         parallel.instrument_workers.cost=Duration::from_millis(5);

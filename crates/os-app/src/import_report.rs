@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 const TAG: os_flp::Tag = os_flp::Tag(*b"LIMP");
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Report {
     pub source: Option<PathBuf>,
     pub approved: bool,

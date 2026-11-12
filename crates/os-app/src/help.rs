@@ -19,6 +19,7 @@ pub enum Hit {
     Search,
     Clear,
     Topic(usize),
+    Section(usize),
     Back,
     ShowWhere,
     ReturnToGuide,
@@ -31,6 +32,7 @@ pub struct View {
     search: crate::dialog::Field,
     focused: bool,
     topic: Option<usize>,
+    expanded: std::collections::BTreeSet<usize>,
     results_scroll: f32,
     spotlight: Option<spotlight::Visit>,
     pub content_height: Cell<f32>,
@@ -170,6 +172,12 @@ pub fn act(app: &mut App, hit: Hit) {
             view.focused = true;
             st.scroll = 0.;
         }
+        Hit::Section(index) if view.topic.is_none() && view.search.text.trim().is_empty() => {
+            view.focused = false;
+            if !view.expanded.remove(&index) {
+                view.expanded.insert(index);
+            }
+        }
         Hit::Topic(index) if index < topics().len() => {
             view.results_scroll = st.scroll;
             view.topic = Some(index);
@@ -182,7 +190,7 @@ pub fn act(app: &mut App, hit: Hit) {
             st.scroll = view.results_scroll;
         }
         Hit::Close => st.open = false,
-        Hit::Topic(_) | Hit::ShowWhere | Hit::ReturnToGuide | Hit::DismissSpotlight => {}
+        Hit::Section(_) | Hit::Topic(_) | Hit::ShowWhere | Hit::ReturnToGuide | Hit::DismissSpotlight => {}
     }
     app.invalidate();
 }
@@ -209,7 +217,7 @@ pub fn key(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
         Key::Named(NamedKey::Escape) if !view.search.text.is_empty() => act(app, Hit::Clear),
         Key::Named(NamedKey::Escape) => act(app, Hit::Close),
         Key::Character(c) if ctrl && !alt && c.eq_ignore_ascii_case("f") => act(app, Hit::Search),
-        Key::Named(NamedKey::Enter) if st.tab == PAGE && view.topic.is_none() => {
+        Key::Named(NamedKey::Enter) if st.tab == PAGE && view.topic.is_none() && !view.search.text.trim().is_empty() => {
             if let Some(index) = results(&view.search.text).first().copied() {
                 act(app, Hit::Topic(index));
             }
@@ -342,9 +350,24 @@ pub fn paint(ui: &mut Ui, s: &State) {
     );
 
     let matches = if change_log { Vec::new() } else { results(&view.search.text) };
-    let offset = st
-        .scroll
-        .clamp(0., (view.content_height.get() - body.h).max(0.));
+    let browse = !change_log && view.topic.is_none() && view.search.text.trim().is_empty();
+    let total = if browse {
+        let mut height = 0.;
+        let mut section = 0;
+        for (i, topic) in topics().iter().enumerate() {
+            if i == 0 || topics()[i - 1].category != topic.category {
+                height += 33.;
+                section = i;
+            }
+            if view.expanded.contains(&section) {
+                height += 47.;
+            }
+        }
+        height
+    } else {
+        view.content_height.get()
+    };
+    let offset = st.scroll.clamp(0., (total - body.h).max(0.));
     ui.c.push_clip(body);
     ui.clip_hit_rect(body, |ui| {
         let mut y = body.y - offset;
@@ -364,23 +387,32 @@ pub fn paint(ui: &mut Ui, s: &State) {
                 y += 9.;
             }
         } else {
-            let browse = view.search.text.trim().is_empty();
-            let mut previous_category = "";
+            let mut section = 0;
             for index in matches.iter().copied() {
                 let topic = &topics()[index];
-                if browse && topic.category != previous_category {
-                    ui.c.text_clip(
-                        Font::new(13).bold(),
-                        body.x,
-                        y + 3.,
-                        body.w,
-                        t.text,
-                        topic.category,
-                    );
-                    y += 25.;
-                    previous_category = topic.category;
+                if browse && (index == 0 || topics()[index - 1].category != topic.category) {
+                    section = index;
+                    let header = Rect::new(body.x, y, body.w, 29.);
+                    if header.bottom() > body.y && header.y < body.bottom() {
+                        let open = view.expanded.contains(&section);
+                        let hover = ui.hit(header, hit(Hit::Section(section)), topic.category);
+                        ui.c.fill_rrect(header, 4., if hover { t.button_hi } else { t.button });
+                        let (cx, cy) = (header.x + 12., header.cy());
+                        let arrow = if open {
+                            [(cx - 4., cy - 2.), (cx + 4., cy - 2.), (cx, cy + 3.)]
+                        } else {
+                            [(cx - 2., cy - 4.), (cx - 2., cy + 4.), (cx + 3., cy)]
+                        };
+                        ui.c.fill_polygon(&arrow, t.text);
+                        ui.c.text_clip(Font::new(13).bold(), header.x + 24., header.y + 5., header.w - 30., t.text, topic.category);
+                    }
+                    y += 33.;
                 }
-                let card = Rect::new(body.x, y, body.w, 42.);
+                if browse && !view.expanded.contains(&section) {
+                    continue;
+                }
+                let inset = if browse { 12. } else { 0. };
+                let card = Rect::new(body.x + inset, y, body.w - inset, 42.);
                 if card.bottom() > body.y && card.y < body.bottom() {
                     let hover = ui.hit(card, hit(Hit::Topic(index)), topic.title);
                     ui.c.fill_rrect(card, 5., if hover { t.button_hi } else { t.s(0x303438) });
@@ -458,7 +490,11 @@ pub fn paint(ui: &mut Ui, s: &State) {
             r.y + 98.,
             body.w,
             t.text_dim,
-            &format!("{count} topics  ·  Enter opens the first match"),
+            &if browse {
+                format!("{count} topics  ·  Click a section to browse")
+            } else {
+                format!("{count} topics  ·  Enter opens the first match")
+            },
         );
     }
     let total = view.content_height.get();
@@ -500,7 +536,16 @@ mod tests {
             app.menu_item(HELP_MENU, HELP_GUIDE);
             assert!(is_open(&app.state));
             app.paint(&mut canvas, None);
-            assert!(settings::content_h(&app.state) > settings::page_h(&app.state));
+            assert!(!app.hits.iter().any(|target| matches!(target.action, Action::Settings(SAct::Help(Hit::Topic(_))))));
+            let section = app.hits.iter().find(|target| target.action == hit(Hit::Section(0))).unwrap().rect;
+            for open in [true, false] {
+                app.mouse_move(section.cx(), section.cy());
+                app.mouse_down();
+                app.mouse_up();
+                app.paint(&mut canvas, None);
+                assert_eq!(app.hits.iter().any(|target| target.action == hit(Hit::Topic(0))), open);
+            }
+            act(&mut app, Hit::Search);
             app.key(&Key::Character("warp audio".into()), false, false);
             app.paint(&mut canvas, None);
             let row = app
@@ -563,17 +608,18 @@ mod tests {
             assert!(active(&app.state));
             assert_eq!(app.state.z.last(), Some(&crate::app::Win::Playlist));
             app.paint(&mut canvas, None);
-            assert!(canvas.pixmap.pixels().iter().any(|pixel| (
-                pixel.red(),
-                pixel.green(),
-                pixel.blue()
-            ) == (255, 218, 80)));
             let anchor = app
                 .hits
                 .iter()
                 .find(|h| h.action == Action::Warp(crate::warp::Command::Toggle(0)))
                 .unwrap()
                 .rect;
+            let x = anchor.cx().round() as u32;
+            let y = (anchor.y - 3.).round() as u32;
+            assert!((y.saturating_sub(1)..=y + 1).any(|y| {
+                canvas.pixmap.pixel(x, y).is_some_and(|pixel|
+                    (pixel.red(), pixel.green(), pixel.blue()) == (32, 150, 243))
+            }));
             assert!(matches!(
                 app.top_hit(anchor.cx(), anchor.cy()).map(|h| &h.action),
                 Some(Action::Warp(crate::warp::Command::Toggle(0)))

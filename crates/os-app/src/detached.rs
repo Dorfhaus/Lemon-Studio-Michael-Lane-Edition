@@ -72,7 +72,7 @@ impl Windows {
         }
         for id in created {self.event(app,el,id,WindowEvent::RedrawRequested,cache);}
         app.detached_eq_visible = self.panes.iter().any(|p| {
-            p.kind == Win::Mixer && p.eq_visible && p.window.is_minimized() != Some(true)
+            matches!(p.kind,Win::Mixer|Win::Playlist) && p.eq_visible && p.window.is_minimized() != Some(true)
         });
     }
     pub fn event(&mut self,app:&mut App,_el:&ActiveEventLoop,id:WindowId,event:WindowEvent,cache:&mut crate::CursorCache) {

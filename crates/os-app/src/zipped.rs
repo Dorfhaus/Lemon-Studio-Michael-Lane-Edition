@@ -224,6 +224,9 @@ impl Pack {
             }
         }
         for vocal in &mut p.vocal_edits {
+            let original=PathBuf::from(crate::plugins::resolve_sample(&vocal.source));
+            let rendered=PathBuf::from(crate::plugins::resolve_sample(&vocal.rendered));
+            let owner=p.channels.iter().find(|c|c.index==vocal.channel).and_then(|c|c.sample_path.as_deref()).and_then(|path|{let real=PathBuf::from(crate::plugins::resolve_sample(path));if real==original{Some(false)}else if real==rendered{Some(true)}else{self.files.iter().find(|(_,name)|name==&file_name(path)).and_then(|(real,_)|if real==&original{Some(false)}else if real==&rendered{Some(true)}else{None})}});
             let current=vocal.render_key==crate::vocal::key(vocal);
             for stored in [&mut vocal.source,&mut vocal.rendered]{
                 if stored.is_empty(){continue;}let real=PathBuf::from(crate::plugins::resolve_sample(stored));
@@ -232,6 +235,7 @@ impl Pack {
                 *stored=name;
             }
             if current{vocal.render_key=crate::vocal::key(vocal);}
+            if let Some(rendered)=owner{if let Some(c)=p.channels.iter_mut().find(|c|c.index==vocal.channel){c.sample_path=Some(if rendered{vocal.rendered.clone()}else{vocal.source.clone()});}}
         }
         for warp in &mut p.audio_warps {
             let real=PathBuf::from(crate::plugins::resolve_sample(&warp.source));
@@ -444,11 +448,25 @@ mod tests {
     /// A zip unzips beside itself and the project nearest its top is the one opened; names leaving the folder are
     /// skipped; unzipping it again uses the same folder, and a folder holding other files of those names is not used.
     #[test]
+    fn audio_edits_portable_pending_revision_keeps_history_and_source(){
+        let(mut app,dir,ci)=crate::audio_edits::tests::fixture("portable");let ch=crate::audio_edits::channel(&app.state,ci).unwrap();
+        app.state.project.vocal_edits[0].notes[0].shift=2.;crate::audio_edits::finish(&mut app.state);crate::audio_edits::tests::render(&mut app);
+        app.state.project.vocal_edits[0].timing=vec![(0.,0.),(1.,0.8),(2.,2.)];crate::audio_edits::finish(&mut app.state);
+        let mut p=app.state.project.clone();let histories=p.audio_edits.clone();let stale=p.vocal_edits[0].render_key.clone();
+        let mut pack=Pack{project:"Editable.lmn".into(),..Default::default()};pack.gather(&mut p);assert!(pack.missing.is_empty());assert_eq!(pack.files.len(),2);
+        assert_eq!(p.vocal_edits[0].render_key,stale);assert_ne!(stale,crate::vocal::key(&p.vocal_edits[0]));assert!(crate::audio_edits::owns(&p,&p.vocal_edits[0]));
+        let bytes=os_flp::project::create(&p).unwrap().to_bytes().unwrap();let zip=dir.join("portable.zip");write_zip(&zip,&bytes,&pack,&AtomicU64::new(0),&AtomicU64::new(0)).unwrap();
+        let file=unzip(&zip,None,&AtomicU64::new(0),&AtomicU64::new(0)).unwrap();let mut back=os_flp::project::load(&os_flp::FlpFile::parse(&std::fs::read(&file).unwrap()).unwrap()).unwrap();assert_eq!(back.audio_edits,histories);
+        let d=&mut back.vocal_edits[0];d.source=file.parent().unwrap().join(&d.source).to_string_lossy().into_owned();d.rendered=file.parent().unwrap().join(&d.rendered).to_string_lossy().into_owned();let playback=d.rendered.clone();back.channels.iter_mut().find(|c|c.index==ch).unwrap().sample_path=Some(playback);
+        app.state.project=back;assert!(crate::audio_edits::pending(&app.state.project));crate::audio_edits::tests::render(&mut app);crate::audio_edits::history(&mut app,ch,true,false);assert_eq!(app.state.project.vocal_edits[0].notes[0].shift,2.);crate::audio_edits::tests::render(&mut app);
+    }
+
+    #[test]
     fn vocal_portable_pack_preserves_original_and_render_with_colliding_names(){
         let dir=std::env::temp_dir().join(format!("lemon-vocal-pack-{}",std::process::id()));let a=dir.join("source");let b=dir.join("render");std::fs::create_dir_all(&a).unwrap();std::fs::create_dir_all(&b).unwrap();
         let original=a.join("Voice.wav");let rendered=b.join("Voice.wav");std::fs::write(&original,b"original source").unwrap();std::fs::write(&rendered,b"tuned cache").unwrap();
         let mut p=crate::app::test_project();let channel=p.channels[0].index;p.channels[0].sample_path=Some(rendered.to_string_lossy().into_owned());
-        let mut edit=os_model::vocal::Edit{channel,source:original.to_string_lossy().into_owned(),source_hash:"0".repeat(64),rendered:rendered.to_string_lossy().into_owned(),render_key:String::new(),rate:16000,frames:16000,f0:vec![0.;201],notes:vec![],curve:vec![],timing:vec![(0.,0.),(1.,1.)],enabled:true,strength:1.,formant:1.};edit.render_key=crate::vocal::key(&edit);p.vocal_edits.push(edit);
+        let mut edit=os_model::vocal::Edit{channel,source:original.to_string_lossy().into_owned(),source_hash:"0".repeat(64),rendered:rendered.to_string_lossy().into_owned(),render_key:String::new(),rate:16000,frames:16000,f0:vec![0.;201].into(),notes:vec![],curve:vec![],timing:vec![(0.,0.),(1.,1.)],enabled:true,strength:1.,formant:1.};edit.render_key=crate::vocal::key(&edit);p.vocal_edits.push(edit);
         let mut pack=Pack{project:"Vocal.lmn".into(),..Default::default()};pack.gather(&mut p);
         assert_eq!(pack.files.len(),2);assert!(pack.missing.is_empty());let edit=&p.vocal_edits[0];assert_ne!(edit.source,edit.rendered);assert_eq!(edit.render_key,crate::vocal::key(edit));
         assert!(pack.files.iter().any(|(p,n)|p==&original&&n==&edit.source));assert!(pack.files.iter().any(|(p,n)|p==&rendered&&n==&edit.rendered));

@@ -5,7 +5,7 @@ fn strengths(app:&App)->Vec<(u16,f32)>{app.state.project.vocal_edits.iter().filt
 pub fn begin(app:&mut App,clip:usize,note:Option<usize>){
  let tool=app.state.playlist.vocal.tool;
  if matches!(tool,Tool::Hand|Tool::Zoom){navigation::begin(app,if tool==Tool::Hand{navigation::Kind::Pan}else{navigation::Kind::Zoom});return;}
- let Some(i)=doc_index(&app.state,clip)else{return};let d=app.state.project.vocal_edits[i].clone();
+ let Some(i)=doc_index(&app.state,clip)else{return};app.state.playlist.vocal.active=Some(app.state.project.vocal_edits[i].channel);let d=app.state.project.vocal_edits[i].clone();
  if let Some(n)=note{if n>=d.notes.len(){return;}let entry=(d.channel,n);
   if app.ctrl{if let Some(i)=app.state.playlist.vocal.selected.iter().position(|p|*p==entry){app.state.playlist.vocal.selected.remove(i);}else{app.state.playlist.vocal.selected.push(entry);}app.invalidate();return;}
   if app.shift{if !app.state.playlist.vocal.selected.contains(&entry){app.state.playlist.vocal.selected.push(entry);}}else if !app.state.playlist.vocal.selected.contains(&entry){app.state.playlist.vocal.selected=vec![entry];}
@@ -25,7 +25,7 @@ pub fn begin(app:&mut App,clip:usize,note:Option<usize>){
  if tool==Tool::Draw{drag(app,app.mouse.0,app.mouse.1);}app.invalidate();
 }
 pub fn boundary(app:&mut App,clip:usize,n:usize){
- let Some(i)=doc_index(&app.state,clip)else{return};let d=app.state.project.vocal_edits[i].clone();if n>=d.notes.len(){return;}
+ let Some(i)=doc_index(&app.state,clip)else{return};app.state.playlist.vocal.active=Some(app.state.project.vocal_edits[i].channel);let d=app.state.project.vocal_edits[i].clone();if n>=d.notes.len(){return;}
  snapshot(&mut app.state,"Edit vocal boundary");app.state.playlist.vocal.selected=vec![(d.channel,n)];
  app.drag=Some(Drag::Vocal(Gesture{clip,note:Some(n),before:Arc::new(d.clone()),selected:vec![n],x:app.mouse.0,y:app.mouse.1,last:None,tool:if app.state.playlist.vocal.tool==Tool::Split{Tool::Split}else{Tool::Time},edge:1,axis:0,field:None,related:related(app,d.channel),strengths:strengths(app)}));app.invalidate();
 }

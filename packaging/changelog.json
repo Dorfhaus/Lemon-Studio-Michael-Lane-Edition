@@ -3,6 +3,25 @@
   "intro": "The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.",
   "sections": [
     {
+      "date": "2026-11-12",
+      "title": "ML Studio attached Mixer, automatic clip editing and updated User Guide \u00b7 public build 2026111201",
+      "changes": [
+        "Attach the Mixer to the Playlist for mixer-ordered tracks with per-track recording, Piano Roll and instrument insertion. The Mixer stays open, and detaching restores your Playlist arrangement while retaining new edits and recordings.",
+        "The attached inspector includes the Mixer EQ, scrollable effects and color-coded sends. Resize or collapse sections, hide the inspector, or choose the optional Full channel strip. Enable Playlist record and instrument buttons in Workspace Visibility to use them with the Mixer detached.",
+        "Time Warper and Vocal Tuning apply completed gestures automatically. Pitch and timing have separate per-clip Undo and Redo histories that survive saving and reopening. Copies and slices inherit the edits and can be changed independently.",
+        "Export audio starts in Easy mode with 24-bit WAV and 320 kbps MP3. Choose either or both. The Advanced tab keeps the full export settings.",
+        "Audio Settings opens in Normal mode for device and latency choices. Advanced includes recording format and offset, playback resampling, audio workers, plugin delay compensation and optional Smart disable.",
+        "Selected typing-keyboard scales play consecutive notes across the letter rows, with each row starting an octave apart. This covers Y through minus and A through \u00c4 on German keyboards. The typing-keyboard switch is remembered when you reopen ML Studio.",
+        "The offline User Guide has collapsible sections and an expanded settings reference. Search still covers every topic. Drag the Options header to move the dropdown, or the Settings title bar to move the Settings window.",
+        "Right-click Mixer channels to rename them or choose a custom hex color. Optional double-click resets and hover menus are available under Settings > General > Input.",
+        "Improved Mixer and Playlist spacing, track borders, and selection outlines. Refined the Slice cursor, menu and export labels, and the Mixer EQ display.",
+        "Detect sample tempo can set the project BPM on confirmation. Stem separation setup can retry a verified mirror if the primary model download is unavailable.",
+        "Waveform loading and project backup work run in the background. Improved Mixer processing across routing dependencies and reduced unnecessary work in the clip editors and automation playback.",
+        "Resolved a launch compatibility issue on older macOS versions by loading newer Core Audio tap functions only when available.",
+        "External MCP activity appears as a small Working indicator. Its visibility can be changed in Settings."
+      ]
+    },
+    {
       "date": "2026-11-11",
       "title": "ML Studio Channel Rack editing and Playlist timing fixes \u00b7 public build 2026111102",
       "changes": [

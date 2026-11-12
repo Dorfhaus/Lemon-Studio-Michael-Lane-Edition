@@ -24,6 +24,31 @@ pub fn channel_items(row:usize)->Vec<pl::PItem>{
     items.push(item("Reset stretching",Fit::Reset));items
 }
 
+pub(crate) const TEMPO_RESULT_VISIBILITY: &str = "visible_detected-sample-tempo";
+
+fn report_tempo(app: &mut App, detected: Option<(f64, f64)>) -> Option<String> {
+    let bpm = detected.map(|(_, bpm)| (bpm * 10.0).round() / 10.0);
+    let text = bpm.map_or_else(
+        || "No consistent tempo found. Try a drum loop or enter its source BPM.".to_owned(),
+        |bpm| format!("Detected source tempo is {bpm:.1} BPM."),
+    );
+    if !crate::workspace_visibility::shown(TEMPO_RESULT_VISIBILITY) {
+        return Some(text);
+    }
+    use crate::dialog::{Answer, Kind, Msg, Then, spans};
+    let title = "Detect sample tempo";
+    if let Some(bpm) = bpm {
+        let mut msg = Msg::new(Kind::Info, title, spans(&[&text]),
+            &[Answer::Yes, Answer::Cancel], Then::SetDetectedProjectTempo(bpm))
+            .labelled(&["Set Project Tempo", "Close"]);
+        msg.focus = 1;
+        app.show_msg(msg);
+    } else {
+        app.tell(Kind::Info, title, spans(&[&text]));
+    }
+    None
+}
+
 /// Fit the sample channel itself; do not create clips or change pattern notes.
 pub fn run_channel(app:&mut App,row:usize,cmd:Fit)->Option<String>{
     let channel=app.state.project.channels.get(row)?;
@@ -46,7 +71,7 @@ pub fn run_channel(app:&mut App,row:usize,cmd:Fit)->Option<String>{
         let secs=sample.frames() as f64/f64::from(sample.rate.max(1));
         if secs<=0.{return Some("The sample is empty".into());}
         let detected=if matches!(cmd,Fit::Auto|Fit::Detect){source_beats(&sample,&path,app.state.tempo)}else{None};
-        if cmd==Fit::Detect{return Some(detected.map_or_else(||"No consistent tempo found. Try a drum loop or enter its source BPM.".into(),|(_,b)|format!("Detected source tempo: {b:.1} BPM")));}
+        if cmd==Fit::Detect{return report_tempo(app, detected);}
         let beats=match cmd{
             Fit::Auto=>{
                 if !has_audio(&sample,None){return Some("The sample is silent; choose a beat/bar length manually".into());}
@@ -338,7 +363,7 @@ pub fn run(app: &mut App, i: usize, cmd: Fit) -> Option<String> {
     let ppq=f64::from(app.state.project.ppq.max(4));
     let detected=source_beats(&sample,&path,app.state.tempo);
     if cmd==Fit::Detect {
-        return Some(detected.map_or_else(||"No consistent tempo found. Try a drum stem.".into(),|(_,b)|format!("Detected source tempo: {b:.1} BPM")));
+        return report_tempo(app, detected);
     }
     let visible_beats = match cmd {
         Fit::Auto => {
@@ -375,6 +400,52 @@ pub fn run(app: &mut App, i: usize, cmd: Fit) -> Option<String> {
 #[cfg(test)]
 mod tests {
  use super::*;
+
+ #[test]
+ fn detected_tempo_applies_displayed_bpm_only_on_confirmation() {
+    use crate::dialog::{Body, DHit};
+    use winit::keyboard::{Key, NamedKey};
+    let mut app = App::new(None);
+    app.state.project = crate::app::test_project();
+    app.state.tempo = 120.0;
+    let detected = Some((24.0, 90.123));
+    let show_result = |app: &mut App| {
+        assert_eq!(report_tempo(app, detected), None);
+        let Body::Msg(result) = &app.state.dialogs.last().unwrap().body else {
+            panic!("tempo detection opens a results dialog");
+        };
+        assert!(result.plain().contains("90.1 BPM"));
+        assert_eq!(result.label(0), "Set Project Tempo");
+        assert_eq!(result.label(result.focus), "Close");
+    };
+    show_result(&mut app);
+    app.dialog_key(&Key::Named(NamedKey::Enter), false, false);
+    assert!(app.state.dialogs.is_empty());
+    assert_eq!(app.state.tempo, 120.0);
+
+    show_result(&mut app);
+    app.dialog_click(DHit::Button(0));
+    assert!(app.state.dialogs.is_empty());
+    assert_eq!(app.state.tempo, 90.1);
+    crate::history::undo(&mut app.state).unwrap();
+    assert_eq!(app.state.tempo, 120.0);
+    crate::history::redo(&mut app.state).unwrap();
+    assert_eq!(app.state.tempo, 90.1);
+
+    report_tempo(&mut app, None);
+    let Body::Msg(result) = &app.state.dialogs.last().unwrap().body else {
+        panic!("a failed detection opens an information dialog");
+    };
+    assert_eq!(result.buttons, [crate::dialog::Answer::Ok]);
+    app.dialog_key(&Key::Named(NamedKey::Escape), false, false);
+    assert_eq!(app.state.tempo, 90.1);
+
+    crate::workspace_visibility::toggle(TEMPO_RESULT_VISIBILITY);
+    assert!(report_tempo(&mut app, detected).unwrap().contains("90.1 BPM"));
+    assert!(app.state.dialogs.is_empty());
+    crate::workspace_visibility::toggle(TEMPO_RESULT_VISIBILITY);
+ }
+
  #[test]
  fn rack_sample_fit_without_playlist_supports_bpm_lengths_reset_and_undo(){
     let mut app=App::new(None);app.state.project=crate::app::test_project();app.state.tempo=120.;
@@ -387,7 +458,13 @@ mod tests {
     let menu=crate::rack::channel_menu(&app.state,row,10.,10.);
     let fitting=menu.items.iter().find(|i|i.label=="Tempo / stretching").unwrap();assert!(fitting.enabled);
     let detect=&fitting.children.iter().find(|i|i.label=="Detect tempo").unwrap().cmd;
-    assert!(pl::run(&mut app,detect.clone()).unwrap().contains("90.0"));
+    assert_eq!(pl::run(&mut app, detect.clone()), None);
+    let crate::dialog::Body::Msg(result) = &app.state.dialogs.last().unwrap().body else {
+        panic!("tempo detection opens a results dialog");
+    };
+    assert!(result.plain().contains("90.0"));
+    app.dialog_key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter), false, false);
+    assert!(app.state.dialogs.is_empty());
     assert_eq!(app.state.project.channels[row].sound,before);
     let fit=fitting.children.iter().find(|i|i.label=="Make it fit").unwrap().cmd.clone();
     pl::run(&mut app,fit);
@@ -426,7 +503,9 @@ mod tests {
     pl::arr_mut(&mut app.state).clips[x].window = Some((500.0, 3500.0));
     app.state.playlist.sel=vec![x,y];
     let before=pl::capture(&app.state);
-    assert!(run(&mut app,x,Fit::Auto).unwrap().contains("one bar each"));
+    let menu = pl::clip_menu(&app.state, x, 0.0, 0.0);
+    let fit = menu.items.iter().find(|item| item.label == "Make it fit" && item.enabled).unwrap();
+    assert!(pl::run(&mut app, fit.cmd.clone()).unwrap().contains("one bar each"));
     pl::fit_audio(&mut app.state);
     let clips=pl::clips(&app.state);
     assert_eq!(clips[x].position,384);assert_eq!(clips[y].position,807);

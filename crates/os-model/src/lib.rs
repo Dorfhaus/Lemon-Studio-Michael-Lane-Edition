@@ -12,6 +12,7 @@ pub mod crossfade;
 pub mod mpe;
 pub mod curve;
 pub mod vocal;
+pub mod audio_edit;
 
 /// An RGB color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
@@ -40,6 +41,8 @@ pub struct Project {
     pub clip_picker_order: Vec<ClipSource>,
     pub audio_warps:Vec<AudioWarp>,
     pub vocal_edits:Vec<vocal::Edit>,
+    #[serde(default)]
+    pub audio_edits:Vec<audio_edit::Document>,
     pub peak_links: Vec<PeakLink>,
     /// Native piano harmony key, scale entry and editor/input flags.
     pub harmony: Option<(u8,u8,u8)>,
@@ -480,6 +483,8 @@ impl Project {
         }
         let m = |c: u16| map.get(usize::from(c)).copied().flatten();
         self.mpe.channels=order.iter().enumerate().filter_map(|(new,&old)|self.mpe.channels.iter().find(|c|usize::from(c.0)==old).map(|(_,c)|(new as u16,*c))).collect();
+        self.audio_edits.retain_mut(|d|m(d.channel).map(|ch|d.channel=ch).is_some());
+        self.vocal_edits.retain_mut(|d|m(d.channel).map(|ch|d.channel=ch).is_some());
         self.clip_fx_channels=self.clip_fx_channels.iter().filter_map(|&c|m(c)).collect();
         self.instrument_lanes.retain_mut(|v|m(v.0).map(|ch|v.0=ch).is_some());
         let old = std::mem::take(&mut self.channels);
@@ -1852,6 +1857,9 @@ impl TimeMarker {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlaylistTrack {
+    /// Explicit source lane for the attached mixer. Presentation never changes audio routing.
+    #[serde(default)]
+    pub attached_mixer: Option<u16>,
     /// Optional individual lane height in logical pixels.
     pub height:Option<f32>,
     pub folder:bool,
@@ -1876,7 +1884,7 @@ pub struct PlaylistTrack {
 impl PlaylistTrack {
     /// Track `number` as a new project has it: unnamed, default colour, on, not grouped.
     pub fn new(number: u32) -> Self {
-        PlaylistTrack { height:None,folder:false, frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
+        PlaylistTrack { attached_mixer:None, height:None,folder:false, frozen: None, comp: None, number, name: None, color: None, enabled: true, grouped: false, collapsed: false, locked: false }
     }
 }
 
@@ -2087,7 +2095,7 @@ pub mod target {
     }
 
     /// What a target id names.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     pub enum Target {
         ChannelVolume(u16),
         ChannelPan(u16),

@@ -275,9 +275,39 @@ pub fn cursor(app: &App) -> Option<Cursor> {
     Some(Cursor::Playlist(tool, phase(&app.state)))
 }
 
-fn hotspot(tool: PlTool, scale: f32) -> (u16,u16) {
-    let (x,y)=match tool { PlTool::Draw | PlTool::Paint | PlTool::Slice => (6.,26.), _ => (6.,6.) };
-    ((x*scale).round() as u16,(y*scale).round() as u16)
+const TOOL_TIP: (f32, f32) = (6.0, 6.0);
+
+fn directional_tool(tool: PlTool) -> bool {
+    matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Slice)
+}
+
+fn align_tip(size: f32, tip: (f32, f32), target: (f32, f32)) -> Rect {
+    Rect::new(target.0 - tip.0 * size / 24.0, target.1 - tip.1 * size / 24.0, size, size)
+}
+
+fn mirrored_tool_tip(mask: &Canvas) -> (f32, f32) {
+    (TOOL_TIP.0, mask.pixmap.height() as f32 / mask.scale - TOOL_TIP.1)
+}
+
+fn orient_tool(mask: &mut Canvas, tool: PlTool) {
+    // Move the tool tip from the lower left to the upper left.
+    let width = mask.pixmap.width() as usize;
+    let height = mask.pixmap.height() as usize;
+    let pixels = mask.pixmap.pixels_mut();
+    for y in 0..height / 2 {
+        let (top, bottom) = pixels.split_at_mut((height - 1 - y) * width);
+        top[y * width..(y + 1) * width].swap_with_slice(&mut bottom[..width]);
+    }
+    if tool == PlTool::Slice {
+        // The knife runs along the cursor's top-left to bottom-right diagonal.
+        // Reflect across that diagonal to turn the blade over without moving its tip.
+        debug_assert_eq!(width, height);
+        for y in 1..height {
+            for x in 0..y {
+                pixels.swap(y * width + x, x * width + y);
+            }
+        }
+    }
 }
 
 /// The tool is the pointer: its tip stays on the edit position through the small size animation.
@@ -297,12 +327,6 @@ fn default_cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> 
     mask.clear(Color::rgb(0x000000));
     let icon = match tool { PlTool::Draw => Icon::Pencil, PlTool::Paint => Icon::Brush, PlTool::Slice => Icon::Slice, PlTool::Select | PlTool::Comp => Icon::Select, PlTool::Delete => Icon::Delete, PlTool::Mute => Icon::Mute, PlTool::Zoom => Icon::Zoom, PlTool::Slip => Icon::Slip, PlTool::Playback => Icon::Play };
     let size = [19.5,21.5,21.2,21.0][usize::from(phase.min(3))];
-    let (tip_x,tip_y,at_x,at_y)=match tool {
-        PlTool::Draw | PlTool::Paint => (3.,21.,6.,26.),
-        PlTool::Slice => (3.,19.,6.,26.),
-        _ => (4.,4.,6.,6.),
-    };
-    let r=Rect::new(at_x-tip_x*size/24.,at_y-tip_y*size/24.,size,size);
     if phase>=11 {
         let t=crate::vocal::TOOLS[usize::from(phase-11).min(crate::vocal::TOOLS.len()-1)];mask.icon_stroke(&crate::vocal::tool_icon(t),Rect::new(4.,3.,24.,24.),Color::rgb(0xffffff),1.55);
     } else if phase>=GRAB {
@@ -322,7 +346,18 @@ fn default_cursor_canvas(tool: PlTool, phase: u8, scale: f32) -> Option<Canvas> 
         // Cursor-only weight: toolbar icons keep their existing artwork and stroke.
         let brush=os_ui::tabler::TablerIcon{filled:false,d:"M 3.0000 21.0000 L 3.3600 17.3600 C 3.5588 15.3498 5.3498 13.5588 7.3600 13.3600 C 9.3702 13.1612 10.8388 14.6298 10.6400 16.6400 C 10.4412 18.6502 8.6502 20.4412 6.6400 20.6400 L 3.0000 21.0000 M 21.0000 3.0000 C 15.6377 4.2467 10.8145 8.2515 8.4340 13.4340 M 21.0000 3.0000 C 19.7533 8.3623 15.7485 13.1855 10.5660 15.5660 M 10.9960 9.3960 C 12.6834 10.0374 13.9626 11.3166 14.6040 13.0040"};
         let shape=if tool==PlTool::Paint{&brush}else{icons::default_shape(icon)};
-        mask.icon_stroke(shape,r,Color::rgb(0xffffff),1.55*size/24.);
+        let white = Color::rgb(0xffffff);
+        if directional_tool(tool) {
+            let tip = if tool == PlTool::Slice { (3.0, 19.0) } else { (3.0, 21.0) };
+            let r = align_tip(size, tip, mirrored_tool_tip(&mask));
+            mask.icon_stroke(shape, r, white, 1.55 * size / 24.0);
+            orient_tool(&mut mask, tool);
+        } else {
+            let pointer = icons::gesture(icons::Gesture::Pointer, 0);
+            let r = align_tip(15.0, pointer.hotspot.unwrap(), TOOL_TIP);
+            mask.art_icon(&pointer.shape, r, white);
+            mask.icon_stroke(shape, Rect::new(12.0, 12.0, 17.0, 17.0), white, 1.2);
+        }
     }
     if phase==4 || phase==COPYING {
         mask.fill_rrect(Rect::new(19.,17.,12.,13.),2.,Color::rgb(0));
@@ -347,8 +382,7 @@ pub fn packed_cursor_canvas(tool: PlTool, phase: u8, scale: f32, pack: u8) -> Op
     let white = Color::rgb(0xffffff);
     let draw = |mask: &mut Canvas, art: &icons::Art, r: Rect| mask.art_icon(&art.shape, r, white);
     let aligned = |art: &icons::Art, size: f32, target: (f32, f32)| {
-        let (x, y) = art.hotspot.expect("cursor artwork has an anchor");
-        Rect::new(target.0 - x * size / 24.0, target.1 - y * size / 24.0, size, size)
+        align_tip(size, art.hotspot.expect("cursor artwork has an anchor"), target)
     };
     let center = Rect::new(4.0, 4.0, 24.0, 24.0);
     match phase {
@@ -369,16 +403,16 @@ pub fn packed_cursor_canvas(tool: PlTool, phase: u8, scale: f32, pack: u8) -> Op
             let art = icons::artwork(icon, pack);
             let size = [20.0, 21.8, 21.4, 21.0][usize::from(phase.min(3))];
             if art.hotspot.is_some() {
-                let target = if matches!(tool, PlTool::Draw | PlTool::Paint | PlTool::Slice) {
-                    (6.0, 26.0)
-                } else {
-                    (6.0, 6.0)
-                };
+                let mirrored = directional_tool(tool);
+                let target = if mirrored { mirrored_tool_tip(&mask) } else { TOOL_TIP };
                 draw(&mut mask, art, aligned(art, size, target));
+                if mirrored {
+                    orient_tool(&mut mask, tool);
+                }
             } else {
                 // The small pointer marks the real click location. The adjacent glyph names the active tool.
                 let pointer = icons::gesture(Gesture::Pointer, pack);
-                draw(&mut mask, pointer, aligned(pointer, 15.0, (6.0, 6.0)));
+                draw(&mut mask, pointer, aligned(pointer, 15.0, TOOL_TIP));
                 draw(&mut mask, art, Rect::new(12.0, 10.0, 18.0, 18.0));
             }
         }
@@ -447,7 +481,7 @@ pub fn packed_cursor_source(tool: PlTool, phase: u8, scale: f32, pack: u8) -> Op
         let mid = (16. * scale).round() as u16;
         (mid, mid)
     } else {
-        hotspot(tool, scale)
+        ((TOOL_TIP.0 * scale).round() as u16, (TOOL_TIP.1 * scale).round() as u16)
     };
     winit::window::CustomCursor::from_rgba(bytes,c.pixmap.width() as u16,c.pixmap.height() as u16,hx,hy).ok()
 }
@@ -550,8 +584,12 @@ mod tests {
                     let opaque=c.pixmap.pixels().iter().filter(|p| p.alpha()>100).count();
                     assert!(opaque as f32>40.*scale*scale,"{tool:?} phase {phase} scale {scale}: visible tool artwork, not just a hotspot");
                     assert!(c.pixmap.pixels().iter().all(|p| p.red()<=p.alpha() && p.green()<=p.alpha() && p.blue()<=p.alpha()),"valid premultiplied pixels");
-                    let (hx,hy)=hotspot(tool,scale);
-                    if phase<GRAB && matches!(tool,PlTool::Draw|PlTool::Paint|PlTool::Slice|PlTool::Select|PlTool::Comp) {assert!(c.pixmap.pixels()[usize::from(hy)*c.pixmap.width() as usize+usize::from(hx)].alpha()>0,"the tip stays on the edit position");}
+                    if phase < GRAB {
+                        let x = (TOOL_TIP.0 * scale).round() as u32;
+                        let y = (TOOL_TIP.1 * scale).round() as u32;
+                        assert!(c.pixmap.pixel(x, y).unwrap().alpha() > 0,
+                            "{tool:?} phase {phase} scale {scale}: visible tip at the shared click position");
+                    }
                     assert_eq!(c.pixmap.pixels().last().unwrap().alpha(),0);
                     assert!(cursor_source(tool,phase,scale).is_some());
                     if phase>=3 && let Ok(dir)=std::env::var("LEMON_CURSOR_PREVIEW_DIR") {

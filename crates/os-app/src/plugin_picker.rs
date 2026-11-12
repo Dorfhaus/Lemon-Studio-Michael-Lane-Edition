@@ -23,7 +23,7 @@ pub struct View {
 impl Default for View {fn default()->Self{Self{multi:Vec::new(),anchor:None,minimized:false,sort_open:false,last_click:None,sort:0,preview_revision:0,images:Default::default(),hovered:None,open:false,target:Target::All,query:String::new(),filter:0,first:0,selected:0,pending:None,chains:Default::default()}}}
 fn entries(s:&State,effect:bool)->Vec<&Entry>{
     let v=&s.plugin_picker;
-    if (effect && matches!(v.target,Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
+    if (effect && matches!(v.target,Target::AttachedInstrument|Target::PlaylistInstrument(_)|Target::LaneInstrument(..)|Target::Gen(_)|Target::Replace(_)|Target::Stack(_))) || (!effect && matches!(v.target,Target::Fx(_)|Target::ClipFx(..)))
         || (v.filter==1 && effect) || (v.filter==2 && !effect) {return Vec::new();}
     let q=v.query.to_lowercase();
     let words: Vec<_> = q.split_whitespace().collect();
@@ -40,7 +40,7 @@ fn entries(s:&State,effect:bool)->Vec<&Entry>{
 fn choices(s:&State)->Vec<(bool,usize)>{[true,false].into_iter().flat_map(|fx|entries(s,fx).into_iter().map(move|e|(fx,e.index))).collect()}
 fn panes(s:&State)->Vec<bool>{
     match s.plugin_picker.target {
-        Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>vec![false],Target::Fx(_)|Target::ClipFx(..)=>vec![true],
+        Target::AttachedInstrument|Target::PlaylistInstrument(_)|Target::LaneInstrument(..)|Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>vec![false],Target::Fx(_)|Target::ClipFx(..)=>vec![true],
         Target::All=>match s.plugin_picker.filter{1=>vec![false],2=>vec![true],_=>vec![true,false]},
     }
 }
@@ -76,6 +76,9 @@ fn choose(app:&mut App,fx:bool,index:usize){
     if app.state.plugin_picker.filter==5||!choices(&app.state).contains(&(fx,index)){return;}
     let target=app.state.plugin_picker.target;close(app);
     let cmd=match (target,fx){
+        (Target::AttachedInstrument,false)=>PlugCmd::AttachedInstrument(index),
+        (Target::LaneInstrument(mixer,row),false)=>PlugCmd::LaneInstrument{index,mixer,row},
+        (Target::PlaylistInstrument(row),false)=>PlugCmd::PlaylistInstrument{index,row},
         (Target::ClipFx(channel,slot),_)=>PlugCmd::ClipFx{channel,slot,index},
         (Target::Fx(slot),_)=>PlugCmd::Effect{index,slot},(_,true)=>PlugCmd::Effect{index,slot:None},
         (Target::Stack(row),false)=>PlugCmd::Stack{index,row},
@@ -341,7 +344,7 @@ pub fn paint(ui:&mut Ui,s:&State){
     let lemon=Color::rgb(0x2096f3);
     ui.c.fill_rect_gradient(r,Color::rgb(0x202124),Color::rgb(0x111215),14.);
     ui.c.stroke_rrect(r,14.,1.,Color::rgb(0x46474b));
-    let title=match v.target{Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)=>"Choose an effect",Target::All=>"Choose a plugin"};
+    let title=match v.target{Target::AttachedInstrument|Target::PlaylistInstrument(_)|Target::LaneInstrument(..)|Target::Gen(_)|Target::Replace(_)|Target::Stack(_)=>"Choose an instrument",Target::Fx(_)|Target::ClipFx(..)=>"Choose an effect",Target::All=>"Choose a plugin"};
     let progress=crate::plugin_previews::progress();
     let btn=|ui:&mut Ui,b:Rect,label:&'static str,hit:Hit,on:bool|{
         let hover=ui.hit(b,Action::PluginPicker(hit),label);

@@ -483,6 +483,29 @@ mod separate {
     }
 
     #[test]
+    fn smart_disable_checks_pending_work_and_keeps_vst3_host_time() {
+        let probe = Arc::new(Probe::default()); let (_m, mut p) = instance(&probe);
+        assert!(p.activate(48000));
+        p.process_fx(48000, &mut [0.; 16], &mut [0.; 16]);
+        assert_eq!(p.smart_disable_tail(), Some(0));
+        p.advance_silent(48000, 5000);
+        p.process_fx(48000, &mut [0.; 16], &mut [0.; 16]);
+        assert_eq!(p.context.continuous_time_samples, 5016);
+        assert_eq!(p.steady, 5032);
+        p.shared.to_processor.lock().unwrap().push((GAIN, 0.5));
+        assert_eq!(p.smart_disable_tail(), None);
+        p.process_fx(48000, &mut [0.; 16], &mut [0.; 16]);
+        assert_eq!(p.smart_disable_tail(), Some(0));
+        let editor = p.editor_state.lock().unwrap();
+        assert_eq!(p.smart_disable_tail(), None, "busy editor never blocks audio"); drop(editor);
+        let params = p.shared.to_processor.lock().unwrap();
+        assert_eq!(p.smart_disable_tail(), None, "busy parameter queue never blocks audio"); drop(params);
+        p.note_on(500000, 60, 1.); assert_eq!(p.smart_disable_tail(), None);
+        p.queue.clear(); p.shared.restart.store(LATENCY_CHANGED, Ordering::Release);
+        assert_eq!(p.smart_disable_tail(), None);
+    }
+
+    #[test]
     fn mpe_native_events_keep_unisons_independent() {
         let probe=Arc::new(Probe::default());let (_module,mut p)=instance(&probe);
         p.mpe_map=[2,100000,5];

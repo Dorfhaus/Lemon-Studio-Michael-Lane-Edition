@@ -28,6 +28,33 @@ pub struct Backup {
     due: Option<Instant>,
     /// The project and tempo of the last backup.
     last: Option<(Project, f64, u64)>,
+    pub(crate) preparing: bool,
+    pending: Option<Pending>,
+}
+
+#[derive(Debug)]
+struct Pending {
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+    snapshot: (Project, f64, u64),
+    epoch: std::sync::Arc<()>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl Backup {
+    pub(crate) fn enqueue(&mut self, snapshot: (Project, f64, u64), epoch: std::sync::Arc<()>,
+        write: impl FnOnce() -> Result<(), String> + Send + 'static) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || { let _ = tx.send(write()); });
+        self.pending = Some(Pending { rx, snapshot, epoch, worker: Some(worker) });
+    }
+}
+
+impl Drop for Backup {
+    fn drop(&mut self) {
+        // Finish an already captured backup when the application closes.
+        if let Some(mut pending) = self.pending.take() {
+            if let Some(worker) = pending.worker.take() { let _ = worker.join(); }
+        }
+    }
 }
 
 /// The interval of Autosave entry `i`: Never none, Rarely 15, Occasionally 10, Regularly 5, Frequently 5, Very
@@ -119,6 +146,21 @@ impl App {
     /// The Autosave timer (`App::tick`): when its interval ends and the project changed since the last backup or save,
     /// a backup is written. A new Autosave choice starts the timer again.
     pub(crate) fn backup_tick(&mut self, now: Instant) {
+        if let Some(job) = &self.backup.pending {
+            let result = match job.rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("Backup worker stopped".into())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            let Some(result) = result else { return };
+            let job = self.backup.pending.take().unwrap();
+            if std::sync::Arc::ptr_eq(&job.epoch, &self.state.playlist.vocal.epoch) {
+                match result {
+                    Ok(()) => self.backup.last = Some(job.snapshot),
+                    Err(e) => { self.state.message = Some(format!("Backup failed: {e}")); self.invalidate(); }
+                }
+            }
+        }
         let every = interval(prefs::index(&prefs::AUTOSAVE));
         if every != self.backup.every {
             self.backup.every = every;
@@ -128,8 +170,18 @@ impl App {
         if now < due {
             return;
         }
+        // Plug-in state APIs run on the UI thread and share the processing lock.
+        // An overdue snapshot is taken as soon as playback/recording and live notes are idle.
+        if self.transport.playing() && !self.transport.paused() || self.state.rec.recording()
+            || self.audio_rec.is_some() || !self.transport.sounding().is_empty()
+            || self.transport.peaks().0.max(self.transport.peaks().1) > 0.00001 {
+            return;
+        }
         if self.changed_since_backup() {
-            match self.write_backup(chrono::Local::now().naive_local()) {
+            self.backup.preparing = true;
+            let result = self.write_backup(chrono::Local::now().naive_local());
+            self.backup.preparing = false;
+            match result {
                 // A project loading or an export rendering: at a later tick.
                 None => return,
                 Some(Err(e)) => {
@@ -162,7 +214,9 @@ impl App {
         }
         let snap = (self.state.project.clone(), self.state.tempo, self.plugins.edit_revision);
         let done = self.save_copy(target.clone())?;
-        if done.is_ok() {
+        if let Some(job) = self.backup.pending.as_mut() {
+            job.snapshot = snap;
+        } else if done.is_ok() {
             self.backup.last = Some(snap);
             prune(&dir, &name, usize::from(prefs::number(&prefs::BACKUP_MAXIMUM)));
         }
@@ -194,6 +248,52 @@ mod tests {
         v
     }
 
+    #[test]
+    fn background_failure_and_project_switch_do_not_acknowledge_edits() {
+        let mut app = App::new(None);
+        let before = app.state.project.clone();
+        let epoch = app.state.playlist.vocal.epoch.clone();
+        app.backup.enqueue((before.clone(), app.state.tempo, 0), epoch.clone(), || Err("injected write failure".into()));
+        let until = Instant::now() + Duration::from_secs(10);
+        while app.backup.pending.is_some() {
+            app.backup_tick(Instant::now());
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.backup.last.is_none());
+        assert!(app.state.message.as_deref().unwrap().contains("injected write failure"));
+        app.backup.enqueue((before, app.state.tempo, 0), epoch, || Ok(()));
+        app.state.playlist.vocal.epoch = std::sync::Arc::new(());
+        while app.backup.pending.is_some() {
+            app.backup_tick(Instant::now());
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.backup.last.is_none());
+    }
+
+    #[test]
+    fn background_snapshot_keeps_later_edits_dirty() {
+        let dir = scratch("background");
+        let mut app = App::new(None);
+        app.state.tempo = 111.;
+        app.backup.preparing = true;
+        let target = app.write_backup(at(11, 12, 14, 0)).unwrap().unwrap();
+        app.backup.preparing = false;
+        assert!(app.backup.pending.is_some());
+        app.state.tempo = 123.;
+        let until = Instant::now() + Duration::from_secs(10);
+        while app.backup.pending.is_some() {
+            app.backup_tick(Instant::now());
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let saved = os_flp::FlpFile::parse(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(os_flp::project::load(&saved).unwrap().tempo, Some(111.));
+        assert!(app.changed_since_backup());
+        assert_eq!(app.state.tempo, 123.);
+        let _ = std::fs::remove_dir_all(dir);
+    }
     #[test]
     fn names_follow_fl() {
         assert_eq!(file_name("gs7", "autosaved", at(10, 15, 0, 13)), "gs7 (autosaved on 10-15-2026 at 0h13).lmn");
@@ -249,6 +349,12 @@ mod tests {
         app.backup_tick(t0 + minute + Duration::from_secs(30));
         assert!(names(&dir).is_empty(), "the interval runs on");
         app.backup_tick(t0 + 2 * minute);
+        let until = Instant::now() + Duration::from_secs(10);
+        while app.backup.pending.is_some() {
+            app.backup_tick(t0 + 2 * minute);
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let files = names(&dir);
         assert_eq!(files.len(), 1, "{files:?}");
         assert!(autosaved_at(&files[0], "untitled").is_some(), "{files:?}");

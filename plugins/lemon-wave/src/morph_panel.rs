@@ -47,7 +47,7 @@ impl Panel {
     }
     fn hear(&self, bus: &PreviewBus) {
         if let Some(i) = self.selected {
-            bus.play(morph::audition(&self.points[i].cycle, false));
+            bus.play(morph::audition(&self.points[i].cycle, self.points[i].cycle.len(), false));
         }
     }
     fn commit_point(&mut self, s: &Sample, t: f32, replace: Option<usize>, bus: &PreviewBus) {
@@ -176,7 +176,7 @@ impl Panel {
                         );
                         return Some(source);
                     }
-                    bus.play(morph::audition(&source.samples, true));
+                    bus.play(morph::audition(&source.samples, source.frame_size, true));
                     self.message = "Auditioning the morph from first marker to last.".into();
                 }
                 Err(e) => self.message = e,

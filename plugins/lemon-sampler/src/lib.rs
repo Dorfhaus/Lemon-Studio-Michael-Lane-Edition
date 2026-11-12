@@ -647,7 +647,7 @@ pub fn block(p: &SamplerParams, tempo: f64, bend: f64) -> dsp::Block {
 
 /// The voices play a processed sample from now on.
 fn take(engine: &mut dsp::Engine, p: &Processed) {
-    engine.sample = p.sample.clone();
+    engine.replace_sample(p.sample.clone());
     engine.set_disk(p.disk.clone());
     engine.looped = p.looped;
     engine.file_frames = p.file_frames;
@@ -715,6 +715,15 @@ impl LemonSampler {
             a.store(b, Ordering::Relaxed);
         }
     }
+}
+
+#[cfg(feature = "linked")]
+static LIVE_RESAMPLING_POINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+
+/// Set the built-in sampler's live interpolation without changing plugin state or export quality.
+#[cfg(feature = "linked")]
+pub fn set_live_resampling_points(points: u32) {
+    LIVE_RESAMPLING_POINTS.store(points, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl Plugin for LemonSampler {
@@ -789,7 +798,17 @@ impl Plugin for LemonSampler {
         self.pick_up_sample(ctx);
         // An offline render or an export waits for frames from disk (spec: plugins/lemon-sampler.md "Keep on disk
         // (Lemon Studio)").
-        self.engine.wait = self.offline || stream::exporting();
+        let exporting = stream::exporting();
+        self.engine.wait = self.offline || exporting;
+        #[cfg(feature = "linked")]
+        if !self.offline {
+            use os_dsp::resample::Quality;
+            self.engine.quality = match if exporting { 16 } else { LIVE_RESAMPLING_POINTS.load(std::sync::atomic::Ordering::Relaxed) } {
+                2 => Quality::Linear,
+                16 => Quality::Live16,
+                points => Quality::LiveSinc((points / 2) as usize),
+            };
+        }
         let tempo = self.shared.tempo();
         let mut blk = block(&self.params, tempo, self.bend);
         // Notes the editor plays itself.

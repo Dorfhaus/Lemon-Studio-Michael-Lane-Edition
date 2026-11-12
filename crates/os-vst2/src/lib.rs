@@ -961,6 +961,22 @@ impl Plugin {
 }
 
 impl os_host::Plugin for Plugin {
+    fn advance_silent(&mut self, rate: u32, frames: usize) {
+        let song = self.song.take();
+        self.set_time(song, 0, rate);
+        self.steady = self.steady.saturating_add(frames as u64);
+    }
+    fn smart_disable_tail(&self) -> Option<u64> {
+        if self.rate == 0 || !self.queue.is_empty() || !self.auto.is_empty()
+            || self.inst.shared.io_changed.load(Ordering::Acquire)
+            || self.wanted_rate.load(Ordering::Acquire) != 0
+            || !self.editor_state.try_lock().is_ok_and(|editor| !editor.editor) { return None; }
+        match self.inst.dispatch(op::TAIL_SAMPLES, 0, 0, std::ptr::null_mut(), 0.0) {
+            1 => Some(0),
+            tail @ 2..=2_147_483_646 => Some(tail as u64),
+            _ => None,
+        }
+    }
     fn programs(&self)->Vec<(u32,u32,String)> {
         let count=self.inst.num_programs().clamp(0,16384);
         (0..count).map(|i|{

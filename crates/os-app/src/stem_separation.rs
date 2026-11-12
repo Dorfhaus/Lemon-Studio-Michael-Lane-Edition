@@ -20,6 +20,10 @@ use std::{
 };
 type Result<T> = std::result::Result<T, String>;
 const REV: &str = "demucs-4.0.1-torch-2.5.1-v1";
+const MODEL_URL: &str =
+    "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th";
+const MODEL_MIRROR_URL: &str = "https://huggingface.co/teamup-tech/Demucs-weights/resolve/e12e76af128e0935a0ad1734cb97974e5d27663d/hybrid_transformer/955717e8-8726e21a.th";
+const MODEL_SHA256: &str = "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4";
 const STEMS: [&str; 4] = ["vocals", "drums", "bass", "other"];
 const LABELS: [&str; 4] = ["Vocals", "Drums", "Bass", "Instruments"];
 fn indices(selected: u8) -> impl Iterator<Item = usize> {
@@ -612,14 +616,35 @@ fn install(root: &Path, stop: &AtomicBool, tx: &mpsc::Sender<Event>) -> Result<(
     run(c, root, stop)?;
     io(fs::create_dir_all(root.join("models")))?;
     phase(tx, "Downloading the four-stem AI model...");
+    let model = root.join("models/955717e8-8726e21a.th");
     download(
-        "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th",
-        &root.join("models/955717e8-8726e21a.th"),
-        "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4",
+        MODEL_URL,
+        &model,
+        MODEL_SHA256,
         stop,
         tx,
         "Downloading AI model",
-    )?;
+    )
+    .or_else(|primary_error| {
+        check(stop)?;
+        phase(tx, "Trying the backup AI model download...");
+        match download(
+            MODEL_MIRROR_URL,
+            &model,
+            MODEL_SHA256,
+            stop,
+            tx,
+            "Downloading AI model from backup",
+        ) {
+            Ok(()) => Ok(()),
+            Err(backup_error) => {
+                check(stop)?;
+                Err(format!(
+                    "Both AI model download servers failed.\nPrimary: {primary_error}\nBackup: {backup_error}"
+                ))
+            }
+        }
+    })?;
     phase(tx, "Checking the separation engine...");
     let mut c = command(&python(root), root);
     c.arg(root.join("separate.py")).arg("--check");
