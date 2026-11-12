@@ -353,7 +353,19 @@ fn style_key(index: usize) -> String {
 }
 
 pub fn set_color(text: &str, token: &str, color: Color) -> String {
-    fl::set_key(text, &color_key(token), &hex(color))
+    if token.starts_with("skin_")
+        && let Some(part) = Part::ALL.into_iter().find(|part| part.colors().iter().any(|&(_, key)| key == token))
+    {
+        return mixer_skin::set_color(text, Scope::Theme, part, token, color);
+    }
+    let text = fl::set_key(text, &color_key(token), &hex(color));
+    // Authored mixer finishes have fixed colors. Choosing a mixer palette color is
+    // an explicit request to use the editable finish, also for traditional strips.
+    if token.starts_with("mixer_") || token.starts_with("slot") || token == "fader_handle" {
+        fl::set_key(&text, "LemonStudioStyle.mixer", "Theme colors")
+    } else {
+        text
+    }
 }
 
 fn hex(c: Color) -> String {

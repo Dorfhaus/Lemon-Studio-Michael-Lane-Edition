@@ -3532,6 +3532,26 @@ pub fn fade_xs(s: &State, g: &PGeom, c: &Clip) -> (f32, f32) {
     (snap(f64::from(body.x) + f64::from(fin)), snap(f64::from(body.right()) - f64::from(fout)))
 }
 
+/// Visible fade grips stay inside the clip and separate when their endpoints meet.
+/// Curves keep their exact endpoints; painting and hit testing share these grips.
+pub fn fade_handles(s: &State, g: &PGeom, c: &Clip) -> (Rect, Rect) {
+    let body = g.body(c);
+    let (fin, fout) = fade_xs(s, g, c);
+    let size = 6.0_f32.min((body.w / 2.0).max(0.0));
+    let half = size / 2.0;
+    let lo = body.x + half;
+    let hi = (body.right() - half).max(lo);
+    let mut a = (fin + half).clamp(lo, hi);
+    let mut b = (fout - half).clamp(lo, hi);
+    let gap = (size + 2.0).min((hi - lo).max(0.0));
+    if (a - b).abs() < gap {
+        let center = ((a + b) / 2.0).clamp(lo + gap / 2.0, hi - gap / 2.0);
+        a = center - gap / 2.0;
+        b = center + gap / 2.0;
+    }
+    (Rect::new(a - half, body.y, size, size), Rect::new(b - half, body.y, size, size))
+}
+
 /// Whether a clip's fade-in (`out` false) or fade-out belongs to the automatic crossfades: the switch is on and the
 /// edge's bit is clear. Its length follows the overlaps, and a fade-out's tension too (spec: audio/audio-clips.md
 /// "Automatic crossfades"), so it has no tension handle of its own.
@@ -3580,12 +3600,26 @@ pub fn fade_mid(body: Rect, x0: f32, x1: f32, tension: f32, _out: bool) -> (f32,
     ((x0 + x1) / 2.0, body.bottom() - v * body.h)
 }
 
+/// The painted gain handle stays centered in the visible part of the clip.
+pub fn gain_handle(g: &PGeom, clip: &Clip) -> Option<Rect> {
+    let clip = g.clip_rect(clip);
+    let visible = clip.intersect(&g.grid);
+    let bottom = clip.bottom() - 1.0;
+    (visible.w >= 12.0 && clip.h >= 8.0 && bottom - 5.0 >= visible.y && bottom <= visible.bottom())
+        .then(|| Rect::new(visible.cx() - 5.0, bottom - 5.0, 10.0, 5.0))
+}
+
 /// The handle of audio clip `i` under (x, y), if any (§9a).
 pub fn handle_at(s: &State, g: &PGeom, i: usize, x: f32, y: f32) -> Option<Handle> {
     if !s.playlist.controls.fades { return None; }
     let c = clips(s).get(i)?;
     if !is_audio_clip(s, g, c) || c.muted || !matches!(s.playlist.tool, PlTool::Draw | PlTool::Paint | PlTool::Select) {
         return None;
+    }
+    let gain = gain_handle(g, c);
+    // The gain handle is painted over the other controls, including on short rows.
+    if gain.is_some_and(|r| r.contains(x, y)) {
+        return Some(Handle::Gain);
     }
     let body = g.body(c);
     let (fx_in, fx_out) = fade_xs(s, g, c);
@@ -3609,13 +3643,17 @@ pub fn handle_at(s: &State, g: &PGeom, i: usize, x: f32, y: f32) -> Option<Handl
             return Some(Handle::TensionOut);
         }
     }
-    if near(fx_in + 3.0, body.y + 3.0, 5.0) {
-        return Some(Handle::FadeIn);
+    let (fade_in, fade_out) = fade_handles(s, g, c);
+    let in_hit = fade_in.outset(2.0).contains(x, y);
+    let out_hit = fade_out.outset(2.0).contains(x, y);
+    if in_hit || out_hit {
+        return Some(if in_hit && (!out_hit || (x - fade_in.cx()).abs() <= (x - fade_out.cx()).abs()) {
+            Handle::FadeIn
+        } else {
+            Handle::FadeOut
+        });
     }
-    if near(fx_out - 3.0, body.y + 3.0, 5.0) {
-        return Some(Handle::FadeOut);
-    }
-    if near(body.cx(), body.bottom() - 2.0, 6.0) {
+    if gain.is_some_and(|r| near(r.cx(), r.bottom() - 2.0, 6.0)) {
         return Some(Handle::Gain);
     }
     None

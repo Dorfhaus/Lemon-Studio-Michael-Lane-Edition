@@ -1530,10 +1530,14 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     }
     // Squish: the slot rows and the equalizer graph shrink with the height (the knob rows under
     // the graph are dropped when they no longer fit); the top and bottom rows keep their size.
+    let output_visible = crate::workspace_visibility::shown(mx::HARDWARE_OUTPUT_VISIBILITY);
+    let output_h = if output_visible { 35.0 } else { 0.0 };
+    let panel_bottom = r.bottom() - output_h;
     let room = r.h - 125.0;
-    let kp = ((room - 15.0) / 503.0).clamp(0.3, 1.0);
+    let slot_limit = ((panel_bottom - r.y - 66.0) / 330.0).clamp(0.04, 1.0);
+    let kp = ((room - 15.0) / 503.0).clamp(0.3, 1.0).min(slot_limit);
     let q = kp.max(0.55);
-    // Input row: EQ glyph, "(none)" combo, latency clock. Audio inputs are not available yet: greyed out.
+    // Recording input selector above the effects.
     let input_bg = ui.t.s(0x2b2e30);
     ui.c.fill_rect(Rect::new(r.x, r.y + 23.0, r.w, 36.0), input_bg);
     let mut g = Glyph::new();
@@ -1597,36 +1601,21 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
     let sep = r.y + 61.0 + 330.0 * kp;
     ui.c.fill_rect(Rect::new(r.x, sep, r.w, 1.0), ui.t.s(0x1f2224));
 
-    if crate::workspace_visibility::shown("visible_mixer-eq") {
-        crate::mini_eq::draw(ui, s, Rect::new(r.x + 4.0, sep + 6.0, r.w - 8.0, (r.bottom() - 72.0 - sep - 6.0).max(30.0)));
+    let eq_h = panel_bottom - 5.0 - (sep + 6.0);
+    if eq_h >= 30.0 && crate::workspace_visibility::shown("visible_mixer-eq") {
+        crate::mini_eq::draw(ui, s, Rect::new(r.x + 4.0, sep + 6.0, r.w - 8.0, eq_h));
     }
-    let b = r.bottom();
-
-    // Output rows at the bottom: audio outputs are not available yet, greyed out.
-    ui.c.fill_rect(Rect::new(r.x, b - 66.0, r.w, 1.0), ui.t.s(0x1f2224));
-    ui.c.fill_rect(Rect::new(r.x, b - 33.0, r.w, 1.0), ui.t.s(0x1f2224));
-    let mut g = Glyph::new();
-    g.ring(r.x + 14.0, b - 48.5, 8.0, 1.5).rect(r.x + 13.3, b - 53.0, 1.4, 5.0).rect(r.x + 13.3, b - 49.2, 4.0, 1.4);
-    ui.c.glyph(ui.t.s(0x40464a), &g);
-    ui.off(Rect::new(r.x + 25.0, b - 60.0, r.w - 28.0, 22.0), "Audio output target");
-    ui.c.text(console_font(ui,s,17), r.x + 30.0, b - 59.0, ui.t.tx(0xd4dade), "(none)");
-    chevron(ui, r.right() - 11.0, b - 48.5, true, ui.t.tx(0x8c969c));
-    ui.veil(Rect::span(r.x, r.right(), b - 65.0, b - 34.0), ui.t.s(0x2e3133));
-    let mut g = Glyph::new();
-    g.ring(r.x + 13.0, b - 16.0, 8.0, 1.6);
-    g.erase(true).rect(r.x + 13.0, b - 26.0, 10.0, 20.0);
-    g.erase(false).polygon(&[(r.x + 11.0, b - 20.5), (r.x + 16.0, b - 20.5), (r.x + 21.0, b - 16.0), (r.x + 16.0, b - 11.5), (r.x + 11.0, b - 11.5)]);
-    ui.c.glyph(ui.t.tx(0xc4ccd0), &g);
-    ui.veil(Rect::new(r.x + 3.0, b - 26.0, 20.0, 20.0), ui.t.s(0x2e3133));
-    off_combo(ui, Rect::new(r.x + 26.0, b - 28.0, 189.0, 24.0), "Audio output target", ui.t.s(0x2e3133));
-}
-
-/// An input / output combo that is not available yet: drawn greyed out, its hit only says so.
-fn off_combo(ui: &mut Ui, r: Rect, name: &'static str, bg: Color) {
-    ui.off(r, name);
-    let st = os_ui::kit::State::NORMAL.with_disabled(true);
-    os_ui::kit::combo(ui.c, ui.t, r, "(none)", Font::new(17), st);
-    ui.veil(r, bg);
+    if output_visible {
+        ui.c.fill_rect(Rect::new(r.x, panel_bottom, r.w, 1.0), ui.t.s(0x1f2224));
+        let row = Rect::new(r.x + 4., panel_bottom + 5., r.w - 8., 24.);
+        let label = track.and_then(|track| track.hardware_output.as_ref()).map_or_else(
+            || "Hardware out: Off".to_owned(),
+            |out| format!("Hardware out: {} / {}", u32::from(out.first) + 1, u32::from(out.first) + 2),
+        );
+        let hover = ui.hit(row, Action::Mix(MHit::HardwareOutput(n)), "Send this channel to an additional pair on your audio interface");
+        let font = label_font(ui.c, console_font(ui, s, 13), &label, row.w - 24.);
+        os_ui::kit::combo(ui.c, ui.t, row, &label, font, os_ui::kit::State::hover(hover));
+    }
 }
 
 /// Small solid chevron centred on (x, y), pointing right or left.

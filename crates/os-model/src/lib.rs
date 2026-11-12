@@ -1358,6 +1358,14 @@ pub struct RackStrip {
 }
 
 
+/// A live, post-fader send to an additional stereo pair on one output device.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HardwareOutput {
+    pub device: String,
+    /// Zero-based index of the first channel of the pair.
+    pub first: u16,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MixerTrack {
     /// In-memory identity, preserved across edits/reordering; never serialized.
@@ -1419,6 +1427,9 @@ pub struct MixerTrack {
     pub channel_layout: u8,
     /// Bypass native knobs without changing their values or plugin-slot switches.
     pub strip_bypassed: bool,
+    /// An additional live output on a particular device.
+    #[serde(default)]
+    pub hardware_output: Option<HardwareOutput>,
     /// The track's output and input latency settings in milliseconds, either sign, 0 = none (event 236; spec:
     /// flp/layouts.md "A mixer track's record", audio/delay-compensation.md "Settings").
     pub latency_out: f32,
@@ -1468,6 +1479,7 @@ impl PartialEq for MixerTrack {
             tune_learn: _,
             channel_layout,
             strip_bypassed,
+            hardware_output,
             latency_out,
             latency_in,
             icon,
@@ -1500,6 +1512,7 @@ impl PartialEq for MixerTrack {
             && *group_locked == o.group_locked
             && *parametric_pre == o.parametric_pre
             && *eq == o.eq
+            && *hardware_output == o.hardware_output
             && *latency_out == o.latency_out
             && *latency_in == o.latency_in
             && *icon == o.icon
@@ -1554,6 +1567,7 @@ impl MixerTrack {
             tune_learn: 0,
             channel_layout: 1,
             strip_bypassed: false,
+            hardware_output: None,
             latency_out: 0.0,
             latency_in: 0.0,
             icon: None,

@@ -145,6 +145,9 @@ pub enum ParamEvent {
     Begin(u32),
     /// Parameter id, new normalized value.
     Value(u32, f64),
+    /// Controller value mirrored from playback/host state; refresh the baseline
+    /// without treating it as a user edit, automation recording or an Undo step.
+    Sync(u32, f64),
     End(u32),
 }
 
@@ -205,6 +208,13 @@ pub enum EditorAction {
 /// Prepared under the instance lock, executed immediately on the UI thread after releasing it.
 /// Implementations must isolate editor state from audio processing and retain their interface lifetimes.
 pub type EditorJob = Box<dyn FnOnce() -> Result<(u32, u32), String>>;
+/// UI-only controller work prepared under the audio instance lock. Run immediately
+/// on that same UI thread, after releasing the lock and before removing the plugin.
+pub type UiJob = Box<dyn FnOnce()>;
+/// Read controller values on the UI thread without excluding audio processing.
+/// Like `UiJob`, execute immediately after releasing the instance lock. The job
+/// must retain its interfaces and must not access mutable processor state.
+pub type ParamValuesJob = Box<dyn FnOnce() -> Vec<(u32, f64)>>;
 
 /// A plugin instance, whatever its format.
 /// Main-thread calls (everything except the `Instrument` / `HostedEffect` methods) come from the UI thread only.
@@ -229,6 +239,15 @@ pub trait Plugin: Instrument + HostedEffect + Send {
 
     /// UI-thread housekeeping, every tick: callbacks the plugin asked for, restarts, rate changes.
     fn idle(&mut self);
+    /// Detach pending display updates from the audio state when the format permits.
+    /// Other formats continue to deliver their updates through `idle`.
+    fn take_ui_job(&mut self) -> Option<UiJob> { None }
+    /// Formats with an independent UI controller can snapshot parameter values
+    /// outside the audio lock. None uses the serialized parameter API instead.
+    fn param_values_job(&self) -> Option<ParamValuesJob> { None }
+    /// Optional bounded controller read in parameter-index order. A UI may spread
+    /// large banks across frames; None uses serialized reads for that range.
+    fn param_values_job_range(&self, _range: std::ops::Range<usize>) -> Option<ParamValuesJob> { None }
 
     /// The plugin has an editor that can be embedded in a host window.
     fn has_editor(&self) -> bool;

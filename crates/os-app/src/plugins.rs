@@ -1278,6 +1278,7 @@ impl Plugins {
         for (&row, h) in &mut self.hosted {
             let look = h.due(h.seen);
             let mut menu: Option<(os_host::Menu, (i32, i32))> = None;
+            let mut ui_job = None;
             #[cfg(plugin_windows)] let mut editor_layout = None;
             #[cfg(any(windows,target_os="macos"))] let mut embedded_size = None;
             if let Some(mut p) = look.and_then(|_| h.plugin.try_lock().ok()) {
@@ -1288,6 +1289,7 @@ impl Plugins {
                     out.push(Request::Stopped(row, stopped_message(&p.desc().name, code, row >= FX_KEY)));
                     close.push(row);
                 }
+                ui_job = p.take_ui_job();
                 p.idle();
                 out.extend(p.take_playback_requests().into_iter().map(|request|Request::AraPlayback(row,request)));
                 #[cfg(any(windows,target_os="macos"))] if let (Some(_),Some(size))=(&h.rack_editor,p.editor_size()){
@@ -1325,6 +1327,7 @@ impl Plugins {
             }
             // Native window moves/repaints may block in the OS. Do them after
             // releasing the audio plugin instance, not inside its processing lock.
+            if let Some(job) = ui_job { job(); }
             #[cfg(any(windows,target_os="macos"))] if let Some(e)=&mut h.rack_editor {if let Some(size)=embedded_size {e.accept_size(size);}e.animate();}
             #[cfg(plugin_windows)]
             if let Some(w) = &h.window {
@@ -3986,6 +3989,13 @@ mod tests {
         fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
     }
     impl os_host::Plugin for Tracked {
+        fn take_ui_job(&mut self) -> Option<os_host::UiJob> {
+            let thread = std::thread::current().id();
+            Some(Box::new(move || {
+                assert_eq!(std::thread::current().id(), thread);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }))
+        }
         fn editor_job(&mut self, _: os_host::EditorAction) -> Option<os_host::EditorJob> {
             let thread = std::thread::current().id();
             Some(Box::new(move || {
@@ -4020,6 +4030,36 @@ mod tests {
         fn load_state(&mut self, _: &[u8]) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn slow_editor_updates_leave_audio_instance_available() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let plugin: SharedPlugin = Arc::new(Mutex::new(Tracked(
+            builtin_effects()[0].desc.clone(), Arc::new(Mutex::new(None)),
+        )));
+        let mut plugins = Plugins::default();
+        plugins.hosted.insert(0, Hosted::new(plugin.clone()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let done = stop.clone();
+        let count = blocks.clone();
+        let worker = std::thread::spawn(move || {
+            let (mut left, mut right) = ([0.1; 64], [0.1; 64]);
+            while !done.load(Ordering::Acquire) {
+                if let Ok(mut p) = plugin.try_lock() {
+                    p.process_fx(48000, &mut left, &mut right);
+                    count.fetch_add(1, Ordering::Release);
+                }
+                std::thread::sleep(Duration::from_micros(1333));
+            }
+        });
+        let before = blocks.load(Ordering::Acquire);
+        plugins.idle(|_| None);
+        let progress = blocks.load(Ordering::Acquire) - before;
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(progress > 10, "slow editor blocked audio for 50 ms: {progress} blocks");
     }
 
     #[test]

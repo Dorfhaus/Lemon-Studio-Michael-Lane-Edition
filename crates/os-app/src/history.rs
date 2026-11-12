@@ -93,6 +93,7 @@ pub enum Snap {
     StripBypass(u16,bool),
     DriveType(u16,u16),
     EqPosition(u16,bool),
+    HardwareOutput(u16, Option<os_model::HardwareOutput>),
     EqEnabled(u16, bool),
     MixerLock(u16, bool),
     MixerGroupLock(u16, bool),
@@ -431,6 +432,7 @@ impl Snap {
             Snap::MixerLock(t, _) => Snap::MixerLock(*t, crate::mixer::individually_locked(s, *t)),
             Snap::MixerGroupLock(t, _) => Snap::MixerGroupLock(*t, crate::mixer::group_locked(s, *t)),
             Snap::EqEnabled(t, _) => crate::mixer::track(s, *t).map_or_else(|| self.clone(), |m| Snap::EqEnabled(*t, m.slot_on[usize::from(crate::mini_eq::SLOT)])),
+            Snap::HardwareOutput(t, _) => Snap::HardwareOutput(*t, crate::mixer::track(s, *t).and_then(|m| m.hardware_output.clone())),
             Snap::EqPosition(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::EqPosition(*t,m.parametric_pre)),
             Snap::DriveType(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::DriveType(*t,m.strip[6])),
             Snap::StripBypass(t,_) => crate::mixer::track(s,*t).map_or_else(||self.clone(),|m|Snap::StripBypass(*t,m.strip_bypassed)),
@@ -540,6 +542,7 @@ impl Snap {
             | Snap::TuneEnabled(..)
             | Snap::PeakLinks(..)
             | Snap::EqPosition(..)
+            | Snap::HardwareOutput(..)
             | Snap::EqEnabled(..)
             | Snap::MixerLock(..)
             | Snap::MixerGroupLock(..)
@@ -664,6 +667,9 @@ impl Snap {
             Snap::EqEnabled(t, enabled) => {
                 if let Some(m) = crate::mixer::track_mut(s, t) { m.slot_on[usize::from(crate::mini_eq::SLOT)] = enabled; }
             },
+            Snap::HardwareOutput(t, output) => {
+                if let Some(track) = crate::mixer::track_mut(s, t) { track.hardware_output = output; }
+            }
             Snap::EqPosition(t,p) => {if let Some(m)=crate::mixer::track_mut(s,t){m.parametric_pre=p;}},
             Snap::DriveType(t,p) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip[6]=p;}},
             Snap::StripBypass(t,b) => {if let Some(m)=s.project.mixer.iter_mut().find(|m|m.index==t){m.strip_bypassed=b;}},

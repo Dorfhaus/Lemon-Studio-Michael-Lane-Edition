@@ -193,9 +193,7 @@ impl Engine {
             .jobs
             .resize_with(self.tracks.len(), || Some(Box::default()));
         let limit = self.worker_limit.min(mix_workers::worker_count()).max(1);
-        let until = self
-            .busy_until
-            .or_else(|| Some(Instant::now() + self.busy_wait));
+        let until = Some(*self.busy_until.get_or_insert_with(|| Instant::now() + self.busy_wait));
         let mut running = 0;
         let mut finished = 0;
         let mut moved = false;

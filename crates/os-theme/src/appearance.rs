@@ -209,6 +209,11 @@ impl Appearance {
             if matches!(name, "knob_cap" | "knob_pointer" | "knob_ring") {
                 self.knob.get_or_insert(Knob::Ring);
             }
+            // Existing exported themes with mixer overrides also need the palette
+            // renderer. An explicitly chosen authored finish still takes precedence.
+            if name.starts_with("mixer_") || name.starts_with("slot") || name == "fader_handle" {
+                self.mixer.get_or_insert(Mixer::Theme);
+            }
             self.themed_buttons |= matches!(
                 name,
                 "button"

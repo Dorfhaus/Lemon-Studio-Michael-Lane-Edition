@@ -448,6 +448,11 @@ impl Engine {
             self.out.truncate(2 * keep as usize);
             *f -= keep;
         }
+        if !self.exporting {
+            let start = 2 * skip as usize;
+            self.device_outputs.render(&self.bus, start..start + self.out.len(),
+                self.pdc.lag, &self.pdc.leaving, &self.varispeed, self.speed_ratio);
+        }
         self.pdc.handed += (self.out.len() / 2) as u64;
         // A live engine plays on while a sound is still on its way through the pads.
         if !self.voices.is_empty() || self.inst_tail > 0 || self.tap_clicks.sounding() {

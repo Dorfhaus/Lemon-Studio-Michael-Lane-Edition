@@ -411,6 +411,51 @@ fn rate_changes_reactivate_on_idle() {
 
 /// `OS_VST3_PLUGIN=<path>`: any VST 3 plug-in loads, activates, processes a block and saves its state.
 #[test]
+#[ignore = "loads the explicitly selected installed plugin, without an editor or audio device"]
+fn plugin_load_processing_probe() {
+    use os_host::Plugin as _;
+    use os_engine::HostedEffect as _;
+    let path = std::env::var_os("OS_VST3_PLUGIN").expect("OS_VST3_PLUGIN required");
+    let m = Module::load(Path::new(&path)).expect("load");
+    let d = m.plugins().iter().find(|d| !d.is_instrument()).expect("effect");
+    let mut p = Plugin::new(&m, &d.id).expect("create");
+    if let Some(path) = std::env::var_os("OS_VST3_PROJECT") {
+        let bytes = std::fs::read(path).expect("read diagnostic project");
+        let file = os_flp::FlpFile::parse(&bytes).expect("parse project");
+        let project = os_flp::project::load(&file).expect("load project");
+        let saved = project.mixer.iter().flat_map(|t| t.slots.iter().flatten())
+            .filter_map(|s| os_flp::wrapper::decode(&s.state))
+            .find(|s| s.name == d.name).expect("selected effect in project");
+        assert!(p.load_state(&saved.state), "restore saved effect settings");
+    }
+    assert!(p.activate(48000));
+    for frames in [16, 64, 128, 256, 512] {
+        let (mut l, mut r) = (vec![0.; frames], vec![0.; frames]);
+        let mut processing = std::time::Duration::ZERO;
+        let mut idle = std::time::Duration::ZERO;
+        let mut notifications = 0;
+        for block in 0..(48000 / frames) {
+            for (i, (l, r)) in l.iter_mut().zip(&mut r).enumerate() {
+                *l = ((block * frames + i) as f32 * 0.0576).sin() * 0.1;
+                *r = *l;
+            }
+            let start = Instant::now();
+            p.process_fx(48000, &mut l, &mut r);
+            processing += start.elapsed();
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+            if block % (48000 / frames / 30).max(1) == 0 {
+                let flags = p.shared.restart.load(Ordering::Acquire);
+                notifications += usize::from(flags != 0);
+                let start = Instant::now();
+                p.idle();
+                idle += start.elapsed();
+            }
+        }
+        eprintln!("{} frames={frames}: process={processing:?} idle={idle:?} notifications={notifications} latency={}", d.name, p.latency());
+    }
+}
+
+#[test]
 fn hosts_a_plugin_from_env() {
     let Some(path) = std::env::var_os("OS_VST3_PLUGIN") else { return };
     let m = Module::load(Path::new(&path)).expect("load");
@@ -565,6 +610,56 @@ mod separate {
         assert_eq!(p.latency(), 64);
         assert_eq!(probe.logged("comp.setup_processing"), ["comp.setup_processing 48000 4096 0"]);
         assert_eq!(probe.logged("ctrl.notify"), ["ctrl.notify activated 64"]);
+    }
+
+    #[test]
+    fn editor_dimensions_follow_cached_resize_notifications() {
+        let probe = Arc::new(Probe::default());
+        let (_m, p) = instance(&probe);
+        let mut editor = p.editor_state.lock().unwrap();
+        editor.editor = true;
+        editor.editor_scale = 1.5;
+        *editor.shared.size.lock().unwrap() = Some((800, 600));
+        assert_eq!(editor.editor_size(), Some((1200, 900)));
+        *editor.shared.size.lock().unwrap() = Some((1000, 700));
+        assert_eq!(editor.editor_size(), Some((1500, 1050)));
+        editor.close_editor();
+        assert_eq!(editor.editor_size(), None);
+    }
+
+    #[test]
+    fn deferred_display_updates_preserve_processing_and_newer_values() {
+        let probe = Arc::new(Probe::default());
+        let (_m, mut p) = instance(&probe);
+        assert!(p.activate(48000));
+        let (mut l, mut r) = ones(64);
+        p.process_fx(48000, &mut l, &mut r);
+        let job = p.take_ui_job().expect("display updates detached");
+        assert!(p.from_processor.is_empty());
+        p.idle();
+        assert_ne!(probe.controller().value(PEAK), 1.0, "idle did not deliver under the instance lock");
+        l.fill(0.25); r.fill(0.25);
+        p.process_fx(48000, &mut l, &mut r);
+        job();
+        assert_eq!(probe.controller().value(PEAK), 1.0);
+        p.take_ui_job().expect("newer meter reading retained")();
+        assert_eq!(probe.controller().value(PEAK), 0.25);
+    }
+
+    #[test]
+    fn controller_snapshot_reads_current_values() {
+        let probe = Arc::new(Probe::default());
+        let (_m, mut p) = instance(&probe);
+        assert!(p.set_param(GAIN, 0.75));
+        let job = p.param_values_job().expect("independent controller snapshot");
+        assert!(p.set_param(GAIN, 0.25));
+        let values = job();
+        assert_eq!(values.iter().find(|p| p.0 == GAIN).map(|p| p.1), Some(0.25));
+        assert_eq!(values.len(), p.param_count());
+        let first = p.param_values_job_range(0..1).unwrap()();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0], values[0]);
+        assert!(p.param_values_job_range(p.param_count()..p.param_count()).unwrap()().is_empty());
     }
 
     #[test]
@@ -1225,6 +1320,85 @@ mod window {
     }
 
     /// Opt-in lifecycle test with independent synthetic processing; never uses an audio device.
+    #[test]
+    #[ignore = "visible installed editor diagnostic; requires explicit GUI authorization"]
+    fn installed_visible_editor_processing_probe() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        #[link(name = "ole32")]
+        extern "system" { fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32; }
+        unsafe { CoInitializeEx(std::ptr::null_mut(), 2); }
+        let path = std::env::var_os("OS_VST3_PLUGIN").expect("plugin path");
+        let module = Module::load(Path::new(&path)).expect("load");
+        let desc = module.plugins().iter().find(|d| d.is_effect()).unwrap();
+        let shared = module.clone().create(&desc.id).expect("create");
+        assert!(shared.lock().unwrap().activate(48000));
+        let hwnd = host_window(false);
+        let ids: Vec<_> = {let p=shared.lock().unwrap();(0..p.param_count()).filter_map(|i|p.param_info(i).map(|p|p.id)).collect()};
+        // The legacy mode deliberately reproduces the old app parameter tick.
+        let legacy = std::env::var_os("OS_VST3_LEGACY_POLL").is_some();
+        let job = shared.lock().unwrap().editor_job(os_host::EditorAction::Open { parent: hwnd.cast(), scale: 1.0 }).unwrap();
+        let (w,h) = job().expect("editor opens");
+        unsafe { SetWindowPos(hwnd, HWND_TOP, 80, 80, w as i32, h as i32, SWP_NOACTIVATE); }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new([const { AtomicU64::new(0) }; 4]);
+        let (done, totals, audio) = (stop.clone(), stats.clone(), shared.clone());
+        let worker = std::thread::spawn(move || {
+            let mut frame = 0;
+            while !done.load(Ordering::Acquire) {
+                let start = Instant::now();
+                if let Ok(mut p) = audio.try_lock() {
+                    let mut l = [0.; 128]; let mut r = l;
+                    p.transport_fx(&os_engine::TransportInfo { playing:true, tempo:120., frame, beats:frame as f64/24000., bar_start:0., bar:0, numerator:4, denominator:4, looping:None });
+                    let at = Instant::now();
+                    p.process_fx(48000, &mut l, &mut r);
+                    let ns = at.elapsed().as_nanos() as u64;
+                    totals[0].fetch_add(ns, Ordering::Relaxed);
+                    totals[1].fetch_add(1, Ordering::Relaxed);
+                    totals[2].fetch_max(ns, Ordering::Relaxed);
+                    assert!(l.iter().chain(&r).all(|v|v.is_finite()));
+                } else { totals[3].fetch_add(1, Ordering::Relaxed); }
+                frame += 128;
+                std::thread::sleep(Duration::from_micros(2667).saturating_sub(start.elapsed()));
+            }
+        });
+        let mut missed = 0;
+        let mut processed = 0;
+        for visible in [false,true,false] {
+            unsafe { ShowWindow(hwnd, if visible {SW_SHOWNOACTIVATE} else {SW_HIDE}); }
+            for s in stats.iter() {s.store(0,Ordering::Relaxed);}
+            let start = Instant::now();
+            let mut idle_ns=0u128;
+            while start.elapsed() < Duration::from_secs(4) {
+                unsafe {
+                    let mut msg:MSG=std::mem::zeroed();
+                    for _ in 0..1000 {
+                        if PeekMessageW(&mut msg,std::ptr::null_mut(),0,0,PM_REMOVE)==0 {break;}
+                        TranslateMessage(&msg); DispatchMessageW(&msg);
+                    }
+                }
+                let at=Instant::now();
+                let (job,values)=if let Ok(mut p)=shared.try_lock() {
+                    if legacy {for id in &ids {let _=p.param_value(*id);}}
+                    let values=if legacy {None} else {Some(p.param_values_job().expect("controller snapshot"))};
+                    let job=p.take_ui_job();p.idle();let _=p.editor_size();let _=p.editor_resizable();(job,values)
+                }else{(None,None)};
+                if let Some(job)=job {job();}
+                if let Some(job)=values {assert_eq!(job().len(),ids.len());}
+                idle_ns+=at.elapsed().as_nanos();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let v=stats.each_ref().map(|s|s.load(Ordering::Relaxed));
+            missed+=v[3]; processed+=v[1];
+            eprintln!("VISIBLE={visible} calls={} audio_load={:.2}% max_process_us={} lock_misses={} ui_idle_ms={}",v[1],v[0] as f64/(v[1].max(1) as f64*128./48000.*1e9)*100.,v[2]/1000,v[3],idle_ns/1_000_000);
+            if visible {if let Some(path)=std::env::var_os("OS_VST3_CAPTURE") {write_bmp(Path::new(&path),w as i32,h as i32,&capture_live(hwnd,w as i32,h as i32));}}
+        }
+        stop.store(true,Ordering::Release);worker.join().unwrap();
+        let job=shared.lock().unwrap().editor_job(os_host::EditorAction::Close).unwrap();job().unwrap();
+        unsafe {DestroyWindow(hwnd);}
+        assert_eq!(shared.lock().unwrap().stopped(),None);
+        if !legacy {assert!(processed > 1000 && missed*20 < processed,"parameter reads starved processing: {processed} blocks, {missed} misses");}
+    }
+
     #[test]
     #[ignore = "opens hidden editors for the installed effect named in the environment"]
     fn installed_editor_jobs_keep_audio_processing() {

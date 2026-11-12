@@ -774,7 +774,8 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
                     {
                         rows.push(Text(format!("Your driver is using {} frames.", actual), true));
                     }
-                } else if st.audio.asio_driver().is_some() {
+                }
+                if st.audio.asio_driver().is_some() {
                     rows.push(Buttons(vec![(SHOW_ASIO_PANEL, 136.0)]));
                     rows.push(txt("Adjust latency in your audio driver's panel."));
                 }
@@ -1688,11 +1689,8 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
     for row in &gr.rows {
         let h = row_h(row);
         if y + h > clip.y && y < clip.bottom() {
-            if s.settings.tab == MENUS || (s.settings.tab == MIDI && !s.midi.advanced) {
-                ui.clip_hit_rows(clip, |ui| paint_row(ui, s, gr.title, row, r, y, h));
-            } else {
-                paint_row(ui, s, gr.title, row, r, y, h);
-            }
+            // Scrolled controls must not cover the tabs or title bar with invisible hits.
+            ui.clip_hit_rows(clip, |ui| paint_row(ui, s, gr.title, row, r, y, h));
         }
         y += h;
     }

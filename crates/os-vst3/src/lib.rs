@@ -489,6 +489,7 @@ struct EditorState {
     frame: Com<Frame>,
     shared: Arc<Shared>,
     editor: bool,
+    resizable: bool,
     /// Device pixels per editor unit (points on macOS, pixels elsewhere).
     editor_scale: f32,
     _module: Arc<Module>,
@@ -518,21 +519,19 @@ impl EditorState {
             view.get_size(&mut r);
             self.view = Some(view);
             self.editor = true;
+            self.resizable = self.view.as_ref().is_some_and(|v| v.can_resize() == kResultTrue);
             if let Ok(mut s) = self.shared.size.lock() {
-                *s = None;
+                *s = Some((r.right - r.left, r.bottom - r.top));
             }
             Ok(self.to_px(r.right - r.left, r.bottom - r.top))
         }
     }
 
-    /// The editor's size in pixels (when open): what it asked for last, else what it reports.
+    /// Opening seeds this cache. Plugin resizeView callbacks and host resizes update
+    /// it, so UI ticks never call into an expensive native editor under the DSP lock.
     pub fn editor_size(&self) -> Option<(u32, u32)> {
-        let v = self.view.as_ref()?;
-        if let Some((w, h)) = self.shared.size.lock().ok().and_then(|s| *s) {
-            return Some(self.to_px(w, h));
-        }
-        let mut r = ViewRect::default();
-        (unsafe { v.get_size(&mut r) } == kResultOk).then(|| self.to_px(r.right - r.left, r.bottom - r.top))
+        if !self.editor { return None; }
+        self.shared.size.lock().ok().and_then(|s| *s).map(|(w, h)| self.to_px(w, h))
     }
 
     /// An editor size as the plug-in gives it (points on macOS) in pixels.
@@ -552,6 +551,7 @@ impl EditorState {
         }
         self.frame.get().clear_run_loop();
         self.editor = false;
+        self.resizable = false;
     }
 
 }
@@ -674,7 +674,7 @@ impl Plugin {
             let mut p = Plugin {
                 editor_state: Arc::new(std::sync::Mutex::new(EditorState {
                     view: None, controller: controller.clone(), frame: Frame::create(shared.clone()),
-                    shared: shared.clone(), editor: false, editor_scale: 1.0, _module: module.clone(),
+                    shared: shared.clone(), editor: false, resizable: false, editor_scale: 1.0, _module: module.clone(),
                 })),
                 points: None,
                 controller,
@@ -996,6 +996,7 @@ impl Plugin {
         if let Some(c) = &self.controller {
             for (id, v) in self.from_processor.drain(..) {
                 unsafe { c.set_param_normalized(id, v) };
+                if let Ok(mut events) = self.shared.events.lock() { events.push(os_host::ParamEvent::Sync(id, v)); }
             }
         }
         // Edits only reach a processor in `process`: without a stream, flush them with an empty block so the sound
@@ -1165,6 +1166,7 @@ impl Plugin {
     /// another class is refused) and a bare component state (imports, other hosts' chunks).
     pub fn load_state(&mut self, data: &[u8]) -> bool {
         if self.ara.is_some() || ara::State::is(data) { return false; }
+        let timing = debug().then(std::time::Instant::now);
         let p = if data.starts_with(b"VST3") {
             match preset::Preset::parse(data) {
                 Some(p) if p.class_id.eq_ignore_ascii_case(&self.desc.id) => p,
@@ -1180,6 +1182,7 @@ impl Plugin {
             if self.component.set_state(s.shared()) != kResultOk {
                 return false;
             }
+            if let Some(at)=timing {eprintln!("[os-vst3] state component {} us",at.elapsed().as_micros());}
             if let (Some(c), true) = (&self.controller, self.separate) {
                 let s = Stream::create(p.component);
                 c.set_component_state(s.shared());
@@ -1189,7 +1192,9 @@ impl Plugin {
                 }
             }
         }
+        if let Some(at)=timing {eprintln!("[os-vst3] state controller {} us",at.elapsed().as_micros());}
         self.refresh_param_ids();
+        if let Some(at)=timing {eprintln!("[os-vst3] state metadata {} us",at.elapsed().as_micros());}
         true
     }
 
@@ -1449,8 +1454,49 @@ impl os_host::Plugin for Plugin {
         Plugin::idle(self)
     }
 
+    fn take_ui_job(&mut self) -> Option<os_host::UiJob> {
+        // Lifecycle/reconfiguration stays serialized. Ordinary controller updates
+        // are VST3 UI-thread calls and need not exclude processor::process.
+        if self.from_processor.is_empty() || self.ara.is_some()
+            || self.shared.restart.load(Ordering::Acquire) != 0
+            || self.wanted_rate.load(Ordering::Acquire) != 0 { return None; }
+        let controller = self.controller.clone()?;
+        let values: Vec<_> = self.from_processor.drain(..).collect();
+        let module = self._module.clone();
+        let shared = self.shared.clone();
+        Some(Box::new(move || {
+            for &(id, value) in &values { unsafe { controller.set_param_normalized(id, value); } }
+            if let Ok(mut events) = shared.events.lock() {
+                events.extend(values.into_iter().map(|(id, value)| os_host::ParamEvent::Sync(id, value)));
+            }
+            shared.attention.raise();
+            drop(controller);
+            drop(module);
+        }))
+    }
+
     fn has_editor(&self) -> bool {
         self.can_edit
+    }
+
+    fn param_values_job(&self) -> Option<os_host::ParamValuesJob> {
+        self.param_values_job_range(0..self.param_ids.len())
+    }
+
+    fn param_values_job_range(&self, range: std::ops::Range<usize>) -> Option<os_host::ParamValuesJob> {
+        // IEditController is a UI-thread interface, independent of process().
+        // Some controllers make even getParamNormalized expensive: never hold
+        // the audio instance lock across a complete parameter-bank read.
+        if self.ara.is_some() { return None; }
+        let controller = self.controller.clone()?;
+        let ids: Vec<_> = self.param_ids.get(range).unwrap_or(&[]).iter().map(|p| p.0).filter(|&id| id != u32::MAX).collect();
+        let module = self._module.clone();
+        Some(Box::new(move || {
+            let values = ids.into_iter().map(|id| (id, unsafe { controller.get_param_normalized(id) })).collect();
+            drop(controller);
+            drop(module);
+            values
+        }))
     }
 
     fn editor_job(&mut self, action: os_host::EditorAction) -> Option<os_host::EditorJob> {
@@ -1477,7 +1523,7 @@ impl os_host::Plugin for Plugin {
     }
 
     fn editor_resizable(&self) -> bool {
-        self.editor_state.lock().is_ok_and(|editor| editor.view.as_ref().is_some_and(|v| unsafe { v.can_resize() } == kResultTrue))
+        self.editor_state.lock().is_ok_and(|editor| editor.editor && editor.resizable)
     }
 
     fn resize_editor(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {

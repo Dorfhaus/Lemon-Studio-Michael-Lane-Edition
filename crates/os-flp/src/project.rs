@@ -854,6 +854,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_vocals(file,&mut p);
     read_audio_edits(file,&mut p);
     read_rack_strips(file,&mut p);
+    read_hardware_outputs(file, &mut p);
     read_instrument_lanes(file,&mut p);
     read_pattern_speeds(file,&mut p);
     read_marker_colors(file,&mut p);
@@ -2125,6 +2126,7 @@ fn load_mixer(events: &[Event], l: &Layout, enc: TextEnc) -> Vec<MixerTrack> {
             slot_on,
             slot_mix,
             eq,
+            hardware_output: None,
             latency_out,
             latency_in,
             icon: m.icon.map(|i| int(&events[i]) as u16),
@@ -3300,6 +3302,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_vocals(project,file);
     write_audio_edits(project,file);
     write_rack_strips(project,file);
+    write_hardware_outputs(project, file);
     write_instrument_lanes(project,file);
     write_pattern_speeds(project,file);
     write_marker_colors(project,file);
@@ -3844,6 +3847,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_vocals(project,&mut file);
     write_audio_edits(project,&mut file);
     write_rack_strips(project,&mut file);
+    write_hardware_outputs(project, &mut file);
     write_instrument_lanes(project,&mut file);
     write_pattern_speeds(project,&mut file);
     write_marker_colors(project,&mut file);
@@ -4072,6 +4076,7 @@ fn mixer_is_default(mixer: &[MixerTrack]) -> bool {
             && t.pan.is_none_or(|v| v == 0.0)
             && t.stereo_separation.is_none_or(|v| v == 0.0)
             && t.routes == if t.index == 0 { Vec::<u16>::new() } else { vec![0] }
+            && t.hardware_output.is_none()
             && t.latency_out == 0.0
             && t.latency_in == 0.0
     })
@@ -6583,6 +6588,45 @@ fn write_parametric_chunk(project: &Project, file: &mut FlpFile) {
     }
     file.chunks.retain(|c|c.tag!=PARAMETRIC_TAG);
     if data.len()>1 {file.chunks.push(Chunk{tag:PARAMETRIC_TAG,body:ChunkBody::Raw(data)});}
+}
+
+const HARDWARE_OUTPUT_TAG: Tag = Tag(*b"LMHO");
+
+fn read_hardware_outputs(file: &FlpFile, project: &mut Project) {
+    for chunk in &file.chunks {
+        if chunk.tag != HARDWARE_OUTPUT_TAG { continue; }
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        let Some((&1, mut rows)) = data.split_first() else { continue };
+        while let Some(head) = rows.get(..6) {
+            let index = u16::from_le_bytes([head[0], head[1]]);
+            let first = u16::from_le_bytes([head[2], head[3]]);
+            let len = usize::from(u16::from_le_bytes([head[4], head[5]]));
+            let Some(name) = rows.get(6..6 + len) else { break };
+            rows = &rows[6 + len..];
+            if first >= 2 && first % 2 == 0
+                && let Ok(device) = std::str::from_utf8(name)
+                && let Some(track) = project.mixer.iter_mut().find(|t| t.index == index)
+            {
+                track.hardware_output = Some(os_model::HardwareOutput { device: device.into(), first });
+            }
+        }
+    }
+}
+
+fn write_hardware_outputs(project: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|chunk| chunk.tag != HARDWARE_OUTPUT_TAG);
+    let mut data = vec![1];
+    for track in &project.mixer {
+        let Some(output) = &track.hardware_output else { continue };
+        let Ok(len) = u16::try_from(output.device.len()) else { continue };
+        data.extend(track.index.to_le_bytes());
+        data.extend(output.first.to_le_bytes());
+        data.extend(len.to_le_bytes());
+        data.extend(output.device.as_bytes());
+    }
+    if data.len() > 1 {
+        file.chunks.push(Chunk { tag: HARDWARE_OUTPUT_TAG, body: ChunkBody::Raw(data) });
+    }
 }
 
 const MIXER_LOCK_TAG: Tag = Tag(*b"LMLK");

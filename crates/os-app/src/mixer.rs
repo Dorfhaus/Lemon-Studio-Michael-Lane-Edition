@@ -15,9 +15,8 @@ use crate::app::{App, State, Action, Win};
 use crate::knobs::KnobId;
 use crate::playlist::{Cmd, EditTarget, Mark, PItem, Popup};
 
-/// Mixer controls (the view registers them as `Action::Mix`). Controls that are not available yet (title-bar view
-/// buttons, input pin, latency clock, disk recording, input / output combos, track equalizer) are greyed out with
-/// `Ui::off` instead.
+/// Mixer controls registered by the view.
+pub const HARDWARE_OUTPUT_VISIBILITY: &str = "visible_mixer-hardware-output";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MHit {
     AttachPlaylist,
@@ -33,6 +32,7 @@ pub enum MHit {
     AttachedSlotScroll(usize),
     AttachedAddSlot(usize),
     Input(u16),
+    HardwareOutput(u16),
     Disk(u16),
     /// Anywhere on a strip that is not a control.
     Strip(u16),
@@ -144,6 +144,7 @@ pub enum MCmd {
     Detach,
     DriveType(u16,u8),
     RecordInput(u16,Option<crate::capture::Input>),
+    HardwareOutput(u16, Option<os_model::HardwareOutput>),
     PlaylistInput(u16,Option<crate::capture::Input>),
     ArmDisk(u16),
     Rename(u16),
@@ -430,6 +431,47 @@ pub(crate) fn makes_loop(s: &State, src: u16, dst: u16) -> bool {
     false
 }
 
+fn valid_hardware_pair(first: u16, extra: usize) -> bool {
+    first >= 2 && first % 2 == 0 && usize::from(first) <= extra
+}
+
+fn hardware_output_menu(s: &State, track_id: u16, at: (f32, f32), output: Option<(String, usize)>) -> Popup {
+    let current = track(s, track_id).and_then(|track| track.hardware_output.as_ref());
+    let mut items = vec![
+        PItem::head("Direct hardware output"),
+        PItem::new("Off", Cmd::Mixer(MCmd::HardwareOutput(track_id, None)))
+            .mark(Mark::Radio(current.is_none())),
+    ];
+    if let Some((device, extra)) = output {
+        if extra > 0 {
+            items.push(PItem::head(device.clone()));
+            for first in (2..=extra as u16).step_by(2) {
+                let target = os_model::HardwareOutput { device: device.clone(), first };
+                let checked = current == Some(&target);
+                items.push(PItem::new(format!("Outputs {} / {}", first + 1, first + 2),
+                    Cmd::Mixer(MCmd::HardwareOutput(track_id, Some(target)))).mark(Mark::Radio(checked)));
+            }
+        } else {
+            items.push(PItem::head("This device exposes no additional stereo pairs"));
+        }
+        if current.is_some_and(|target| target.device != device || !valid_hardware_pair(target.first, extra)) {
+            items.push(PItem::head("Saved output pair unavailable"));
+        }
+    } else {
+        items.push(PItem::head("Open your audio device to detect its outputs"));
+    }
+    Popup { x: at.0, y: at.1, items, sub: None, scroll: [0; 2], cascade: Vec::new() }
+}
+
+fn set_hardware_output(s: &mut State, n: u16, output: Option<os_model::HardwareOutput>) {
+    let Some(track) = track(s, n) else { return };
+    if track.hardware_output == output { return; }
+    let previous = track.hardware_output.clone();
+    crate::history::record(s, "Mixer hardware output", crate::history::Snap::HardwareOutput(n, previous));
+    if let Some(track) = track_mut(s, n) { track.hardware_output = output; }
+    changed(s);
+}
+
 fn changed(s: &mut State) {
     s.piano.dirty = true;
 }
@@ -535,7 +577,7 @@ pub fn locked_knob(s: &State, id: crate::knobs::KnobId) -> bool {
 fn locked_hit(s: &State, hit: MHit) -> bool {
     match hit {
         MHit::Led(t) | MHit::Polarity(t) | MHit::Swap(t) | MHit::Effects(t) | MHit::StripBypass(t)
-        | MHit::Disk(t) | MHit::Input(t) | MHit::CompProfile(t) | MHit::TuneLearn(t)
+        | MHit::Disk(t) | MHit::Input(t) | MHit::HardwareOutput(t) | MHit::CompProfile(t) | MHit::TuneLearn(t)
         | MHit::TunePower(t) | MHit::DriveType(t) | MHit::TrackSlot(t, _) => locked(s, t),
         MHit::Route(dst) | MHit::Unroute(dst) => locked(s, dst) || locked(s, s.selected_mixer),
         MHit::SlotName(_) | MHit::SlotArrow(_) | MHit::SlotLed(_) | MHit::AddSlot | MHit::AttachedAddSlot(_) | MHit::DeleteExtraSlot
@@ -633,6 +675,10 @@ pub fn hit(app: &mut App, h: MHit) -> Option<String> {
             None
         }
         MHit::Input(t)=>{s.playlist.popup=Some(crate::mixer_recording::input_menu(s,t,at.0,at.1+10.));None}
+        MHit::HardwareOutput(t) => {
+            s.playlist.popup = Some(hardware_output_menu(s, t, at, crate::device::current_output()));
+            None
+        }
         MHit::Disk(_) | MHit::Headphones | MHit::HeadphonesToggle | MHit::MasterAssistant | MHit::MasterAssistantToggle=>None,
         MHit::TunePower(n)=>{
             let m=track(s,n)?;if !m.is_vocal(){return None;}let old=m.tune_enabled;
@@ -853,6 +899,7 @@ pub fn right(app: &mut App, h: MHit) -> bool {
     match h {
         MHit::TuneLearn(n)=>s.playlist.popup=Some(tune_menu(s,n,at.0,at.1,false)),
         MHit::Input(t)|MHit::Disk(t)=>s.playlist.popup=Some(crate::mixer_recording::input_menu(s,t,at.0,at.1+10.)),
+        MHit::HardwareOutput(t) => s.playlist.popup = Some(hardware_output_menu(s, t, at, crate::device::current_output())),
         MHit::AttachedRecord(row)=>{if let Some(n)=crate::attached_mixer::owner(s,row){s.playlist.popup=Some(crate::mixer_recording::input_menu(s,n,at.0,at.1+10.));}},
         MHit::Lock(n) => {
             let mut items = vec![channel_lock_item(s, n)];
@@ -1158,7 +1205,9 @@ pub fn trim_list(s: &State, non_empty: bool) -> Vec<u16> {
     let last_protected = (1..=n).rev().find(|&t| group_structure_locked(s, t)).unwrap_or(0);
     let mut gone: Vec<u16> = (last_protected + 1..=n)
         .filter(|&t| !s.project.channels.iter().any(|c| c.mixer_track == t))
-        .filter(|&t| non_empty || track(s, t).is_none_or(|m| m.slots.iter().all(Option::is_none)))
+        .filter(|&t| track(s, t).is_none_or(|m| {
+            m.hardware_output.is_none() && (non_empty || m.slots.iter().all(Option::is_none))
+        }))
         .collect();
     loop {
         let fed: Vec<u16> = gone
@@ -1924,7 +1973,7 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
     let blocked = match c {
         MCmd::Color(t, _) | MCmd::CustomColor(t) | MCmd::RandomColor(t) => targets(s, t).into_iter().any(|t| locked(s, t)),
         MCmd::Rename(t) | MCmd::MoveLeft(t) | MCmd::MoveRight(t) | MCmd::ChannelLayout(t, _)
-        | MCmd::SlotSidechain(t, ..) | MCmd::RecordInput(t, _) => locked(s, t),
+        | MCmd::SlotSidechain(t, ..) | MCmd::RecordInput(t, _) | MCmd::HardwareOutput(t, _) => locked(s, t),
         MCmd::Separator(t) => locked(s, t) || group_structure_locked(s, t),
         MCmd::InsertOne(t) => group_shift_locked(s, t.max(1)),
         MCmd::Reset(t) => reset_blocked(s, &targets(s, t)),
@@ -1962,6 +2011,17 @@ pub fn run(app: &mut App, c: MCmd) -> Option<String> {
         crate::history::record(s,"Mixer track color",crate::history::Snap::Several(snaps));
     }
     let msg = match c {
+        MCmd::HardwareOutput(track, output) => {
+            if let Some(output) = &output
+                && !crate::device::current_output().is_some_and(|(device, extra)| {
+                    output.device == device && valid_hardware_pair(output.first, extra)
+                })
+            {
+                return Some("That output pair is unavailable on the current device".into());
+            }
+            set_hardware_output(s, track, output);
+            None
+        }
         MCmd::AttachedSelect(n)=>{select(s,n,false);None},
         MCmd::RecordInput(..)|MCmd::PlaylistInput(..)|MCmd::ArmDisk(_)|MCmd::ToggleLock(_)|MCmd::ToggleGroupLock(_)=>None,
         MCmd::TuneSetting(n,k,v)=>{
@@ -3144,6 +3204,33 @@ mod tests {
     }
 
     // spec: ui/mixer-track-commands.md §4, §6
+    #[test]
+    fn mixer_hardware_output_menu_and_history() {
+        let mut app = App::new(None);
+        app.state.project = crate::app::test_project();
+        app.state.project.arrangements.push(os_flp::project::default_arrangement());
+        let track_id = 1;
+        let device = "ASIO: Synthetic 6-channel interface".to_owned();
+        let menu = hardware_output_menu(&app.state, track_id, (0., 0.), Some((device.clone(), 4)));
+        assert_eq!(menu.items.iter().filter(|item| matches!(item.cmd, Cmd::Mixer(MCmd::HardwareOutput(_, Some(_))))).count(), 2);
+        let target = os_model::HardwareOutput { device, first: 4 };
+        let routes = track(&app.state, track_id).unwrap().routes.clone();
+        set_hardware_output(&mut app.state, track_id, Some(target.clone()));
+        assert_eq!(track(&app.state, track_id).unwrap().hardware_output, Some(target.clone()));
+        let bytes = os_flp::project::create(&app.state.project).unwrap().to_bytes().unwrap();
+        let mut file = os_flp::FlpFile::parse(&bytes).unwrap();
+        let loaded = os_flp::project::load(&file).unwrap();
+        assert_eq!(loaded.mixer.iter().find(|track| track.index == track_id).unwrap().hardware_output, Some(target.clone()));
+        assert!(crate::history::undo(&mut app.state).is_some());
+        assert_eq!(track(&app.state, track_id).unwrap().hardware_output, None);
+        os_flp::project::apply(&app.state.project, &mut file).unwrap();
+        assert!(os_flp::project::load(&file).unwrap().mixer[track_id as usize].hardware_output.is_none());
+        assert!(crate::history::redo(&mut app.state).is_some());
+        let track = track(&app.state, track_id).unwrap();
+        assert_eq!(track.hardware_output, Some(target));
+        assert_eq!(track.routes, routes);
+    }
+
     #[test]
     fn trim_unused_tracks() {
         let mut a = app();

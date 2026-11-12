@@ -122,7 +122,6 @@ pub const MULTILINK_LABEL: &str = "Multilink to controllers";
 pub const INTO_WORKSPACE_LABEL: &str = "Into workspace";
 /// Index of the OPTIONS menu.
 pub const OPTIONS_MENU: usize = 5;
-pub const OPTIONS_DRAG_VISIBILITY: &str = "visible_options-menu-drag";
 /// OPTIONS > Project info (the toolbar's info button).
 pub const OPT_INFO: usize = 9;
 /// HELP > About (the toolbar logo).

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
-//! ASIO output (Windows): the chosen driver plays the mix on its first two outputs, at the buffer length chosen on the
+//! ASIO output (Windows): the chosen driver plays the mix and additional interface sends at the buffer length chosen on the
 //! Audio page when it takes it, else the one set in its own panel (`control_panel`). Its first inputs open with the
 //! outputs (full duplex): the same callback hands them to the capture while One-click audio recording records
 //! (`crate::capture`; spec: ui/one-click-recording.md §2).
@@ -104,7 +104,7 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     if outs < 1 {
         return Err("the driver has no outputs".into());
     }
-    let channels = outs.min(2) as usize;
+    let wanted = (outs as usize).min(super::MAX_OUTPUT_CHANNELS);
     let ty = driver.output_data_type().map_err(|e| e.to_string())?;
     let (format, big) = Format::of(&ty).ok_or_else(|| format!("the driver's sample format ({ty:?}) is not one ML Studio writes"))?;
     let range = driver.buffersize_range().map_err(|e| e.to_string())?;
@@ -114,19 +114,26 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     // Its inputs with its outputs, else its outputs alone (a driver that refuses its inputs, or has none, plays on).
     let ins = counts.ins.clamp(0, MAX_INPUTS) as usize;
     let in_format = driver.input_data_type().ok().and_then(|t| Format::of(&t));
-    let prepare = |ins: usize, ask: Option<i32>| {
+    let prepare = |channels: usize, ins: usize, ask: Option<i32>| {
         if ins == 0 {
             return driver.prepare_output_stream(None, channels, ask);
         }
         let s = driver.prepare_input_stream(None, ins, ask)?;
         driver.prepare_output_stream(s.input, channels, ask)
     };
-    let tries = [(ins, ask), (ins, None), (0, ask), (0, None)];
+    let inputs = [if in_format.is_some() { ins } else { 0 }, 0];
+    let outputs = [wanted, wanted.min(2)];
     let mut streams = Err(sys::AsioError::NoDrivers);
-    for (i, a) in tries.into_iter().filter(|&(i, _)| i == 0 || in_format.is_some()) {
-        streams = prepare(i, a);
-        if streams.is_ok() {
-            break;
+    // Keep existing recording inputs if the driver only accepts them with a stereo output.
+    'open: for (i, ins) in inputs.into_iter().enumerate() {
+        if i > 0 && ins == inputs[0] { break; }
+        for (j, channels) in outputs.into_iter().enumerate() {
+            if j > 0 && channels == outputs[0] { break; }
+            streams = prepare(channels, ins, ask);
+            if streams.is_err() && ask.is_some() {
+                streams = prepare(channels, ins, None);
+            }
+            if streams.is_ok() { break 'open; }
         }
     }
     let streams = streams.map_err(|e| e.to_string())?;
@@ -138,6 +145,8 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
     let frames = stream.buffer_size.max(1) as usize;
     // Each channel's two halves (the driver plays one while the callback fills the other).
     let halves = Halves(stream.buffer_infos.iter().map(|b| b.buffers.map(|p| p as usize)).collect());
+    let channels = halves.0.len();
+    mix.prepare_outputs(channels);
     let callback = driver.add_callback(move |info| {
         let half = (info.buffer_index & 1) as usize;
         // Publish input before the output wakes its feeder, for live monitoring and disk recording.
@@ -154,14 +163,14 @@ pub(crate) fn open(name: &str, rate: Option<u32>, buffer: Option<u32>, mut mix: 
             crate::capture::push_inputs(true, frames, at);
             crate::input_monitor::push_all(true, now.round() as u32, frames, at);
         }
-        let sum = mix.block(frames);
+        let sum = mix.block_at(frames, channels, None);
         // One output: both sides (`Side::Both`).
         let mono = halves.0.len() == 1;
         for (ch, b) in halves.0.iter().enumerate() {
             let side = if mono { Side::Both } else { Side::One(ch) };
             // Safety: the driver's buffer holds `frames` samples of `format` until the buffers are disposed of, which
             // only happens after this callback is removed (`AsioOut::drop`).
-            unsafe { write(b[half] as *mut u8, sum, side, frames, format, big) };
+            unsafe { write(b[half] as *mut u8, &sum, side, frames, format, big) };
         }
 
     });
@@ -344,13 +353,13 @@ enum Side {
 /// Writes `side` of the interleaved stereo `mix` into a driver buffer of `frames` samples.
 ///
 /// Safety: `dst` holds `frames` samples of `format`, and nothing else uses it meanwhile.
-unsafe fn write(dst: *mut u8, mix: &[f32], side: Side, frames: usize, format: Format, big: bool) {
+unsafe fn write(dst: *mut u8, mix: &super::DeviceBlock<'_>, side: Side, frames: usize, format: Format, big: bool) {
     let n = format.bytes();
     let out = unsafe { std::slice::from_raw_parts_mut(dst, frames * n) };
     for (i, s) in out.chunks_exact_mut(n).enumerate() {
         let x = match side {
-            Side::One(ch) => mix[2 * i + ch],
-            Side::Both => 0.5 * (mix[2 * i] + mix[2 * i + 1]),
+            Side::One(ch) => mix.sample(i, ch),
+            Side::Both => 0.5 * (mix.sample(i, 0) + mix.sample(i, 1)),
         };
         encode(x, format, big, s);
     }
@@ -404,11 +413,16 @@ mod tests {
     /// A buffer gets one side of the stereo mix; a driver's only output gets both, halved.
     #[test]
     fn a_buffer_gets_its_side() {
-        let mix = [0.5, -0.5, 0.25, 0.75];
+        let mix = super::super::DeviceBlock {
+            stereo: &[0.5, -0.5, 0.25, 0.75], extra: &[0.125, 0.25, -0.125, -0.25], extra_channels: 2,
+        };
         let mut buf = [0u8; 8];
         unsafe { write(buf.as_mut_ptr(), &mix, Side::One(1), 2, Format::F32, false) };
         assert_eq!(buf[..4], (-0.5f32).to_le_bytes());
         assert_eq!(buf[4..], 0.75f32.to_le_bytes());
+        unsafe { write(buf.as_mut_ptr(), &mix, Side::One(3), 2, Format::F32, false) };
+        assert_eq!(buf[..4], 0.25f32.to_le_bytes());
+        assert_eq!(buf[4..], (-0.25f32).to_le_bytes());
         unsafe { write(buf.as_mut_ptr(), &mix, Side::Both, 2, Format::F32, false) };
         assert_eq!(buf[..4], 0.0f32.to_le_bytes());
         assert_eq!(buf[4..], 0.5f32.to_le_bytes());

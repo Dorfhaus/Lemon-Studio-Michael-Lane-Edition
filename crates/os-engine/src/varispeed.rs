@@ -8,6 +8,10 @@ pub(crate) struct Varispeed {
 }
 impl Varispeed {
     pub fn new(ratio: f64) -> Self { Self { ratio, ..Self::default() } }
+    /// Align another stereo bus to the same fractional clock while keeping its own samples.
+    pub(crate) fn sync_clock(&mut self, other: &Self) {
+        (self.phase, self.ratio, self.active) = (other.phase, other.ratio, other.active);
+    }
     pub fn process(&mut self, audio: &mut Vec<f32>, target: f64) {
         if audio.is_empty() { return; }
         if target == 1.0 && self.ratio == 1.0 && !self.active {

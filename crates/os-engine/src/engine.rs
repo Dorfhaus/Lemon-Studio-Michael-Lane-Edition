@@ -34,6 +34,7 @@ mod marks;
 mod notes;
 mod param_auto;
 mod pdc;
+mod device_outputs;
 pub use param_auto::PARAM_STEP;
 
 /// What to play.
@@ -1071,6 +1072,7 @@ pub struct Engine {
     audition_held: Vec<(usize,u16)>,
     audition_frame: u64,
     mixer_input: Option<Box<dyn MixerInput>>,
+    device_outputs: device_outputs::DeviceOutputs,
     input_bus: Vec<Vec<f32>>,
     rate: u32,
     /// The main volume's gain `curve(stored / 12800)` and its ramp (spec: audio/mixer.md "Main volume"). Playback
@@ -1200,6 +1202,8 @@ pub struct Engine {
     /// When this tick stops waiting for hosted plugins busy elsewhere (set at its first wait, `busy_wait` from then).
     busy_until: Option<Instant>,
     busy_wait: Duration,
+    /// One feeder deadline, also shared by ticks skipped for delay compensation.
+    live_busy_until: Option<Instant>,
     /// Ticks hosted plugins missed since `take_missed` (each heard as a gap on its channel or track).
     missed: u64,
     scratch: (Vec<f32>, Vec<f32>),
@@ -1724,6 +1728,7 @@ impl Engine {
             live_only: false,
             awake: false,
             mixer_input: None,
+            device_outputs: Default::default(),
             input_bus: Vec::new(),
             tail_done: false,
             held: false,
@@ -1771,6 +1776,7 @@ impl Engine {
             inst_missed: Vec::new(),
             busy_until: None,
             busy_wait: BUSY_WAIT,
+            live_busy_until: None,
             missed: 0,
             scratch: (Vec::new(), Vec::new()),
             fx_dry: Vec::new(),
@@ -1899,6 +1905,7 @@ impl Engine {
     /// Total plugin-wait allowance per tick, bounded by the feeder's queued audio.
     pub fn set_plugin_wait_budget(&mut self, budget: Duration) {
         self.busy_wait = budget.min(Duration::from_millis(20));
+        self.live_busy_until = Some(Instant::now() + self.busy_wait);
     }
 
     pub fn take_missed(&mut self) -> u64 {
@@ -2156,6 +2163,11 @@ impl Engine {
     /// processed every tick, so notes from the editor's own keyboard sound. Off, it finishes again once silent.
     pub fn set_awake(&mut self, on: bool) {
         self.awake = on;
+    }
+
+    /// Enables live interface outputs for a session. Exports use the regular stereo mix.
+    pub fn set_hardware_device(&mut self, device: String, pairs: usize, project: &Project) {
+        self.device_outputs.configure(device, pairs, &project.mixer);
     }
 
     pub fn set_mixer_input(&mut self, input: Box<dyn MixerInput>) {
@@ -2526,6 +2538,7 @@ impl Engine {
         self.frame = self.clock.next_start();
         if self.rate == old.rate {
             self.out = std::mem::take(&mut old.out);
+            self.device_outputs.continue_from(&mut old.device_outputs);
             self.out_pos = old.out_pos;
             self.out_tick = old.out_tick;
             self.out_frame = old.out_frame;
@@ -2960,6 +2973,18 @@ impl Engine {
     /// compensation the samples are those heard now and the position where the song was when they were made (a tick's
     /// worth of samples can then span two ticks of the song).
     pub fn next_tick(&mut self) -> Option<(&[f32], f64, u64, bool, u64)> {
+        let (from, tick, frame, held, len) = self.next_tick_start()?;
+        Some((&self.out[from..], tick, frame, held, len))
+    }
+
+    /// Supplies the main mix and the additional interleaved hardware channels together.
+    pub fn next_device_tick(&mut self, extra_channels: usize) -> Option<(&[f32], &[f32], f64, u64, bool, u64)> {
+        let (from, tick, frame, held, len) = self.next_tick_start()?;
+        let extra = self.device_outputs.interleaved.get(from / 2 * extra_channels..).unwrap_or_default();
+        Some((&self.out[from..], extra, tick, frame, held, len))
+    }
+
+    fn next_tick_start(&mut self) -> Option<(usize, f64, u64, bool, u64)> {
         self.exporting = false;
         // A tick wholly inside the head of the stream that delay compensation skips hands out nothing: on to the next.
         while self.out_pos >= self.out.len() {
@@ -2974,7 +2999,7 @@ impl Engine {
             true => (self.out_tick, self.out_frame),
             false => (self.out_tick + from as f64 / 2.0 / self.out_len as f64, self.out_frame + (from / 2) as u64),
         };
-        Some((&self.out[from..], tick, frame, self.out_held, self.out_len))
+        Some((from, tick, frame, self.out_held, self.out_len))
     }
 
     /// Renders the next tick into `self.out`, in the order of spec audio/timing.md ("What a tick does"): the clock
@@ -2982,6 +3007,7 @@ impl Engine {
     /// triggered; then the tick's samples are produced.
     fn render_tick(&mut self) {
         let _audio_float = os_dsp::audio_float::AudioFloat::enter();
+        self.busy_until = self.live_busy_until;
         if self.held {
             return self.render_held();
         }
@@ -3035,7 +3061,6 @@ impl Engine {
         let was_done = self.tail_done;
         let (start, len) = self.clock.advance();
         let song = self.transport_at(start);
-        self.busy_until = None;
         // A delay that changed, or an insert whose slots all went off, works the pads out again before this tick's
         // values arrive; on the first tick they are worked out after its slot values.
         self.check_delays();
@@ -3139,7 +3164,8 @@ impl Engine {
                 !self.inst_active && self.out.iter().all(|s| (s * gain).abs() < QUIET)
             };
             let limit = (TAIL_LIMIT_SECONDS * f64::from(self.rate) / self.clock.samples_per_tick()) as u64;
-            if quiet || tick >= self.end_tick + limit {
+            let hardware_quiet = self.exporting || !self.device_outputs.sounding(&self.bus);
+            if (quiet && hardware_quiet) || tick >= self.end_tick + limit {
                 self.tail_done = true;
             }
         }
@@ -3632,7 +3658,7 @@ impl Engine {
             job.rate = self.rate;
             job.gains = gains;
             job.voiced = voiced;
-            job.until = self.busy_until.or_else(|| Some(Instant::now() + self.busy_wait));
+            job.until = Some(*self.busy_until.get_or_insert_with(|| Instant::now() + self.busy_wait));
             job.wait = self.busy_wait;
             job.export = self.exporting;
             job.priority = self.worker_priority;
@@ -3791,6 +3817,7 @@ impl Engine {
         use os_model::target::{self, Target};
         self.set_mixer_tone(index, settings);
         self.set_mixer_sends(index, settings);
+        self.device_outputs.set_route(index, settings.hardware_output.as_ref());
         let id = index as u16;
         let owned = |control| self.auto_last.iter().any(|(t, _)| *t == control)
             || (self.tick != 0 && self.init.iter().any(|(t, _)| *t == control))
@@ -4506,7 +4533,10 @@ fn lock_busy<'a, T: ?Sized>(m: &'a Mutex<T>, until: &mut Option<Instant>, wait: 
         if now >= *until.get_or_insert(now + wait) {
             return None;
         }
-        std::thread::yield_now();
+        // Yielding a realtime thread can immediately schedule it again, starving
+        // the lower-priority editor that owns this lock. Actually suspend the
+        // worker for a short bounded interval while keeping the existing deadline.
+        std::thread::sleep((*until.as_ref().unwrap() - now).min(Duration::from_micros(50)));
     }
 }
 
@@ -5267,6 +5297,27 @@ mod tests {
 
     /// spec: audio/implementing.md "Playing live": an instrument the UI thread holds for a moment is waited for, so it
     /// misses no frame and no note.
+    #[test]
+    fn live_plugin_wait_deadline_survives_ticks_and_processing_stages() {
+        let mut p = project(vec![long_note(0, 48, 0)], vec![]);
+        p.channels[0].kind = ChannelKind::Plugin;
+        let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Pattern(1));
+        let probe = Arc::new(Mutex::new(Probe { log: vec![], held: vec![], at: 0 }));
+        e.set_instrument(0, probe.clone());
+        let held = probe.lock().unwrap();
+        e.set_plugin_wait_budget(Duration::ZERO);
+        let deadline = e.live_busy_until;
+        for _ in 0..4 {
+            e.next_tick().unwrap();
+            assert_eq!(e.busy_until, deadline, "ticks must not grant a fresh wait budget");
+        }
+        assert!(e.take_missed() > 0);
+        drop(held);
+        e.next_tick().unwrap();
+        assert_eq!(e.take_missed(), 0, "an expired deadline still permits uncontended processing");
+        assert!(probe.lock().unwrap().at > 0);
+    }
+
     #[test]
     fn instruments_busy_for_a_moment_are_waited_for() {
         let mut p = project(vec![long_note(0, 48, 0)], vec![]);

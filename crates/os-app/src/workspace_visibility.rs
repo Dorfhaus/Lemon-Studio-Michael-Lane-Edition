@@ -139,12 +139,12 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Routing cables", "visible_mixer-cables"),
         ("Channel meters", "visible_mixer-meters"),
         ("Mini EQ panel", "visible_mixer-eq"),
+        ("Mixer hardware output selector", crate::mixer::HARDWARE_OUTPUT_VISIBILITY),
         ("Mini EQ bypass button", crate::mini_eq::BYPASS_VISIBILITY),
     ]),
     ("Workspace", &[
         (crate::prefs::DOUBLE_CLICK_RESET.label, "visible_double-click-reset"),
         (crate::prefs::HOVER_MENUS.label, "visible_hover-main-menus"),
-        ("Options menu drag handle", crate::views::menus::OPTIONS_DRAG_VISIBILITY),
         ("Advanced Export tab", crate::export_form::ADVANCED_VISIBILITY),
         ("Search User Guide menu item", crate::help::VISIBILITY),
         (crate::change_log::LABEL, crate::change_log::VISIBILITY),

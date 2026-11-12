@@ -1071,7 +1071,14 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
                     waveform(ui, s, g, c, ch, body_at, col, waves.as_ref().map(|w| (w, &dim as &dyn Fn(Color) -> Color)));
                 }
                 if !c.muted {
-                    fades(ui, s, g, i, c, body_at, dim(wave));
+                    fades(ui, s, g, i, c, body_at);
+                    if s.playlist.hover_clip == Some(i)
+                        && s.playlist.controls.fades
+                        && matches!(s.playlist.tool, pl::PlTool::Draw | pl::PlTool::Paint | pl::PlTool::Select)
+                        && let Some(handle) = pl::gain_handle(g, c)
+                    {
+                        paint_gain_handle(ui, handle, s.playlist.hover_handle == Some(pl::Handle::Gain));
+                    }
                 }
             }
             (PickKind::Automation, ClipSource::Channel(ch)) => {
@@ -1274,11 +1281,21 @@ fn waveform(ui: &mut Ui, s: &State, g: &PGeom, c: &Clip, ch: u16, body: Body, co
     ui.c.pop_clip();
 }
 
+/// Draw the half-disc at the same position used for pointer hit testing.
+fn paint_gain_handle(ui: &mut Ui, handle: Rect, lit: bool) {
+    let radius = if lit { handle.h } else { handle.h - 1.0 };
+    let points: [(f32, f32); 9] = std::array::from_fn(|i| {
+        let angle = std::f32::consts::PI * i as f32 / 8.0;
+        (handle.cx() - radius * angle.cos(), handle.bottom() - radius * angle.sin())
+    });
+    let color = ui.t.tx(0xffffff).with_alpha(if lit { 255 } else { 215 });
+    ui.c.fill_polygon(&points, color);
+}
+
 /// An audio clip's fade curves, and its handles while the mouse is over it (§9a): fade triangles at the top
-/// corners (at the fades' ends), tension rings in the middle of each curve, the gain half-circle at the bottom. A
-/// crossfade is drawn by its later clip, over both bodies: an X of the two fades across the overlap, with its handle
+/// corners (at the fades' ends) and tension rings in the middle of each curve. A crossfade is drawn by its later clip, over both bodies: an X of the two fades across the overlap, with its handle
 /// in the middle.
-fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body, wave: Color) {
+fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body) {
     let body = edges.r;
     if body.w < 12.0 || body.h < 10.0 {
         return;
@@ -1323,19 +1340,10 @@ fn fades(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, edges: Body, wav
     if !hovered || !s.playlist.controls.fades {
         return;
     }
-    let _ = wave;
     let col = |h: pl::Handle| if lit(h) { white } else { white.with_alpha(215) };
-    let k = 6.0;
-    ui.c.fill_polygon(&[(fx_in, body.y), (fx_in + k, body.y), (fx_in, body.y + k)], col(pl::Handle::FadeIn));
-    ui.c.fill_polygon(&[(fx_out, body.y), (fx_out - k, body.y), (fx_out, body.y + k)], col(pl::Handle::FadeOut));
-    // The gain handle: a half disc on the body's bottom edge (a shape, not a clipped circle: clips are costly).
-    let (gx, gy) = (body.cx(), body.bottom());
-    let r = if lit(pl::Handle::Gain) { 5.0 } else { 4.0 };
-    let half: Vec<(f32, f32)> = (0..=8).map(|k| {
-        let a = std::f32::consts::PI * k as f32 / 8.0;
-        (gx - r * a.cos(), gy - r * a.sin())
-    }).collect();
-    ui.c.fill_polygon(&half, col(pl::Handle::Gain));
+    let (a, b) = pl::fade_handles(s, g, c);
+    ui.c.fill_polygon(&[(a.x, a.y), (a.right(), a.y), (a.x, a.bottom())], col(pl::Handle::FadeIn));
+    ui.c.fill_polygon(&[(b.right(), b.y), (b.x, b.y), (b.right(), b.bottom())], col(pl::Handle::FadeOut));
     if hovered {
         // The crossfade's handle: a big filled circle at the later clip's gain in the middle, a small ring at the
         // earlier clip's (§9a); where they meet the ring shows inside the circle.
@@ -1617,9 +1625,7 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
         // At the Pop-ups scaling (spec: ui/ui-scaling.md §1).
         ui.scaled(super::popup_scale(ui.c.scale), |ui, k| {
             let (w, h) = ui.c.size();
-            let movable = s.menu_open == Some(crate::views::menus::OPTIONS_MENU)
-                && crate::workspace_visibility::shown(crate::views::menus::OPTIONS_DRAG_VISIBILITY);
-            let (rect, mut rows) = popup_list(ui,&p.items,p.x/k,p.y/k,(w,h),p.sub,0,p.scroll[0],&[],movable);
+            let (rect, mut rows) = popup_list(ui,&p.items,p.x/k,p.y/k,(w,h),p.sub,0,p.scroll[0],&[]);
             let mut occupied=vec![rect];
             let mut entries=&p.items;
             let mut selected=p.sub;
@@ -1636,7 +1642,7 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
                     let border=os_ui::kit::menu::metrics(ui.c.scale).border;
                     *parent=Rect::new(row.x-border,parent.y,row.w+2.0*border,parent.h);
                 }
-                let (rect,next_rows)=popup_list(ui,entries,row.right(),row.y-2.0,(w,h),open,depth,scroll,&occupied,false);
+                let (rect,next_rows)=popup_list(ui,entries,row.right(),row.y-2.0,(w,h),open,depth,scroll,&occupied);
                 occupied.push(rect);rows=next_rows;selected=open;depth+=1;
             }
         });
@@ -1689,7 +1695,7 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 /// screen: the ones that fit from column `scroll` on, and a scroll bar under them (spec: ui/menus.md "Menus wider than
 /// the window").
 #[allow(clippy::too_many_arguments)]
-fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect], movable: bool) -> (Rect, Vec<Rect>) {
+fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect]) -> (Rect, Vec<Rect>) {
     let t = ui.t;
     let font = os_ui::kit::menu::app_font(t, 12);
     let key_font = os_ui::kit::menu::app_shortcut_font(t, font);
@@ -1703,8 +1709,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     }
     let cw = 20.0 + lw + if kw > 0.0 { kw + 24.0 } else { 12.0 } + 14.0;
     let m = os_ui::kit::menu::metrics(ui.c.scale);
-    let title_h = if movable { m.row } else { 0.0 };
-    let max_h = (screen.1 - 8.0 - title_h).max(m.row);
+    let max_h = (screen.1 - 8.0).max(m.row);
     let (mut layout, mut cols, mut body_h) = popup_layout(&m, items, max_h);
     // Wider than the screen: the columns wrap a scroll bar's height sooner, and as many as fit are shown.
     let room = screen.0 - 2.0;
@@ -1714,7 +1719,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     }
     let shown = if bar_h > 0.0 { ((room / cw) as usize).clamp(1, cols) } else { cols };
     let first = scroll.min(cols - shown);
-    let (w, h) = (cw * shown as f32, title_h + body_h + 2.0 * m.border + bar_h);
+    let (w, h) = (cw * shown as f32, body_h + 2.0 * m.border + bar_h);
     let x = if let Some(parent)=occupied.last() {
         let left=occupied.iter().map(|r|r.x).fold(parent.x,f32::min);
         let right=occupied.iter().map(|r|r.right()).fold(parent.right(),f32::max);
@@ -1735,20 +1740,11 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
         ui.c.stroke_rrect(Rect::new(r.x + m.line, r.y + m.line, r.w - 2.0 * m.line, r.h - 2.0 * m.line), 0.0, m.border, t.menu_pop_border);
     }
     ui.hit(r, Action::Swallow, "");
-    if movable {
-        let title = Rect::new(r.x + m.border, r.y + m.border, r.w - 2.0 * m.border, title_h);
-        let hover = ui.hit(Rect::new(r.x, r.y, r.w, title_h + m.border), Action::MoveOptionsMenu, "Drag to move the Options menu");
-        ui.c.fill_rrect(title, 3., if hover { t.button_hi } else { t.menu_pop_head });
-        ui.c.text_clip(font, title.x + 8., title.y + 2., title.w - 24., t.text, "Options");
-        for i in 0..3 {
-            ui.c.fill_rect(Rect::new(title.right() - 14., title.cy() - 4. + i as f32 * 3., 7., 1.), t.text_dim);
-        }
-    }
     for (i, it) in items.iter().enumerate() {
         let (col, off) = layout[i];
         // A column out of view is placed beside the shown ones.
         let at = |col: usize| r.x + m.border + (col as f32 - first as f32) * cw;
-        let rr = Rect::new(at(col), r.y + m.border + title_h + off, cw - 2.0 * m.border, item_h(&m, it));
+        let rr = Rect::new(at(col), r.y + m.border + off, cw - 2.0 * m.border, item_h(&m, it));
         rows.push(rr);
         let action = match depth {0=>Action::PlPopup(i),1=>Action::PlPopupSub(i),d=>Action::PlPopupDeep(d,i)};
         if col < first || col >= first + shown {
@@ -1760,7 +1756,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
             continue;
         }
         if col > first && (i == 0 || layout[i - 1].0 != col) {
-            ui.c.fill_rect(Rect::new(rr.x - m.border, r.y + m.border + title_h, 1.0, body_h), t.menu_pop_head);
+            ui.c.fill_rect(Rect::new(rr.x - m.border, r.y + m.border, 1.0, body_h), t.menu_pop_head);
         }
         if it.col {
             continue;

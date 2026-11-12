@@ -262,6 +262,38 @@ impl<P: Plugin> Plugin for Guarded<P> {
     fn idle(&mut self) {
         self.run((), |p| p.idle())
     }
+    fn take_ui_job(&mut self) -> Option<crate::UiJob> {
+        let job = self.run(None, |p| p.take_ui_job())?;
+        let module = self.module.clone();
+        let attention = self.attention.clone();
+        Some(Box::new(move || {
+            if guard::call(&module, job).is_err() {
+                if let Some(attention) = attention { attention.raise(); }
+            }
+        }))
+    }
+    fn param_values_job(&self) -> Option<crate::ParamValuesJob> {
+        let job = self.look(None, |p| p.param_values_job())?;
+        let module = self.module.clone();
+        let attention = self.attention.clone();
+        Some(Box::new(move || {
+            guard::call(&module, job).unwrap_or_else(|_| {
+                if let Some(attention) = attention { attention.raise(); }
+                Vec::new()
+            })
+        }))
+    }
+    fn param_values_job_range(&self, range: std::ops::Range<usize>) -> Option<crate::ParamValuesJob> {
+        let job = self.look(None, |p| p.param_values_job_range(range))?;
+        let module = self.module.clone();
+        let attention = self.attention.clone();
+        Some(Box::new(move || {
+            guard::call(&module, job).unwrap_or_else(|_| {
+                if let Some(attention) = attention { attention.raise(); }
+                Vec::new()
+            })
+        }))
+    }
     fn has_editor(&self) -> bool {
         self.look(false, |p| p.has_editor())
     }
@@ -432,6 +464,18 @@ mod tests {
     }
 
     impl Plugin for Crashy {
+        fn param_values_job_range(&self, _: std::ops::Range<usize>) -> Option<crate::ParamValuesJob> {
+            self.param_values_job()
+        }
+        fn param_values_job(&self) -> Option<crate::ParamValuesJob> {
+            let crash = self.crash.clone();
+            Some(Box::new(move || {
+                if crash.load(Ordering::Relaxed) {
+                    unsafe { std::ptr::read_volatile(8 as *const usize) };
+                }
+                vec![(7, 0.5)]
+            }))
+        }
         fn desc(&self) -> &Descriptor {
             &self.desc
         }
@@ -490,6 +534,22 @@ mod tests {
         assert_eq!(p.lock().unwrap().stopped(), None);
         drop(p);
         assert!(dropped.load(Ordering::Relaxed));
+    }
+
+    #[cfg(plugin_guard)]
+    #[test]
+    fn controller_snapshot_is_guarded_after_releasing_instance_lock() {
+        let (p, crash, _) = crashy();
+        let job = p.lock().unwrap().param_values_job().unwrap();
+        assert_eq!(job(), vec![(7, 0.5)]);
+        let attention = p.lock().unwrap().attention().unwrap();
+        let before = attention.count();
+        let job = p.lock().unwrap().param_values_job_range(0..1).unwrap();
+        crash.store(true, Ordering::Relaxed);
+        assert!(job().is_empty());
+        assert_eq!(p.lock().unwrap().stopped(), Some(0xC000_0005));
+        assert!(attention.count() > before);
+        assert!(p.lock().unwrap().param_values_job().is_none());
     }
 
     /// A crash stops the instance: effects pass the sound through, instruments are silent, the last saved state is kept,

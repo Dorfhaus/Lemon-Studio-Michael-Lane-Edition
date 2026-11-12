@@ -150,6 +150,10 @@ pub(crate) trait Source: Send {
     fn play_at(&mut self, stereo: &mut [f32], _playback_at: Option<Instant>) {
         self.play(stereo);
     }
+    /// Live project streams can also supply audio for the additional device channels.
+    fn play_device(&mut self, stereo: &mut [f32], _extra: &mut [f32], playback_at: Option<Instant>) {
+        self.play_at(stereo, playback_at);
+    }
     /// Its owner let go of it: the callback no longer plays it and hands it back (`OutputDevice::collect`).
     fn detached(&self) -> bool;
 }
@@ -166,6 +170,27 @@ pub(crate) fn blocks() -> u64 {
 const MAX_SOURCES: usize = 64;
 /// Frames the mix holds without growing: twice the longest buffer length the settings offer.
 const MAX_FRAMES: usize = 2 * 8192;
+pub(crate) const MAX_OUTPUT_CHANNELS: usize = 32;
+
+fn extra_channels(channels: usize) -> usize {
+    (channels.min(MAX_OUTPUT_CHANNELS) / 2).saturating_sub(1) * 2
+}
+
+struct DeviceBlock<'a> {
+    stereo: &'a [f32],
+    extra: &'a [f32],
+    extra_channels: usize,
+}
+
+impl DeviceBlock<'_> {
+    fn sample(&self, frame: usize, channel: usize) -> f32 {
+        match channel {
+            0 | 1 => self.stereo[frame * 2 + channel],
+            c if c - 2 < self.extra_channels => self.extra[frame * self.extra_channels + c - 2],
+            _ => 0.0,
+        }
+    }
+}
 
 type Queue = ArrayQueue<Box<dyn Source>>;
 
@@ -177,21 +202,34 @@ struct Mix {
     /// One source's block, and the sum of all of them (interleaved stereo).
     one: Vec<f32>,
     sum: Vec<f32>,
+    one_extra: Vec<f32>,
+    sum_extra: Vec<f32>,
     headphones: crate::headphones::Processor,
 }
 
 impl Mix {
     fn new(inbox: Arc<Queue>, outbox: Arc<Queue>) -> Mix {
-        Mix { headphones: Default::default(), sources: Vec::with_capacity(MAX_SOURCES), inbox, outbox, one: Vec::with_capacity(2 * MAX_FRAMES), sum: Vec::with_capacity(2 * MAX_FRAMES) }
+        Mix {
+            headphones: Default::default(), sources: Vec::with_capacity(MAX_SOURCES), inbox, outbox,
+            one: Vec::with_capacity(2 * MAX_FRAMES), sum: Vec::with_capacity(2 * MAX_FRAMES),
+            one_extra: Vec::new(), sum_extra: Vec::new(),
+        }
     }
 
     /// The next `frames` frames of every source, summed (interleaved stereo, not clipped).
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn block(&mut self, frames: usize) -> &[f32] {
-        self.block_at(frames, None)
+        self.block_at(frames, 2, None).stereo
     }
 
-    fn block_at(&mut self, frames: usize, playback_at: Option<Instant>) -> &[f32] {
+    fn prepare_outputs(&mut self, channels: usize) {
+        let samples = extra_channels(channels) * MAX_FRAMES;
+        self.one_extra.reserve(samples);
+        self.sum_extra.reserve(samples);
+    }
+
+    fn block_at(&mut self, frames: usize, channels: usize, playback_at: Option<Instant>) -> DeviceBlock<'_> {
+        let extra_channels = extra_channels(channels);
         BLOCKS.fetch_add(1, Ordering::Relaxed);
         while self.sources.len() < MAX_SOURCES {
             match self.inbox.pop() {
@@ -202,6 +240,9 @@ impl Mix {
         self.sum.clear();
         self.sum.resize(2 * frames, 0.0);
         self.one.resize(2 * frames, 0.0);
+        self.one_extra.resize(extra_channels * frames, 0.0);
+        self.sum_extra.clear();
+        self.sum_extra.resize(extra_channels * frames, 0.0);
         let mut i = 0;
         while i < self.sources.len() {
             if self.sources[i].detached() {
@@ -219,14 +260,18 @@ impl Mix {
                     }
                 }
             }
-            self.sources[i].play_at(&mut self.one, playback_at);
+            self.one_extra.fill(0.0);
+            self.sources[i].play_device(&mut self.one, &mut self.one_extra, playback_at);
             for (a, b) in self.sum.iter_mut().zip(&self.one) {
+                *a += *b;
+            }
+            for (a, b) in self.sum_extra.iter_mut().zip(&self.one_extra) {
                 *a += *b;
             }
             i += 1;
         }
         self.headphones.process(&mut self.sum);
-        &self.sum
+        DeviceBlock { stereo: &self.sum, extra: &self.sum_extra, extra_channels }
     }
 }
 
@@ -265,6 +310,29 @@ static OPENS: AtomicU64 = AtomicU64::new(0);
 /// The device that opened last (it may have closed since).
 pub fn last() -> Option<DeviceInfo> {
     LAST.lock().ok()?.as_ref().map(|(_, i)| i.clone())
+}
+
+/// Current output options, with the actual open stream taking precedence over its settings.
+pub(crate) fn current_output() -> Option<(String, usize)> {
+    let cfg = AudioCfg::current();
+    if let Some(info) = LAST.lock().ok().and_then(|last| {
+        last.as_ref().filter(|(open, _)| *open == cfg).map(|(_, info)| info.clone())
+    }) {
+        return Some((info.hardware_key(), info.extra_channels()));
+    }
+    if cfg.asio_driver().is_some() { return None; }
+    let output = audio_cfg::output(&cfg).ok()?;
+    let host = if cfg!(windows) && cfg.exclusive { WASAPI_EXCLUSIVE } else { output.host };
+    Some((hardware_key(host, &output.name), extra_channels(usize::from(output.config.channels))))
+}
+
+fn hardware_key(host: &str, name: &str) -> String {
+    format!("{host}: {name}")
+}
+
+impl DeviceInfo {
+    pub(crate) fn hardware_key(&self) -> String { hardware_key(self.host, &self.name) }
+    pub(crate) fn extra_channels(&self) -> usize { extra_channels(usize::from(self.channels)) }
 }
 
 /// Counts the devices opened: a change means `last` is another (or the same opened again).
@@ -652,6 +720,7 @@ where
 {
     mix.headphones.set_rate(config.sample_rate);
     let channels = usize::from(config.channels);
+    mix.prepare_outputs(channels);
     device
         .build_output_stream::<T, _, _>(
             config.clone(),
@@ -661,11 +730,10 @@ where
                 let playback_at = stamp.playback.checked_duration_since(stamp.callback)
                     .filter(|&delay| delay <= Duration::from_secs(1))
                     .and_then(|delay| now.checked_add(delay));
-                let stereo = mix.block_at(out.len() / channels, playback_at);
-                // Left and right on the first two channels (a mono device gets the left), silence on the others.
-                for (frame, s) in out.chunks_mut(channels).zip(stereo.chunks_exact(2)) {
+                let block = mix.block_at(out.len() / channels, channels, playback_at);
+                for (i, frame) in out.chunks_mut(channels).enumerate() {
                     for (c, slot) in frame.iter_mut().enumerate() {
-                        let v = if c < 2 { s[c] } else { 0.0 };
+                        let v = block.sample(i, c);
                         *slot = T::from_sample(v.clamp(-1.0, 1.0));
                     }
                 }

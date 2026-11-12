@@ -1009,6 +1009,8 @@ impl Transport {
 /// can publish the position of what is being heard.
 struct Queue {
     samples: Box<[AtomicU32]>,
+    extra: Box<[AtomicU32]>,
+    extra_channels: usize,
     /// Samples written / read since the start.
     written: AtomicU64,
     read: AtomicU64,
@@ -1025,9 +1027,14 @@ struct Queue {
 }
 
 impl Queue {
-    fn new() -> Queue {
+    #[cfg(test)]
+    fn new() -> Queue { Self::with_outputs(0) }
+
+    fn with_outputs(extra_channels: usize) -> Queue {
         Queue {
             samples: (0..QUEUE_SAMPLES).map(|_| AtomicU32::new(0)).collect(),
+            extra: (0..QUEUE_SAMPLES / 2 * extra_channels).map(|_| AtomicU32::new(0)).collect(),
+            extra_channels,
             written: AtomicU64::new(0),
             read: AtomicU64::new(0),
             ticks: (0..QUEUE_TICKS).map(|_| Default::default()).collect(),
@@ -1050,10 +1057,22 @@ impl Queue {
     }
 
     /// Feeder: appends one tick (call `has_room` first).
+    #[cfg(test)]
     fn push(&self, s: &[f32], tick: f64, frame: u64, held: bool, tick_frames: u64) {
+        self.push_outputs(s, &[], tick, frame, held, tick_frames);
+    }
+
+    fn push_outputs(&self, s: &[f32], extra: &[f32], tick: f64, frame: u64, held: bool, tick_frames: u64) {
         let w = self.written.load(Ordering::Relaxed);
         for (i, &v) in s.iter().enumerate() {
             self.samples[(w as usize + i) % QUEUE_SAMPLES].store(v.to_bits(), Ordering::Relaxed);
+        }
+        if self.extra_channels != 0 {
+            let start = (w as usize / 2 % (QUEUE_SAMPLES / 2)) * self.extra_channels;
+            for i in 0..s.len() / 2 * self.extra_channels {
+                let sample = extra.get(i).copied().unwrap_or(0.0);
+                self.extra[(start + i) % self.extra.len()].store(sample.to_bits(), Ordering::Relaxed);
+            }
         }
         let tw = self.ticks_written.load(Ordering::Relaxed);
         let rec = &self.ticks[tw as usize % QUEUE_TICKS];
@@ -1068,12 +1087,19 @@ impl Queue {
     }
 
     /// Callback: copies up to `out.len()` samples and returns how many.
-    fn pop(&self, out: &mut [f32]) -> usize {
+    fn pop(&self, out: &mut [f32], extra: &mut [f32]) -> usize {
         let r = self.read.load(Ordering::Relaxed);
         let w = self.written.load(Ordering::Acquire);
         let n = (w.saturating_sub(r) as usize).min(out.len());
         for (i, o) in out[..n].iter_mut().enumerate() {
             *o = f32::from_bits(self.samples[(r as usize + i) % QUEUE_SAMPLES].load(Ordering::Relaxed));
+        }
+        if !extra.is_empty() {
+            let start = (r as usize / 2 % (QUEUE_SAMPLES / 2)) * self.extra_channels;
+            let count = n / 2 * self.extra_channels;
+            for (i, out) in extra[..count].iter_mut().enumerate() {
+                *out = f32::from_bits(self.extra[(start + i) % self.extra.len()].load(Ordering::Relaxed));
+            }
         }
         self.read.store(r + n as u64, Ordering::Release);
         n
@@ -1142,20 +1168,23 @@ impl Feeder {
             return;
         }
         let t0 = Instant::now();
+        // Fix this pass's work before rendering. A slow plugin must not keep the
+        // engine locked forever while the callback consumes the queue behind us.
+        let frame_limit = want.saturating_sub(self.queue.queued()) / 2;
         let mut frames = 0u64;
-        while self.queue.queued() < want && self.queue.has_room() {
+        while frames < frame_limit && self.queue.queued() < want && self.queue.has_room() {
             // The device has already consumed its block. The remaining queue is
             // our deadline; reserve 2 ms for rendering instead of a fixed wait.
             e.set_plugin_wait_budget(plugin_wait_budget(self.queue.queued()/2,self.rate));
-            match e.next_tick() {
+            match e.next_device_tick(self.queue.extra_channels) {
                 None => {
                     self.queue.ended.store(true, Ordering::Release);
                     break;
                 }
-                Some((s, tick, frame, held, tick_frames)) => {
+                Some((s, extra, tick, frame, held, tick_frames)) => {
                     frames += s.len() as u64 / 2;
                     let at = self.queue.written.load(Ordering::Relaxed) / 2;
-                    self.queue.push(s, tick, frame, held, tick_frames);
+                    self.queue.push_outputs(s, extra, tick, frame, held, tick_frames);
                     if self.meters {
                         let selected = self.shared.eq_scope_track.load(Ordering::Relaxed);
                         if selected > 0 {
@@ -1483,7 +1512,7 @@ fn mixer_live_edits(previous: &mut Project, next: &mut Project) -> Option<Vec<us
         if old.clip_fx && old.enabled != new.enabled { return None; }
         if !controls_match!(eq, strip, routes, send_levels, volume, pan, stereo_separation,
             polarity, swap, enabled, slots_enabled, slot_on, slot_mix, parametric_pre,
-            strip_bypassed, deess, tune, tune_enabled, latency_out, latency_in,
+            strip_bypassed, deess, tune, tune_enabled, latency_out, latency_in, hardware_output,
             name, color, icon, separator, edit_locked, group_locked) { return None; }
         changed.push(index);
     }
@@ -1553,6 +1582,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
     let swap = |s: &mut Session, library: &mut SampleLibrary, switched:bool| {
         // Build outside the lock, then swap at the playing position.
         let mut e = engine(&s.project, library, s.rate, s.mode, &inst, true);
+        e.set_hardware_device(s.hardware_device.clone(), s.extra_channels / 2, &s.project);
         if s.mode == PlayMode::Song && s.project.arrangement().is_none_or(|a|a.clips.is_empty()) { e.empty_song_transport(); }
         if s.kind == Kind::Live {
             e.clear_schedule();
@@ -2299,6 +2329,8 @@ struct Session {
     project: Project,
     mode: PlayMode,
     rate: u32,
+    hardware_device: String,
+    extra_channels: usize,
     /// "Play truncated notes on transport" as this playback started with (a move to new audio settings keeps it).
     truncated: bool,
 }
@@ -2318,6 +2350,9 @@ impl Session {
         let (rate, fixed, info) = (out.info.rate, out.info.fixed, out.info.clone());
         // Playback loops: a pattern on its bar line, the song at its end (back to the start).
         let mut e = preview_engine(project, library, rate, mode, inst, kind, at.preview_loop);
+        let extra_channels = if preview { 0 } else { info.extra_channels() };
+        let hardware_device = info.hardware_key();
+        e.set_hardware_device(hardware_device.clone(), extra_channels / 2, project);
         if song && mode == PlayMode::Song && project.arrangement().is_none_or(|a|a.clips.is_empty()) { e.empty_song_transport(); }
         if kind == Kind::Live {
             e.clear_schedule();
@@ -2352,7 +2387,7 @@ impl Session {
             publish(&shared, &info);
         }
         // The queue gets a first block before the stream starts; then the feeder keeps it filled.
-        let queue = Arc::new(Queue::new());
+        let queue = Arc::new(Queue::with_outputs(extra_channels));
         let mut feeder = Feeder::new(engine.clone(), queue.clone(), shared.clone(), ctl.clone(), rate);
         feeder.meters = !preview;
         feeder.live=kind==Kind::Live;
@@ -2364,7 +2399,7 @@ impl Session {
         r.wake = feed.thread();
         let detach = Detach(r.detach.clone());
         device.add(Box::new(r))?;
-        Ok(Session { _detach: detach, feed, kind, engine, done, ctl, generation, project: project.clone(), mode, rate, truncated: at.truncated })
+        Ok(Session { _detach: detach, feed, kind, engine, done, ctl, generation, project: project.clone(), mode, rate, hardware_device, extra_channels, truncated: at.truncated })
     }
 }
 
@@ -2392,6 +2427,7 @@ struct Renderer {
     /// Output gain, ramped toward 1 (playing) or 0 (paused) by `step` per frame.
     gain: f32,
     last: [f32;2],
+    last_extra: Vec<f32>,
     step: f32,
     /// Feed the monitor tap with what this stream outputs.
     tap: bool,
@@ -2406,18 +2442,20 @@ impl Renderer {
         let step = (1.0 / (f64::from(rate.max(1)) * FADE_SECONDS)) as f32;
         // A stream that starts paused (moved to new audio settings while paused) starts silent.
         let gain = if ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
-        Renderer { queue, wake: None, inline: None, ctl, done, shared, gain, last:[0.;2], step, tap: false, detach: Arc::new(AtomicBool::new(false)), asked: None }
+        let last_extra = vec![0.0; queue.extra_channels];
+        Renderer { queue, wake: None, inline: None, ctl, done, shared, gain, last:[0.;2], last_extra, step, tap: false, detach: Arc::new(AtomicBool::new(false)), asked: None }
     }
 
     /// Renders one block (see `render_block`) and copies it to the monitor tap, unless the stream is held.
     #[cfg(test)]
     fn render(&mut self, stereo: &mut [f32]) {
-        self.render_at(stereo, None);
+        self.render_at(stereo, &mut [], None);
     }
 
-    fn render_at(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
+    fn render_at(&mut self, stereo: &mut [f32], extra: &mut [f32], playback_at: Option<Instant>) {
+        let extra = if extra.len() == stereo.len() / 2 * self.queue.extra_channels { extra } else { &mut [] };
         let held = self.gain == 0.0 && self.ctl.paused.load(Ordering::Relaxed);
-        self.render_block(stereo, playback_at);
+        self.render_block(stereo, extra, playback_at);
         if self.tap && !held {
             if let Ok(mut t) = self.shared.tap.try_lock() {
                 t.push(stereo, crate::device::blocks(), Instant::now(), self.shared.sample_rate.load(Ordering::Relaxed));
@@ -2427,10 +2465,11 @@ impl Renderer {
 
     /// Plays `stereo.len() / 2` frames (interleaved L/R) from the queue. A paused stream, once faded out, reads
     /// nothing, so its position and the queued ticks stay exactly where they were.
-    fn render_block(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
+    fn render_block(&mut self, stereo: &mut [f32], extra: &mut [f32], playback_at: Option<Instant>) {
         let target = if self.ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
         if self.gain == 0.0 && target == 0.0 {
             stereo.fill(0.0);
+            extra.fill(0.0);
             return;
         }
         self.queue.block.fetch_max(stereo.len() / 2, Ordering::Relaxed);
@@ -2448,7 +2487,21 @@ impl Renderer {
         // Where the block starts (the playback's position moves from here to its end while the device plays it).
         let from = self.queue.heard();
         let read = self.queue.read.load(Ordering::Relaxed) / 2;
-        let got = self.queue.pop(stereo);
+        let got = self.queue.pop(stereo, extra);
+        let width = if extra.is_empty() { 0 } else { self.queue.extra_channels };
+        let got_extra = got / 2 * width;
+        if width > 0 && got_extra >= width {
+            self.last_extra.copy_from_slice(&extra[got_extra - width..got_extra]);
+        }
+        if width > 0 {
+            if target == 0.0 {
+                for frame in extra[got_extra..].chunks_exact_mut(width) {
+                    frame.copy_from_slice(&self.last_extra);
+                }
+            } else {
+                extra[got_extra..].fill(0.0);
+            }
+        }
         self.ctl.consumed.fetch_add((got/2) as u64,Ordering::Relaxed);
         let ended = self.queue.ended.load(Ordering::Acquire);
         if got>=2 {self.last=[stereo[got-2],stereo[got-1]];}
@@ -2485,10 +2538,13 @@ impl Renderer {
             }
         }
         if self.gain != 1.0 || target != 1.0 {
-            for f in stereo.chunks_exact_mut(2) {
+            for (frame, f) in stereo.chunks_exact_mut(2).enumerate() {
                 self.gain = if self.gain < target { (self.gain + self.step).min(target) } else { (self.gain - self.step).max(target) };
                 f[0] *= self.gain;
                 f[1] *= self.gain;
+                for sample in &mut extra[frame * width..(frame + 1) * width] {
+                    *sample *= self.gain;
+                }
             }
         }
     }
@@ -2497,11 +2553,11 @@ impl Renderer {
 /// What the device plays of a stream: its block, and its own peaks for the meters.
 impl Source for Renderer {
     fn play(&mut self, stereo: &mut [f32]) {
-        self.play_at(stereo, None);
+        self.play_device(stereo, &mut [], None);
     }
 
-    fn play_at(&mut self, stereo: &mut [f32], playback_at: Option<Instant>) {
-        self.render_at(stereo, playback_at);
+    fn play_device(&mut self, stereo: &mut [f32], extra: &mut [f32], playback_at: Option<Instant>) {
+        self.render_at(stereo, extra, playback_at);
         let (mut pl, mut pr) = (0.0f32, 0.0f32);
         for s in stereo.chunks_exact(2) {
             pl = pl.max(s[0].abs());
@@ -2603,6 +2659,46 @@ mod tests {
         (r, ctl, shared)
     }
 
+    #[test]
+    fn hardware_outputs_reach_the_device_callback_and_leave_master_intact() {
+        struct Signal;
+        impl os_engine::engine::MixerInput for Signal {
+            fn render(&mut self, _: u32, tracks: &mut [Vec<f32>]) {
+                for frame in tracks[1].chunks_exact_mut(2) {
+                    frame.copy_from_slice(&[0.25, -0.125]);
+                }
+            }
+        }
+
+        let mut project = Project::default();
+        project.mixer = (0..3).map(os_model::MixerTrack::new).collect();
+        project.mixer[1].hardware_output = Some(os_model::HardwareOutput {
+            device: "Synthetic interface".into(), first: 4,
+        });
+        let mut engine = Engine::new(&project, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+        engine.clear_schedule();
+        engine.set_awake(true);
+        engine.set_mixer_input(Box::new(Signal));
+        engine.set_hardware_device("Synthetic interface".into(), 2, &project);
+        let ctl = Arc::new(Ctl {
+            consumed: AtomicU64::new(0), paused: AtomicBool::new(false),
+            held: AtomicBool::new(false), report: AtomicBool::new(true),
+        });
+        let shared = Arc::new(Shared::default());
+        let queue = Arc::new(Queue::with_outputs(4));
+        let mut renderer = Renderer::new(queue.clone(), ctl.clone(), Arc::new(AtomicBool::new(false)), shared.clone(), 48000);
+        renderer.inline = Some(Feeder::new(Arc::new(Mutex::new(engine)), queue, shared, ctl.clone(), 48000));
+        let mut master = [0.; 128];
+        let mut extra = [0.; 256];
+        renderer.play_device(&mut master, &mut extra, None);
+        assert!(master.chunks_exact(2).all(|frame| frame == [0.25, -0.125]));
+        assert!(extra.chunks_exact(4).all(|frame| frame == [0., 0., 0.25, -0.125]));
+        assert_eq!(ctl.consumed.load(Ordering::Relaxed), 64);
+        ctl.paused.store(true, Ordering::Relaxed);
+        for _ in 0..10 { renderer.play_device(&mut master, &mut extra, None); }
+        assert!(extra.iter().all(|&sample| sample == 0.));
+    }
+
     /// Device tests: waits up to 3 s for `ready`, as a device opening for the first time may take a while. Wait on
     /// something only a running device does (the position, peaks, the tap): a stream's first block is rendered before
     /// its device opens, so voices and sounding notes show up early.
@@ -2684,6 +2780,34 @@ mod tests {
         assert!(buses[1][0] > 0.29); m.stop();
     }
 
+
+    #[test]
+    fn overloaded_feeder_releases_engine_when_consumer_keeps_draining() {
+        struct Drain { queue: Arc<Queue>, calls: Arc<AtomicUsize> }
+        impl os_engine::engine::MixerInput for Drain {
+            fn render(&mut self, _: u32, _: &mut [Vec<f32>]) {
+                // Deterministic slow-producer simulation: each tick takes long
+                // enough for the device to consume everything queued so far.
+                if self.calls.fetch_add(1, Ordering::Relaxed) < 100 {
+                    let mut block = [0.; 4096];
+                    self.queue.pop(&mut block, &mut []);
+                }
+            }
+        }
+        let (e, _) = looping_engine();
+        let (mut renderer, _, _) = renderer(e);
+        let mut feeder = renderer.inline.take().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        feeder.engine.lock().unwrap().set_mixer_input(Box::new(Drain {
+            queue: feeder.queue.clone(), calls: calls.clone(),
+        }));
+        feeder.fill(128);
+        assert!(calls.load(Ordering::Relaxed) < 20, "overload monopolized the engine");
+        assert!(feeder.engine.try_lock().is_ok(), "Stop/device changes can acquire the engine");
+        let written = feeder.queue.written.load(Ordering::Relaxed);
+        feeder.fill(128);
+        assert!(feeder.queue.written.load(Ordering::Relaxed) > written, "next pass resumes processing");
+    }
 
     #[test]
     fn display_locks_cannot_stall_audio_feeder() {
@@ -2958,7 +3082,7 @@ mod tests {
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 44100, &audio).unwrap();
         let mut failures = Vec::new();
         for hosted in [false, true] {
-            for size in [48usize, 192, 512, 1024] {
+            for size in [48usize, 128, 192, 512, 1024] {
                 let mut project = crate::app::test_project();
                 project.channels.truncate(if hosted { 3 } else { 2 });
                 project.tempo = Some(120.0);
@@ -2973,15 +3097,21 @@ mod tests {
                     assert!(samplers.load_sample(row, &wav.to_string_lossy()));
                 }
                 let mut instruments = samplers.instruments();
+                let mut effect = None;
                 if hosted {
                     project.channels[2].kind = os_model::ChannelKind::Plugin;
                     project.channels[2].plugin = Some(descriptor.name.clone());
                     project.patterns[0].notes.extend([48, 55, 60, 64].map(|key| os_model::Note { key, length: 384, ..os_model::Note::step(2, 0) }));
                     let plugin = library.clone().create(&descriptor.id).unwrap();
                     assert!(plugin.lock().unwrap().activate(48000));
-                    instruments.push((2, plugin as SharedInstrument));
+                    if descriptor.is_instrument() {
+                        instruments.push((2, plugin as SharedInstrument));
+                    } else {
+                        effect = Some(plugin);
+                    }
                 }
                 let mut engine = Engine::with_instruments(&project, &mut host_library(None), 48000, PlayMode::Pattern(1), &instruments);
+                if let Some(plugin) = &effect { engine.set_effect(0, 0, plugin.clone()); }
                 engine.set_interpolation(16);
                 engine.set_looping(true);
                 let (mut renderer, _, shared) = renderer(engine);
@@ -3008,6 +3138,11 @@ mod tests {
                     gaps += u64::from(output.iter().all(|x| x.abs() < 1e-8));
                     invalid += output.iter().filter(|x| !x.is_finite()).count() as u64;
                     peak_load = peak_load.max(f32::from_bits(shared.load.load(Ordering::Relaxed)));
+                    if calls % 20 == 0 {
+                        if let Some(plugin) = &effect {
+                            if let Ok(mut p) = plugin.try_lock() { p.idle(); }
+                        }
+                    }
                     due = at + period;
                 }
                 feed.halt();
@@ -3018,6 +3153,120 @@ mod tests {
         }
         std::fs::remove_file(wav).unwrap();
         assert!(failures.is_empty(), "Playback failures: {failures:?}; inspect scheduler timing separately from physical driver behavior");
+    }
+
+    /// Native editor + the real app parameter tick and playback queue, without
+    /// opening a device or touching a personal project. Requires GUI authorization.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "visible installed editor; requires explicit GUI authorization and LEMON_STRESS_PLUGIN"]
+    fn installed_editor_with_app_parameter_tick_and_queue() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        #[link(name="ole32")]
+        unsafe extern "system" { fn CoInitializeEx(reserved:*mut std::ffi::c_void, flags:u32)->i32; }
+        unsafe {CoInitializeEx(std::ptr::null_mut(),2);}
+        let path=std::env::var_os("LEMON_STRESS_PLUGIN").expect("explicit plugin path");
+        let path=std::path::Path::new(&path);
+        let format=match path.extension().and_then(|s|s.to_str()) {Some("dll")=>os_host::Format::Vst2,Some("clap")=>os_host::Format::Clap,_=>os_host::Format::Vst3};
+        let lib=crate::plugins::load_file(path,format).unwrap();
+        let desc=lib.plugins().first().unwrap().clone();
+        let instrument=desc.is_instrument();
+        let seconds=std::env::var("LEMON_STRESS_SECONDS").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(4).clamp(1,10);
+        let lifecycle=std::env::var_os("LEMON_STRESS_LIFECYCLE").is_some();
+        let only_step=std::env::var("LEMON_STRESS_STEP").ok().and_then(|v|v.parse::<u32>().ok());
+        let mut a=crate::app::App::new(None);
+        a.plugins.set_rate(48000);
+        let available=crate::plugins::Available{desc,lib};
+        let key=if instrument {a.plugins.available=vec![available];a.plugins.create(0,0).unwrap();0}
+            else {a.plugins.effects=vec![available];a.plugins.create_effect(0,0,0,None).unwrap();crate::plugins::fx_key(0,0)};
+        a.params_tick();
+        let info=crate::plugin_window::ChannelInfo{name:"Isolated audio test".into(),target:"Master".into(),enabled:true,volume:0.78,pan:0.,pitch_cents:0,range:2,track:0,max_track:125,sidechain:None,misc:None};
+        a.plugins.open_window(key,info.clone()).unwrap();
+        let initial_state=if lifecycle {a.plugins.state(key)} else {None};
+        let plugin=a.plugins.hosted[&key].plugin.clone();
+        let mut project=crate::app::test_project();
+        for pattern in &mut project.patterns {pattern.notes.clear();}
+        let instruments=if instrument {
+            project.patterns[0].notes.push(os_model::Note{key:60,length:384,..os_model::Note::step(project.channels[0].index,0)});
+            vec![(0,plugin.clone() as SharedInstrument)]
+        } else {Vec::new()};
+        let mut engine=Engine::with_instruments(&project,&mut host_library(None),48000,PlayMode::Pattern(1),&instruments);
+        if !instrument {engine.set_effect(0,0,plugin.clone());}engine.set_looping(true);
+        let (mut renderer,_,shared)=renderer(engine);
+        let mut feeder=renderer.inline.take().unwrap();feeder.fill(PREFILL_FRAMES);
+        let mut feed=FeedThread::spawn(feeder);renderer.wake=feed.thread();
+        let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done=stop.clone();
+        let worker=std::thread::spawn(move || {
+            let mut output=[0.;256];let mut calls=0;
+            while !done.load(Ordering::Acquire) {
+                let start=Instant::now();renderer.render(&mut output);calls+=1;
+                assert!(output.iter().all(|v|v.is_finite()));
+                std::thread::sleep(Duration::from_secs_f64(128./48000.).saturating_sub(start.elapsed()));
+            }
+            feed.halt();calls
+        });
+        let mut failures=Vec::new();
+        let mut saved=initial_state;
+        for visible in [false,true,false] {
+            let window=a.plugins.hosted[&key].window.as_ref().unwrap().hwnd() as windows_sys::Win32::Foundation::HWND;
+            unsafe {ShowWindow(window,if visible {SW_SHOWNOACTIVATE}else{SW_HIDE});}
+            let before=shared.underruns.load(Ordering::Relaxed);
+            let start=Instant::now();let mut ticks=0;let mut peak=0.0f32;
+            let mut timings: [Vec<u128>; 3] = std::array::from_fn(|_| Vec::new());
+            while start.elapsed()<Duration::from_secs(seconds) {
+                let pump_at = Instant::now();
+                unsafe {
+                    let mut msg:MSG=std::mem::zeroed();
+                    for _ in 0..1000 {
+                        if PeekMessageW(&mut msg,std::ptr::null_mut(),0,0,PM_REMOVE)==0 {break;}
+                        TranslateMessage(&msg);DispatchMessageW(&msg);
+                    }
+                }
+                timings[0].push(pump_at.elapsed().as_micros());
+                if lifecycle && visible && only_step.is_none_or(|step|step==ticks) {
+                    let at=Instant::now();
+                    match ticks {
+                        3=>{saved=Some(a.plugins.state(key).expect("save state"));}
+                        5=>{assert!(a.plugins.set_state(key,saved.as_ref().unwrap()));}
+                        7=>{a.state.params.lists.remove(&key);a.params_tick();}
+                        9=>{a.plugins.close_window(key);a.plugins.open_window(key,info.clone()).unwrap();}
+                        _=>{}
+                    }
+                    if [3,5,7,9].contains(&ticks) {eprintln!("LIFECYCLE step={ticks} elapsed_us={}",at.elapsed().as_micros());}
+                }
+                let idle_at = Instant::now();
+                a.plugins.idle(|_|None);
+                timings[1].push(idle_at.elapsed().as_micros());
+                let params_at = Instant::now();
+                a.params_tick();
+                timings[2].push(params_at.elapsed().as_micros());
+                ticks+=1;
+                let now=shared.underruns.load(Ordering::Relaxed);
+                if now>before && ticks<20 {eprintln!("UNDERRUN tick={ticks} total={}",now-before);}
+                peak=peak.max(f32::from_bits(shared.load.load(Ordering::Relaxed)));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let dropouts=shared.underruns.load(Ordering::Relaxed)-before;
+            eprintln!("APP_QUEUE visible={visible} ticks={ticks} dropouts={dropouts} peak_audio_load={peak:.3}");
+            for (label, mut samples) in ["messages", "idle", "params"].into_iter().zip(timings) {
+                samples.sort_unstable();
+                if !samples.is_empty() {
+                    eprintln!("UI_TIME visible={visible} stage={label} mean_us={} p95_us={} max_us={}",
+                        samples.iter().sum::<u128>() / samples.len() as u128,
+                        samples[(samples.len() * 95 / 100).min(samples.len() - 1)], samples.last().unwrap());
+                    if label == "params" && let Ok(limit) = std::env::var("LEMON_UI_BUDGET_US") {
+                        let limit = limit.parse::<u128>().expect("UI budget in microseconds");
+                        assert!(samples[samples.len() * 95 / 100] <= limit, "parameter polling exceeded the requested UI budget");
+                    }
+                }
+            }
+            if dropouts!=0 {failures.push((visible,dropouts));}
+        }
+        stop.store(true,Ordering::Release);assert!(worker.join().unwrap()>100);
+        a.plugins.close_window(key);
+        assert_eq!(plugin.lock().unwrap().stopped(),None);
+        assert!(failures.is_empty(),"real app parameter polling starved playback: {failures:?}");
     }
 
     /// The queue hands out exactly what the engine renders, tick after tick, whatever the device's block size; the
@@ -3991,7 +4240,6 @@ mod tests {
 // Spend only already-buffered audio on waiting for a busy editor. Keep rendering
 // headroom and cap the wait in Engine so an unresponsive plugin cannot hang playback.
 fn plugin_wait_budget(queued_frames:u64,rate:u32)->Duration {
-    if queued_frames==0 {return Duration::from_millis(2);}
     let spare=queued_frames.saturating_sub(u64::from(rate/500));
     Duration::from_secs_f64(spare as f64/f64::from(rate.max(1)))
 }
@@ -4001,6 +4249,6 @@ fn plugin_wait_budget(queued_frames:u64,rate:u32)->Duration {
         assert_eq!(super::plugin_wait_budget(48,48000),D::ZERO);
         assert_eq!(super::plugin_wait_budget(480,48000),D::from_millis(8));
         assert_eq!(super::plugin_wait_budget(960,48000),D::from_millis(18));
-        assert_eq!(super::plugin_wait_budget(0,48000),D::from_millis(2));
+        assert_eq!(super::plugin_wait_budget(0,48000),D::ZERO);
     }
 }

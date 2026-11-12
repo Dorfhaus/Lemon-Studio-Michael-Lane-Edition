@@ -130,7 +130,8 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     let ly = Ly::new(r, s.vintage_2005);
 
     let strips = Rect::new(r.x, client.y, r.w - panel_w - 7.0, client.h);
-    ui.c.fill_rect(Rect::new(r.x, client.y, r.w - panel_w, client.h), ui.t.s(0x232527));
+    ui.c.fill_rect(Rect::new(r.x, client.y, r.w - panel_w, client.h),
+        if ui.mixer_finish == Finish::Theme { ui.t.mixer_bg } else { ui.t.s(0x232527) });
     ui.hit(strips, Action::MixerArea, "Mixer");
     let bank = InsertBank::new(s);
     let bottom = r.bottom();
@@ -333,7 +334,10 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
 
     // Body and the strip divider.
     // The current strip's body is a shade lighter (measured: 0x26292b vs 0x232527).
-    let body = if selected { ui.t.s(0x26292b) } else { ui.t.s(0x232527) };
+    let themed = ui.mixer_finish == Finish::Theme;
+    let body = if themed {
+        if selected { t.mixer_strip.shade(0.03) } else { t.mixer_strip }
+    } else if selected { ui.t.s(0x26292b) } else { ui.t.s(0x232527) };
     let tint=track.and_then(|m|m.color).map(crate::views::rgb);
     let body=tint.map_or(body,|c|body.mix(c,0.22));
     let lemon = crate::views::lemon(ui);
@@ -387,9 +391,9 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
     if t.style.vintage_2005 {
         os_ui::kit::bordered(ui.c, well, 0.0, t.window_border, t.mixer_strip_dark);
     } else {
-        ui.c.fill_rrect(well, 9.0, t.s(0x1d1f21));
+        ui.c.fill_rrect(well, 9.0, if themed { t.mixer_strip_dark } else { t.s(0x1d1f21) });
     }
-    ui.c.fill_rect(Rect::new(left + 1.0, ly.y(PANEL_Y0), width - 2.0, 12.0), ui.t.s(0x1d1f21));
+    ui.c.fill_rect(Rect::new(left + 1.0, ly.y(PANEL_Y0), width - 2.0, 12.0), if themed { t.mixer_strip_dark } else { t.s(0x1d1f21) });
 
     // Meter slot with its tick marks; the selected strip gets a green frame.
     let alt=matches!(layout_index(s),2|6);
@@ -515,7 +519,8 @@ fn strip(ui: &mut Ui, s: &State, n: u16, left: f32, bottom: f32, f: &FrameInfo, 
         }
     }
     let hov = ui.hit(Rect::new(mx - 9.0, ly.y(TRACK_Y0) - 5.0, 18.0, track_y1 - ly.y(TRACK_Y0) + 10.0), Action::Fader(n), mx::level_text("Volume", f64::from(v)));
-    fader_handle(ui, mx, hy, selected, hov);
+    if themed { themed::fader(ui, mx, hy, selected, hov); }
+    else { fader_handle(ui, mx, hy, selected, hov); }
 
     let master=n==0;
     let by=bottom;
@@ -615,7 +620,7 @@ fn plugin_list(ui:&mut Ui,s:&State,n:u16,r:Rect) {
         let k=mx::visible_user_slot(s,n,i);
         let b=Rect::new(r.x,r.y+i as f32*19.,r.w,18.);
         let plugin = mx::slot_name(s, n, k);
-        ui.c.fill_rrect(b, 2.0, ui.t.sunken);
+        ui.c.fill_rrect(b, 2.0, if ui.mixer_finish == Finish::Theme { ui.t.slot } else { ui.t.sunken });
         let text = Rect::new(b.x + 3.0, b.y, b.w - 6.0, b.h);
         paint_slot_label(ui, text, plugin.as_deref(), i + 1, 12, 3.0);
         let hint = plugin.unwrap_or_else(|| format!("Slot {}", i + 1));

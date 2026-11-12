@@ -248,6 +248,11 @@ Route a Channel Rack instrument or audio clip to a named Mixer insert. Use its f
 Right-click a Mixer channel to rename it or choose Change color > Custom color. The custom swatches accept six-digit hex colors. Settings > General > Input offers optional double-click reset for faders and knobs and opening main menus on hover. Both start off.
 Effects in the insert's slots run in order. Check that the track reaches Master through a direct route or a bus. Avoid clipping the Master if you are exporting a mix.
 
+### Send a Mixer track to an interface output
+hardware output cue headphone mix out extra stereo pair asio
+Open a Mixer track and click Hardware out below its EQ. Choose an additional pair exposed by the active audio device, such as Outputs 3 / 4, or choose Off. The output gets the track's post-fader signal alongside its normal sends. Master plays through the device's main outputs.
+The choice is saved with the project for that device and affects live playback and monitoring. For a cue mix, send the desired tracks to a bus and set that bus's hardware output. A stereo-only device offers Off. Settings > Visibility > Mixer can hide the selector while retaining the assignment.
+
 ### Route audio with the miniature Mixer picker
 route picker send to mixer track track number audio clip channel rack
 Guide: rack-route
@@ -430,10 +435,9 @@ Open Settings > General > Workspace Visibility, or choose the Visibility tab. Ex
 These choices save to your profile and follow you between projects. Use the Playlist menu's Show clip picker panel switch to open or close the picker itself.
 Restore default visibility brings back the default show/hide choices. Existing toolbar layout settings still apply.
 
-### Move the Options menu and Settings window
-options menu move drag position title header floating settings
-Open Options in the main menu bar and drag the Options header to move the dropdown. Click an entry or submenu from its new position. The menu returns to its usual anchor the next time you open it.
-The Settings window has its own draggable title bar. To hide the dropdown handle, use Settings > Visibility > Workspace > Options menu drag handle.
+### Move the Settings window
+settings options menu move drag position title header floating
+Drag the Settings window by its title bar to move it within the workspace. File, Options and other dropdown menus stay anchored to their menu buttons; they cannot be dragged.
 
 ### Customize menus
 menu layout arrange submenu hide items piano roll channel rack mixer
@@ -548,7 +552,7 @@ This spectral tool targets steady noise such as hiss, fans and hum. It does not 
 ## Settings reference
 ### Audio device and latency
 settings audio normal advanced driver output device mode sample rate hz buffer length latency show asio panel reset underruns auto close
-Open Settings > Audio. Normal shows Output device and Latency. Use a shorter buffer when playing live and a larger buffer if playback clicks or drops out. Advanced exposes the device's sample rate (Hz) and buffer length. Under ASIO, Show ASIO panel opens the driver's own controls. Shared or Exclusive mode is shown for supported Windows and Linux devices.
+Open Settings > Audio. Normal shows Output device and Latency. Use a shorter buffer when playing live and a larger buffer if playback clicks or drops out. Advanced exposes the device's sample rate (Hz) and buffer length. Under ASIO, Show ASIO panel opens the driver's own controls in both Normal and Advanced, including when latency presets are available. Shared or Exclusive mode is shown for supported Windows and Linux devices.
 Use the status and underrun counters to check that the selected settings took effect. Reset underruns clears the counter so you can check a new configuration. Available options depend on your driver and platform. Greyed controls show when a choice is unavailable.
 
 ### Audio processing and recording settings
@@ -594,7 +598,7 @@ Combine formats of the same plugin and the format preference affect which varian
 ### Themes, icons, cursor and mixer design
 settings theme appearance skins adjustments theme editor mixer skin designer icons fonts cursor packs note colors brightness
 Settings > Theme lets you choose a skin and theme and adjust colors and brightness. Audio and automation clips use note colors changes how clip colors are derived. The Playlist scrollbar style is also adjustable when its visibility option is enabled.
-Open Theme Editor for individual color and shape settings or Mixer Skin Designer for mixer-specific appearance. Icons & Fonts lets you choose icon and cursor packs independently, override individual glyphs, and change the interface font. Save a preset or export the theme to reuse the appearance.
+Open Theme Editor for individual color and shape settings or Mixer Skin Designer for mixer-specific appearance. Editing a mixer body, panel, slot or fader color selects the editable Theme colors finish automatically; the Traditional and Full layouts both use those colors. Editing a skin component color enables that custom component. Apply keeps the changes, and Cancel restores the previous appearance. Icons & Fonts lets you choose icon and cursor packs independently, override individual glyphs, and change the interface font. Save a preset or export the theme to reuse the appearance.
 
 ### Project data, time and credits
 settings project data folder ask copy used samples ppq timebase signature division panning law crossfades info debug about licence

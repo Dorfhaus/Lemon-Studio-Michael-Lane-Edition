@@ -1,42 +1,42 @@
 {
-  "tag": "v2026.11.12.1",
-  "title": "ML Studio 2026.11.12.1",
-  "notes": "- Attach the Mixer to the Playlist for mixer-ordered tracks with per-track recording, Piano Roll and instrument insertion. The Mixer stays open, and detaching restores your Playlist arrangement while retaining new edits and recordings.\n- The attached inspector includes the Mixer EQ, scrollable effects and color-coded sends. Resize or collapse sections, hide the inspector, or choose the optional Full channel strip. Enable Playlist record and instrument buttons in Workspace Visibility to use them with the Mixer detached.\n- Time Warper and Vocal Tuning apply completed gestures automatically. Pitch and timing have separate per-clip Undo and Redo histories that survive saving and reopening. Copies and slices inherit the edits and can be changed independently.\n- Export audio starts in Easy mode with 24-bit WAV and 320 kbps MP3. Choose either or both. The Advanced tab keeps the full export settings.\n- Audio Settings opens in Normal mode for device and latency choices. Advanced includes recording format and offset, playback resampling, audio workers, plugin delay compensation and optional Smart disable.\n- Selected typing-keyboard scales play consecutive notes across the letter rows, with each row starting an octave apart. This covers Y through minus and A through \u00c4 on German keyboards. The typing-keyboard switch is remembered when you reopen ML Studio.\n- The offline User Guide has collapsible sections and an expanded settings reference. Search still covers every topic. Drag the Options header to move the dropdown, or the Settings title bar to move the Settings window.\n- Right-click Mixer channels to rename them or choose a custom hex color. Optional double-click resets and hover menus are available under Settings > General > Input.\n- Improved Mixer and Playlist spacing, track borders, and selection outlines. Refined the Slice cursor, menu and export labels, and the Mixer EQ display.\n- Detect sample tempo can set the project BPM on confirmation. Stem separation setup can retry a verified mirror if the primary model download is unavailable.\n- Waveform loading and project backup work run in the background. Improved Mixer processing across routing dependencies and reduced unnecessary work in the clip editors and automation playback.\n- Resolved a launch compatibility issue on older macOS versions by loading newer Core Audio tap functions only when available.\n- External MCP activity appears as a small Working indicator. Its visibility can be changed in Settings.\n\nhttps://michaellanemusic.de/ml-studio/",
+  "tag": "v2026.11.13.1",
+  "title": "ML Studio 2026.11.13.1",
+  "notes": "- Maintenance hotfix.\n\nhttps://michaellanemusic.de/ml-studio/",
   "assets": [
     {
-      "name": "ML-Studio-Windows-Setup-2026.11.12.1.exe",
-      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026111201/Lemon-Studio-Windows-Setup-2026.11.12.1.exe",
-      "sha256": "f4be13bc0508a4999d4fe3de515124f5d08eca4699c2d5f04c25f80787104cea"
+      "name": "ML-Studio-Windows-Setup-2026.11.13.1.exe",
+      "url": "https://michaellanemusic.de/lemon-studio/downloads/2026111301/Lemon-Studio-Windows-Setup-2026.11.13.1.exe",
+      "sha256": "0ae5cef146a078fd6477d1020f9352fc92b80c7b79d7cf0ba6e4442627445ee9"
     },
     {
-      "name": "ML-Studio-Source-2026111201.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/updates/2026111201/Lemon%20Studio%20Source.zip",
-      "sha256": "d0591d71416685da0cfcd4c08ee522f6caf92919d51bdcc96f2834cff563acc9"
+      "name": "ML-Studio-Source-2026111301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/updates/2026111301/Lemon%20Studio%20Source.zip",
+      "sha256": "bd8e2212ad96b6850850934103073f60528586f131820ad163d7cf0b6e726ee7"
     },
     {
-      "name": "ML-Studio-Linux-x86_64-2026111201.tar.gz",
-      "url": "https://michaellanemusic.de/lemon-studio/linux/2026111201/Lemon-Studio-Linux-x86_64-2026111201.tar.gz",
-      "sha256": "bda367ad55bc7e65fb15eb466d70cdbc7ce738cb8161515516e42ed7b1e2c2d9"
+      "name": "ML-Studio-Linux-x86_64-2026111301.tar.gz",
+      "url": "https://michaellanemusic.de/lemon-studio/linux/2026111301/Lemon-Studio-Linux-x86_64-2026111301.tar.gz",
+      "sha256": "2bc8ebd35187f75b23afb1e335d8de9cbeb6e7a2e96f17b8b05665b441e021d5"
     },
     {
-      "name": "ML-Studio-Mac-arm64-2026111201.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111201/Lemon-Studio-Mac-arm64-2026111201.dmg",
-      "sha256": "6ebdc886c6f8c80354f77683e910aa2eba3561f49b7124537adc73039b8038bb"
+      "name": "ML-Studio-Mac-arm64-2026111301.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111301/Lemon-Studio-Mac-arm64-2026111301.dmg",
+      "sha256": "152b063800078504fa05c220342f36e4cab92cd29f3fe360799e4b578600fac2"
     },
     {
-      "name": "ML-Studio-Source-Mac-arm64-2026111201.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111201/Lemon-Studio-Source-Mac-arm64-2026111201.zip",
-      "sha256": "510a613bd0e8003aec4139596a333f4a94c7db64bc8c2963ff028ab03380667a"
+      "name": "ML-Studio-Source-Mac-arm64-2026111301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111301/Lemon-Studio-Source-Mac-arm64-2026111301.zip",
+      "sha256": "b635b122bfff8d4029199d1b742e677fac275d72d7bcd8ca8cb773325a76904c"
     },
     {
-      "name": "ML-Studio-Mac-x86_64-2026111201.dmg",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111201/Lemon-Studio-Mac-x86_64-2026111201.dmg",
-      "sha256": "be80f5d6b6e4f79546b7021fc68c0d2857ea0a8aa619ab6190bcc59eef88d7eb"
+      "name": "ML-Studio-Mac-x86_64-2026111301.dmg",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111301/Lemon-Studio-Mac-x86_64-2026111301.dmg",
+      "sha256": "909924ea1235594d4fb1ee264001324adc51304c4a6771cd2203d99115ed0f78"
     },
     {
-      "name": "ML-Studio-Source-Mac-x86_64-2026111201.zip",
-      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111201/Lemon-Studio-Source-Mac-x86_64-2026111201.zip",
-      "sha256": "294a495c3ce1738eb6c888212ddc81d3e8b8a31b74d86ce0058dadedf349501a"
+      "name": "ML-Studio-Source-Mac-x86_64-2026111301.zip",
+      "url": "https://michaellanemusic.de/lemon-studio/mac/2026111301/Lemon-Studio-Source-Mac-x86_64-2026111301.zip",
+      "sha256": "a796d7ffdd28aa586c1df622638ee991915141c68b6ebb80a940b3f12a8d5774"
     }
   ]
 }

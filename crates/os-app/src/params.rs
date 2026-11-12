@@ -20,6 +20,8 @@ use crate::plugins::{fx_key, fx_of};
 
 /// Browser tab of the project tree, and the sections plugin nodes live in (spec: ui/browser.md §2).
 const PROJECT_TAB: usize = 1;
+const POLL_BATCH: usize = 32;
+const POLL_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 pub const ROOT: &str = "1:Current project";
 
 /// One parameter of a hosted instance, as the browser and menus show it.
@@ -38,6 +40,8 @@ pub struct Entry {
 /// A hosted instance's parameter list in plugin order (position = automation index k).
 #[derive(Debug, Clone)]
 pub struct List {
+    /// Next index in a large controller bank's incremental background refresh.
+    pub poll_index: usize,
     /// Last observed values and whether an active editor gesture already owns an undo step.
     pub values: std::cell::RefCell<BTreeMap<u32,f64>>,
     pub gestures: BTreeMap<u32,bool>,
@@ -59,6 +63,8 @@ pub enum Tweak {
 /// What the app knows about plugin parameters.
 #[derive(Debug, Default)]
 pub struct ParamUi {
+    /// Fair starting point when the frame's controller-poll budget runs out.
+    poll_after: Option<usize>,
     pub collaboration: std::cell::RefCell<BTreeMap<(usize,u32),f64>>,
     pub generic_editor:Option<usize>,
     pub capture_armed: bool,
@@ -360,7 +366,15 @@ impl App {
         let mut stretch = Vec::new();
         let mut recorded=Vec::new();
         let mut undo=Vec::new();
-        for (&key, h) in &self.plugins.hosted {
+        let mut poll_time = std::time::Duration::ZERO;
+        let poll_after = ui.poll_after;
+        let mut hosted: Vec<_> = self.plugins.hosted.iter().collect();
+        if let Some(after) = poll_after {
+            let start = hosted.partition_point(|(key, _)| **key <= after);
+            let len = hosted.len();
+            if len != 0 { hosted.rotate_left(start % len); }
+        }
+        for (&key, h) in hosted {
             // Only an instance with something new is locked, and never waited for: one the audio thread is rendering
             // is read again next tick (its events stay queued).
             let Some(look) = h.due(ui.lists.get(&key).map_or(crate::plugins::Look::never(), |l| l.seen)) else { continue };
@@ -369,14 +383,29 @@ impl App {
             let count = p.param_count();
             let stale = ui.lists.get(&key).is_none_or(|l| l.params.len() != count || !Weak::ptr_eq(&l.plugin, &weak));
             if stale {
-                let params = (0..count)
+                let params: Vec<Entry> = (0..count)
                     .map(|i| match p.param_info(i) {
                         Some(info) => Entry { id: info.id, name: info.name, hidden: info.hidden, read_only:info.read_only, default: info.default, steps: info.steps },
                         None => Entry { id: u32::MAX, name: String::new(), hidden: true, read_only:true, default: 0.0, steps: 0 },
                     })
                     .collect();
-                let values=(0..count).filter_map(|i|{let id=p.param_info(i)?.id;Some((id,p.param_value(id)?))}).collect();
-                ui.lists.insert(key, List { plugin: weak, params, seen: look, values:std::cell::RefCell::new(values),gestures:BTreeMap::new() });
+                // First discovery/rebuilding a list must use the same unlocked
+                // controller path as subsequent ticks. Re-reading the entire
+                // bank here used to stall audio even after periodic polling was fixed.
+                let initial_job = p.param_values_job();
+                let values = if initial_job.is_none() {
+                    params.iter().filter(|entry|entry.id!=u32::MAX).filter_map(|entry| Some((entry.id,p.param_value(entry.id)?))).collect()
+                } else { BTreeMap::new() };
+                let mut list = List { poll_index: 0, plugin: weak, params, seen: crate::plugins::Look::never(), values:std::cell::RefCell::new(values),gestures:BTreeMap::new() };
+                if let Some(job) = initial_job {
+                    drop(p);
+                    *list.values.get_mut() = job().into_iter().filter(|(_,value)|value.is_finite()).collect();
+                    ui.lists.insert(key,list);
+                    // Events stay queued when audio takes the lock meanwhile.
+                    // Look::never ensures discovery does not mark them consumed.
+                    let Ok(locked) = h.plugin.try_lock() else { continue };
+                    p = locked;
+                } else { ui.lists.insert(key,list); }
             }
             if let Some(l) = ui.lists.get_mut(&key) {
                 l.seen = look;
@@ -387,6 +416,9 @@ impl App {
             for e in p.take_param_events() {
                 if let Some(l)=ui.lists.get_mut(&key) {
                     match e {
+                        os_host::ParamEvent::Sync(id,v) if v.is_finite()=>{
+                            if !l.gestures.contains_key(&id) { l.values.borrow_mut().insert(id,v); }
+                        }
                         os_host::ParamEvent::Begin(id)=>{l.gestures.insert(id,false);}
                         os_host::ParamEvent::End(id)=>{l.gestures.remove(&id);}
                         os_host::ParamEvent::Value(id,v) if v.is_finite()=>{
@@ -413,12 +445,48 @@ impl App {
                     if let os_host::ParamEvent::Value(_,v)=e {recorded.push((key,index,v,!pending && p.param_info(index).is_some_and(|i|i.automatable && !i.read_only && !i.hidden)));}
                 }
             }
-            // Automation and host changes establish the next gesture's starting value without making history.
-            if let Some(l)=ui.lists.get_mut(&key){for entry in &l.params {if !l.gestures.contains_key(&entry.id){if let Some(v)=p.param_value(entry.id){l.values.borrow_mut().insert(entry.id,v);if sampler&&entry.name=="Reverse"{stretch.push((key,entry.name.clone(),v));}}}}}
+            // A VST3 controller can read hundreds of values here. Prepare its
+            // UI-only snapshot now, then run it after releasing the DSP lock.
+            let defer_poll = poll_time >= POLL_BUDGET;
+            let list = ui.lists.get_mut(&key).expect("parameter list initialized");
+            let start = if count > 64 { list.poll_index.min(count.saturating_sub(1)) } else { 0 };
+            let end = if count > 64 { (start + POLL_BATCH).min(count) } else { count };
+            let values_job = if defer_poll { None } else if count > 64 {
+                p.param_values_job_range(start..end)
+            } else { p.param_values_job() };
+            if !defer_poll {
+                list.poll_index = if end == count { 0 } else { end };
+                ui.poll_after = Some(key);
+            }
+            if !defer_poll && values_job.is_none() {
+                let at = std::time::Instant::now();
+                if let Some(l)=ui.lists.get_mut(&key){for entry in &l.params[start..end] {if !l.gestures.contains_key(&entry.id){if let Some(v)=p.param_value(entry.id){l.values.borrow_mut().insert(entry.id,v);if sampler&&entry.name=="Reverse"{stretch.push((key,entry.name.clone(),v));}}}}}
+                poll_time += at.elapsed();
+            }
             // "Create automation clip" picked in the plugin's own menu (CLAP context menu).
             for id in p.take_automation_requests() {
                 if let Some(index) = ui.lists.get(&key).and_then(|l| l.params.iter().position(|x| x.id == id)) {
                     automate.push((key, index));
+                }
+            }
+            drop(p);
+            if let Some(job) = values_job {
+                // Automation and host changes establish the next gesture's
+                // starting value without making history or replacing an active
+                // gesture's baseline. No UI messages are pumped by the host here.
+                let at = std::time::Instant::now();
+                let values = job();
+                poll_time += at.elapsed();
+                ui.poll_after = Some(key);
+                if let Some(l) = ui.lists.get_mut(&key) {
+                    let reverse = sampler.then(|| l.params.iter().find(|entry| entry.name == "Reverse").map(|entry| entry.id)).flatten();
+                    let mut cached = l.values.borrow_mut();
+                    for (id, value) in values {
+                        if value.is_finite() && !l.gestures.contains_key(&id) {
+                            cached.insert(id, value);
+                            if reverse == Some(id) { stretch.push((key, "Reverse".into(), value)); }
+                        }
+                    }
                 }
             }
         }
@@ -646,7 +714,7 @@ mod tests {
         assert_eq!(key_of(s, Target::ChannelParam(ch, 7)), Some((0, 7)));
         assert_eq!(key_of(s, Target::SlotParam(2, 3, 35)), Some((fx_key(2, 3), 35)));
         let cutoff = Entry { id: 9, name: "Cutoff".into(), hidden: false, read_only:false, default: 1.0, steps: 0 };
-        s.params.lists.insert(0, List { plugin: Weak::<Mutex<Dummy>>::new(), params: vec![cutoff], seen: crate::plugins::Look::never(), values:Default::default(),gestures:Default::default() });
+        s.params.lists.insert(0, List { poll_index: 0, plugin: Weak::<Mutex<Dummy>>::new(), params: vec![cutoff], seen: crate::plugins::Look::never(), values:Default::default(),gestures:Default::default() });
         assert_eq!(clip_name(s, 0, 0), "Lead - Cutoff");
         // Last tweaked keeps the two newest, newest first, without repeats.
         let p = &mut s.params;
@@ -682,7 +750,11 @@ mod tests {
         let keys = [fx_key(2, 1), fx_key(2, 2)];
         for key in keys { a.state.browser_open.insert(view::parameter_node_key(key)); }
         let rows = view::rows(&a.state);
-        for key in keys { assert_eq!(rows.iter().filter(|r| matches!(r.item, view::Item::Param(k, _) if k == key)).count(), 36); }
+        for key in keys {
+            let expected=a.plugins.param_infos(key).iter().filter(|p|!p.hidden).count();
+            assert!(expected>=36,"legacy EQ automation parameters remain available");
+            assert_eq!(rows.iter().filter(|r| matches!(r.item, view::Item::Param(k, _) if k == key)).count(),expected);
+        }
         assert_ne!(view::parameter_node_key(keys[0]), view::parameter_node_key(keys[1]));
         a.state.browser_search = "main level".into();
         let rows = view::rows(&a.state);
@@ -714,12 +786,14 @@ mod tests {
         a.sync_effects();
         let key = fx_key(2, 1);
         assert_eq!(a.browse_params(key), None);
-        assert_eq!(a.state.params.visible(key).count(), 36);
-        let node = "1:Current project/Effects/Lemon Parametric EQ (Insert 2)";
+        let expected=a.plugins.param_infos(key).iter().filter(|p|!p.hidden).count();
+        assert!(expected>=36,"legacy EQ automation parameters remain available");
+        assert_eq!(a.state.params.visible(key).count(), expected);
+        let node = "1:Current project/Effects/ML EQ (Insert 2)";
         assert_eq!((a.state.show_browser, a.state.browser_tab, a.state.browser_sel.as_deref()), (true, PROJECT_TAB, Some(node)));
         let list = rows(&a.state);
         let names: Vec<&str> = list.iter().filter(|r| matches!(r.item, Item::Param(k, _) if k == key)).map(|r| r.label.as_str()).collect();
-        assert_eq!((names.len(), names[0], names[35]), (36, "Band 1 level", "Main level"));
+        assert_eq!((names.len(), names[0], names[35]), (expected, "Band 1 level", "Main level"));
         assert_eq!(row_hint(&a.state, key, 0), "Band 1 level: 0.0dB");
 
         // Right-click a parameter row: its automation menu.
@@ -728,7 +802,7 @@ mod tests {
         let menu = a.state.playlist.popup.take().unwrap();
         let tgt = target::slot_param(2, 1, 35);
         let create = menu.items.iter().find(|i| i.label == "Create automation clip").unwrap();
-        assert_eq!(create.cmd, Cmd::CreateAutomation(tgt, "Lemon Parametric EQ - Insert 2 - Main level".into(), 0.5));
+        assert_eq!(create.cmd, Cmd::CreateAutomation(tgt, "ML EQ - Insert 2 - Main level".into(), 0.5));
         // A plugin parameter's stored units aren't known: no initial value (spec: ui/settings-choices.md "Advanced:
         // Initialize controls automatically").
         let init = menu.items.iter().find(|i| i.label == crate::init::INIT_LABEL).unwrap();
@@ -743,7 +817,7 @@ mod tests {
 
         // Dropped on the playlist: a clip there, aimed at the parameter.
         let msg = a.params_drop(key, 35, 3, 384);
-        assert_eq!(msg.as_deref(), Some("Created automation clip \"Lemon Parametric EQ - Insert 2 - Main level\""));
+        assert_eq!(msg.as_deref(), Some("Created automation clip \"ML EQ - Insert 2 - Main level\""));
         let ch = a.state.project.channels.last().unwrap().index;
         assert_eq!(a.state.project.automations.last().map(|x| (x.channel, x.target())), Some((ch, Some(tgt))));
         let clip = crate::playlist::arr_mut(&mut a.state).clips.last().cloned().unwrap();
@@ -760,11 +834,11 @@ mod tests {
         a.state.params.note(Tweak::Plugin { key, index: 35 });
         a.params_menu(ADD_LAST);
         let last = a.state.project.channels.last().unwrap();
-        assert_eq!(last.name.as_deref(), Some("Lemon Parametric EQ - Insert 2 - Main level #2"));
+        assert_eq!(last.name.as_deref(), Some("ML EQ - Insert 2 - Main level #2"));
         // A plugin's own knob menu (host link): a clip on band 1 frequency.
         a.params_automate(key, 7);
         let last = a.state.project.channels.last().unwrap();
-        assert_eq!(last.name.as_deref(), Some("Lemon Parametric EQ - Insert 2 - Band 1 freq"));
+        assert_eq!(last.name.as_deref(), Some("ML EQ - Insert 2 - Band 1 freq"));
         assert_eq!(a.state.project.automations.last().and_then(|x| x.target()), Some(target::slot_param(2, 1, 7)));
         a.note_host_tweak(&Action::Tempo);
         assert_eq!(a.params_menu(TOOLS_NEXT), None);
@@ -998,7 +1072,7 @@ mod tests {
         let (mut app,key)=eq_app();
         let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
         let events=Arc::new(Mutex::new(vec![Value(7,0.2)]));
-        let plugin:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{desc,events:events.clone(),value:0.7}));
+        let plugin:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::ZERO,bank:1,desc,events:events.clone(),value:0.7,snapshot:None,reads:Default::default()}));
         app.plugins.hosted.insert(key,crate::plugins::Hosted::new(plugin));
         pl::arr_mut(&mut app.state).clips.clear();
         app.state.project.patterns[0].notes.push(os_model::Note::step(1, 0));
@@ -1059,7 +1133,7 @@ mod tests {
         use os_host::ParamEvent::{Begin,Value,End};
         let (mut a,key)=eq_app();let desc=a.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
         let events=Arc::new(Mutex::new(Vec::new()));
-        let p:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{desc,events:events.clone(),value:0.2}));
+        let p:Arc<Mutex<dyn os_host::Plugin>>=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::ZERO,bank:1,desc,events:events.clone(),value:0.2,snapshot:None,reads:Default::default()}));
         a.plugins.hosted.insert(key,crate::plugins::Hosted::new(p));a.params_tick();a.state.history.reset();
         events.lock().unwrap().extend([Begin(7),Value(7,0.4)]);a.params_tick();
         events.lock().unwrap().extend([Value(7,0.8),End(7)]);a.params_tick();
@@ -1071,11 +1145,56 @@ mod tests {
         a.params_tick();assert_eq!(a.state.history.len(),2,"host undo must not produce editor history");
     }
     #[test]
+    fn controller_snapshot_releases_audio_lock_and_preserves_gesture_undo() {
+        use os_host::ParamEvent::{Begin,Value,End};
+        let (mut a,key)=eq_app();
+        let desc=a.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        let events=Arc::new(Mutex::new(Vec::new()));
+        let concrete=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::ZERO,bank:1,desc,events:events.clone(),value:0.2,snapshot:None,reads:Default::default()}));
+        let shared:os_host::SharedPlugin=concrete.clone();
+        concrete.lock().unwrap().snapshot=Some(Arc::downgrade(&shared));
+        a.plugins.hosted.insert(key,crate::plugins::Hosted::new(shared));
+        a.params_tick();a.state.history.reset();
+        assert_eq!(concrete.lock().unwrap().reads.load(std::sync::atomic::Ordering::Relaxed),0,"first discovery uses the unlocked snapshot");
+        a.state.params.lists.remove(&key);a.params_tick();
+        assert_eq!(concrete.lock().unwrap().reads.load(std::sync::atomic::Ordering::Relaxed),0,"rebuilding also avoids serialized bank reads");
+        events.lock().unwrap().extend([Begin(7),Value(7,0.4)]);a.params_tick();
+        // Host/automation values must not replace the editor's in-flight gesture.
+        concrete.lock().unwrap().value=0.9;a.params_tick();
+        assert_eq!(a.state.params.lists[&key].values.borrow()[&7],0.4);
+        events.lock().unwrap().extend([Value(7,0.8),End(7)]);a.params_tick();
+        assert_eq!(a.state.history.len(),1);
+        crate::history::undo(&mut a.state);assert_eq!(param_value(&a.state,key,0),Some(0.2));
+        crate::history::redo(&mut a.state);assert_eq!(param_value(&a.state,key,0),Some(0.8));
+        // A host update establishes the next before-value without adding history.
+        concrete.lock().unwrap().value=0.3;a.params_tick();
+        assert_eq!(a.state.params.lists[&key].values.borrow()[&7],0.3);
+        assert_eq!(a.state.history.len(),1);
+        events.lock().unwrap().extend([Begin(7),Value(7,0.6),End(7)]);a.params_tick();
+        assert_eq!(a.state.history.len(),2);
+        crate::history::undo(&mut a.state);assert_eq!(param_value(&a.state,key,0),Some(0.3));
+    }
+    #[test]
+    fn controller_snapshot_preserves_sampler_reverse_sync() {
+        let (mut a,key)=eq_app();
+        let mut desc=a.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        desc.name=crate::plugins::LEMON_SAMPLER.into();
+        let concrete=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::ZERO,bank:1,desc,events:Default::default(),value:0.,snapshot:None,reads:Default::default()}));
+        let shared:os_host::SharedPlugin=concrete.clone();
+        concrete.lock().unwrap().snapshot=Some(Arc::downgrade(&shared));
+        a.plugins.hosted.insert(0,crate::plugins::Hosted::new(shared));a.params_tick();
+        let bit=os_model::SampleFx::REVERSE;
+        concrete.lock().unwrap().value=1.;a.params_tick();
+        assert_ne!(a.state.project.channels[0].sound.fx.flags&bit,0);
+        concrete.lock().unwrap().value=0.;a.params_tick();
+        assert_eq!(a.state.project.channels[0].sound.fx.flags&bit,0);
+    }
+    #[test]
     fn generic_editor_exposes_values_and_plugin_programs() {
         let (mut app,key)=eq_app();
         let mut desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
         desc.name = "Test plugin with native programs only".into();
-        let plugin=CapturePlugin{desc,events:Default::default(),value:0.2};
+        let plugin=CapturePlugin{delay:std::time::Duration::ZERO,bank:1,desc,events:Default::default(),value:0.2,snapshot:None,reads:Default::default()};
         app.plugins.hosted.insert(key,crate::plugins::Hosted::new(Arc::new(Mutex::new(plugin))));
         assert!(app.open_generic_editor(key));
         assert!(app.state.show_browser && app.state.params.has_params(key));
@@ -1098,7 +1217,75 @@ mod tests {
         assert_eq!(param_value(&app.state, key, 0), Some(0.8));
         assert_eq!(app.plugins.preset_name(key).as_deref(), Some("Bright"));
     }
-    struct CapturePlugin { desc: os_host::Descriptor, events: Arc<Mutex<Vec<os_host::ParamEvent>>>, value:f64 }
+    #[test]
+    fn large_controller_refresh_is_incremental_and_events_stay_immediate() {
+        use os_host::ParamEvent::{Begin, Value, End};
+        use std::sync::atomic::Ordering;
+        let (mut app,key)=eq_app();
+        let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        let events=Arc::new(Mutex::new(Vec::new()));
+        let concrete=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::ZERO,bank:873,desc,events:events.clone(),value:0.2,snapshot:None,reads:Default::default()}));
+        let plugin: Arc<Mutex<dyn os_host::Plugin>>=concrete.clone();
+        concrete.lock().unwrap().snapshot=Some(Arc::downgrade(&plugin));
+        app.plugins.hosted.insert(key,crate::plugins::Hosted::new(plugin));
+        app.params_tick();
+        app.state.history.reset();
+        let reads=concrete.lock().unwrap().reads.clone();
+        reads.store(0,Ordering::Relaxed);
+        concrete.lock().unwrap().value=0.3;
+        app.params_tick();
+        assert_eq!(reads.load(Ordering::Relaxed),POLL_BATCH);
+        // A gesture near the end of the bank must bypass the passive refresh cursor.
+        let id=7+872;
+        events.lock().unwrap().extend([os_host::ParamEvent::Sync(id,0.3),Begin(id),Value(id,0.8),End(id)]);
+        app.params_tick();
+        assert_eq!(app.state.params.lists[&key].values.borrow()[&id],0.8);
+        assert_eq!(app.state.history.len(),1);
+        app.key(&winit::keyboard::Key::Character("z".into()),true,false);
+        assert_eq!(concrete.lock().unwrap().value,0.3,"Undo uses the immediate playback baseline, not the older polled value");
+        app.key(&winit::keyboard::Key::Character("y".into()),true,false);
+        assert_eq!(concrete.lock().unwrap().value,0.8);
+        let before = reads.load(Ordering::Relaxed);
+        for _ in 0..30 { app.params_tick(); }
+        assert!(app.state.params.lists[&key].values.borrow().values().all(|&v| v==0.8));
+        assert_eq!(app.state.history.len(),1,"background refresh creates no undo action");
+        assert!(reads.load(Ordering::Relaxed)-before<=30*POLL_BATCH);
+        app.state.params.lists.remove(&key);
+        app.params_tick();
+        assert_eq!(app.state.params.lists[&key].params.len(),873);
+        assert_eq!(app.state.params.lists[&key].values.borrow()[&id],0.8);
+    }
+
+    #[test]
+    fn controller_poll_budget_is_fair_and_never_defers_edit_events() {
+        use std::sync::atomic::Ordering;
+        let (mut app,key)=eq_app();
+        let desc=app.plugins.hosted[&key].plugin.lock().unwrap().desc().clone();
+        app.plugins.hosted.clear();
+        let mut probes=Vec::new();
+        for n in 0..3 {
+            let events=Arc::new(Mutex::new(Vec::new()));
+            let concrete=Arc::new(Mutex::new(CapturePlugin{delay:std::time::Duration::from_millis(3),bank:873,desc:desc.clone(),events:events.clone(),value:0.2,snapshot:None,reads:Default::default()}));
+            let plugin:Arc<Mutex<dyn os_host::Plugin>>=concrete.clone();
+            concrete.lock().unwrap().snapshot=Some(Arc::downgrade(&plugin));
+            let reads=concrete.lock().unwrap().reads.clone();
+            app.plugins.hosted.insert(key+n,crate::plugins::Hosted::new(plugin));
+            probes.push((events,reads));
+        }
+        app.params_tick();
+        for (_,reads) in &probes { reads.store(0,Ordering::Relaxed); }
+        for tick in 0..9 {
+            for (events,_) in &probes { events.lock().unwrap().push(os_host::ParamEvent::Value(879,0.5+tick as f64/100.)); }
+            let before:usize=probes.iter().map(|(_,r)|r.load(Ordering::Relaxed)).sum();
+            app.params_tick();
+            let after:usize=probes.iter().map(|(_,r)|r.load(Ordering::Relaxed)).sum();
+            assert_eq!(after-before,POLL_BATCH,"one slow batch exhausts the shared budget");
+            for n in 0..3 { assert_eq!(app.state.params.lists[&(key+n)].values.borrow()[&879],0.5+tick as f64/100.); }
+        }
+        for (_,reads) in &probes { assert_eq!(reads.load(Ordering::Relaxed),3*POLL_BATCH,"no plugin starved"); }
+    }
+
+    struct CapturePlugin { delay:std::time::Duration, bank:usize, desc: os_host::Descriptor, events: Arc<Mutex<Vec<os_host::ParamEvent>>>, value:f64, snapshot:Option<Weak<Mutex<dyn os_host::Plugin>>>, reads:Arc<std::sync::atomic::AtomicUsize> }
     impl os_engine::Instrument for CapturePlugin {
         fn note_on(&mut self, _: u32, _: u8, _: f32) {}
         fn note_off(&mut self, _: u32, _: u8) {}
@@ -1108,6 +1295,23 @@ mod tests {
         fn process_fx(&mut self, _: u32, _: &mut [f32], _: &mut [f32]) {}
     }
     impl os_host::Plugin for CapturePlugin {
+        fn param_values_job(&self)->Option<os_host::ParamValuesJob> {
+            self.param_values_job_range(0..self.bank)
+        }
+        fn param_values_job_range(&self, range: std::ops::Range<usize>)->Option<os_host::ParamValuesJob> {
+            let weak=self.snapshot.clone()?;
+            let value=self.value;
+            let reads=self.reads.clone();
+            let large=self.bank>64;
+            let delay=self.delay;
+            Some(Box::new(move || {
+                let plugin=weak.upgrade().unwrap();
+                assert!(plugin.try_lock().is_ok(),"controller snapshot must not own the audio lock");
+                if large { reads.fetch_add(range.len(), std::sync::atomic::Ordering::Relaxed); }
+                if range.len() <= POLL_BATCH && !delay.is_zero() { std::thread::sleep(delay); }
+                range.map(|index| (7+index as u32,value)).collect()
+            }))
+        }
         fn programs(&self) -> Vec<(u32, u32, String)> {
             vec![(0, 0, "Soft".into()), (0, 1, "Bright".into())]
         }
@@ -1122,11 +1326,11 @@ mod tests {
         fn desc(&self) -> &os_host::Descriptor {
             &self.desc
         }
-        fn param_count(&self)->usize {1}
-        fn param_info(&self,_:usize)->Option<os_host::ParamInfo> {
-            Some(os_host::ParamInfo {id:7,name:"Peak Reduction".into(),unit:String::new(),group:String::new(),min:0.,max:1.,default:0.5,steps:0,automatable:true,read_only:false,hidden:false,bypass:false,enumerated:false})
+        fn param_count(&self)->usize {self.bank}
+        fn param_info(&self,index:usize)->Option<os_host::ParamInfo> {
+            Some(os_host::ParamInfo {id:7+index as u32,name:if self.desc.name==crate::plugins::LEMON_SAMPLER {"Reverse"} else {"Peak Reduction"}.into(),unit:String::new(),group:String::new(),min:0.,max:1.,default:0.5,steps:0,automatable:true,read_only:false,hidden:false,bypass:false,enumerated:false})
         }
-        fn param_value(&self,_:u32)->Option<f64> {Some(self.value)}
+        fn param_value(&self,_:u32)->Option<f64> {if self.bank<=64 {self.reads.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}Some(self.value)}
         fn set_param(&mut self,_:u32,v:f64)->bool {self.value=v;true}
         fn take_param_events(&mut self)->Vec<os_host::ParamEvent> {let events=std::mem::take(&mut *self.events.lock().unwrap());for e in &events{if let os_host::ParamEvent::Value(_,v)=e{self.value=*v;}}events}
         fn activate(&mut self, _: u32) -> bool {
