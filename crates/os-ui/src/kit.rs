@@ -453,22 +453,29 @@ pub fn focus_frame(c: &mut Canvas, t: &Palette, r: Rect, width: f32) {
 // ---------------------------------------------------------------- knobs and faders
 
 pub fn styled_knob(c: &mut Canvas, t: &Palette, x: f32, y: f32, r: f32, value: f32, bipolar: bool, hover: bool, style: os_theme::appearance::Knob) {
+    styled_knob_appearance(c, t, x, y, r, value, bipolar, hover, style, &t.appearance);
+}
+
+pub fn styled_knob_appearance(c: &mut Canvas, t: &Palette, x: f32, y: f32, r: f32, value: f32, bipolar: bool, hover: bool, style: os_theme::appearance::Knob, appearance: &os_theme::appearance::Appearance) {
     let start = 0.75 * PI;
     let sweep = 1.5 * PI;
     let angle = start + sweep * value.clamp(0.0, 1.0);
     let cap = if hover { t.knob_cap.shade(0.1) } else { t.knob_cap };
-    c.fill_circle(x, y, r, t.button_border);
-    c.fill_circle(x, y, (r - 1.0).max(0.0), cap);
-    if style == os_theme::appearance::Knob::Ring {
+    let rim = !appearance.knob_body_only && appearance.knob_rim_visible != Some(false);
+    if rim { c.fill_circle(x, y, r, if appearance.knob_rim_custom { t.knob_rim } else { t.button_border }); }
+    c.fill_circle(x, y, (r - if rim { 1.0 } else { 0.0 }).max(0.0), cap);
+    if style == os_theme::appearance::Knob::Ring && !appearance.knob_body_only {
         let track = (r - 1.5).max(0.0);
         let neutral = if bipolar { start + sweep * 0.5 } else { start };
-        c.arc(x, y, track, start, sweep, 1.4, t.sunken_dark);
-        if (angle - neutral).abs() > 0.01 {
-            c.arc(x, y, track, angle.min(neutral), (angle - neutral).abs(), 1.4, t.knob_ring);
+        let width = appearance.knob_ring_width.unwrap_or(1.4);
+        if appearance.knob_track_visible != Some(false) && width > 0.0 { c.arc(x, y, track, start, sweep, width, if appearance.knob_track_custom { t.knob_track } else { t.sunken_dark }); }
+        if appearance.knob_ring_visible != Some(false) && width > 0.0 && (angle - neutral).abs() > 0.01 {
+            c.arc(x, y, track, angle.min(neutral), (angle - neutral).abs(), width, t.knob_ring);
         }
     }
-    c.line(x + r * 0.3 * angle.cos(), y + r * 0.3 * angle.sin(),
-        x + r * 0.72 * angle.cos(), y + r * 0.72 * angle.sin(), 1.4, t.knob_pointer);
+    let pointer_width = appearance.knob_pointer_width.unwrap_or(1.4);
+    if pointer_width > 0.0 { c.line(x + r * 0.3 * angle.cos(), y + r * 0.3 * angle.sin(),
+        x + r * 0.72 * angle.cos(), y + r * 0.72 * angle.sin(), pointer_width, t.knob_pointer); }
 }
 
 /// Knob looks. All share the same value mapping: 270° sweep from bottom-left, `bipolar` arcs from the top.
@@ -485,6 +492,10 @@ pub enum KnobLook {
 }
 
 pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, bipolar: bool, look: KnobLook, st: State) {
+    knob_appearance(c, t, cx, cy, r, value, bipolar, look, st, &t.appearance);
+}
+
+pub fn knob_appearance(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, bipolar: bool, look: KnobLook, st: State, appearance: &os_theme::appearance::Appearance) {
     if t.style.vintage_2005 {
         // Machined cap and a readable pointer, with no glossy ball or animated effects.
         let angle = (0.75 + 1.5 * value.clamp(0.0, 1.0)) * PI;
@@ -497,11 +508,11 @@ pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, b
             if r < 8.0 { 1.0 } else { 1.5 }, t.glyph);
         return;
     }
-    if let Some(style) = t.appearance.knob {
-        return styled_knob(c, t, cx, cy, r, value, bipolar, st.hover, style);
+    if let Some(style) = appearance.knob {
+        return styled_knob_appearance(c, t, cx, cy, r, value, bipolar, st.hover, style, appearance);
     }
     if lemon::on(t) {
-        return lemon::knob(c, t, cx, cy, r, value, bipolar, look, st);
+        return lemon::knob_appearance(c, t, cx, cy, r, value, bipolar, look, st, appearance);
     }
     let v = value.clamp(0.0, 1.0);
     let start = 0.75 * PI;
@@ -535,12 +546,14 @@ pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, b
             c.line(cx + 1.2 * a.cos(), cy + 1.2 * a.sin(), cx + (r - 1.9) * a.cos(), cy + (r - 1.9) * a.sin(), 2.0, pc);
         }
         KnobLook::Mixer { halo, arc } => {
+            if !appearance.knob_body_only {
             c.fill_circle(cx, cy, halo, t.s(0x1b1d20));
             c.stroke_circle(cx, cy, halo - 0.5, 1.0, t.s(0x16181a));
+            }
             c.fill_circle(cx, cy, r + 0.6, t.s(0x16181b));
             c.fill_rect_gradient(Rect::new(cx - r, cy - r, 2.0 * r, 2.0 * r), lift(t.s(0x3c3e41)), t.s(0x17191c), r);
             c.arc(cx, cy, r - 0.6, 1.15 * PI, 0.7 * PI, 1.2, t.s(0x55575a));
-            if arc && (a1 - a0).abs() > 0.02 {
+            if arc && !appearance.knob_body_only && (a1 - a0).abs() > 0.02 {
                 c.arc(cx, cy, halo - 2.0, a0.min(a1), (a1 - a0).abs(), (halo * 0.22).max(2.0), t.h(0xce2900));
             }
         }
@@ -747,6 +760,27 @@ pub fn window_buttons(c: &mut Canvas, t: &Palette, x0: f32, y: f32, hovered: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn themed_dial_layers_hide_independently_and_keep_a_pointer() {
+        let base = "LemonStudioStyle.knob=Ring\nLemonStudioColor.knob_ring=#F205C7\nLemonStudioColor.knob_track=#05F2B7\nLemonStudioColor.knob_rim=#F2A105\nLemonStudioStyle.knob-ring-width=3\nLemonStudioStyle.knob-pointer-width=3\n";
+        for design in os_theme::Design::ALL {
+            for (ring, track, rim) in [("Show","Show","Show"), ("Hide","Show","Show"), ("Show","Hide","Show"), ("Show","Show","Hide"), ("Hide","Hide","Hide")] {
+                let mut text = base.to_owned();
+                for (key, value) in [("knob-ring-visible",ring), ("knob-track-visible",track), ("knob-rim-visible",rim)] {
+                    text = os_theme::fl::set_key(&text, &format!("LemonStudioStyle.{key}"), value);
+                }
+                let p = os_theme::design::palette(design, Some(&os_theme::FlTheme::parse(&text)));
+                let mut c = Canvas::new(80,80,1.0).unwrap();
+                knob(&mut c, &p, 40.0, 40.0, 26.0, 0.5, false, KnobLook::Ring, State::NORMAL);
+                let count = |color: Color| c.pixmap.data().chunks_exact(4).filter(|pixel| pixel[..3] == [color.r,color.g,color.b]).count();
+                assert_eq!(count(p.knob_ring) > 0, ring == "Show");
+                assert_eq!(count(p.knob_track) > 0, track == "Show");
+                assert_eq!(count(p.knob_rim) > 0, rim == "Show");
+                assert!(count(p.knob_pointer) > 0);
+            }
+        }
+    }
 
     #[test]
     fn thumb_geometry() {

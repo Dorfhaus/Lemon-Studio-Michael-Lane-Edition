@@ -206,13 +206,17 @@ fn msg_box(ui: &mut Ui, s: &State, m: &Modal, msg: &Msg) {
         super::remember_check(ui, r.x + 14.0, by + BTN_H / 2.0, ticked, remember_label, Action::Dlg(DHit::Remember));
     }
     let mut bx = r.right() - 12.0 - buttons_w;
+    let show_accelerators = !matches!(
+        msg.then,
+        crate::dialog::Then::Discard(crate::dialog::Next::Close | crate::dialog::Next::Quit)
+    );
     for (i, bw) in widths.into_iter().enumerate() {
         let b = Rect::new(bx, by, bw, BTN_H);
         let act = Action::Dlg(DHit::Button(i));
         let down = ui.down(b, &act);
         let enabled=!(choices==Some(0) && msg.buttons[i]==crate::dialog::Answer::Ok);
         let hov = enabled && ui.hit(b, act, msg.label(i));
-        button(ui, b, msg.label(i), i == msg.focus, hov, down, enabled);
+        button(ui, b, msg.label(i), i == msg.focus, hov, down, enabled && show_accelerators);
         bx += bw + 6.0;
     }
 }

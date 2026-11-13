@@ -485,6 +485,21 @@ pub fn knob(
     bipolar: bool,
     hover: bool,
 ) {
+    knob_body(c, t, skin, x, y, r, value, bipolar, hover, false);
+}
+
+pub fn knob_body(
+    c: &mut Canvas,
+    t: &Palette,
+    skin: &Skin,
+    x: f32,
+    y: f32,
+    r: f32,
+    value: f32,
+    bipolar: bool,
+    hover: bool,
+    body_only: bool,
+) {
     let box_rect = Rect::new(x - r, y - r, 2.0 * r, 2.0 * r);
     if !c.visible(box_rect) {
         return;
@@ -531,7 +546,7 @@ pub fn knob(
         }
     }
     let neutral = if bipolar { start + sweep * 0.5 } else { start };
-    if d > 0.0 && (angle - neutral).abs() > 0.01 {
+    if !body_only && d > 0.0 && (angle - neutral).abs() > 0.01 {
         c.arc(
             x,
             y,

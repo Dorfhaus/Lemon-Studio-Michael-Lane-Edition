@@ -2666,6 +2666,10 @@ impl App {
             None => s.project.channels.get(key).map(|c| c.mixer_track),
         };
         let Some(t) = track.filter(|t| s.project.mixer.iter().any(|m| m.index == *t)) else { return };
+        self.reveal_mixer_track(t);
+    }
+
+    pub(crate) fn reveal_mixer_track(&mut self, t: u16) {
         select(&mut self.state, t, false);
         // The master strip is fixed; an insert scrolls into the mixer's last painted view.
         if let Some(bar) = self.bar(crate::app::Scroll::MixerX).filter(|_| t > 0) {

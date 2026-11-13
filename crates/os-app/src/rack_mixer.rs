@@ -4,6 +4,16 @@ use crate::{app::{App,State,Action,Win},mixer,playlist::{Cmd,PItem,Popup}};
 use os_model::RackStrip;
 use os_ui::Rect;
 pub const VIEW:u8=32;
+pub const LINK_VISIBILITY:&str="visible_mixer-ssl360-link";
+pub const LINK_GUIDE:&str="Use SSL 360 Link in Channel Strip view";
+/// Recognize the effect wrapper, not SSL's controller software, instruments or Link Bus.
+fn is_ssl_link(name:&str,vendor:&str,format:os_host::Format)->bool{
+    let key=|s:&str|s.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+    format==os_host::Format::Vst3
+        && matches!(key(vendor).as_str(),"solidstatelogic"|"ssl")
+        && matches!(key(name).as_str(),"ssl360link"|"360link")
+}
+pub fn ssl_link(d:&os_host::Descriptor)->bool{d.kind==os_host::Kind::Effect&&is_ssl_link(&d.name,&d.vendor,d.format)}
 /// Original editors are measured during direct loading, before assignment.
 /// Formats provide no "vertical solo strip" capability flag.
 pub fn vertical_shape(size:(u32,u32))->bool{let (w,h)=size;w>=32&&h>=128&&w<=4096&&h<=16384}
@@ -30,7 +40,7 @@ fn experimental_strip(name:&str,vendor:&str)->bool{
     let n=name.to_ascii_lowercase();
     n.contains("channel strip")||n.contains("channelstrip")||((vendor.to_ascii_lowercase().contains("universal audio"))&&(n.contains("api vision")||n.contains("ssl 4000")||n.contains("neve 88rs")))
 }
-pub fn strip_kind(d:&os_host::Descriptor)->bool{d.kind==os_host::Kind::Effect&&(strip_family(&d.name,&d.vendor).is_some()||experimental_strip(&d.name,&d.vendor))}
+pub fn strip_kind(d:&os_host::Descriptor)->bool{d.kind==os_host::Kind::Effect&&(ssl_link(d)||strip_family(&d.name,&d.vendor).is_some()||experimental_strip(&d.name,&d.vendor))}
 fn spec_key(uid:&str)->String{use sha2::{Digest,Sha256};format!("vertical_strip_{:x}",Sha256::digest(uid.as_bytes()))}
 #[derive(serde::Serialize,serde::Deserialize)]
 struct Spec{version:String,path:String,width:u32,height:u32}
@@ -44,17 +54,19 @@ pub fn observe_editor(d:&os_host::Descriptor,size:(u32,u32),scale:f32){
 pub fn vertical_spec(d:&os_host::Descriptor)->Option<(u32,u32)>{let s=saved(&d.uid())?;(strip_kind(d)&&s.version==d.version&&s.path==d.path.to_string_lossy()&&vertical_shape((s.width,s.height))).then_some((s.width,s.height))}
 fn eligible_slot(s:&State,n:u16,k:u8)->bool{s.params.lists.get(&crate::plugins::fx_key(n,k)).and_then(|l|l.plugin.upgrade()).is_some_and(|p|p.try_lock().is_ok_and(|p|strip_kind(p.desc())))}
 #[derive(Clone,Debug,PartialEq)]
-pub enum Command { Menu(u16), Choose(u16,usize,bool), Existing(u16,u8), CopyAll(u16), Remove(u16), Retry(u16), Width(u16), Page(u16,i8) }
+pub enum Command { Menu(u16), Choose(u16,usize,bool), Existing(u16,u8), CopyAll(u16), Remove(u16), Retry(u16), Open(u16), LinkHelp, Width(u16), Page(u16,i8) }
 fn item(s:impl Into<String>,c:Command)->PItem{PItem::new(s.into(),Cmd::Mixer(mixer::MCmd::Rack(c)))}
 pub fn menu(s:&State,n:u16)->Vec<PItem>{
     if n==0{return vec![PItem::head("Vertical strips belong to insert channels")];}
-    let choices=|all|{let mut groups=std::collections::BTreeMap::<String,Vec<PItem>>::new();for e in &s.plugdb.lists.fx {if strip_family(&e.name,&e.vendor).is_none(){continue;}groups.entry(if e.vendor.is_empty(){"Other".into()}else{e.vendor.clone()}).or_default().push(item(e.label.clone(),Command::Choose(n,e.index,all)));}groups.into_iter().map(|(v,e)|PItem::sub(v,e)).collect()};
-    let mut v=vec![PItem::head("Waves channel strips"),PItem::sub("Choose channel strip",choices(false)),PItem::sub("Fill all insert channels with",choices(true))];
+    let link_visible=crate::workspace_visibility::shown(LINK_VISIBILITY);
+    let choices=|all|{let mut groups=std::collections::BTreeMap::<String,Vec<PItem>>::new();for e in &s.plugdb.lists.fx {let link=is_ssl_link(&e.name,&e.vendor,e.format);if strip_family(&e.name,&e.vendor).is_none()&&!(link_visible&&link){continue;}groups.entry(if link{"Solid State Logic".into()}else if e.vendor.is_empty(){"Other".into()}else{e.vendor.clone()}).or_default().push(item(e.label.clone(),Command::Choose(n,e.index,all)));}groups.into_iter().map(|(v,e)|PItem::sub(v,e)).collect()};
+    let mut v=vec![PItem::head("Channel strips"),PItem::sub("Choose channel strip",choices(false)),PItem::sub("Fill all insert channels with",choices(true))];
+    if link_visible&&crate::workspace_visibility::shown(crate::help::VISIBILITY){v.push(item("SSL 360 Link: setup and mapping...",Command::LinkHelp));}
     let other:Vec<_>=s.plugdb.lists.fx.iter().filter(|e|experimental_strip(&e.name,&e.vendor)).map(|e|item(e.label.clone(),Command::Choose(n,e.index,false))).collect();
     if !other.is_empty(){v.push(PItem::sub("Other resizable strips (unsupported)",other));}
     if let Some(m)=mixer::track(s,n){
         v.push(PItem::sub("Use an existing effect",m.slots.iter().enumerate().filter_map(|(k,p)|{p.as_ref()?;(k!=10&&eligible_slot(s,n,k as u8)&&!(n==0&&crate::master_assistant::slot(s)==Some(k as u8))).then(||item(format!("{}: {}",k+1,mixer::slot_name(s,n,k as u8).unwrap_or_default()),Command::Existing(n,k as u8)))}).collect()));
-        if m.rack_strip.is_some(){v.extend([item("Copy this rack and settings to all inserts",Command::CopyAll(n)),item("Dock original interface here",Command::Retry(n)),item("Remove strip (keep bypassed effect)",Command::Remove(n))]);}
+        if m.rack_strip.is_some(){v.extend([item("Copy this rack and settings to all inserts",Command::CopyAll(n)),item("Open strip in plugin window",Command::Open(n)),item("Dock original interface here",Command::Retry(n)),item("Remove strip (keep bypassed effect)",Command::Remove(n))]);}
     }
     v.push(PItem::sub("Channel width",[96,128,160,192].into_iter().map(|w|item(format!("{w} px"),Command::Width(w))).collect()));v
 }
@@ -75,7 +87,7 @@ fn validate(app:&mut App,t:u16,k:u8)->Result<(),String>{
 fn choose(app:&mut App,n:u16,index:usize,all:bool,state:Option<Vec<u8>>)->Result<String,String>{
     if !app.plugins.effect_ready(index){return Err("Plugin is still being checked. Try again shortly.".into());}
     let desc=app.plugins.effects.get(index).ok_or("That plugin is no longer in the list. Reopen the picker.")?.desc.clone();
-    if n==0||!strip_kind(&desc){return Err("Choose a supported Waves or compatible resizable UAD channel strip. AudioTrack and other racks are excluded.".into());}
+    if n==0||!strip_kind(&desc){return Err("Choose a supported Waves strip, SSL 360 Link VST3, or compatible resizable channel strip. AudioTrack and other racks are excluded.".into());}
     let tracks:Vec<u16>=if all {(1..=mixer::inserts(&app.state)).filter(|t|state.is_none()||*t!=n).collect()}else{vec![n]};
     if tracks.iter().any(|&t| mixer::locked(&app.state, t)) { return Err(mixer::LOCK_MESSAGE.into()); }
     let mut dest=Vec::new();for t in &tracks {let m=mixer::track(&app.state,*t).ok_or("The destination mixer channel no longer exists.")?;let Some(k)=(0..64).find(|k|*k!=10&&m.slots[*k].is_none())else{return Err(format!("{} has no empty effect slot. No channels changed.",mixer::name(&app.state,*t)))};dest.push((*t,k as u8));}
@@ -102,10 +114,12 @@ fn report(app:&mut App,n:u16,result:Result<String,String>)->Option<String>{
 }
 pub fn run(app:&mut App,c:Command)->Option<String>{
     let target = match c {
-        Command::Choose(t, ..) | Command::Existing(t, _) | Command::Remove(t) | Command::Retry(t) => Some(t),
+        Command::Choose(t, ..) | Command::Existing(t, _) | Command::Remove(t) | Command::Retry(t) | Command::Open(t) => Some(t),
         _ => None,
     };
     if target.is_some_and(|t| mixer::locked(&app.state, t)) { return Some(mixer::LOCK_MESSAGE.into()); }
+    if c==Command::LinkHelp{crate::help::open_topic(app,LINK_GUIDE);return None;}
+    if let Command::Open(n)=c{if let Some(k)=slot(&app.state,n){app.open_fx(n,k);}app.invalidate();return None;}
     if let Command::Menu(n)=c {app.state.playlist.popup=Some(Popup{x:app.mouse.0,y:app.mouse.1,items:menu(&app.state,n),sub:None,scroll:[0;2],cascade:vec![]});app.invalidate();return None;}
     if let Command::Page(n,d)=c{#[cfg(any(windows,target_os="macos"))] if let Some(k)=slot(&app.state,n){if let Some(e)=app.plugins.hosted.get_mut(&crate::plugins::fx_key(n,k)).and_then(|h|h.rack_editor.as_mut()){e.page_by(d);}}app.invalidate();return None;}
     if app.state.rec.recording()||app.state.rec.audio{return Some("Stop recording before changing channel strips.".into());}
@@ -117,7 +131,7 @@ pub fn run(app:&mut App,c:Command)->Option<String>{
         Command::Remove(n)=>{let k=slot(&app.state,n)?;let old=match save(app,&[n]){Ok(v)=>v,Err(e)=>return Some(e)};record(app,old);detach(&mut app.state,n,k);None},
         Command::Retry(n)=>{#[cfg(any(windows,target_os="macos"))]if let Some(k)=slot(&app.state,n){app.plugins.close_window(crate::plugins::fx_key(n,k));}None},
         Command::Width(w)=>{let width=f32::from(w.clamp(96,192));app.state.mixer_scroll*=width/app.state.mixer.rack_width;app.state.mixer.rack_width=width;None},
-        Command::Menu(_)=>None,
+        Command::Menu(_)|Command::Open(_)|Command::LinkHelp=>None,
     };app.invalidate();out
 }
 /// Viewport hit areas are the same geometry used to parent the real native editors.
@@ -154,6 +168,26 @@ pub fn paint_slot(ui:&mut crate::app::Ui,s:&State,n:u16,r:Rect){
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]fn ssl_link_picker_visibility_and_descriptor_guard(){
+        let (mut app,index)=setup();let mut d=app.plugins.effects[index].desc.clone();
+        d.format=os_host::Format::Vst3;d.name="SSL 360 Link".into();d.vendor="Solid State Logic".into();
+        assert!(ssl_link(&d)&&strip_kind(&d));
+        for (name,vendor,format) in [("360 Link","SSL",os_host::Format::Vst3),("SSL 360 Link Bus","Solid State Logic",os_host::Format::Vst3),("SSL 360 Link","Other",os_host::Format::Vst3),("SSL 360 Link","Solid State Logic",os_host::Format::Vst2)]{
+            assert_eq!(is_ssl_link(name,vendor,format),name=="360 Link");
+        }
+        let mut instrument=d.clone();instrument.kind=os_host::Kind::Instrument;assert!(!strip_kind(&instrument));
+        app.state.plugdb.lists.fx.push(crate::plugin_db::Entry{builtin:false,index,name:d.name.clone(),label:d.name.clone(),uid:d.uid(),vendor:d.vendor.clone(),format:d.format,category:"Effect",favorite:false});
+        let original=app.state.project.clone();
+        let present=|items:&[PItem],all:bool|items.iter().flat_map(|i|&i.children).flat_map(|i|&i.children).any(|i|i.cmd==Cmd::Mixer(mixer::MCmd::Rack(Command::Choose(1,index,all))));
+        crate::settings_file::set_flag(LINK_VISIBILITY,true);
+        assert!(present(&menu(&app.state,1),false)&&present(&menu(&app.state,1),true));
+        crate::settings_file::set_flag(LINK_VISIBILITY,false);
+        let hidden=menu(&app.state,1);assert!(!present(&hidden,false)&&!present(&hidden,true));
+        assert!(!hidden.iter().any(|i|i.label.contains("SSL 360 Link")));
+        assert!(strip_kind(&d),"Visibility must not disable existing project instances");assert_eq!(app.state.project,original);
+        crate::settings_file::set_flag(LINK_VISIBILITY,true);
+        assert!(present(&menu(&app.state,1),false));
+    }
     fn setup()->(App,usize){let mut app=App::new(None);app.state.project=crate::app::test_project();app.state.project.mixer.truncate(4);app.state.project.arrangements.push(os_flp::project::default_arrangement());app.reset_hosted();app.plugins.effects=crate::plugins::builtin_effects();let index=app.plugins.effects.iter().position(|a|a.desc.name==crate::plugins::LEMON_EQ).unwrap();app.plugins.effects[index].desc.name="Magma Channel Strip Mono".into();app.plugins.effects[index].desc.vendor="Waves".into();(app,index)}
     #[test]fn rack_mixer_picker_only_offers_reviewed_original_strips(){
         let (mut app,index)=setup();let d=&app.plugins.effects[index].desc;

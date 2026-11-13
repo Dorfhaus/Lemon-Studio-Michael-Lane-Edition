@@ -23,6 +23,7 @@ pub mod presets;
 pub mod waves;
 pub use design::{Design, Style};
 pub mod appearance;
+pub mod regions;
 pub use fl::FlTheme;
 
 /// An sRGB color with alpha.
@@ -373,6 +374,10 @@ tokens! {
     knob_cap = 0x484d50, "Custom dial cap.";
     knob_pointer = 0xe0e6e9, "Custom dial pointer.";
     knob_ring = 0xf0a34e, "Custom dial value ring.";
+    knob_track = 0x222629, "Shared dial unfilled ring track.";
+    knob_rim = 0x171a1c, "Shared dial outer border.";
+    insert_knob_ring = 0x2096f3, "Traditional FL-style mixer plugin insert dry/wet mix knob thin value ring.";
+    insert_knob_rim = 0x55595c, "Traditional FL-style mixer plugin insert dry/wet mix knob outer circle.";
     mixer_plate = 0x303638, "Themed mixer label and meter surround.";
     skin_knob_rim = 0x292d2b, "Mixer Skin Designer knob rim.";
     skin_fader_edge = 0x292d2b, "Mixer Skin Designer fader edge.";

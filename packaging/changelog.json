@@ -4,6 +4,22 @@
   "sections": [
     {
       "date": "2026-11-13",
+      "title": "Mixer theme controls, direct plugin downloads and SSL 360 Link \u00b7 public build 2026111303",
+      "changes": [
+        "Customize the wet/dry knobs in the Traditional Mixer, including the Full Mixer knob style and separate color, width and visibility for the value ring and outer circle.",
+        "Adjust hue, saturation, brightness and contrast across 14 interface areas. The Theme Editor groups styles with their colors and adds more controls for shared dials.",
+        "Plugin Downloads offers direct, checksum-verified packages for 51 additional free or open source plugins and six suites. Available packages vary by operating system and architecture.",
+        "Channel Strip view can dock the separately installed SSL 360 Link VST3 on Windows and macOS. Use Link's own controls and maps for compatible third-party VST3 effects. The strip menu opens the setup guide or a separate plugin window.",
+        "With Open main menus on hover enabled, click a menu once and then move across the menu bar to switch dropdowns. Submenus also open on hover while a main menu is active.",
+        "ML Sampler has an optional right-click setting to drag up or down on TRACK and change its Mixer route. A click still opens the chooser and the mouse wheel still steps through tracks.",
+        "Settings keeps section and scroll state separate for each page and refreshes audio devices or theme previews only when opening the corresponding tab. Search Workspace Visibility using words from both the group and the control name.",
+        "Fixed Open main menus on hover and Double-click resets faders and knobs hiding their own Settings controls when clicked.",
+        "Removed the dotted shortcut marks under Yes, No and Cancel in the unsaved-project confirmation. Keyboard shortcuts still work.",
+        "Updated the detachable User Guide with the new menu navigation, Sampler routing, theme controls, plugin downloads and SSL 360 Link setup."
+      ]
+    },
+    {
+      "date": "2026-11-13",
       "title": "Audio stability, saved workspaces and illustrated User Guide \u00b7 public build 2026111302",
       "changes": [
         "Improved playback buffering, including large ASIO buffer sizes, and reduced repeated memory allocation during rendering.",

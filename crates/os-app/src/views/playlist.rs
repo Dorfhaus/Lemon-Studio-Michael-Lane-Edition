@@ -1629,7 +1629,9 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
         // At the Pop-ups scaling (spec: ui/ui-scaling.md §1).
         ui.scaled(super::popup_scale(ui.c.scale), |ui, k| {
             let (w, h) = ui.c.size();
-            let (rect, mut rows) = popup_list(ui,&p.items,p.x/k,p.y/k,(w,h),p.sub,0,p.scroll[0],&[]);
+            // Main dropdowns and their children must leave the menu titles reachable.
+            let top = if s.menu_open.is_some() && s.menu_sub.is_none() { p.y / k } else { 0. };
+            let (rect, mut rows) = popup_list(ui,&p.items,p.x/k,p.y/k,(w,h),p.sub,0,p.scroll[0],&[],top);
             let mut occupied=vec![rect];
             let mut entries=&p.items;
             let mut selected=p.sub;
@@ -1646,7 +1648,7 @@ pub fn paint_overlays(ui: &mut Ui, s: &State) {
                     let border=os_ui::kit::menu::metrics(ui.c.scale).border;
                     *parent=Rect::new(row.x-border,parent.y,row.w+2.0*border,parent.h);
                 }
-                let (rect,next_rows)=popup_list(ui,entries,row.right(),row.y-2.0,(w,h),open,depth,scroll,&occupied);
+                let (rect,next_rows)=popup_list(ui,entries,row.right(),row.y-2.0,(w,h),open,depth,scroll,&occupied,top);
                 occupied.push(rect);rows=next_rows;selected=open;depth+=1;
             }
         });
@@ -1699,7 +1701,7 @@ fn any_enabled(items: &[pl::PItem]) -> bool {
 /// screen: the ones that fit from column `scroll` on, and a scroll bar under them (spec: ui/menus.md "Menus wider than
 /// the window").
 #[allow(clippy::too_many_arguments)]
-fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect]) -> (Rect, Vec<Rect>) {
+fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f32), open: Option<usize>, depth: usize, scroll: usize, occupied: &[Rect], top: f32) -> (Rect, Vec<Rect>) {
     let t = ui.t;
     let font = os_ui::kit::menu::app_font(t, 12);
     let key_font = os_ui::kit::menu::app_shortcut_font(t, font);
@@ -1713,7 +1715,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
     }
     let cw = 20.0 + lw + if kw > 0.0 { kw + 24.0 } else { 12.0 } + 14.0;
     let m = os_ui::kit::menu::metrics(ui.c.scale);
-    let max_h = (screen.1 - 8.0).max(m.row);
+    let max_h = (screen.1 - top - 8.0).max(m.row);
     let (mut layout, mut cols, mut body_h) = popup_layout(&m, items, max_h);
     // Wider than the screen: the columns wrap a scroll bar's height sooner, and as many as fit are shown.
     let room = screen.0 - 2.0;
@@ -1730,7 +1732,7 @@ fn popup_list(ui: &mut Ui, items: &[pl::PItem], x: f32, y: f32, screen: (f32, f3
         [parent.right(),parent.x-w,right,left-w].into_iter().find(|&at|at>=0.0 && at+w<=screen.0-2.0 && occupied.iter().all(|r|at+w<=r.x+0.1 || at>=r.right()-0.1))
             .unwrap_or_else(||if parent.x>=w {parent.x-w} else {x.min(screen.0-w-2.0).max(0.0)})
     } else {x.min(screen.0-w-2.0).max(0.0)};
-    let y = y.min(screen.1 - h - 2.0).max(0.0);
+    let y = y.min(screen.1 - h - 2.0).max(top);
     let r = Rect::new(x, y, w, h);
     let menu = match depth {0=>crate::app::MENU_POPUP,1=>crate::app::MENU_SUB,d=>crate::app::MENU_DEEP+(d-2) as u8};
     let mut rows = Vec::with_capacity(items.len());

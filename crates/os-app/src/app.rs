@@ -3065,6 +3065,10 @@ impl App {
                     if k.pressed {self.undo_key(k.alt||k.shift);}
                     continue;
                 }
+                #[cfg(plugin_windows)]
+                if k.pressed && code == winit::keyboard::KeyCode::Escape && self.plugins.cancel_sampler_track_step() {
+                    continue;
+                }
                 // Space keeps playing / stopping the song (the typing keyboard does not use it).
                 if !self.typing_key(code, k.pressed, k.ctrl, k.alt) && k.pressed && code == winit::keyboard::KeyCode::Space {
                     self.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space), k.ctrl, k.alt);
@@ -3098,7 +3102,7 @@ impl App {
                     }
                     // A native Wayland main window (Linux): the popups cannot be lifted above a plugin window there.
                     #[cfg(not(windows))]
-                    Request::SidechainMenu(..) | Request::Menu(..) | Request::Presets(..) | Request::MiscMenu(..) | Request::KnobMenu(..) if self.plugins.owner == 0 => {
+                    Request::SidechainMenu(..) | Request::Menu(..) | Request::Presets(..) | Request::MiscMenu(..) | Request::KnobMenu(..) | Request::TrackMenu(..) if self.plugins.owner == 0 => {
                         self.state.message = Some(off_text(PLUGIN_POPUPS));
                         self.invalidate();
                         continue;
@@ -3226,17 +3230,24 @@ impl App {
                     #[cfg(target_os="linux")] Request::Undo(redo)=>{self.undo_key(redo);continue;}
                     Request::WaveZoom(row,pct)=>{crate::playlist::run(self,crate::playlist::Cmd::WaveSize(row,pct));continue;}
                     Request::PickTrack(row) => {
-                        self.route_hover=None;
-                        crate::route_picker::open(self,row);
-                        self.popup_lift=Some(row);
-                        #[cfg(windows)]
-                        if self.plugins.owner!=0 {unsafe {
-                            // Give the selector's search field keyboard focus, including detached editors.
-                            windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(self.plugins.owner as _);
-                            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.plugins.owner as _);
-                        }}
-                        #[cfg(not(windows))]
-                        crate::plugin_window::focus_main();
+                        self.open_plugin_route_picker(row);
+                        continue;
+                    }
+                    Request::TrackMenu(row, x, y) => {
+                        let Some((_, detached)) = self.plugins.window_of(row) else { continue };
+                        let (x, y) = self.screen_to_canvas(x, y);
+                        if let Some(menu) = crate::route_picker::sampler_track_menu(&self.state, row, x, y) {
+                            self.state.playlist.popup = Some(menu);
+                            self.popup_lift = detached.then_some(row);
+                            self.invalidate();
+                        }
+                        continue;
+                    }
+                    Request::CommitTrackStep(row, from, to) => {
+                        if let Some(message) = self.commit_sampler_track_step(row, from, to) {
+                            self.state.message = Some(message);
+                            self.invalidate();
+                        }
                         continue;
                     }
                     Request::TrackHoverEnd=>{self.route_hover=None;continue;}
@@ -3299,6 +3310,21 @@ impl App {
             }
             self.clip_docked();
         }
+    }
+
+    #[cfg(plugin_windows)]
+    pub(crate) fn open_plugin_route_picker(&mut self, row: usize) {
+        self.route_hover = None;
+        crate::route_picker::open(self, row);
+        self.popup_lift = Some(row);
+        #[cfg(windows)]
+        if self.plugins.owner != 0 { unsafe {
+            // Give the selector's search field keyboard focus, including from detached editors.
+            windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(self.plugins.owner as _);
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.plugins.owner as _);
+        }}
+        #[cfg(not(windows))]
+        crate::plugin_window::focus_main();
     }
 
     /// Screen point -> canvas logical px (an X11 main window: Linux; macOS).
@@ -5389,9 +5415,7 @@ impl App {
         if tab != views::settings::THEME { self.finish_theme_editor(false); }
         self.theme_editor_blur();
         let st = &mut self.state.settings;
-        if st.tab != tab {
-            st.scroll = 0.0;
-        }
+        st.select_tab(tab);
         st.open = true;
         st.visibility_search_focused = false;
         st.menu_editor.name_focused = false;
@@ -5406,18 +5430,26 @@ impl App {
             self.invalidate();
             return;
         }
-        self.audio_page();
+        self.refresh_settings_page(tab);
+        self.state.settings.name_edit = None;
+        self.invalidate();
+    }
+
+    fn refresh_settings_page(&mut self, tab: usize) {
+        if tab == views::settings::AUDIO {
+            self.audio_page();
+        }
         if tab == views::settings::MIDI {
             self.midi_page_opened();
         }
         // General ▸ System's association check shows what Windows says now (`crate::file_assoc`).
         #[cfg(windows)]
-        self.assoc_read();
+        if tab == views::settings::GENERAL { self.assoc_read(); }
         // The Lemon and Citrus themes, the built-in themes, then the user's own (`crate::theme_library`).
-        self.state.settings.name_edit = None;
-        self.theme_list();
-        self.sync_preset();
-        self.invalidate();
+        if tab == views::settings::THEME {
+            self.theme_list();
+            self.sync_preset();
+        }
     }
 
     /// Fills the Audio page: the output devices, the audio settings and the status (spec: ui/settings.md "Audio").
@@ -5796,6 +5828,7 @@ impl App {
             }
             SAct::Button(crate::menu_layout::OPEN) => return self.open_settings(views::settings::MENUS),
             SAct::ThemeEditor(hit) => return self.theme_editor_act(hit),
+            SAct::Button(crate::advanced_theme::INSERT_OPEN) => return self.open_insert_theme_editor(),
             SAct::Button(crate::advanced_theme::OPEN) => return self.start_theme_editor(),
             SAct::Button(crate::mixer_skin::OPEN) => return self.mixer_designer_open(true),
             SAct::Button(crate::theme_identity::OPEN) => return self.theme_identity_open(),
@@ -5816,9 +5849,11 @@ impl App {
                 self.state.mixer_scroll *= views::mixer::strip_width(&self.state) / previous_width;
                 self.state.rack_scroll_x *= views::rack::step_width(&self.state) / previous_step;
             }
-            SAct::Check(label) if crate::workspace_visibility::key(label).is_some() => {
-                crate::workspace_visibility::toggle(crate::workspace_visibility::key(label).unwrap());
-                if matches!(crate::workspace_visibility::key(label),Some("visible_plugin-tape" | "visible_plugin-hall" | "visible_plugin-plasma")){self.state.plugdb.rebuild(&self.plugins);}
+            SAct::VisibilityToggle(key) => {
+                crate::workspace_visibility::toggle(key);
+                if matches!(key, "visible_plugin-tape" | "visible_plugin-hall" | "visible_plugin-plasma") {
+                    self.state.plugdb.rebuild(&self.plugins);
+                }
             }
             SAct::Button(crate::workspace_visibility::RESET) => {
                 crate::workspace_visibility::reset();
@@ -5891,20 +5926,11 @@ impl App {
             SAct::Ppi => return self.ppi_press(),
             SAct::Tab(i) => {
                 self.state.midi.learning = None;
-                st.tab = i;
-                st.scroll = 0.0;
+                st.select_tab(i);
                 if i == views::settings::CONTROLS {
                     st.input_editor.open();
                 }
-                // Read again whenever the General page opens (spec: ui/settings-choices.md "System: Associate project
-                // files with application").
-                #[cfg(windows)]
-                if i == views::settings::GENERAL {
-                    self.assoc_read();
-                }
-                if i == views::settings::MIDI {
-                    self.midi_page_opened();
-                }
+                self.refresh_settings_page(i);
             }
             // Opt in / out of the experimental native host. Discovery remains manual.
             SAct::Check(k) if k == views::settings::NATIVE_HOST_CHECK => {
@@ -6744,23 +6770,84 @@ impl App {
             mixer.insertion_hover=boundary.map(|n|(n,(x,y),std::time::Instant::now()));
             if mixer.insertion_ready {mixer.insertion_ready=false;self.damage_win(Win::Mixer);}
         }
-        let open_menu = match hover {
-            Some(Action::Menu(i)) if self.hover != hover && self.state.menu_open != Some(i)
-                && self.pressed.is_none() && !self.modal_open() && !self.state.settings.open
-                && !self.state.plugin_picker.open && self.state.playlist.edit.is_none()
-                && self.state.pat_ui.name_box.is_none()
-                && (self.state.playlist.popup.is_none() || self.state.menu_open.is_some())
-                && crate::prefs::check(&crate::prefs::HOVER_MENUS) => Some(i),
-            _ => None,
-        };
+        let entered = self.hover != hover;
         self.hover = hover;
         self.hover_rect = rect;
         self.hint = hint;
-        if let Some(i) = open_menu {
-            self.act(Action::Menu(i));
+        (entered && self.update_menu_hover()) || changed
+    }
+
+    fn update_menu_hover(&mut self) -> bool {
+        let s = &self.state;
+        let Some(active) = s.menu_open else { return false };
+        if self.pressed.is_some() || self.loading() || self.modal_open() || s.settings.open
+            || s.native_view.is_some() || s.native_input.is_some() || s.plugin_picker.open
+            || s.playlist.edit.is_some() || s.pat_ui.name_box.is_some() || s.pat_ui.confirm
+            || s.rack.fill.is_some() || crate::remote::is_open(s)
+            || !crate::prefs::check(&crate::prefs::HOVER_MENUS)
+        {
+            return false;
+        }
+        if let Some(Action::Menu(index)) = self.hover {
+            if active == index && s.pat_ui.menu_at.is_none() {
+                return false;
+            }
+            self.open_main_menu(index);
             return true;
         }
-        changed
+        let opened = match (self.hover.as_ref(), self.state.playlist.popup.as_mut()) {
+            (Some(Action::MenuSub(menu, i)), _) if self.state.menu_sub != Some(*i) => {
+                self.open_menu_sub(*menu, *i);
+                true
+            }
+            (Some(Action::PlPopup(i)), Some(p)) if p.sub != Some(*i)
+                && p.items.get(*i).is_some_and(|item| item.enabled && !item.children.is_empty()) =>
+            {
+                p.sub = Some(*i);
+                p.scroll[1] = 0;
+                p.cascade.clear();
+                true
+            }
+            (Some(action @ (Action::PlPopupSub(_) | Action::PlPopupDeep(..))), Some(p)) => {
+                let (depth, index) = match *action {
+                    Action::PlPopupSub(i) => (1, i),
+                    Action::PlPopupDeep(depth, i) => (depth, i),
+                    _ => unreachable!(),
+                };
+                if p.cascade.get(depth - 1).is_some_and(|entry| entry.0 == index)
+                    || !p.submenu_item(depth, index).is_some_and(|item| item.enabled && !item.children.is_empty())
+                {
+                    return false;
+                }
+                p.cascade.truncate(depth - 1);
+                p.cascade.push((index, 0));
+                true
+            }
+            _ => false,
+        };
+        if opened { self.invalidate(); }
+        opened
+    }
+
+    fn open_main_menu(&mut self, index: usize) {
+        let at = self.hits.iter().find(|hit| hit.action == Action::Menu(index))
+            .map_or(Rect::new(self.mouse.0, self.mouse.1, 0., 0.), |hit| hit.rect);
+        let s = &mut self.state;
+        s.pat_ui.menu_at = None;
+        s.menu_open = Some(index);
+        s.menu_sub = None;
+        s.playlist.popup = Some(crate::playlist::Popup {
+            x: at.x, y: at.bottom(), items: views::menus::organized_items(s, index),
+            sub: None, scroll: [0; 2], cascade: Vec::new(),
+        });
+        self.invalidate();
+    }
+
+    fn close_main_menu(&mut self) {
+        self.state.menu_open = None;
+        self.state.menu_sub = None;
+        self.state.playlist.popup = None;
+        self.invalidate();
     }
 
     /// Plain buttons, switches and menu entries act on the release over the same control instead of on the press, like
@@ -6780,6 +6867,7 @@ impl App {
                     | SAct::Help(_)
                     | SAct::Tab(_)
                     | SAct::Check(_)
+                    | SAct::VisibilityToggle(_)
                     | SAct::Group(_)
                     | SAct::Button(_)
                     | SAct::Preset(_)
@@ -6823,6 +6911,7 @@ impl App {
                 matches!(h, Hit::Accept | Hit::Cancel | Hit::Suggest(..) | Hit::Swatch(_) | Hit::CustomSwatch(_) | Hit::EditSwatch(_) | Hit::SaveSwatch | Hit::ClearSwatch | Hit::CancelSwatch | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::ConfirmRemember)
             }
             Action::RackFill(h) => !matches!(h, crate::rack::FillHit::Inside),
+            Action::PlPopupSub(_) | Action::PlPopupDeep(..) => self.state.menu_open.is_some(),
             Action::Bar(h) => matches!(h, crate::toolbar::BarHit::Rows(_) | crate::toolbar::BarHit::Done),
             _ => matches!(
                 a,
@@ -7492,12 +7581,7 @@ impl App {
             }
         }
         if self.state.menu_open.is_some() {
-            self.state.menu_open = None;
-            // With its submenu.
-            if self.state.menu_sub.take().is_some() {
-                self.state.playlist.popup = None;
-            }
-            self.invalidate();
+            self.close_main_menu();
             return;
         }
         if self.state.pat_ui.name_box.is_some() || self.state.pat_ui.confirm {
@@ -7726,6 +7810,26 @@ impl App {
             self.state.message = crate::rack_controls::route(&mut self.state, &rows, t, false);
             self.sync_live(); self.invalidate();
         } else { self.route_sample_to(row,t); }
+    }
+
+    #[cfg(plugin_windows)]
+    pub(crate) fn commit_sampler_track_step(&mut self, row: usize, from: u16, to: u16) -> Option<String> {
+        let s = &mut self.state;
+        let ch = s.project.channels.get(row)?;
+        if !ch.kind.is_sampler() || ch.mixer_track != from || from == to
+            || to > crate::mixer::max_insert(&s.project) || crate::mixer::track(s, to).is_none()
+        {
+            return None;
+        }
+        if crate::mixer::locked(s, from) || crate::mixer::locked(s, to) {
+            return Some(crate::mixer::LOCK_MESSAGE.into());
+        }
+        crate::history::record(s, "Route sampler to Mixer", crate::history::Snap::ChannelRoute(row, from));
+        s.project.channels[row].mixer_track = to;
+        s.piano.dirty = true;
+        self.sync_live();
+        self.invalidate();
+        None
     }
 
     pub(crate) fn route_sample_to(&mut self,row:usize,t:u16) {
@@ -8741,6 +8845,10 @@ impl App {
 
     pub fn key(&mut self, key: &winit::keyboard::Key, ctrl: bool, alt: bool) {
         self.invalidate();
+        #[cfg(plugin_windows)]
+        if *key == Key::Named(NamedKey::Escape) && self.plugins.cancel_sampler_track_step() {
+            return;
+        }
         if matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))
             && matches!(self.drag, Some(Drag::ClipPicker { .. }))
         {
@@ -8758,6 +8866,10 @@ impl App {
         // A dialog takes every key.
         if self.modal_open() {
             return self.dialog_key(key, ctrl, alt);
+        }
+        if self.state.menu_open.is_some() && *key == Key::Named(NamedKey::Escape) {
+            self.close_main_menu();
+            return;
         }
         if crate::input_bindings::capture(self, key, ctrl, alt) { return; }
         if crate::plugin_picker::key(self,key,ctrl,alt){return;}
@@ -9725,11 +9837,7 @@ impl App {
             }
             Action::PlPopupSub(i) | Action::PlPopupDeep(_, i) => {
                 let depth=match a {Action::PlPopupDeep(d,_)=>*d,_=>1};
-                let item=self.state.playlist.popup.as_ref().and_then(|p| {
-                    let mut entries=&p.items.get(p.sub?)?.children;
-                    for (index,_) in p.cascade.iter().take(depth-1) {entries=&entries.get(*index)?.children;}
-                    entries.get(i).cloned()
-                });
+                let item = self.state.playlist.popup.as_ref().and_then(|p| p.submenu_item(depth, i)).cloned();
                 match item.filter(|it| !it.head && !it.sep) {
                     Some(item) if item.enabled && !item.children.is_empty() => {
                         let p=self.state.playlist.popup.as_mut().unwrap();
@@ -9993,10 +10101,8 @@ impl App {
             }
             Action::GlobalSnapToggle => s.message = Some(crate::snap::toggle(s)),
             Action::Menu(i) => {
-                s.pat_ui.menu_at = None;
-                s.menu_open = if s.menu_open == Some(i) { None } else { Some(i) };
-                s.menu_sub = None;
-                s.playlist.popup=if s.menu_open.is_some(){let r=self.hits.iter().find(|h|h.action==Action::Menu(i)).map_or(Rect::new(self.mouse.0,self.mouse.1,0.,0.),|h|h.rect);Some(crate::playlist::Popup{x:r.x,y:r.bottom(),items:views::menus::organized_items(s,i),sub:None,scroll:[0;2],cascade:Vec::new()})}else{None};
+                if s.menu_open == Some(i) { self.close_main_menu(); }
+                else { self.open_main_menu(i); }
             }
             Action::MenuItem(m, i) => {
                 s.menu_open = None;
@@ -12807,7 +12913,8 @@ mod tests {
         // The workspace's pixels, right of the browser and below the toolbar.
         let work = |app: &mut App, c: &mut Canvas| -> Vec<u32> {
             frame(app, c, None);
-            let (left, top) = (views::browser_w(&app.state) as usize, views::work_y(&app.state) as usize);
+            // The toolbar draws its bottom separator over the first two workspace pixels.
+            let (left, top) = (views::browser_w(&app.state).ceil() as usize, views::work_y(&app.state).ceil() as usize + 2);
             let mut out = vec![0u32; 1920 * 1080];
             c.copy_to_xrgb(&mut out);
             (top..1080).flat_map(|y| out[y * 1920 + left..(y + 1) * 1920].to_vec()).collect()
@@ -12821,7 +12928,7 @@ mod tests {
         assert_eq!(kept, Some(dir.join("pics").join("wall.png")), "made absolute against the theme file's folder");
         let pic = work(&mut app, &mut c);
         let off = pic.iter().filter(|&&p| p != 0x7a3c91).count();
-        assert_eq!(off, 0, "the picture everywhere, no logo or version line");
+        assert_eq!(off, 0, "the workspace picture covers the interior without a watermark");
         // The solid colour mode: the plain workspace again.
         std::fs::write(&file, format!("{}BackPicFilename=pics\\wall.png\nBackMode=1\n", os_theme::fl::DARK_TEXT)).unwrap();
         app.load_theme_file_ex(&file, false);
@@ -13204,7 +13311,7 @@ mod tests {
         let checks = |app: &App| -> Vec<(&'static str, bool)> {
             let rows = views::settings::page(THEME, &app.state).into_iter().flat_map(|g| g.rows);
             rows.filter_map(|r| match r {
-                views::settings::Row::Check(k, v) => Some((k, v)),
+                views::settings::Row::Check(k, v) if k == NOTE_COLORS_CHECK => Some((k, v)),
                 _ => None,
             })
             .collect()
@@ -13230,6 +13337,7 @@ mod tests {
         assert_eq!(app.theme.base, os_theme::fl::palette(&FlTheme::parse(&lit)));
         if let Ok(mut c) = Canvas::new(1920, 1080, 1.0) {
             app.open_settings(THEME);
+            app.state.settings.scroll = views::settings::content_h(&app.state);
             frame(&mut app, &mut c, None);
             assert!(!app.hits.iter().any(|h| h.action == Action::Settings(SAct::Check("Light mode"))));
             let r = hit_rect(&app, &Action::Settings(SAct::Check(NOTE_COLORS_CHECK)));
@@ -13400,6 +13508,7 @@ mod tests {
         app.settings_act(SAct::Preset(2));
         app.settings_act(SAct::Preset(5));
         let five = app.state.fl_text.clone();
+        app.state.settings.scroll = views::settings::content_h(&app.state);
         frame(&mut app, &mut c, None);
         let hue = hit_rect(&app, &Action::Settings(SAct::ThemeKnob(0)));
         app.mouse_move(hue.cx(), hue.cy());
@@ -13482,6 +13591,7 @@ mod tests {
         app.open_settings(THEME);
         app.settings_act(SAct::Preset(2));
         let base = PRESETS[0].1;
+        app.state.settings.scroll = views::settings::content_h(&app.state);
         frame(&mut app, &mut c, None);
         // Brightness: dragged up 30 px = a tenth of its 510 range.
         let knob = hit_rect(&app, &Action::Settings(SAct::ThemeKnob(2)));
@@ -14468,7 +14578,9 @@ mod tests {
     #[test]
     fn optional_pointer_shortcuts_default_off_and_act_when_enabled() {
         use crate::knobs::KnobId;
-        use crate::prefs::{DOUBLE_CLICK_RESET, HOVER_MENUS};
+        use crate::prefs::{self, DOUBLE_CLICK_RESET, HOVER_MENUS};
+        use crate::views::settings::{self, SAct};
+        use crate::workspace_visibility as visibility;
         let mut app = App::new(None);
         app.state.project = test_project();
         app.state.z = vec![Win::Mixer];
@@ -14485,7 +14597,44 @@ mod tests {
         }
         assert_eq!(crate::mixer::track(&app.state, 1).unwrap().volume, Some(0.42));
         assert_eq!(app.state.knob(pan), 0.8);
-        crate::prefs::set_check(&DOUBLE_CLICK_RESET, true);
+        let hover_key = "visible_hover-main-menus";
+        let reset_key = "visible_double-click-reset";
+        let click_setting = |app: &mut App, canvas: &mut Canvas, action| {
+            let rect = hit_rect(app, &Action::Settings(action));
+            assert!(!rect.is_empty());
+            click(app, canvas, rect);
+        };
+        // Restore a checkbox hidden by the previous build, then enable the actual preference.
+        visibility::toggle(hover_key);
+        app.open_settings(settings::VISIBILITY);
+        app.state.settings.visibility_search.set(HOVER_MENUS.label);
+        frame(&mut app, &mut c, None);
+        click_setting(&mut app, &mut c, SAct::VisibilityToggle(hover_key));
+        assert!(visibility::shown(hover_key));
+        assert!(!prefs::check(&HOVER_MENUS));
+
+        app.open_settings(settings::GENERAL);
+        for group in ["Display", "Language"] {
+            app.state.settings.folded.insert(group);
+        }
+        frame(&mut app, &mut c, None);
+        click_setting(&mut app, &mut c, SAct::Check(DOUBLE_CLICK_RESET.label));
+        click_setting(&mut app, &mut c, SAct::Check(HOVER_MENUS.label));
+        assert!(prefs::check(&DOUBLE_CLICK_RESET) && visibility::shown(reset_key));
+        assert!(prefs::check(&HOVER_MENUS) && visibility::shown(hover_key));
+        assert!(!hit_rect(&app, &Action::Settings(SAct::Check(HOVER_MENUS.label))).is_empty());
+
+        // Hiding the checkbox is independent of its saved behavior.
+        app.open_settings(settings::VISIBILITY);
+        frame(&mut app, &mut c, None);
+        click_setting(&mut app, &mut c, SAct::VisibilityToggle(hover_key));
+        assert!(!visibility::shown(hover_key));
+        assert!(prefs::check(&HOVER_MENUS));
+        click_setting(&mut app, &mut c, SAct::VisibilityToggle(hover_key));
+        assert!(visibility::shown(hover_key));
+        assert!(prefs::check(&HOVER_MENUS));
+        click_setting(&mut app, &mut c, SAct::Close);
+
         for r in [fader, knob] {
             click(&mut app, &mut c, r);
             click(&mut app, &mut c, r);
@@ -14495,10 +14644,18 @@ mod tests {
         let file = hit_rect(&app, &Action::Menu(0));
         app.mouse_move(file.cx(), file.cy());
         assert!(app.state.menu_open.is_none());
-        crate::prefs::set_check(&HOVER_MENUS, true);
-        app.mouse_move(file.cx(), file.bottom() + 30.0);
-        app.mouse_move(file.cx(), file.cy());
+        click(&mut app, &mut c, file);
         assert_eq!(app.state.menu_open, Some(0));
+        app.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape), false, false);
+
+        app.open_settings(settings::GENERAL);
+        frame(&mut app, &mut c, None);
+        click_setting(&mut app, &mut c, SAct::Check(HOVER_MENUS.label));
+        assert!(!prefs::check(&HOVER_MENUS));
+        assert!(visibility::shown(hover_key));
+        click_setting(&mut app, &mut c, SAct::Close);
+        app.mouse_move(file.cx(), file.cy());
+        assert!(app.state.menu_open.is_none());
     }
 
     /// The wheel over a mixer fader moves it instead of scrolling the mixer: three notches up from unity read
@@ -14619,6 +14776,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn main_menu_hover_switches_and_opens_submenus_after_click() {
+        use crate::views::menus::{HELP_ABOUT, HELP_MENU};
+        use winit::keyboard::{Key, NamedKey};
+
+        for (height, scale, vintage) in [(900, 1., false), (450, 1.25, false), (600, 1., true)] {
+            let mut app = App::new(None);
+            app.state.vintage_2005 = vintage;
+            let mut canvas = Canvas::new(1280, height, scale).unwrap();
+            let enter = |app: &mut App, canvas: &mut Canvas, action: Action| {
+                let r = hit_rect(app, &action);
+                assert!(!r.is_empty());
+                app.mouse_move(r.cx(), r.cy());
+                frame(app, canvas, None);
+                r
+            };
+            let menu_row = |app: &App, parent: Option<usize>, label: &str| {
+                let p = app.state.playlist.popup.as_ref().unwrap();
+                let entries = parent.map_or(p.items.as_slice(), |i| p.items[i].children.as_slice());
+                entries.iter().position(|item| item.label == label).unwrap()
+            };
+            crate::prefs::set_check(&crate::prefs::HOVER_MENUS, true);
+            frame(&mut app, &mut canvas, None);
+            enter(&mut app, &mut canvas, Action::Menu(HELP_MENU));
+            let file = enter(&mut app, &mut canvas, Action::Menu(0));
+            assert!(app.state.menu_open.is_none());
+            click(&mut app, &mut canvas, file);
+
+            let import_export = menu_row(&app, None, "Import / export");
+            let import = menu_row(&app, Some(import_export), "Import");
+            enter(&mut app, &mut canvas, Action::PlPopup(import_export));
+            assert_eq!(app.state.playlist.popup.as_ref().unwrap().sub, Some(import_export));
+            enter(&mut app, &mut canvas, Action::PlPopupSub(import));
+            assert_eq!(app.state.playlist.popup.as_ref().unwrap().cascade, [(import, 0)]);
+            let midi = enter(&mut app, &mut canvas, Action::PlPopupDeep(2, 0));
+            assert!(!app.modal_open(), "hovering a leaf does not run it");
+            assert!(midi.y >= file.bottom() - 1.);
+
+            enter(&mut app, &mut canvas, Action::Menu(HELP_MENU));
+            assert_eq!(app.state.menu_open, Some(HELP_MENU));
+            assert!(app.state.playlist.popup.as_ref().unwrap().sub.is_none());
+            let about = app.state.playlist.popup.as_ref().unwrap().items.iter()
+                .position(|item| item.cmd == crate::playlist::Cmd::MainMenu(HELP_MENU, HELP_ABOUT)).unwrap();
+            let row = enter(&mut app, &mut canvas, Action::PlPopup(about));
+            assert!(!app.state.settings.open);
+            app.mouse_down();
+            assert!(!app.state.settings.open);
+            app.mouse_move(file.cx(), file.cy());
+            app.mouse_up();
+            assert!(!app.state.settings.open, "releasing outside the row cancels the command");
+            click(&mut app, &mut canvas, row);
+            assert_eq!(app.state.settings.tab, views::settings::ABOUT);
+            assert!(app.state.settings.open && app.state.menu_open.is_none());
+            app.key(&Key::Named(NamedKey::Escape), false, false);
+            frame(&mut app, &mut canvas, None);
+            enter(&mut app, &mut canvas, Action::Menu(0));
+            assert!(app.state.menu_open.is_none(), "choosing a command ends hover navigation");
+            click(&mut app, &mut canvas, file);
+            app.key(&Key::Named(NamedKey::Escape), false, false);
+            frame(&mut app, &mut canvas, None);
+            enter(&mut app, &mut canvas, Action::Menu(HELP_MENU));
+            assert!(app.state.menu_open.is_none(), "Escape ends hover navigation");
+            click(&mut app, &mut canvas, file);
+            let outside = Rect::new(app.state.screen.0 - 25., app.state.screen.1 - 25., 10., 10.);
+            click(&mut app, &mut canvas, outside);
+            enter(&mut app, &mut canvas, Action::Menu(HELP_MENU));
+            assert!(app.state.menu_open.is_none(), "clicking outside ends hover navigation");
+        }
+    }
+
     /// Holding the mouse on a toolbar window button lights it orange; releasing restores it.
     #[test]
     fn pressed_button_look() {
@@ -14688,8 +14915,11 @@ mod tests {
         assert_eq!(app.state.menu_open, Some(0), "the menu opens on the press");
         app.mouse_up();
         frame(&mut app, &mut c, None);
-        let item = app.hits.iter().find(|h| matches!(h.action, Action::MenuItem(0, _))).map(|h| (h.action.clone(), h.rect)).unwrap();
-        app.mouse_move(item.1.cx(), item.1.cy());
+        let index = app.state.playlist.popup.as_ref().unwrap().items.iter()
+            .position(|item| item.cmd == crate::playlist::Cmd::MainMenu(0, views::menus::FILE_OPEN))
+            .unwrap();
+        let item = hit_rect(&app, &Action::PlPopup(index));
+        app.mouse_move(item.cx(), item.cy());
         app.mouse_down();
         assert_eq!(app.state.menu_open, Some(0), "the entry's press keeps the menu");
         app.mouse_up();
@@ -15877,6 +16107,46 @@ mod tests {
         app.hits.iter().rev().find(|h| &h.action == a).map(|h| h.rect).unwrap_or_else(|| panic!("no hit for {a:?}"))
     }
 
+    #[test]
+    fn settings_page_refresh_folds_and_visibility_catalogue() {
+        use crate::views::settings::{self as settings, SAct};
+        let mut app = App::new(None);
+        app.state.settings.devices = vec!["Retained device list".into()];
+        app.open_settings(settings::GENERAL);
+        assert_eq!(app.state.settings.devices, ["Retained device list"]);
+        assert!(app.state.settings.themes.is_empty());
+        app.settings_act(SAct::Group("Advanced"));
+        app.settings_act(SAct::Tab(settings::PROJECT));
+        assert!(!app.state.settings.folded.contains("Advanced"));
+        app.settings_act(SAct::Tab(settings::GENERAL));
+        assert!(app.state.settings.folded.contains("Advanced"));
+        app.state.settings.scroll = 120.;
+        app.settings_act(SAct::Tab(settings::GENERAL));
+        assert_eq!(app.state.settings.scroll, 120.);
+        app.settings_act(SAct::Tab(settings::THEME));
+        assert!(!app.state.settings.themes.is_empty());
+        assert_eq!(app.state.settings.theme_previews.len(), app.state.settings.themes.len());
+
+        let project = app.state.project.clone();
+        let mut keys = std::collections::HashSet::new();
+        for &(_, rows) in crate::workspace_visibility::GROUPS {
+            for &(label, key) in rows {
+                assert!(keys.insert(key), "Duplicate visibility key for {label}");
+                let before = crate::workspace_visibility::shown(key);
+                app.settings_act(SAct::VisibilityToggle(key));
+                assert_eq!(crate::workspace_visibility::shown(key), !before, "{label}");
+                app.settings_act(SAct::VisibilityToggle(key));
+                assert_eq!(crate::workspace_visibility::shown(key), before, "{label}");
+            }
+        }
+        assert_eq!(app.state.project, project);
+        app.open_settings(settings::VISIBILITY);
+        app.state.settings.visibility_search.set("plugin sampler");
+        let rows = settings::page(settings::VISIBILITY, &app.state);
+        assert!(rows.iter().flat_map(|g| &g.rows).any(|row|
+            matches!(row, settings::Row::VisibilityToggle("Sampler Mixer track menu", _))));
+    }
+
     fn click(app: &mut App, c: &mut Canvas, r: Rect) {
         app.mouse_move(r.cx(), r.cy());
         app.mouse_down();
@@ -16456,7 +16726,6 @@ mod tests {
         let activate = |app: &mut App, c: &mut Canvas, act: SAct| {
             click(app, c, hit_rect(app, &Action::Settings(act)));
         };
-        let label = "Donate button";
         let key = "visible_donate";
         assert!(shown(key));
         frame(&mut app, &mut c, None);
@@ -16466,17 +16735,17 @@ mod tests {
         frame(&mut app, &mut c, None);
         activate(&mut app, &mut c, SAct::Button(OPEN_VISIBILITY));
         assert_eq!(app.state.settings.tab, VISIBILITY);
-        assert!(!has(&app, &Action::Settings(SAct::Check("Time display"))));
+        assert!(!has(&app, &Action::Settings(SAct::VisibilityToggle("visible_time"))));
         activate(&mut app, &mut c, SAct::Group("Toolbar panels"));
-        assert!(has(&app, &Action::Settings(SAct::Check("Time display"))));
+        assert!(has(&app, &Action::Settings(SAct::VisibilityToggle("visible_time"))));
         activate(&mut app, &mut c, SAct::Group("Toolbar panels"));
-        assert!(!has(&app, &Action::Settings(SAct::Check("Time display"))));
+        assert!(!has(&app, &Action::Settings(SAct::VisibilityToggle("visible_time"))));
         activate(&mut app, &mut c, SAct::VisibilitySearch);
         app.key(&Key::Character("donate".into()), false, false);
         app.key(&Key::Named(NamedKey::Enter), false, false);
         frame(&mut app, &mut c, None);
-        assert!(!has(&app, &Action::Settings(SAct::Check("Time display"))));
-        activate(&mut app, &mut c, SAct::Check(label));
+        assert!(!has(&app, &Action::Settings(SAct::VisibilityToggle("visible_time"))));
+        activate(&mut app, &mut c, SAct::VisibilityToggle(key));
         assert!(!shown(key));
         assert!(!has(&app, &Action::Donate));
         assert!(has(&app, &Action::Close));
@@ -16810,9 +17079,9 @@ LemonStudioStyle.button-radius=8
                 assert!(app.hits.iter().any(|hit| hit.action == action), "Missing compact toolbar action {action:?}");
             }
         }
-        assert!(app.vintage_title_scrolling());
+        assert!(!app.vintage_title_scrolling(), "the compact toolbar has no scrolling title");
         let now = std::time::Instant::now();
-        assert!(app.state.vintage_title.borrow().changed(now + std::time::Duration::from_secs(2)));
+        assert!(!app.state.vintage_title.borrow().changed(now + std::time::Duration::from_secs(2)));
         assert!(app.hits.iter().any(|hit| hit.action == Action::CpuPanel));
         assert!(app.live.iter().any(|(kind, _)| *kind == Live::VintageScope));
         app.state.cpu.update(now, Some(0.23), 8, 0);
@@ -16858,13 +17127,13 @@ LemonStudioStyle.button-radius=8
         use crate::views::settings::{self as settings, SAct};
 
         let options = [
-            (settings::THEME, "Theme tab"),
-            (settings::PROJECT, "Project tab"),
-            (settings::INFO, "Info tab"),
-            (settings::DEBUG, "Debug tab"),
-            (settings::ABOUT, "About tab"),
-            (settings::MENUS, "Menus tab and customization shortcut"),
-            (settings::CONTROLS, "Controls tab"),
+            (settings::THEME, "visible_settings-theme"),
+            (settings::PROJECT, "visible_settings-project"),
+            (settings::INFO, "visible_settings-info"),
+            (settings::DEBUG, "visible_settings-debug"),
+            (settings::ABOUT, "visible_settings-about"),
+            (settings::MENUS, crate::menu_layout::VISIBILITY),
+            (settings::CONTROLS, crate::input_bindings::VISIBILITY),
         ];
         let mut c = Canvas::new(1600, 1000, 1.0).unwrap();
         let mut app = App::new(None);
@@ -16879,7 +17148,7 @@ LemonStudioStyle.button-radius=8
         app.state.settings.visibility_search.text = "settings tabs".into();
         frame(&mut app, &mut c, None);
         assert!(!has(&app, SAct::Tab(settings::DEBUG)));
-        activate(&mut app, &mut c, SAct::Check("Debug tab"));
+        activate(&mut app, &mut c, SAct::VisibilityToggle("visible_settings-debug"));
         let tabs: Vec<_> = app.hits.iter().filter_map(|hit| match hit.action {
             Action::Settings(SAct::Tab(tab)) => Some(tab),
             _ => None,
@@ -16889,9 +17158,9 @@ LemonStudioStyle.button-radius=8
             settings::THEME, settings::DEBUG, settings::PROJECT, settings::VISIBILITY, settings::MENUS,
             settings::CONTROLS, settings::INFO, settings::ABOUT,
         ]);
-        for (tab, label) in options {
+        for (tab, key) in options {
             assert!(has(&app, SAct::Tab(tab)));
-            activate(&mut app, &mut c, SAct::Check(label));
+            activate(&mut app, &mut c, SAct::VisibilityToggle(key));
             assert!(!has(&app, SAct::Tab(tab)));
             app.open_settings(tab);
             assert_eq!(app.state.settings.tab, settings::VISIBILITY);
@@ -16907,7 +17176,7 @@ LemonStudioStyle.button-radius=8
         activate(&mut reopened, &mut c, SAct::Tab(settings::VISIBILITY));
         reopened.state.settings.visibility_search.text = "settings tabs".into();
         frame(&mut reopened, &mut c, None);
-        activate(&mut reopened, &mut c, SAct::Check("Info tab"));
+        activate(&mut reopened, &mut c, SAct::VisibilityToggle("visible_settings-info"));
         assert!(has(&reopened, SAct::Tab(settings::INFO)));
         assert!(!has(&reopened, SAct::Tab(settings::THEME)));
         activate(&mut reopened, &mut c, SAct::Button(crate::workspace_visibility::RESET));
@@ -16973,6 +17242,8 @@ LemonStudioStyle.button-radius=8
         let r = hit_rect(&app, &Action::Settings(SAct::Check("Pickup (takeover mode)")));
         click(&mut app, &mut c, r);
         assert_eq!(app.state.message.as_deref(), Some("Pickup (takeover mode): on"));
+        app.state.settings.scroll = views::settings::content_h(&app.state);
+        frame(&mut app, &mut c, None);
         assert!(app.hits.iter().any(|h| h.action == Action::Settings(SAct::Body) && h.hint == "ML Studio has no MIDI scripts"));
         assert!(app.hits.iter().any(|h| h.action == Action::Settings(SAct::Body) && h.hint == "ML Studio has no playlist performance mode"));
         let r = hit_rect(&app, &Action::Settings(SAct::Tab(PROJECT)));
@@ -17256,21 +17527,22 @@ LemonStudioStyle.button-radius=8
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Drums")).unwrap();
         std::fs::create_dir_all(dir.join("Vocals")).unwrap();
-        for (n, len) in [("Club mix.flp", 48_213), ("Demo.flp", 9_120), ("Night drive.flp", 131_072), ("Sketch 3.flp", 2_048)] {
+        for (n, len) in [("Club mix.lmn", 48_213), ("Demo.lmn", 9_120), ("Night drive.lmn", 131_072), ("Sketch 3.lmn", 2_048)] {
             std::fs::write(dir.join(n), vec![0u8; len]).unwrap();
         }
         for design in [Design::Citrus, Design::Lemon] {
             let name = format!("{design:?}").to_lowercase();
             let mut app = App::new(None);
             app.set_design(design, false);
-            app.state.path = Some(dir.join("Demo.flp"));
+            app.state.path = Some(dir.join("Demo.lmn"));
             for (kind, title, text, buttons, tag) in [
-                (Kind::Question, "Confirm", spans(&["Save the changes to ", "Demo.flp", " before closing?"]), &[Answer::Yes, Answer::No, Answer::Cancel][..], "question"),
-                (Kind::Warning, "Confirm save as", spans(&["", "Demo.flp", " already exists.\nDo you want to replace it?"]), &[Answer::Yes, Answer::No][..], "warning"),
+                (Kind::Question, "Confirm", spans(&["Save the changes to ", "Demo.lmn", " before closing?"]), &[Answer::Yes, Answer::No, Answer::Cancel][..], "question"),
+                (Kind::Warning, "Confirm save as", spans(&["", "Demo.lmn", " already exists.\nDo you want to replace it?"]), &[Answer::Yes, Answer::No][..], "warning"),
                 (Kind::Error, "Error", spans(&["The file doesn't exist or has been moved."]), &[Answer::Ok][..], "error"),
                 (Kind::Info, "Project not supported yet", spans(&["ML Studio cannot open ", "Old.flp", " yet.\n\nIt was saved by version 12.3. Projects saved before version 24.2 use an older channel layout that ML Studio does not read yet."]), &[Answer::Ok][..], "info"),
             ] {
-                let mut m = Msg::new(kind, title, text, buttons, Then::Nothing);
+                let then = if tag == "question" { Then::Discard(crate::dialog::Next::Close) } else { Then::Nothing };
+                let mut m = Msg::new(kind, title, text, buttons, then);
                 // As in the app, the replace question starts on No.
                 m.focus = usize::from(tag == "warning");
                 app.show_msg(m);
@@ -25561,6 +25833,190 @@ LemonStudioStyle.button-radius=8
     }
 
     #[test]
+    fn theme_expansion_edits_reset_undo_cancel_export_and_visibility() {
+        use crate::advanced_theme::{self as e, Hit, FieldFor, Row};
+        use crate::views::settings::{self, SAct};
+        use winit::keyboard::{Key, NamedKey};
+        let dir = std::env::temp_dir().join(format!("theme-expansion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        THEME_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        crate::settings_file::write(e::INSERT_VISIBILITY, "1");
+        crate::settings_file::write(e::AREA_VISIBILITY, "1");
+        let mut app = App::new(None);
+        let original = app.theme.clone();
+        let project = app.state.project.clone();
+        app.open_settings(settings::THEME);
+        let mut canvas = Canvas::new(1600, 1000, 1.0).unwrap();
+        frame(&mut app, &mut canvas, None);
+        let launch = hit_rect(&app, &Action::Settings(SAct::Button(e::INSERT_OPEN)));
+        click(&mut app, &mut canvas, launch);
+        assert!(app.state.settings.advanced_theme.as_ref().unwrap().groups.iter().any(|(group, _)| *group == e::INSERT_SECTION));
+        let style = |query: &str| e::groups(query).into_iter().flat_map(|(_, rows)| rows).find_map(|row| match row { Row::Style(i) => Some(i), _ => None }).unwrap();
+        let knob = style("insert-knob");
+        let ring = style("insert-ring thin");
+        let rim = style("insert-rim outer circle");
+        let sat = style("tone-playlist-saturation");
+        let action = |hit| SAct::ThemeEditor(hit);
+        app.settings_act(action(Hit::Choice(knob, "Full Mixer")));
+        app.settings_act(action(Hit::Choice(ring, "Hide")));
+        app.settings_act(action(Hit::Choice(rim, "Hide")));
+        assert!(app.theme.colors.appearance.insert_full_knob);
+        for scale in [1.0, 1.25, 1.5] {
+            let mut shot = Canvas::new(1600, 1000, scale).unwrap();
+            frame(&mut app, &mut shot, None);
+            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") { shot.pixmap.save_png(PathBuf::from(dir).join(format!("insert-settings-{scale}.png"))).unwrap(); }
+        }
+        assert_eq!(app.theme.colors.appearance.insert_ring, Some(false));
+        app.settings_act(SAct::Button(settings::THEME_UNDO));
+        assert_eq!(app.theme.colors.appearance.insert_rim, None);
+        app.settings_act(SAct::Button(settings::THEME_REDO));
+        assert_eq!(app.theme.colors.appearance.insert_rim, Some(false));
+        app.settings_act(action(Hit::Field(FieldFor::Number(sat))));
+        app.key(&Key::Character("0".into()), false, false);
+        app.key(&Key::Named(NamedKey::Enter), false, false);
+        assert_eq!(app.state.fl_theme().area_tones[3].saturation, 0.0);
+        app.settings_act(action(Hit::ResetGroup(e::INSERT_SECTION)));
+        assert!(!app.theme.colors.appearance.insert_custom);
+        assert_eq!(app.state.fl_theme().area_tones[3].saturation, 0.0);
+        app.settings_act(SAct::Button(settings::THEME_UNDO));
+        assert!(app.theme.colors.appearance.insert_full_knob);
+        app.settings_act(SAct::Button(e::CANCEL));
+        assert_eq!(app.theme, original);
+        app.open_insert_theme_editor();
+        app.settings_act(action(Hit::Choice(knob, "Full Mixer")));
+        app.settings_act(action(Hit::Field(FieldFor::Hex("insert_knob_ring"))));
+        app.key(&Key::Character("#F205C7".into()), false, false);
+        app.key(&Key::Named(NamedKey::Enter), false, false);
+        assert_eq!(app.theme.colors.appearance.mixer, original.colors.appearance.mixer, "insert color must not switch full mixer finish");
+        app.settings_act(SAct::Button(e::APPLY));
+        let exported = dir.join("Expanded.flstheme");
+        app.export_theme(&exported);
+        let mut reopened = App::new(None);
+        reopened.load_theme_file_ex(&exported, false);
+        assert_eq!(reopened.theme.colors, app.theme.colors);
+        crate::settings_file::write(e::INSERT_VISIBILITY, "0");
+        crate::settings_file::write(e::AREA_VISIBILITY, "0");
+        assert!(e::groups(e::INSERT_SECTION).is_empty());
+        assert!(e::groups("tone-playlist-saturation").is_empty());
+        assert!(app.theme.colors.appearance.insert_full_knob, "hiding settings preserves appearance");
+        assert_eq!(app.state.project, project);
+        crate::settings_file::write(e::INSERT_VISIBILITY, "1");
+        crate::settings_file::write(e::AREA_VISIBILITY, "1");
+        THEME_DIR.with(|d| *d.borrow_mut() = None);
+    }
+
+    #[test]
+    fn theme_expansion_insert_rendering_and_mixer_input_stay_independent() {
+        use os_theme::{fl, Color};
+        use crate::knobs::KnobId;
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.selected_mixer = 0;
+        app.state.project.mixer = (0..8).map(os_model::MixerTrack::new).collect();
+        app.state.startup_layout_pending = false;
+        app.state.show_browser = false;
+        app.state.z = vec![Win::Mixer];
+        app.state.wins[Win::Mixer.slot().unwrap()].maxed = true;
+        let action = Action::Knob(KnobId::SlotMix(0, 0));
+        let mut canvas = Canvas::new(1600, 1000, 1.0).unwrap();
+        let count = |c: &Canvas, r: Rect, color: Color| {
+            let data = c.pixmap.data();
+            let mut count = 0;
+            for y in (r.y.max(0.0) as usize)..(r.bottom() as usize).min(c.pixmap.height() as usize) {
+                for x in (r.x.max(0.0) as usize)..(r.right() as usize).min(c.pixmap.width() as usize) {
+                    let p = &data[(y * c.pixmap.width() as usize + x) * 4..][..3];
+                    if p == [color.r, color.g, color.b] { count += 1; }
+                }
+            }
+            count
+        };
+        for design in Design::ALL {
+            app.set_design(design, false);
+            for finish in ["Original", "Clean Modern", "Analog", "Theme colors"] {
+                let base = fl::set_key(&os_theme::design::default_text(design), "LemonStudioStyle.mixer", finish);
+                app.state.mixer.layout = crate::mixer::TRADITIONAL;
+                app.theme_edit(base.clone());
+                frame(&mut app, &mut canvas, None);
+                let bounds = hit_rect(&app, &action);
+                let mut text = fl::set_key(&base, "LemonStudioStyle.insert-knob", "Full Mixer");
+                text = fl::set_key(&text, "LemonStudioColor.insert_knob_ring", "#F205C7");
+                text = fl::set_key(&text, "LemonStudioColor.insert_knob_rim", "#05F2B7");
+                text = fl::set_key(&text, "LemonStudioStyle.insert-ring-width", "2");
+                text = fl::set_key(&text, "LemonStudioStyle.insert-rim-width", "2");
+                for style in ["Traditional", "Full Mixer", "Dial", "Ring"] {
+                let text = fl::set_key(&text, "LemonStudioStyle.insert-knob", style);
+                for (ring, rim) in [("Show", "Show"), ("Hide", "Show"), ("Show", "Hide"), ("Hide", "Hide")] {
+                    let t = fl::set_key(&fl::set_key(&text, "LemonStudioStyle.insert-ring", ring), "LemonStudioStyle.insert-rim", rim);
+                    app.theme_edit(t);
+                    frame(&mut app, &mut canvas, None);
+                    assert_eq!(hit_rect(&app, &action), bounds);
+                    assert_eq!(count(&canvas, bounds.outset(2.0), Color::rgb(0xf205c7)) > 0, ring == "Show", "{design:?} {finish}: ring {ring}");
+                    assert_eq!(count(&canvas, bounds.outset(2.0), Color::rgb(0x05f2b7)) > 0, rim == "Show", "{design:?} {finish}: rim {rim}");
+                    if style == "Full Mixer" && ring == "Show" && rim == "Show" {
+                        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") { canvas.pixmap.save_png(PathBuf::from(dir).join(format!("insert-{}-{}.png",design.key(),finish.replace(' ', "-")))).unwrap(); }
+                    }
+                }
+                }
+                // These overrides must not alter Full Mixer or its input targets.
+                app.state.mixer.layout = crate::mixer::WIDE;
+                app.theme_edit(base);
+                frame(&mut app, &mut canvas, None);
+                let full_bounds = hit_rect(&app, &action);
+                let full = canvas.pixmap.data().to_vec();
+                app.theme_edit(text);
+                frame(&mut app, &mut canvas, None);
+                assert_eq!(hit_rect(&app, &action), full_bounds);
+                assert_eq!(canvas.pixmap.data(), full, "Traditional overrides leaked into Full Mixer");
+            }
+        }
+    }
+
+    #[test]
+    fn theme_expansion_render_cost_and_compact_layout() {
+        use os_theme::fl;
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.project.mixer = (0..127).map(os_model::MixerTrack::new).collect();
+        app.state.startup_layout_pending = false;
+        app.state.show_browser = false;
+        app.state.z = vec![Win::Mixer];
+        app.state.mixer.layout = crate::mixer::TRADITIONAL;
+        app.state.wins[Win::Mixer.slot().unwrap()].maxed = true;
+        let mut canvas = Canvas::new(1600, 1000, 1.0).unwrap();
+        let base = os_theme::design::default_text(Design::Lemon);
+        app.theme_edit(base.clone());
+        let measure = |app: &mut App, c: &mut Canvas| {
+            frame(app, c, None);
+            let area = app.state.win_rect(Win::Mixer);
+            for _ in 0..3 { frame(app, c, Some(area)); }
+            let mut times = (0..21).map(|_| {
+                let start = std::time::Instant::now();
+                frame(app, c, Some(area));
+                start.elapsed().as_secs_f64() * 1000.0
+            }).collect::<Vec<_>>();
+            times.sort_by(f64::total_cmp);
+            times[times.len()/2]
+        };
+        let baseline = measure(&mut app, &mut canvas);
+        let mut custom = fl::set_key(&base, "LemonStudioStyle.insert-knob", "Full Mixer");
+        for (id, _, _) in os_theme::regions::SECTIONS {
+            custom = fl::set_key(&custom, &format!("LemonStudioStyle.tone-{id}-saturation"), "130");
+            custom = fl::set_key(&custom, &format!("LemonStudioStyle.tone-{id}-brightness"), "110");
+        }
+        app.theme_edit(custom);
+        let customized = measure(&mut app, &mut canvas);
+        eprintln!("Theme redraw median: baseline {baseline:.3} ms, customized {customized:.3} ms (127 tracks, 1600x1000)");
+        // Scaling/short-window renders: no change to the saved slot value.
+        let before = app.state.knob(crate::knobs::KnobId::SlotMix(0, 0));
+        for (w,h,scale) in [(1100,700,1.25), (1600,900,1.5)] {
+            let mut compact = Canvas::new(w,h,scale).unwrap();
+            frame(&mut app, &mut compact, None);
+            assert_eq!(app.state.knob(crate::knobs::KnobId::SlotMix(0, 0)), before);
+            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") { compact.pixmap.save_png(PathBuf::from(dir).join(format!("insert-compact-{scale}.png"))).unwrap(); }
+        }
+    }
+
+    #[test]
     fn hotfix_mixer_theme_colors_reach_both_renderers() {
         use crate::advanced_theme::{self as editor, Hit, FieldFor};
         use crate::views::settings::{self, SAct};
@@ -26539,6 +26995,52 @@ LemonStudioStyle.button-radius=8
             assert!(!app.modal_open());
             assert!(app.state.browser_drag.is_none());
         }
+    }
+
+    #[test]
+    #[cfg(plugin_windows)]
+    fn sampler_track_menu_routes_with_undo_and_preserves_mixer_locks() {
+        use crate::playlist::{Cmd, Mark};
+        use crate::route_picker::{sampler_track_menu, SamplerTrackCommand::*};
+
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        let before = app.state.project.clone();
+        let menu = sampler_track_menu(&app.state, 0, 15., 20.).unwrap();
+        let toggle = menu.items.last().unwrap();
+        assert_eq!(toggle.mark, Mark::Check(false));
+        crate::playlist::run(&mut app, toggle.cmd.clone());
+        let menu = sampler_track_menu(&app.state, 0, 15., 20.).unwrap();
+        assert_eq!(menu.items.last().unwrap().mark, Mark::Check(true));
+        assert_eq!(app.state.project, before);
+
+        crate::playlist::run(&mut app, Cmd::SamplerTrack(Pick(0)));
+        assert!(matches!(app.state.dialogs.last().map(|m| &m.body), Some(crate::dialog::Body::RoutePicker(_))));
+        app.state.dialogs.clear();
+        crate::playlist::run(&mut app, Cmd::SamplerTrack(Show(0)));
+        assert_eq!(app.state.selected_mixer, 1);
+        assert!(app.state.z.contains(&Win::Mixer));
+
+        app.commit_sampler_track_step(0, 1, 7);
+        assert_eq!(app.state.project.channels[0].mixer_track, 7);
+        assert_eq!(app.state.selected_mixer, 1);
+        app.commit_sampler_track_step(0, 1, 2);
+        app.commit_sampler_track_step(0, 7, 17);
+        assert_eq!(app.state.project.channels[0].mixer_track, 7);
+        assert_eq!(crate::history::undo(&mut app.state), Some("Route sampler to Mixer"));
+        assert_eq!(app.state.project, before);
+        assert_eq!(crate::history::redo(&mut app.state), Some("Route sampler to Mixer"));
+        assert_eq!(app.state.project.channels[0].mixer_track, 7);
+
+        app.state.project.mixer[7].edit_locked = true;
+        assert_eq!(app.commit_sampler_track_step(0, 7, 8).as_deref(), Some(crate::mixer::LOCK_MESSAGE));
+        assert!(!sampler_track_menu(&app.state, 0, 0., 0.).unwrap().items[2].enabled);
+        app.state.project.mixer[7].edit_locked = false;
+        crate::playlist::run(&mut app, Cmd::SamplerTrack(Master(0)));
+        assert_eq!(app.state.project.channels[0].mixer_track, 0);
+        assert!(!sampler_track_menu(&app.state, 0, 0., 0.).unwrap().items[2].enabled);
+        crate::history::undo(&mut app.state);
+        assert_eq!(app.state.project.channels[0].mixer_track, 7);
     }
 
     #[test]

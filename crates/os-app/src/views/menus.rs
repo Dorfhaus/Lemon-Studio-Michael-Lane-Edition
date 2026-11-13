@@ -1147,7 +1147,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(built, ["New from template", "Import", "Effect", "Toolbars", ONE_CLICK_LABEL, DUMP_LOG_LABEL, CLIPS_ALL_LABEL, CLIPS_SEL_LABEL, EDITORS_LABEL, DECLICK_LABEL]);
+        assert_eq!(built, ["New from template", "Import", "Effect", "Toolbars", "Arrange windows", ONE_CLICK_LABEL, DUMP_LOG_LABEL, CLIPS_ALL_LABEL, CLIPS_SEL_LABEL, EDITORS_LABEL, DECLICK_LABEL]);
         let labels = |menu, label| submenu(menu, label).unwrap()(&app.state).iter().map(|p| p.label.to_string()).collect::<Vec<_>>();
         let modes = ["Out only (no bleeding)", "Transient (no bleeding)", "Transient (bleeding)", "Generic (bleeding)", "Smooth (bleeding)", "Crossfade (bleeding)"];
         assert_eq!(labels(TOOLS_MENU, DECLICK_LABEL), modes, "the six declick modes in order (spec: audio/declick.md)");

@@ -13,6 +13,10 @@ use std::path::Path;
 use winit::keyboard::{Key, NamedKey};
 
 pub const OPEN: &str = "Open Theme Editor...";
+pub const INSERT_OPEN: &str = "Customize insert knobs...";
+pub const AREA_VISIBILITY: &str = "visible_theme-area-adjustments";
+pub const INSERT_VISIBILITY: &str = "visible_theme-insert-knobs";
+pub const INSERT_SECTION: &str = "Traditional FL-style mixer view";
 pub const APPLY: &str = "Apply theme";
 pub const CANCEL: &str = "Cancel edits";
 pub const EXPORT: &str = "Export theme...";
@@ -133,6 +137,7 @@ pub enum MixerRow {
 pub enum Row {
     Search,
     Preview,
+    InsertPreview,
     Color(&'static str),
     Style(usize),
     Reset(&'static str),
@@ -144,6 +149,7 @@ impl Row {
     pub fn height(self) -> f32 {
         match self {
             Self::Preview => 76.0,
+            Self::InsertPreview => 64.0,
             Self::Mixer(MixerRow::Preview) => 128.0,
             Self::Mixer(_) => 34.0,
             Self::Identity(IdentityRow::Preview) => 170.0,
@@ -258,43 +264,75 @@ const STYLES: &[StyleField] = &[
         label: "Themed Mixer button finish",
         values: Values::Choices(&appearance::Finish::CHOICES),
     },
+    StyleField { key: "insert-knob", label: "Insert mix knob style", values: Values::Choices(&["Inherit", "Traditional", "Full Mixer", "Dial", "Ring"]) },
+    StyleField { key: "insert-ring", label: "Thin value ring", values: Values::Choices(&["Inherit", "Show", "Hide"]) },
+    StyleField { key: "insert-rim", label: "Outer circle", values: Values::Choices(&["Inherit", "Show", "Hide"]) },
+    StyleField { key: "insert-ring-width", label: "Value ring width (0–2 px)", values: Values::Number(2.0) },
+    StyleField { key: "insert-rim-width", label: "Outer circle width (0–2 px)", values: Values::Number(2.0) },
+    StyleField { key: "knob-ring-visible", label: "Dial value ring", values: Values::Choices(&["Inherit", "Show", "Hide"]) },
+    StyleField { key: "knob-track-visible", label: "Dial unfilled track", values: Values::Choices(&["Inherit", "Show", "Hide"]) },
+    StyleField { key: "knob-rim-visible", label: "Dial outer border", values: Values::Choices(&["Inherit", "Show", "Hide"]) },
+    StyleField { key: "knob-ring-width", label: "Dial ring width (0–3 px)", values: Values::Number(3.0) },
+    StyleField { key: "knob-pointer-width", label: "Dial pointer width (0–3 px)", values: Values::Number(3.0) },
+    StyleField { key: "tone-toolbar-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-toolbar-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-toolbar-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-toolbar-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-browser-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-browser-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-browser-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-browser-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-frames-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-frames-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-frames-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-frames-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-playlist-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-playlist-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-playlist-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-playlist-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-mixer-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-mixer-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-mixer-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-mixer-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inspector-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-inspector-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inspector-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inspector-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-rack-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-rack-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-rack-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-rack-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-menus-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-menus-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-menus-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-menus-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-piano-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-piano-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-piano-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-piano-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-finishes-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-finishes-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-finishes-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-finishes-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-notes-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-notes-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-notes-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-notes-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-workspace-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-workspace-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-workspace-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-workspace-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-dials-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-dials-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-dials-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-dials-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inserts-hue", label: "Hue (180 = unchanged)", values: Values::Number(360.0) },
+    StyleField { key: "tone-inserts-saturation", label: "Saturation (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inserts-brightness", label: "Brightness (100 = unchanged)", values: Values::Number(200.0) },
+    StyleField { key: "tone-inserts-contrast", label: "Contrast (100 = unchanged)", values: Values::Number(200.0) },
 ];
 
-const SECTIONS: &[(&str, &str)] = &[
-    ("Toolbar & shared controls", "toolbar"),
-    ("Browser", "browser_title"),
-    ("Window frames", "splitter"),
-    ("Playlist", "picker"),
-    ("Mixer", "mixer_bg"),
-    ("Attached mixer inspector", "inspector_panel"),
-    ("Channel Rack", "rack_row_box"),
-    ("Menus & dialogs", "menu_drop"),
-    ("Piano Roll", "pr_row"),
-    ("Control finishes", "button_pressed"),
-    ("Piano Roll note groups", "note_group_01"),
-];
-
-fn section(name: &str) -> &'static str {
-    if name.starts_with("skin_") {
-        return "Mixer";
-    }
-    match name {
-        "workspace" | "watermark" | "version_text" => return "Workspace",
-        "clip" => return "Playlist",
-        "mixer_plate" => return "Mixer",
-        _ => {}
-    }
-    let mut area = SECTIONS[0].0;
-    for &key in Palette::NAMES {
-        if let Some(&(title, _)) = SECTIONS.iter().find(|(_, start)| *start == key) {
-            area = title;
-        }
-        if key == name {
-            break;
-        }
-    }
-    area
-}
+use os_theme::regions::{SECTIONS, section};
 
 fn matches(query: &str, label: &str, hint: &str, group: &str) -> bool {
     query.is_empty() || {
@@ -311,32 +349,34 @@ fn color_label(key: &str) -> String {
     label
 }
 
+fn style_section(key: &str) -> &'static str {
+    if let Some(area) = key.strip_prefix("tone-") {
+        return SECTIONS.iter().find(|(id, _, _)| area.starts_with(&format!("{id}-"))).map(|(_, title, _)| *title).unwrap_or("Shape & finish");
+    }
+    if key.starts_with("insert-") { return INSERT_SECTION; }
+    if key.starts_with("knob") { return "Shared dial controls"; }
+    match key {
+        "playlist-lines" | "playlist-buttons" => "Playlist",
+        "piano-lines" | "piano-buttons" => "Piano Roll",
+        "rack-steps" => "Channel Rack",
+        "mixer" | "mixer-buttons" => "Mixer",
+        _ => "Shape & finish",
+    }
+}
+
 pub fn groups(query: &str) -> Vec<(&'static str, Vec<Row>)> {
     let query = query.trim().to_ascii_lowercase();
     let mut result = Vec::new();
-    let styles = STYLES
-        .iter()
-        .enumerate()
-        .filter(|(_, def)| matches(&query, def.label, def.key, "Shape & finish"))
-        .map(|(i, _)| Row::Style(i))
-        .collect::<Vec<_>>();
-    if !styles.is_empty() {
-        result.push(("Shape & finish", styles));
-    }
-    for title in SECTIONS
-        .iter()
-        .map(|&(title, _)| title)
-        .chain(["Workspace"])
-    {
-        let mut rows = Palette::NAMES
-            .iter()
-            .copied()
-            .filter(|key| {
-                section(key) == title && matches(&query, key, Palette::description(key), title)
-            })
-            .map(Row::Color)
-            .collect::<Vec<_>>();
+    for title in std::iter::once("Shape & finish").chain(SECTIONS.iter().map(|(_, title, _)| *title)) {
+        if title == INSERT_SECTION && !crate::workspace_visibility::shown(INSERT_VISIBILITY) { continue; }
+        let mut rows = STYLES.iter().enumerate()
+            .filter(|(_, def)| (!def.key.starts_with("tone-") || crate::workspace_visibility::shown(AREA_VISIBILITY)) && style_section(def.key) == title && matches(&query, def.label, def.key, title))
+            .map(|(i, _)| Row::Style(i)).collect::<Vec<_>>();
+        rows.extend(Palette::NAMES.iter().copied()
+            .filter(|key| section(key) == title && matches(&query, key, Palette::description(key), title))
+            .map(Row::Color));
         if !rows.is_empty() {
+            if title == INSERT_SECTION { rows.insert(0, Row::InsertPreview); }
             rows.push(Row::Reset(title));
             result.push((title, rows));
         }
@@ -443,6 +483,15 @@ pub fn paint(ui: &mut Ui, s: &State, row: Row, r: Rect) {
             text,
         ),
         Row::Preview => preview(ui, r),
+        Row::InsertPreview => {
+            ui.c.text(Font::new(12), r.x, r.y + 3.0, ui.t.text_dim, "Plugin insert mix — 0%, 50%, 100%. Full Mixer follows Mixer finish / Skin Designer.");
+            let chrome = ui.t;
+            ui.t = ui.theme_preview.unwrap_or(ui.t);
+            for (i, value) in [0.0, 0.5, 1.0].into_iter().enumerate() {
+                crate::views::mixer::insert_knob(ui, crate::knobs::KnobId::SlotMix(0, 0), r.x + 25.0 + i as f32 * 56.0, r.y + 40.0, 1.0, value);
+            }
+            ui.t = chrome;
+        },
         Row::Mixer(row) => paint_mixer(ui, session, row, r),
         Row::Identity(row) => paint_identity(ui, s, row, r),
         Row::Color(token) => {
@@ -525,13 +574,14 @@ pub fn paint(ui: &mut Ui, s: &State, row: Row, r: Rect) {
             if Palette::NAMES
                 .iter()
                 .any(|key| section(key) == group && fl::get_key(text, &color_key(key)).is_some())
+                || STYLES.iter().enumerate().any(|(i, def)| style_section(def.key) == group && fl::get_key(text, &style_key(i)).is_some())
             {
                 button(
                     ui,
                     Rect::new(r.x, r.y + 2.0, 120.0, 24.0),
                     Hit::ResetGroup(group),
-                    "Reset section colors",
-                    "Remove custom colors in this section",
+                    "Reset section",
+                    "Restore this section's colors, styles and area adjustments",
                     false,
                 );
             }
@@ -987,6 +1037,17 @@ fn paint_mixer(ui: &mut Ui, session: &Session, row: MixerRow, r: Rect) {
 }
 
 impl App {
+    pub(crate) fn open_insert_theme_editor(&mut self) {
+        self.start_theme_editor();
+        let edit = self.state.settings.advanced_theme.as_mut().unwrap();
+        edit.mixer_designer = None;
+        edit.identity = false;
+        edit.query.set(INSERT_SECTION);
+        edit.groups = groups(INSERT_SECTION);
+        self.state.settings.scroll = 0.0;
+        self.invalidate();
+    }
+
     pub(crate) fn start_theme_editor(&mut self) {
         if self.state.settings.advanced_theme.is_some() {
             return;
@@ -1111,10 +1172,12 @@ impl App {
             Hit::Choice(i, value) => fl::set_key(&text, &style_key(i), value),
             Hit::ResetColor(token) => fl::remove_key(&text, &color_key(token)),
             Hit::Mixer(_) | Hit::Identity(_) => unreachable!("Designer hits dispatched above"),
-            Hit::ResetGroup(group) => Palette::NAMES
-                .iter()
-                .filter(|key| section(key) == group)
-                .fold(text, |text, token| fl::remove_key(&text, &color_key(token))),
+            Hit::ResetGroup(group) => {
+                let text = Palette::NAMES.iter().filter(|key| section(key) == group)
+                    .fold(text, |text, token| fl::remove_key(&text, &color_key(token)));
+                STYLES.iter().enumerate().filter(|(_, def)| style_section(def.key) == group)
+                    .fold(text, |text, (i, _)| fl::remove_key(&text, &style_key(i)))
+            },
         };
         self.apply_editor_text(next);
         self.invalidate();

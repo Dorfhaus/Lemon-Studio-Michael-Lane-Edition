@@ -4,6 +4,21 @@ use crate::app::{Scroll, Win};
 use crate::views::menus::{self, HELP_GUIDE, HELP_MENU};
 use os_ui::Canvas;
 
+#[test]
+fn ssl_link_setup_opens_article_and_respects_guide_visibility() {
+    let mut app = App::new(None);
+    crate::settings_file::set_flag(VISIBILITY, true);
+    crate::settings_file::set_flag(DETACHED_PREF, false);
+    crate::rack_mixer::run(&mut app, crate::rack_mixer::Command::LinkHelp);
+    assert!(is_open(&app.state));
+    assert_eq!(topics()[app.state.guide.topic().unwrap()].title, crate::rack_mixer::LINK_GUIDE);
+    app.state.settings.open = false;
+    crate::settings_file::set_flag(VISIBILITY, false);
+    crate::rack_mixer::run(&mut app, crate::rack_mixer::Command::LinkHelp);
+    assert!(!is_open(&app.state));
+    crate::settings_file::set_flag(VISIBILITY, true);
+}
+
 fn click(app: &mut App, action: Hit) {
     let r = app
         .hits

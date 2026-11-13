@@ -190,6 +190,10 @@ pub fn focus_frame(c: &mut Canvas, t: &Palette, r: Rect, width: f32) {
 /// Knobs stay round: a dark disc, a track ring, the value as a lemon arc and a light pointer.
 #[allow(clippy::too_many_arguments)]
 pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, bipolar: bool, look: KnobLook, st: State) {
+    knob_appearance(c, t, cx, cy, r, value, bipolar, look, st, &t.appearance);
+}
+
+pub fn knob_appearance(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, bipolar: bool, look: KnobLook, st: State, appearance: &os_theme::appearance::Appearance) {
     let v = value.clamp(0.0, 1.0);
     let start = 0.75 * PI;
     let sweep = 1.5 * PI;
@@ -202,7 +206,7 @@ pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, b
     // Ring radius, ring width, disc radius.
     let (ring, w, disc) = match look {
         KnobLook::Mixer { halo, .. } => {
-            c.fill_circle(cx, cy, halo, t.mixer_strip_dark);
+            if !appearance.knob_body_only { c.fill_circle(cx, cy, halo, t.mixer_strip_dark); }
             (halo - 2.0, (halo * 0.18).clamp(2.0, 3.0), r)
         }
         KnobLook::Row => (r - 0.8, 1.6, r - 2.6),
@@ -212,8 +216,8 @@ pub fn knob(c: &mut Canvas, t: &Palette, cx: f32, cy: f32, r: f32, value: f32, b
         }
     };
     let show_arc = !matches!(look, KnobLook::Mixer { arc: false, .. });
-    c.arc(cx, cy, ring, start, sweep, w, track);
-    if show_arc && span > 0.01 {
+    if !appearance.knob_body_only { c.arc(cx, cy, ring, start, sweep, w, track); }
+    if !appearance.knob_body_only && show_arc && span > 0.01 {
         c.arc(cx, cy, ring, a0.min(a1), span, w, value_col);
     }
     let base = if st.hover && !off { Color::rgb(0x505050) } else { Color::rgb(0x454545) };

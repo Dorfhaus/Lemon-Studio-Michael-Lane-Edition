@@ -214,6 +214,8 @@ pub enum Mark {
 /// Commands of the playlist's popup menus (§10).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
+    #[cfg(plugin_windows)]
+    SamplerTrack(crate::route_picker::SamplerTrackCommand),
     TrackLink(crate::playlist_links::Command),
     ImportReport,
     ExportImportReport,
@@ -563,6 +565,16 @@ pub struct Popup {
     pub scroll: [usize; 2],
     /// Each deeper open folder: selected row in its parent and its own column scroll.
     pub cascade: Vec<(usize, usize)>,
+}
+
+impl Popup {
+    pub(crate) fn submenu_item(&self, depth: usize, index: usize) -> Option<&PItem> {
+        let mut entries = &self.items.get(self.sub?)?.children;
+        for &(parent, _) in self.cascade.get(..depth.checked_sub(1)?)? {
+            entries = &entries.get(parent)?.children;
+        }
+        entries.get(index)
+    }
 }
 
 /// A Themes tile's menu (Settings > Theme; `App::theme_cmd`): the tile's index in `SettingsUi::themes`.
@@ -5152,6 +5164,8 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
     }
     // Commands that need the whole app.
     match cmd {
+        #[cfg(plugin_windows)]
+        Cmd::SamplerTrack(command) => return crate::route_picker::run_sampler_track_menu(app, command),
         Cmd::ExportImportReport=>{crate::import_report::export(app);return None;},
         Cmd::ImportReport=>{crate::import_report::show(app,0);return None;},
         Cmd::ImportOptions=>{crate::import_report::options(app);return None;},
@@ -5506,6 +5520,8 @@ pub fn run(app: &mut App, cmd: Cmd) -> Option<String> {
             crate::playlist_tools::select(s, PlTool::Paint);
             None
         }
+        #[cfg(plugin_windows)]
+        Cmd::SamplerTrack(_) => None,
         Cmd::InputBinding(_) | Cmd::MenuLayout(_) | Cmd::MainMenu(..) | Cmd::PopupBack(_) | Cmd::TypingLayout(_) | Cmd::Harmony(_) | Cmd::Nothing | Cmd::Pick(..) | Cmd::Browser(_) | Cmd::Plugin(_) | Cmd::Project(_) | Cmd::Rack(_) | Cmd::Mixer(_) | Cmd::Param(_) | Cmd::Preset(_) | Cmd::Misc(..) | Cmd::PluginMenu(..) | Cmd::PluginDetach(..) | Cmd::WaveSize(..) | Cmd::Piano(_) | Cmd::Audio(_) | Cmd::Cpu(_) | Cmd::MetronomeSound(_) | Cmd::MetronomeVolume(_) | Cmd::Record(_) | Cmd::RecPrecountBars(_) | Cmd::OneClick(..) | Cmd::OneClickEditor | Cmd::Rec(_) | Cmd::ContinuousScrolling | Cmd::Pattern(_) | Cmd::ClockMode(_) | Cmd::ClockBeat(_) | Cmd::Toolbar(_) | Cmd::ToolbarPreset(_) | Cmd::WorkspaceLayout(_) | Cmd::ToolbarSave | Cmd::ToolbarDelete | Cmd::TimeSig(..) | Cmd::AddSignature | Cmd::MarkerSigAt(_) | Cmd::MarkerEveryMenu | Cmd::Bar(..) | Cmd::PanningLaw(_) | Cmd::TimeMode(_) | Cmd::Timebase(_) => None,
         Cmd::NotYet(name) => Some(format!("{name}: not available yet")),
         Cmd::Tool(t) => {

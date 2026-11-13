@@ -93,3 +93,66 @@ pub fn open_rack(app: &mut App, row: usize, spread: bool) {
         f.rack = Some((rows, spread));
     }
 }
+
+#[cfg(plugin_windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SamplerTrackCommand {
+    Pick(usize),
+    Show(usize),
+    Master(usize),
+    ToggleDrag,
+}
+
+#[cfg(plugin_windows)]
+pub(crate) fn sampler_track_menu(s: &crate::app::State, row: usize, x: f32, y: f32) -> Option<crate::playlist::Popup> {
+    use crate::playlist::{Cmd, Mark, PItem, Popup};
+    use SamplerTrackCommand::*;
+
+    let ch = s.project.channels.get(row).filter(|ch| ch.kind.is_sampler())?;
+    let track = ch.mixer_track;
+    let step = crate::settings_file::flag(crate::plugin_window::SAMPLER_TRACK_DRAG, false);
+    let mut master = PItem::new("Route to Master", Cmd::SamplerTrack(Master(row)));
+    if track == 0 || crate::mixer::track(s, 0).is_none() || crate::mixer::locked(s, track) || crate::mixer::locked(s, 0) {
+        master = master.off();
+    }
+    Some(Popup {
+        x, y,
+        items: vec![
+            PItem::new("Choose Mixer track...", Cmd::SamplerTrack(Pick(row))),
+            PItem::new("Show current Mixer track", Cmd::SamplerTrack(Show(row))),
+            master,
+            PItem::sep(),
+            PItem::new("Drag up/down to change Mixer track", Cmd::SamplerTrack(ToggleDrag)).mark(Mark::Check(step)),
+        ],
+        sub: None,
+        scroll: [0; 2],
+        cascade: Vec::new(),
+    })
+}
+
+#[cfg(plugin_windows)]
+pub(crate) fn run_sampler_track_menu(app: &mut App, command: SamplerTrackCommand) -> Option<String> {
+    use SamplerTrackCommand::*;
+
+    let row = match command {
+        Pick(row) | Show(row) | Master(row) => row,
+        ToggleDrag => {
+            let key = crate::plugin_window::SAMPLER_TRACK_DRAG;
+            crate::settings_file::set_flag(key, !crate::settings_file::flag(key, false));
+            app.invalidate();
+            return None;
+        }
+    };
+    let track = app.state.project.channels.get(row).filter(|ch| ch.kind.is_sampler())?.mixer_track;
+    match command {
+        Pick(_) => app.open_plugin_route_picker(row),
+        Show(_) => {
+            crate::mixer::track(&app.state, track)?;
+            app.state.raise(crate::app::Win::Mixer);
+            app.reveal_mixer_track(track);
+        }
+        Master(_) => return app.commit_sampler_track_step(row, track, 0),
+        ToggleDrag => {}
+    }
+    None
+}

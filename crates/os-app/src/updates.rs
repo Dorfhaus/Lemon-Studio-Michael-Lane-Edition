@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 #[path = "update_retention.rs"]
 mod retention;
 
-pub const VERSION: u64 = 2026111302;
+pub const VERSION: u64 = 2026111303;
 #[cfg(windows)]
 pub const FEED: &str = "https://michaellanemusic.de/lemon-studio/updates/stable.json";
 #[cfg(windows)]

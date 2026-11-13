@@ -107,6 +107,7 @@ pub struct FlTheme {
     /// theme (spec: ui/theme-presets.md §B).
     pub colors: Option<crate::Design>,
     pub appearance: crate::appearance::Appearance,
+    pub area_tones: [crate::regions::Tone; 14],
     pub color_overrides: Vec<(&'static str, Color)>,
 }
 
@@ -177,6 +178,7 @@ impl FlTheme {
             back_color: col("backcolor"),
             back_picture: kv.get("backpicfilename").cloned().unwrap_or_default(),
             colors: kv.get(&COLORS_KEY.to_ascii_lowercase()).and_then(|v| crate::Design::parse(v)),
+            area_tones: crate::regions::parse(|key| kv.get(&format!("{}{key}", crate::appearance::STYLE_PREFIX.to_ascii_lowercase())).cloned()),
             appearance: crate::appearance::Appearance::parse(|key| {
                 kv.get(&format!("{}{key}", crate::appearance::STYLE_PREFIX.to_ascii_lowercase())).cloned()
             }),
@@ -195,7 +197,7 @@ impl FlTheme {
     /// Whether this is the stock Dark theme, whatever its clip note colours option: the colours a skin has of its own
     /// (no theme).
     pub fn is_stock(&self) -> bool {
-        self.same_colours(&FlTheme { appearance: self.appearance, color_overrides: self.color_overrides.clone(), ..FlTheme::dark() })
+        self.same_colours(&FlTheme { appearance: self.appearance, area_tones: self.area_tones, color_overrides: self.color_overrides.clone(), ..FlTheme::dark() })
     }
 
     /// Whether the two themes differ at most in their clip note colours option.

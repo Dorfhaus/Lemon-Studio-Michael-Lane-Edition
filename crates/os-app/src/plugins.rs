@@ -184,6 +184,8 @@ pub enum Request {
     TrackHover(i32,i32),
     TrackDrop(usize,i32,i32),
     PickTrack(usize),
+    TrackMenu(usize, i32, i32),
+    CommitTrackStep(usize, u16, u16),
     /// A preview note from a Lemon plugin's own keyboard (host link): row, key, velocity, on.
     Note(usize, u8, u8, bool),
     /// "Create automation clip" from a Lemon plugin's own parameter menu (host link): row, parameter index.
@@ -1113,7 +1115,9 @@ impl Plugins {
         #[cfg(target_os="macos")]
         if h.name=="ML Wave" {w.set_editor_zoom(wave_zoom());}
         // Keep the mixer routing target visible when opening a sample.
-        w.set_strip(row < FX_KEY && h.name == LEMON_SAMPLER);
+        let sampler = row < FX_KEY && h.name == LEMON_SAMPLER;
+        w.set_sampler_track(sampler);
+        w.set_strip(sampler);
         // The editor takes the frame's scale (on Linux the X server's, not the main window's).
         let k = w.scale();
         let result = editor_action(&h.plugin, os_host::EditorAction::Open { parent: w.area(), scale: k });
@@ -1220,6 +1224,11 @@ impl Plugins {
     #[cfg(plugin_windows)]
     pub fn window_of(&self, row: usize) -> Option<(isize, bool)> {
         self.hosted.get(&row).and_then(|h| h.window.as_ref()).map(|w| (w.hwnd(), w.detached()))
+    }
+
+    #[cfg(plugin_windows)]
+    pub fn cancel_sampler_track_step(&self) -> bool {
+        self.hosted.values().filter_map(|h| h.window.as_ref()).any(|w| w.cancel_sampler_track_step())
     }
 
     /// Docks or detaches row `row`'s window (window menu > Detached); closed, it opens that way next time.
@@ -1437,6 +1446,8 @@ impl Plugins {
                         FrameEvent::TrackDrop(x,y) => Request::TrackDrop(row,x,y),
                         #[cfg(target_os="linux")] FrameEvent::Undo(redo)=>Request::Undo(redo),
                         FrameEvent::PickTrack => Request::PickTrack(row),
+                        FrameEvent::TrackMenu(x, y) => Request::TrackMenu(row, x, y),
+                        FrameEvent::CommitTrackStep { from, to } => Request::CommitTrackStep(row, from, to),
                         FrameEvent::Raise => Request::Raise(row),
                         FrameEvent::Detach(on) => Request::Detach(row, on),
                         FrameEvent::SidechainMenu(x,y)=>Request::SidechainMenu(row,x,y),

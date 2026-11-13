@@ -92,11 +92,14 @@ pub(super) fn signal_switch(ui: &mut Ui, r: Rect, on: bool, hover: bool, swap: b
     ui.c.pop_clip();
 }
 pub(super) fn knob(ui: &mut Ui, x: f32, y: f32, r: f32, value: f32, cap: Color, hover: bool) {
+    knob_body(ui, x, y, r, value, cap, hover, false);
+}
+pub(super) fn knob_body(ui: &mut Ui, x: f32, y: f32, r: f32, value: f32, cap: Color, hover: bool, body_only: bool) {
     if !ui.c.visible(Rect::new(x-r-5.,y-r-5.,2.*r+10.,2.*r+10.)) {return;}
     let q=r*48./39.;
     ui.c.image_rgba(Rect::new(x-q,y-q+2.*r/39.,q*2.,q*2.),super::material::DIM,super::material::DIM,super::material::knob());
     // Restrained colour coding sits outside the silver rim, with a clear gap.
-    ui.c.arc(x,y,r+2.1,-225.*PI/180.,270.*PI/180.,if hover {1.2}else{0.8},cap.mix(DARK,if hover {0.0}else{0.12}));
+    if !body_only { ui.c.arc(x,y,r+2.1,-225.*PI/180.,270.*PI/180.,if hover {1.2}else{0.8},cap.mix(DARK,if hover {0.0}else{0.12})); }
     let a=(-225.+270.*value.clamp(0.,1.))*PI/180.;
     ui.c.line(x+a.cos()*r*0.25,y+a.sin()*r*0.25,x+a.cos()*r*0.74,y+a.sin()*r*0.74,(r*0.11).clamp(0.7,1.4),Color::rgb(0xedf1ed));
 }

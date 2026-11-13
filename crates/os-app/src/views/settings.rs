@@ -9,7 +9,7 @@
 //! The Plugins tab is the plugin manager (search folders, scanning, the plugin table).
 // spec: ui/settings.md, ui/plugin-manager.md
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::prefs::language::Language;
 use os_ui::kit::lemon as lk;
@@ -26,6 +26,7 @@ pub enum SAct {
     Body,
     DragTitle,
     VisibilitySearch,
+    VisibilityToggle(&'static str),
     Help(crate::help::Hit),
     MenuLayout(crate::menu_layout::Action),
     InputBindings(crate::input_bindings::Edit),
@@ -177,6 +178,7 @@ pub struct SettingsUi {
     pub advanced_theme: Option<crate::advanced_theme::Session>,
     /// Groups whose open state differs from their default.
     pub folded: HashSet<&'static str>,
+    pub(crate) folded_pages: HashMap<usize, HashSet<&'static str>>,
     /// Filled when the window opens: output devices and ASIO drivers, theme files (name, path), selected preset.
     pub devices: Vec<String>,
     pub asio_drivers: Vec<String>,
@@ -319,9 +321,8 @@ const NO_PERFORMANCE: &str = "ML Studio has no playlist performance mode";
 /// `LIVE`, and the checks declared in `crate::prefs`.
 fn live(key: &str) -> bool {
     LIVE.contains(&key) || crate::prefs::find_check(key).is_some()
-        || crate::workspace_visibility::key(key).is_some()
         || matches!(key, crate::vintage::LABEL | OPEN_VISIBILITY | crate::workspace_visibility::RESET | crate::menu_layout::OPEN
-            | crate::advanced_theme::OPEN | crate::advanced_theme::APPLY | crate::advanced_theme::CANCEL
+            | crate::advanced_theme::INSERT_OPEN | crate::advanced_theme::OPEN | crate::advanced_theme::APPLY | crate::advanced_theme::CANCEL
             | crate::advanced_theme::EXPORT | crate::advanced_theme::WALLPAPER | crate::advanced_theme::CLEAR_WALLPAPER
             | crate::mixer_skin::OPEN | crate::mixer_skin::BACK | crate::mixer_skin::CLOSE | crate::theme_identity::OPEN)
 }
@@ -553,6 +554,7 @@ pub fn rect(s: &State) -> Rect {
 pub enum Row {
     /// Check: label, default.
     Check(&'static str, bool),
+    VisibilityToggle(&'static str, &'static str),
     VisibilitySearch,
     MenuControls(bool),
     MenuName,
@@ -698,11 +700,9 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             ])];
             for &(section, options) in v::GROUPS {
                 let rows = options.iter().filter(|&&(label, _)| {
-                    query.is_empty() || section.to_ascii_lowercase().contains(&query)
-                        || label.to_ascii_lowercase().contains(&query)
-                        || language.text(section).to_lowercase().contains(&query)
-                        || language.text(label).to_lowercase().contains(&query)
-                }).map(|&(label, key)| Check(label, v::shown(key))).collect::<Vec<_>>();
+                    let searchable = format!("{} {} {} {}", section, label, language.text(section), language.text(label)).to_lowercase();
+                    query.split_whitespace().all(|word| searchable.contains(word))
+                }).map(|&(label, key)| VisibilityToggle(label, key)).collect::<Vec<_>>();
                 if !rows.is_empty() {
                     groups.push(if query.is_empty() {
                         gf(section, true, rows)
@@ -1086,7 +1086,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             let mut rows = vec![
                 Buttons(vec![(crate::mixer_skin::BACK, 180.0), (crate::mixer_skin::CLOSE, 150.0)]),
                 Buttons(vec![(a::APPLY, 88.0), (a::CANCEL, 85.0), (THEME_UNDO, 58.0), (THEME_REDO, 58.0), (a::EXPORT, 100.0)]),
-                txt("Design controls for the full Mixer and Channel Strip layouts."),
+                txt("Design Full Mixer / Channel Strip controls, also used by Traditional insert knobs when selected."),
                 row(M::Target), row(M::Components), row(M::Preview),
             ];
             if part != crate::mixer_skin::Part::Meter { rows.push(row(M::States)); }
@@ -1100,7 +1100,8 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             use crate::advanced_theme as a;
             let editor = st.advanced_theme.as_ref().unwrap();
             let mut sections = vec![g("Theme Editor", vec![
-                txt("Preview live. Enter saves a field. Apply keeps the changes."),
+                txt("Preview live. Enter saves a field. Apply keeps the changes. Cancel restores your starting theme."),
+                txt("Each area has hue, saturation, brightness and contrast. Area adjustments tint its custom colors too."),
                 Buttons(vec![(a::APPLY, 94.0), (a::CANCEL, 92.0), (THEME_UNDO, 62.0), (THEME_REDO, 62.0), (a::EXPORT, 110.0)]),
                 ThemeEditor(a::Row::Search),
                 ThemeEditor(a::Row::Preview),
@@ -1146,6 +1147,10 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
             let themes = st.themes.iter().map(|(n, _)| n.clone()).collect();
             std::iter::once(featured)
             .chain(scrollbar)
+            .chain(crate::workspace_visibility::shown(crate::advanced_theme::INSERT_VISIBILITY).then(|| g(crate::advanced_theme::INSERT_SECTION, vec![
+                txt("Choose Full Mixer insert knobs, or customize the thin value ring and outer circle separately."),
+                Buttons(vec![(crate::advanced_theme::INSERT_OPEN, 186.0)]),
+            ])))
             .chain([
                 g("Customize", vec![Buttons(vec![(crate::advanced_theme::OPEN, 160.0), (crate::mixer_skin::OPEN, 166.0), (crate::theme_identity::OPEN, 120.0), (crate::advanced_theme::EXPORT, 110.0)])]),
                 g("Mixer", vec![combo(s.fl_text.as_deref().and_then(|text| os_theme::fl::get_key(text, crate::mixer_skin::FINISH))
@@ -1287,7 +1292,7 @@ pub fn page(tab: usize, s: &State) -> Vec<Group> {
 
 fn row_h(r: &Row) -> f32 {
     match r {
-        Row::Check(..) | Row::Check2(..) | Row::Off(..) => 21.0,
+        Row::Check(..) | Row::VisibilityToggle(..) | Row::Check2(..) | Row::Off(..) => 21.0,
         Row::Combo(..) | Row::Value(..) | Row::ValueR(..) => 27.0,
         Row::Buttons(..) | Row::VisibilitySearch | Row::MenuControls(..) | Row::MenuName => 36.0,
         Row::MenuEntry(..) => 30.0,
@@ -1322,6 +1327,17 @@ fn group_h(gr: &Group, open: bool) -> f32 {
         return head;
     }
     head + gr.rows.iter().map(row_h).sum::<f32>() + 8.0
+}
+
+impl SettingsUi {
+    pub(crate) fn select_tab(&mut self, tab: usize) {
+        if self.tab != tab {
+            self.folded_pages.insert(self.tab, std::mem::take(&mut self.folded));
+            self.folded = self.folded_pages.remove(&tab).unwrap_or_default();
+            self.tab = tab;
+            self.scroll = 0.0;
+        }
+    }
 }
 
 fn group_open(st: &SettingsUi, gr: &Group) -> bool {
@@ -1435,11 +1451,12 @@ fn paint_window(ui: &mut Ui, s: &State) {
     ui.c.fill_rect(Rect::new(r.x + 1.0, r.y + TABS_B, r.w - 2.0, 1.0), t.s(0x1c1e21));
     // Page.
     let area = Rect::new(r.x + 1.0, r.y + TABS_B + 1.0, r.w - 2.0, r.h - TABS_B - 3.0);
-    let total = content_h(s);
+    let groups = page(st.tab, s);
+    let total = groups.iter().map(|gr| group_h(gr, group_open(st, gr)) + 6.0).sum::<f32>() + 16.0;
     let scroll = st.scroll.min((total - area.h).max(0.0)).max(0.0);
     ui.c.push_clip(area);
     let mut y = area.y + 7.0 - scroll;
-    for gr in page(st.tab, s) {
+    for gr in groups {
         let open = group_open(st, &gr);
         let h = group_h(&gr, open);
         if y + h > area.y && y < area.bottom() {
@@ -1693,6 +1710,10 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
 fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: bool) {
     // A check declared in `crate::prefs` shows its state (the row's is its default).
     let on = crate::prefs::find_check(key).map_or(on, crate::prefs::check);
+    check_control(ui, key, on, (x, cy), enabled.then_some(SAct::Check(key)));
+}
+
+fn check_control(ui: &mut Ui, key: &'static str, on: bool, (x, cy): (f32, f32), action: Option<SAct>) {
     let t = ui.t;
     let label = Language::current().text(key);
     let tw = ui.c.text_width(Font::new(13), label);
@@ -1710,7 +1731,8 @@ fn check(ui: &mut Ui, key: &'static str, on: bool, x: f32, cy: f32, enabled: boo
         return;
     }
     let hr = Rect::new(x - 8.0, cy - 9.0, tw + 26.0, 18.0);
-    let hov = enabled && ui.hit(hr, Action::Settings(SAct::Check(key)), "");
+    let enabled = action.is_some();
+    let hov = action.is_some_and(|action| ui.hit(hr, Action::Settings(action), ""));
     if !enabled {
         ui.off(hr, key);
     }
@@ -1826,6 +1848,10 @@ fn paint_row_at(ui: &mut Ui, s: &State, group: &'static str, row: &Row, g: Rect,
         Row::Check(k, _) if *k == ASSOCIATE_CHECK => check_greyed(ui, k, x0 + 10.0, cy, ASSOCIATE_ELSEWHERE),
         // A check that is not available yet shows its default, greyed out.
         Row::Check(k, d) => check(ui, k, *d, x0 + 10.0, cy, live(k)),
+        Row::VisibilityToggle(label, key) => check_control(
+            ui, label, crate::workspace_visibility::shown(key), (x0 + 10.0, cy),
+            Some(SAct::VisibilityToggle(key)),
+        ),
         Row::Off(k, d) => check(ui, k, *d, x0 + 10.0, cy, false),
         Row::Check2(a, da, b, db) => {
             check(ui, a, *da, g.x + 22.0, cy, live(a));

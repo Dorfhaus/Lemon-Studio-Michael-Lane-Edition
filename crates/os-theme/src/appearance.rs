@@ -76,6 +76,24 @@ pub enum Mixer {
 /// Resolved rendering options. Each stays absent until a theme opts in.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Appearance {
+    /// Insert-slot controls are independent of shared dials and the Full Mixer finish.
+    pub insert_knob: Option<Knob>,
+    pub insert_full_knob: bool,
+    pub insert_traditional_knob: bool,
+    pub insert_custom: bool,
+    pub insert_ring: Option<bool>,
+    pub insert_rim: Option<bool>,
+    pub insert_ring_width: Option<f32>,
+    pub insert_rim_width: Option<f32>,
+    pub knob_track_custom: bool,
+    pub knob_rim_custom: bool,
+    pub knob_ring_visible: Option<bool>,
+    pub knob_rim_visible: Option<bool>,
+    pub knob_track_visible: Option<bool>,
+    pub knob_ring_width: Option<f32>,
+    pub knob_pointer_width: Option<f32>,
+    /// Painter-only: render a cap without its surrounding decorations.
+    pub knob_body_only: bool,
     pub buttons: Option<Finish>,
     pub panels: Option<Finish>,
     pub playlist_buttons: Option<Finish>,
@@ -122,7 +140,29 @@ impl Appearance {
                 .filter(|n| n.is_finite())
                 .map(|n| n.clamp(0.0, max))
         };
+        let visible = |key| match option(key).as_str() {
+            "Show" => Some(true), "Hide" => Some(false), _ => None,
+        };
         Self {
+            insert_knob: match option("insert-knob").as_str() {
+                "Dial" => Some(Knob::Dial), "Ring" => Some(Knob::Ring), _ => None,
+            },
+            insert_full_knob: option("insert-knob") == "Full Mixer",
+            insert_traditional_knob: option("insert-knob") == "Traditional",
+            insert_custom: ["insert-knob", "insert-ring", "insert-rim", "insert-ring-width", "insert-rim-width"]
+                .iter().any(|key| get(key).is_some()),
+            insert_ring: visible("insert-ring"),
+            insert_rim: visible("insert-rim"),
+            insert_ring_width: num("insert-ring-width", 2.0),
+            insert_rim_width: num("insert-rim-width", 2.0),
+            knob_track_custom: false,
+            knob_rim_custom: false,
+            knob_ring_visible: visible("knob-ring-visible"),
+            knob_rim_visible: visible("knob-rim-visible"),
+            knob_track_visible: visible("knob-track-visible"),
+            knob_ring_width: num("knob-ring-width", 3.0),
+            knob_pointer_width: num("knob-pointer-width", 3.0),
+            knob_body_only: false,
             buttons: Finish::parse(&option("buttons")),
             panels: Finish::parse(&option("panels")),
             playlist_buttons: Finish::parse(&option("playlist-buttons")),
@@ -206,9 +246,12 @@ impl Appearance {
             if matches!(name, "indicator_on" | "indicator_off") {
                 self.indicator.get_or_insert(Indicator::Round);
             }
-            if matches!(name, "knob_cap" | "knob_pointer" | "knob_ring") {
+            self.knob_track_custom |= name == "knob_track";
+            self.knob_rim_custom |= name == "knob_rim";
+            if name.starts_with("knob_") {
                 self.knob.get_or_insert(Knob::Ring);
             }
+            if name.starts_with("insert_knob_") { self.insert_custom = true; }
             // Existing exported themes with mixer overrides also need the palette
             // renderer. An explicitly chosen authored finish still takes precedence.
             if name.starts_with("mixer_") || name.starts_with("slot") || name == "fader_handle" {
@@ -224,6 +267,11 @@ impl Appearance {
                     | "on_top"
                     | "on_bottom"
             );
+        }
+        if self.knob_ring_visible.is_some() || self.knob_rim_visible.is_some()
+            || self.knob_track_visible.is_some() || self.knob_ring_width.is_some()
+            || self.knob_pointer_width.is_some() {
+            self.knob.get_or_insert(Knob::Ring);
         }
         palette.style = self.style(palette.style);
         palette.pl_lines = self.playlist_lines.unwrap_or(palette.pl_lines);

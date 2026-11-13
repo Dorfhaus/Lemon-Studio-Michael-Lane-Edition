@@ -12,6 +12,7 @@ mod vintage_cap;
 mod console_skin;
 mod themed;
 pub use console_skin::Finish;
+pub(crate) use console_skin::insert_knob;
 mod material;
 
 use std::f32::consts::PI;
@@ -1595,8 +1596,10 @@ fn slot_panel(ui: &mut Ui, s: &State, r: Rect) {
         paint_slot_label(ui, text, plugin.as_deref(), i + 1, font_size, 4.0 * kp);
         let mix = KnobId::SlotMix(n, k);
         ui.hit(Rect::new(row.right() - 46.0, row.y, 26.0, row.h), Action::Knob(mix), s.knob_text(mix));
-        if mx::view(s)==mx::WIDE {console_skin::knob(ui,mix,row.right()-33.,row.cy(),8.5*q,s.knob(mix),Color::rgb(0xc2c7c9),false);}else{mixer_knob(ui, row.right() - 33.0, row.cy(), 10.5 * q, 12.0 * q, s.knob(mix), Some(false));}
-        ui.c.stroke_circle(row.right() - 33.0, row.cy(), 11.8 * q, 1.5, ui.t.s(0x55595c));
+        if mx::view(s)==mx::WIDE {
+            console_skin::knob(ui,mix,row.right()-33.,row.cy(),8.5*q,s.knob(mix),Color::rgb(0xc2c7c9),false);
+            ui.c.stroke_circle(row.right() - 33.0, row.cy(), 11.8 * q, 1.5, ui.t.s(0x55595c));
+        } else { insert_knob(ui, mix, row.right() - 33.0, row.cy(), if ui.t.appearance.insert_custom { kp } else { q }, s.knob(mix)); }
         ui.hit(Rect::new(row.right() - 18.0, row.y, 18.0, row.h), Action::Mix(MHit::SlotLed(k)), "Mute / solo  (ctrl)0..9");
         led(ui, row.right() - 10.0, row.cy(), track.is_none_or(|m| m.slot_on[k as usize]));
     }

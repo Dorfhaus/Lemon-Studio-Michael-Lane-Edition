@@ -147,6 +147,15 @@ pub fn close_detached(app: &mut App) {
     app.invalidate();
 }
 
+pub(crate) fn open_topic(app: &mut App, title: &str) {
+    if !crate::workspace_visibility::shown(VISIBILITY) { return; }
+    if let Some(index) = topics().iter().position(|topic| topic.title == title) {
+        open(app);
+        app.state.guide.navigate(Page::Topic(index));
+        app.invalidate();
+    }
+}
+
 pub fn fallback_to_docked(app: &mut App) {
     close_detached(app);
     crate::settings_file::set_flag(DETACHED_PREF, false);

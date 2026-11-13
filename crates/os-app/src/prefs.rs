@@ -939,6 +939,7 @@ main_gui_scaling = 200%
     fn declarations_match_the_settings_pages() {
         let mut app = App::new(None);
         app.state.midi.advanced = true;
+        crate::settings_file::set_flag(settings::AUDIO_ADVANCED_KEY, true);
         let mut checks_shown = Vec::new();
         let mut combos_shown = Vec::new();
         let mut numbers_shown = Vec::new();
@@ -966,7 +967,10 @@ main_gui_scaling = 200%
         let mut keys = Vec::new();
         let mut labels = Vec::new();
         for c in checks() {
-            assert!(checks_shown.contains(&c.label), "{} is a check on a settings page", c.label);
+            // Legacy profiles retain the brightness fallback and the retired tick-alignment flag.
+            if ![BRIGHT_PLAYLIST_CLIPS.key, ALIGN_TICK_LENGTHS.key].contains(&c.key) {
+                assert!(checks_shown.contains(&c.label), "{} is a check on a settings page", c.label);
+            }
             keys.push(c.key);
             labels.push(c.label);
         }
@@ -1572,7 +1576,7 @@ main_gui_scaling = 200%
         assert!(!app.hits.iter().any(|h| h.action == Action::Placeholder(BROWSER_PREVIEW_TRACK.label)));
         let r = hit_rect(&app, &key);
         click(&mut app, &mut c, r);
-        assert_eq!(app.state.message.as_deref(), Some("Browser preview track: the mouse wheel changes it"));
+        assert_eq!(number(&BROWSER_PREVIEW_TRACK), 0, "clicking arms a drag without changing the route");
         app.mouse_move(r.cx(), r.cy());
         app.wheel(0.0, 1.0, false, false);
         assert_eq!(number(&BROWSER_PREVIEW_TRACK), 1);

@@ -388,6 +388,7 @@ pub fn palette(design: Design, theme: Option<&FlTheme>) -> Palette {
     p.wallpaper = theme.and_then(fl::wallpaper);
     if let Some(theme) = theme {
         theme.appearance.apply(&mut p, &theme.color_overrides);
+        crate::regions::apply(&mut p, &theme.area_tones);
     }
     p
 }

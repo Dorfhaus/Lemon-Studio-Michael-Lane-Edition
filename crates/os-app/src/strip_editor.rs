@@ -121,12 +121,14 @@ impl crate::plugins::Plugins {
 /// Probe the original editor invisibly on direct load. Non-scaling portrait editors
 /// are accepted at their actual size; layout adapts instead of cropping them.
 fn prepare(d:&os_host::Descriptor,scale:f32,r:[i32;4],mut probe:impl FnMut(f32)->Result<(u32,u32),String>)->Result<f32,String>{
-    if !crate::rack_mixer::strip_kind(d){return Err("Choose a supported Waves strip or an experimental resizable channel strip.".into());}
+    if !crate::rack_mixer::strip_kind(d){return Err("Choose a supported Waves strip, SSL 360 Link VST3, or an experimental resizable channel strip.".into());}
     let spec=if let Some(spec)=crate::rack_mixer::vertical_spec(d){spec}else{
         let size=probe(1.)?;crate::rack_mixer::observe_editor(d,size,1.);
         if !crate::rack_mixer::vertical_shape(size){return Err("This plugin reported an invalid editor size.".into());}size
     };
-    let experimental=!d.vendor.eq_ignore_ascii_case("Waves");
+    // Link also has its own zoom control. Keep the complete editor when host scaling
+    // is declined so its plugin browser and mapping page remain accessible.
+    let experimental=!d.vendor.eq_ignore_ascii_case("Waves")&&!crate::rack_mixer::ssl_link(d);
     if experimental {
         let a=probe(1.)?;let b=probe(0.75)?;
         if a==b{return Err("This unsupported strip does not respond to host resizing. UAD and other non-Waves strips must respond to host resizing.".into());}
@@ -137,6 +139,16 @@ fn prepare(d:&os_host::Descriptor,scale:f32,r:[i32;4],mut probe:impl FnMut(f32)-
     Ok(fit)
 }
 #[cfg(test)]mod tests{
+    #[test]fn ssl_link_keeps_non_scaling_editor_and_full_dynamic_pages(){
+        let mut d=desc();d.format=os_host::Format::Vst3;d.name="SSL 360 Link".into();d.vendor="Solid State Logic".into();d.id="ssl-link-fit-test".into();
+        for size in [(1000,600),(600,1000)]{
+            assert!(super::prepare(&d,1.,[0,0,128,400],|_|Ok(size)).is_ok(),"Link can manage its own zoom");
+            let pages=crate::strip_geometry::pages(crate::strip_geometry::profile(&d),size);
+            assert_eq!(pages.len(),1);assert_eq!(pages[0].left,0.);assert_eq!(pages[0].right,size.0 as f32);
+        }
+        assert_eq!(super::prepare(&d,1.,[0,0,128,400],|scale|if scale<1.{Err("Own zoom only".into())}else{Ok((1000,600))}),Ok(1.));
+        assert!(super::prepare(&d,1.,[0,0,128,400],|_|Ok((0,600))).is_err());
+    }
     fn desc()->os_host::Descriptor{let mut d=crate::plugins::builtin_effects()[0].desc.clone();d.name="Magma Channel Strip Mono".into();d.vendor="Waves".into();d.kind=os_host::Kind::Effect;d.id="direct-strip-fit-test".into();d}
     #[test]fn vertical_direct_loading_measures_and_accepts_unscaled_original(){
         let d=desc();let mut scales=vec![];

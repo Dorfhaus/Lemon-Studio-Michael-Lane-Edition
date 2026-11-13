@@ -42,6 +42,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ("Language", &[
         (crate::prefs::INTERFACE_LANGUAGE.label, crate::prefs::language::VISIBILITY),
     ]),
+    ("Theme customization", &[("Traditional insert knob settings", crate::advanced_theme::INSERT_VISIBILITY), ("Area color adjustments", crate::advanced_theme::AREA_VISIBILITY)]),
     ("Input customization", &[
         ("Typing keyboard octave menu", crate::typing_layout::OCTAVE_VISIBILITY),
         ("MIDI controller setup", crate::controller::VISIBILITY),
@@ -126,11 +127,13 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ("Plugin windows", &[
         ("Detach button", crate::plugin_window::DETACH_VISIBILITY),
         ("Sampler note effects", crate::misc_page::NOTE_EFFECTS_VISIBILITY),
+        ("Sampler Mixer track menu", crate::plugin_window::SAMPLER_TRACK_MENU_VISIBILITY),
     ]),
     ("Plugin Picker", &[
         ("Effect Chain multi-selection and dragging", crate::plugin_picker::chains::BATCH_VISIBILITY),
     ]),
     ("Mixer", &[
+        ("SSL 360 Link in Channel Strip picker", crate::rack_mixer::LINK_VISIBILITY),
         ("Mixer channel lock buttons", "visible_mixer-channel-lock"),
         ("Group lock option in Mixer padlock menu", crate::mixer::GROUP_LOCK_VISIBILITY),
         ("Insert Multiple Tracks menu item", crate::mixer::INSERT_MULTIPLE_VISIBILITY),
@@ -182,11 +185,6 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
 ];
 
 pub(crate) const RESET: &str = "Restore default visibility";
-
-pub(crate) fn key(label: &str) -> Option<&'static str> {
-    GROUPS.iter().flat_map(|(_, rows)| *rows)
-        .find_map(|&(name, key)| (label == name).then_some(key))
-}
 
 pub(crate) fn shown(key: &str) -> bool {
     settings_file::flag(key, key != "visible_settings-debug"&&key!=crate::playlist_tracks::VISIBILITY)

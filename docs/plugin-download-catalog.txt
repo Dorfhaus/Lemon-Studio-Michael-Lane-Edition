@@ -1,4 +1,669 @@
 ML STUDIO - PLUGIN DOWNLOADS
+Catalog expansion checked 13 November 2026
+
+51 new individual plugins and six new suites with direct downloads.
+Supermassive, Graillon Free, Lens Free and Decent Sampler now download directly too.
+Click the download arrow in ML Studio. Complete installation or extract the
+archive and then choose Scan Plugins. Availability depends on your platform.
+The latest packages below were retrieved and checked without executing installers.
+
+Available entries including suites on each platform:
+  windows-x86_64: 152 (55 newly added)
+  macos-aarch64: 142 (47 newly added)
+  macos-x86_64: 144 (48 newly added)
+  linux-x86_64: 88 (20 newly added)
+
+120 distinct official packages verified for this expansion.
+The SHA-256 hashes are pinned in the bundled catalog.
+
+Valhalla Supermassive | Reverb | Proprietary freeware
+Large ambient reverbs and evolving delays. Download the free plugin from Valhalla; follow the official installer instructions.
+  Official source: https://valhalladsp.com/demos-downloads/
+  windows-x86_64 | 5.0.0 | 3,156,933 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/supermassive/ValhallaSupermassiveWin_V5_0_0.zip
+    SHA-256 67e0cedbed9e680b11dfb582618dd257e2dba8b8d10189d59811e4c10414911d
+  macos-universal | 5.0.0 | 8,373,227 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/supermassive/ValhallaSupermassiveOSX_5_0_0.dmg
+    SHA-256 eaac6d0a24ffed0a02afd1dd06124d12f94716d32a8ac376606aa2d701a70c3e
+
+Auburn Graillon Free | Pitch / Vocals | Proprietary freeware
+Free-edition vocal pitch correction. The paid edition adds features; use the free download on the developer website.
+  Official source: https://www.auburnsounds.com/products/Graillon.html
+  windows-x86_64 | 3.2 | 54,447,698 bytes
+    https://www.auburnsounds.com/downloads/Graillon-FREE-3.2.zip
+    SHA-256 d9ed254bd6ac89d5c5e670383dec2cb1acf43a72c62ebf2e4401d039ff6bda18
+  macos-universal | 3.2 | 54,447,698 bytes
+    https://www.auburnsounds.com/downloads/Graillon-FREE-3.2.zip
+    SHA-256 d9ed254bd6ac89d5c5e670383dec2cb1acf43a72c62ebf2e4401d039ff6bda18
+  linux-x86_64 | 3.2 | 54,447,698 bytes
+    https://www.auburnsounds.com/downloads/Graillon-FREE-3.2.zip
+    SHA-256 d9ed254bd6ac89d5c5e670383dec2cb1acf43a72c62ebf2e4401d039ff6bda18
+
+Auburn Lens Free | Dynamics | Proprietary freeware
+Free-edition multiband dynamics processing. Features differ from the paid edition; compare editions on the developer website.
+  Official source: https://www.auburnsounds.com/products/Lens.html
+  windows-x86_64 | 1.4 | 36,671,666 bytes
+    https://www.auburnsounds.com/downloads/Lens-FREE-1.4.zip
+    SHA-256 885f9cf0ed5884e6d4574557eed6759984bfc240e6f31d34cab2ccc08540081c
+  macos-universal | 1.4 | 36,671,666 bytes
+    https://www.auburnsounds.com/downloads/Lens-FREE-1.4.zip
+    SHA-256 885f9cf0ed5884e6d4574557eed6759984bfc240e6f31d34cab2ccc08540081c
+  linux-x86_64 | 1.4 | 36,671,666 bytes
+    https://www.auburnsounds.com/downloads/Lens-FREE-1.4.zip
+    SHA-256 885f9cf0ed5884e6d4574557eed6759984bfc240e6f31d34cab2ccc08540081c
+
+Decent Sampler | Samplers | Proprietary freeware
+Free sample-library player. Download the player from Decent Samples; sound libraries have their own licences and may be paid.
+  Official source: https://store.decentsamples.com/downloads/decent-sampler/versions
+  windows-x86_64 | 1.42.1 | 51,768,455 bytes
+    https://cdn.decentsamples.com/production/builds/ds/1.42.1/Decent_Sampler-1.42.1-Windows.zip
+    SHA-256 ddfe74eefbb89eae3dd9a6535436b646c8d42e628af782e37e02ba3ba63b3efc
+  macos-universal | 1.42.1 | 72,057,289 bytes
+    https://cdn.decentsamples.com/production/builds/ds/1.42.1/Decent_Sampler-1.42.1-Mac.zip
+    SHA-256 47f2c46a2747e22b2daa0e75cf1bf107f8a776485ce925ac1dc3c28eee704987
+  linux-x86_64 | 1.42.1 | 32,290,541 bytes
+    https://cdn.decentsamples.com/production/builds/ds/1.42.1/Decent_Sampler-1.42.1-Linux-Static-x86_64.tar.gz
+    SHA-256 8dbcb6d7ec446c1e4b214e4ee53376cdf3ea504c6956d25306e51ccc143ce61c
+
+Helm | Synthesizers | GPL-3.0
+Subtractive synth with a visual modulation system, step sequencer and feedback oscillator.
+  Official source: https://tytel.org/helm/
+  windows-x86_64 | 0.9.0 | 19,533,824 bytes
+    https://tytel.org/static/dist/Helm_64bit_v0_9_0_r.msi
+    SHA-256 18ca2364b8d52e6f9693a195e769279472a6ea6c3704480ced88ad327a5d8e29
+  macos-x86_64 | 0.9.0 | 17,258,268 bytes
+    https://tytel.org/static/dist/Helm_v0_9_0_r.pkg
+    SHA-256 1bfac2c016d7dd5cd51e714fa6d9facef4e1db52617ff7dd52748dbec1400ebf
+  linux-x86_64 | 0.9.0 | 8,328,284 bytes
+    https://tytel.org/static/dist/helm_0.9.0_amd64_r.deb
+    SHA-256 aedf8b676657f72782513e5ad5f9c61a6bc21fe9357b23052928adafa8215eca
+
+Exakt Lite | Synthesizers | Freeware
+Four-operator FM synth with envelopes and waveform choices for electric keys, bells and basses.
+  Official source: https://www.sonicbits.com/plugins/exakt-lite
+  windows-x86_64 | 2.3.0 | 4,956,566 bytes
+    https://www.sonicbits.com/download/exaktlite/ExaktLite.2.3.0.Setup.exe
+    SHA-256 15f5af9f170d8942f6fb98164b0d8ea248a3edd2c5ab9ed1e8247d4dd94d8b2b
+  macos-universal | 2.3.0 | 7,275,627 bytes
+    https://www.sonicbits.com/download/exaktlite/ExaktLite.2.3.0.pkg
+    SHA-256 4dbeb176a491e95b57e5bce487bee9ce9080f7845771a32cb971a69abb9ce046
+
+Magical 8bit Plug 2 | Synthesizers | GPL-3.0
+Chiptune synth with pulse, triangle and noise voices for game-style leads and drums.
+  Official source: https://ymck.net/app/magical-8bit-plug-en
+  windows-x86_64 | 2024-10-23 | 4,347,339 bytes
+    https://ymck.net/data/magical8bitplug/Magical8bitPlug2-win-241023.zip
+    SHA-256 092f73376dc2b3f5f97fbdec3ffa15664dfe83fed31b9c7ca7aaf42144f4cac3
+  macos-universal | 2024-10-23 | 8,671,583 bytes
+    https://ymck.net/data/magical8bitplug/Magical8bitPlug2-mac-241023.zip
+    SHA-256 ae1e9f730da09dd4286741f97f150bdd8d2b32c6e5493fbd9bf861aac76adbf0
+
+TAL-BassLine | Synthesizers | Freeware
+Monophonic subtractive synth for resonant acid bass, snappy sequences and simple leads.
+  Official source: https://tal-software.com/products/tal-bassline
+  windows-x86_64 | Legacy | 1,003,056 bytes
+    https://tal-software.com/downloads/plugins/TAL-BassLine-x64.zip
+    SHA-256 acd968d037f0cba4266b3f366a5bc51387af4e0de808f435bafcb4b4ba947dde
+
+TAL-Elek7ro | Synthesizers | Freeware
+Virtual analog synth with oscillator sync and FM for punchy basses and aggressive leads.
+  Official source: https://tal-software.com/products/tal-elek7ro
+  windows-x86_64 | II legacy | 749,683 bytes
+    https://tal-software.com/downloads/plugins/TAL-Elek7ro-II-x64.zip
+    SHA-256 736befe01b477f859648e0fbb9455316391ae3d02c386f186136d94ea37d8670
+
+ModulAir | Synthesizers | Freeware
+Polyphonic modular synth with patchable modules for custom signal paths and modulation.
+  Official source: https://www.fullbucket.de/music/modulair.html
+  windows-x86_64 | 1.3.3 | 22,418,835 bytes
+    https://www.fullbucket.de/music/dl.php?file=modulair_1_3_3_winvst
+    SHA-256 a8b2766e55089ac040948144c72a20906540c3fc5894faedeab8fb4449124ff6
+  macos-universal | 1.3.3 | 19,745,499 bytes
+    https://www.fullbucket.de/music/dl.php?file=modulair_1_3_3_mac
+    SHA-256 0c221424e820f813b886fb72d7ab9fa3c401ad68d109a0bdc8bd3631c303441a
+
+Kern | Synthesizers | Freeware
+Compact analog-style polysynth for quick patches and hands-on MIDI controller mapping.
+  Official source: https://www.fullbucket.de/music/kern.html
+  windows-x86_64 | 1.2.0 | 11,160,198 bytes
+    https://www.fullbucket.de/music/dl.php?file=kern_1_2_0_winvst
+    SHA-256 c8f4170dfc0ceefd886673ab6e7c8b772037cdf471d99c443977179c4c36fc5f
+  macos-universal | 1.2.0 | 5,328,760 bytes
+    https://www.fullbucket.de/music/dl.php?file=kern_1_2_0_mac
+    SHA-256 16b5cc1a323d8d089e97c58246d68558a66f986a9576d528e8621ebd2cf37816
+
+Ragnarök 2 | Synthesizers | Freeware
+Analog-style synth with stackable waveforms for thick vintage leads and bass patches.
+  Official source: https://www.fullbucket.de/music/ragnarok.html
+  windows-x86_64 | 2.0.2 | 13,409,858 bytes
+    https://www.fullbucket.de/music/dl.php?file=ragnarok2_2_0_2_winvst
+    SHA-256 cdb5cbc76d1e1d23e472409ec8822d1540a5aeb397bbf6efe43d6734c2cb7d97
+  macos-universal | 2.0.2 | 7,149,039 bytes
+    https://www.fullbucket.de/music/dl.php?file=ragnarok2_2_0_2_mac
+    SHA-256 490a5fcb651a87c911703349b2d22bfe51a737b4e81d968388aedafcf2419d35
+
+Nabla | Synthesizers | Freeware
+Vintage string-machine and polyphonic synth sounds for layered pads and ensemble textures.
+  Official source: https://www.fullbucket.de/music/nabla.html
+  windows-x86_64 | 1.4.0 | 14,514,168 bytes
+    https://www.fullbucket.de/music/dl.php?file=nabla_1_4_0_winvst
+    SHA-256 fc280f876d030bd0394bada75ef8e897b208273b224b5216d19c4bea99bd2357
+  macos-universal | 1.4.0 | 8,137,744 bytes
+    https://www.fullbucket.de/music/dl.php?file=nabla_1_4_0_mac
+    SHA-256 6e38384a4a0f09a94d3676b86393214a8001ea14819657858e30c5b2652581fd
+
+Stigma | Synthesizers | Freeware
+Korg Sigma-inspired analog synth that combines preset instrument and synthesizer sections.
+  Official source: https://www.fullbucket.de/music/stigma.html
+  windows-x86_64 | 1.3.2 | 16,048,158 bytes
+    https://www.fullbucket.de/music/dl.php?file=stigma_1_3_2_winvst
+    SHA-256 f5e2f18e76e252b11cc776019b5a367c21dc011bc03e59ab851784d1b2382e20
+  macos-universal | 1.3.2 | 10,590,680 bytes
+    https://www.fullbucket.de/music/dl.php?file=stigma_1_3_2_mac
+    SHA-256 441588f558f131ceabc225071730f0dd040dfdc8f69bae5376d22453924d5960
+
+blooo | Synthesizers | Freeware
+Subtractive polysynth with two filters and modulation options for layered bass, lead and pad patches.
+  Official source: https://www.fullbucket.de/music/blooo.html
+  windows-x86_64 | 2.3.5 | 15,247,905 bytes
+    https://www.fullbucket.de/music/dl.php?file=blooo_2_3_5_winvst
+    SHA-256 b5ee8d19b17914d1d7b9fce2efb6d90f37e792af22b2a8e68675bb5fc05d0604
+  macos-universal | 2.3.5 | 9,437,136 bytes
+    https://www.fullbucket.de/music/dl.php?file=blooo_2_3_5_mac
+    SHA-256 8c21614a444e67d56a7e68713107c1a2830f8e65eef82f3900bd68a2fa135901
+
+scrooo | Synthesizers | Freeware
+Spectral synth with formant controls for vocal-like timbres and resonant sound design.
+  Official source: https://www.fullbucket.de/music/scrooo.html
+  windows-x86_64 | 2.0.4 | 15,985,997 bytes
+    https://www.fullbucket.de/music/dl.php?file=scrooo_2_0_4_winvst
+    SHA-256 0439da2462d1a8b61eb9053fd3cf0184b692e6c35111dd6523a9a66415a03b68
+  macos-universal | 2.0.4 | 9,858,820 bytes
+    https://www.fullbucket.de/music/dl.php?file=scrooo_2_0_4_mac
+    SHA-256 53fbe9bb1bd84e2bbab3481334583e2b9e27c7d517fbf75bd16093aecf3b69de
+
+Bucket ONE | Synthesizers | Freeware
+Vintage digital polysynth inspired by the Bit 01 and Bit 99, suited to keys and wide pads.
+  Official source: https://www.fullbucket.de/music/bucketone.html
+  windows-x86_64 | 1.1.2 | 13,432,293 bytes
+    https://www.fullbucket.de/music/dl.php?file=bucketone_1_1_2_winvst
+    SHA-256 162ca5b9bf8a5102824d53a31e0debaa15f6e030b50a6ff0699c489c7b09d5af
+  macos-universal | 1.1.2 | 7,384,542 bytes
+    https://www.fullbucket.de/music/dl.php?file=bucketone_1_1_2_mac
+    SHA-256 95f3f2e6fd8761eae44a9507914165bb234b4590568781239fbf20446472b2c0
+
+Mono/Fury | Synthesizers | Freeware
+Mono/Poly-inspired synth with four oscillators for stacked leads and rotating arpeggios.
+  Official source: https://www.fullbucket.de/music/monofury.html
+  windows-x86_64 | 2.3.2 | 14,972,506 bytes
+    https://www.fullbucket.de/music/dl.php?file=monofury_2_3_2_winvst
+    SHA-256 430aceb4c83ac03deff6cb86f72805b66d65b727e7431ba1b02686e6e3751a07
+  macos-universal | 2.3.2 | 9,157,811 bytes
+    https://www.fullbucket.de/music/dl.php?file=monofury_2_3_2_mac
+    SHA-256 6db5c7e3918d1f3b79add8728f7d10e88091b29e1938987842cba603343116d7
+
+FB-3100 | Synthesizers | Freeware
+PS-3100-inspired polyphonic synth with resonators for unusual vintage chords and drones.
+  Official source: https://www.fullbucket.de/music/fb3100.html
+  windows-x86_64 | 1.2.2 | 14,882,278 bytes
+    https://www.fullbucket.de/music/dl.php?file=fb3100_1_2_2_winvst
+    SHA-256 5fbf9d4b681d52a29079b4b79c12a39d3a0432b552dd6c241e242c98e065bc05
+  macos-universal | 1.2.2 | 14,309,145 bytes
+    https://www.fullbucket.de/music/dl.php?file=fb3100_1_2_2_mac
+    SHA-256 548352e42fa6ed14221bbdf034c265435b1374569bf9daff616781a2967c4ed0
+
+Shortcircuit XT | Samplers | MIT
+Multisample instrument with zones, groups, modulation and effects for building playable sample patches.
+  Official source: https://github.com/surge-synthesizer/shortcircuit-xt/releases
+  windows-x86_64 | 2026-11-11 beta | 10,259,078 bytes
+    https://github.com/surge-synthesizer/shortcircuit-xt/releases/download/Nightly/shortcircuit-xt-win64-2026-11-11-d023100.exe
+    SHA-256 cef80e08057bfdadbadf93849a21c4dd03f52ab6010df9663e1a18e017e76f40
+  macos-universal | 2026-11-11 beta | 75,304,575 bytes
+    https://github.com/surge-synthesizer/shortcircuit-xt/releases/download/Nightly/shortcircuit-xt-macOS-2026-11-11-d023100.dmg
+    SHA-256 92ba0d4e93dde1b117b6496da228b58920a7b9cf13e195d97edfa96396630fc7
+  linux-x86_64 | 2026-11-11 beta | 40,172,659 bytes
+    https://github.com/surge-synthesizer/shortcircuit-xt/releases/download/Nightly/shortcircuit-xt-linux-2026-11-11-d023100.zip
+    SHA-256 26471960c84f8b67283c526648034f200b371943ea8a39ccc384b3d2c330cd7b
+
+Valhalla Freq Echo | Delay | Freeware
+Frequency shifting and feedback delay for dub echoes, pitch spirals and psychedelic effects.
+  Official source: https://valhalladsp.com/shop/delay/valhalla-freq-echo/
+  windows-x86_64 | 1.2.0 | 2,958,965 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/freqecho/ValhallaFreqEchoWin_V1_2_0.zip
+    SHA-256 c84a455e7efd88c7919bcd9e72ba2542d0099e8b905a4f4a34b0d9fb2537215b
+  macos-universal | 1.2.8 | 7,623,617 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/freqecho/ValhallaFreqEchoOSX_1_2_8.dmg
+    SHA-256 7e8681bd90fe7c1ef5b82a87c5d90bd1051980c256b0bd9424ea9cbfc53a9bdc
+
+Valhalla Space Modulator | Modulation | Freeware
+Through-zero flanging, doubling and detuning for wide guitars, pads and experimental textures.
+  Official source: https://valhalladsp.com/shop/modulation/valhalla-space-modulator/
+  windows-x86_64 | 1.1.6 | 2,994,548 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/spacemod/ValhallaSpaceModulatorWin_1_1_6v3.zip
+    SHA-256 d4f48ef188f9f9c8128b0ecda38b7cf6df3cc01028f50d65507ca78d1d5b6ae7
+  macos-universal | 1.2.8 | 8,905,760 bytes
+    https://valhallaproduction.s3.us-west-2.amazonaws.com/spacemod/ValhallaSpaceModulatorOSX_1_2_8.dmg
+    SHA-256 12033f7f35e97e6e06e3852e42f50caff17165bc6e79696d6837d61b34858598
+
+Acon Digital Multiply 2 | Modulation | Freeware
+Multi-voice chorus for thickening vocals, guitars and keys, with phase randomization for a diffuse sound.
+  Official source: https://acondigital.com/products/multiply
+  windows-x86_64 | 2.0.1 | 10,051,440 bytes
+    https://acondigital.com/software/Multiply2_Win64_2_0_1.exe
+    SHA-256 edb8c827bc942ac47ea4957db7fecf9a0080edaf321b42ad44e2e07789bc6c07
+  macos-universal | 2.0.1 | 51,656,895 bytes
+    https://acondigital.com/software/Multiply2_macOS_2_0_1.pkg.zip
+    SHA-256 153079261d59902c9a2e7d317069d19ac886aeb5a9bc4848ab6c75669923b096
+
+Auburn Couture Free | Dynamics | Freeware
+Transient shaper for sharpening drums or softening attacks. Choose the Free Edition on the maker’s page.
+  Official source: https://www.auburnsounds.com/products/Couture.html
+  windows-x86_64 | 1.10 | 30,454,749 bytes
+    https://www.auburnsounds.com/downloads/Couture-FREE-1.10.zip
+    SHA-256 29889576676d1aefb3eb06afcd83377519db61ea515ac69396fae2de8c5b8ff3
+  macos-universal | 1.10 | 30,454,749 bytes
+    https://www.auburnsounds.com/downloads/Couture-FREE-1.10.zip
+    SHA-256 29889576676d1aefb3eb06afcd83377519db61ea515ac69396fae2de8c5b8ff3
+  linux-x86_64 | 1.10 | 30,454,749 bytes
+    https://www.auburnsounds.com/downloads/Couture-FREE-1.10.zip
+    SHA-256 29889576676d1aefb3eb06afcd83377519db61ea515ac69396fae2de8c5b8ff3
+
+Auburn Panagement Free | Stereo and routing | Freeware
+Binaural panning and distance controls for placing sounds across a stereo field.
+  Official source: https://www.auburnsounds.com/products/Panagement.html
+  windows-x86_64 | 2.8 | 41,455,282 bytes
+    https://www.auburnsounds.com/downloads/Panagement-FREE-2.8.zip
+    SHA-256 5d8cf4804d839de97a02bbee40cdd67fa13971813e506111aceaac87b6640078
+  macos-universal | 2.8 | 41,455,282 bytes
+    https://www.auburnsounds.com/downloads/Panagement-FREE-2.8.zip
+    SHA-256 5d8cf4804d839de97a02bbee40cdd67fa13971813e506111aceaac87b6640078
+  linux-x86_64 | 2.8 | 41,455,282 bytes
+    https://www.auburnsounds.com/downloads/Panagement-FREE-2.8.zip
+    SHA-256 5d8cf4804d839de97a02bbee40cdd67fa13971813e506111aceaac87b6640078
+
+Auburn Renegate Free | Dynamics | Freeware
+Envelope-driven noise gate for cleaning tracks or shaping rhythmic tails. Choose the Free Edition.
+  Official source: https://www.auburnsounds.com/products/Renegate.html
+  windows-x86_64 | 1.6 | 40,306,232 bytes
+    https://www.auburnsounds.com/downloads/Renegate-FREE-1.6.zip
+    SHA-256 78071f42cad6ff2d90b36cb431d17758be755da1a5218ac1c39403d8993b506f
+  macos-universal | 1.6 | 40,306,232 bytes
+    https://www.auburnsounds.com/downloads/Renegate-FREE-1.6.zip
+    SHA-256 78071f42cad6ff2d90b36cb431d17758be755da1a5218ac1c39403d8993b506f
+  linux-x86_64 | 1.6 | 40,306,232 bytes
+    https://www.auburnsounds.com/downloads/Renegate-FREE-1.6.zip
+    SHA-256 78071f42cad6ff2d90b36cb431d17758be755da1a5218ac1c39403d8993b506f
+
+Auburn Selene Free | Reverb | Freeware
+Creative reverb for adding space and shaped tails to instruments or vocals. Choose the Free Edition.
+  Official source: https://www.auburnsounds.com/products/Selene.html
+  windows-x86_64 | 1.1 | 39,134,527 bytes
+    https://www.auburnsounds.com/downloads/Selene-FREE-1.1.zip
+    SHA-256 9fb0b02442cb81f3b419f8207fb63105a99b41f8845bb4f5aa3f8ab320366a12
+  macos-universal | 1.1 | 39,134,527 bytes
+    https://www.auburnsounds.com/downloads/Selene-FREE-1.1.zip
+    SHA-256 9fb0b02442cb81f3b419f8207fb63105a99b41f8845bb4f5aa3f8ab320366a12
+  linux-x86_64 | 1.1 | 39,134,527 bytes
+    https://www.auburnsounds.com/downloads/Selene-FREE-1.1.zip
+    SHA-256 9fb0b02442cb81f3b419f8207fb63105a99b41f8845bb4f5aa3f8ab320366a12
+
+Auburn Psypan Free | Stereo and routing | Freeware
+Psychoacoustic stereo panning for positioning sounds and experimenting with width. Choose the Free Edition.
+  Official source: https://www.auburnsounds.com/products/Psypan.html
+  windows-x86_64 | 2.0 | 74,298,327 bytes
+    https://www.auburnsounds.com/downloads/Psypan-FREE-2.0.zip
+    SHA-256 3155d171183c389bd3140eb141ee30ca0202cd2afd8c043c8fbaef45b54eda19
+  macos-universal | 2.0 | 74,298,327 bytes
+    https://www.auburnsounds.com/downloads/Psypan-FREE-2.0.zip
+    SHA-256 3155d171183c389bd3140eb141ee30ca0202cd2afd8c043c8fbaef45b54eda19
+  linux-x86_64 | 2.0 | 74,298,327 bytes
+    https://www.auburnsounds.com/downloads/Psypan-FREE-2.0.zip
+    SHA-256 3155d171183c389bd3140eb141ee30ca0202cd2afd8c043c8fbaef45b54eda19
+
+TDR Prism | Analysis and meters | Freeware
+Spectrum analyzer for comparing frequency balance, including sidechain and reference-file views.
+  Official source: https://www.tokyodawn.net/tdr-prism/
+  windows-x86_64 | 1.1.4 | 16,641,664 bytes
+    https://www.tokyodawn.net/labs/Prism/1.1.4/TDR%20Prism%20(installer).zip
+    SHA-256 91e3b80654188c2d7ddfbca5ce1af48613f74764fed699613de9d56175158f6c
+  macos-universal | 1.1.4 | 32,253,522 bytes
+    https://www.tokyodawn.net/labs/Prism/1.1.4/TDR%20Prism.zip
+    SHA-256 a0bc1cdac9c5474941f93da4d96d87bd077d1fa0427ee201c844b94c738c318c
+  linux-x86_64 | 1.1.4 | 10,840,969 bytes
+    https://www.tokyodawn.net/labs/Prism/1.1.4/TDR%20Prism.tar.gz
+    SHA-256 7f33f175f9ca7eb39bf33b8d7f81627253e72e86bb448991b2ee5123ff147942
+
+Full Bucket Deputy Mark II | Synthesizers | Freeware
+String machine and polyphonic synth for layered ensemble patches and vintage pads.
+  Official source: https://www.fullbucket.de/music/deputy.html
+  windows-x86_64 | 1.4.0 | 16,041,529 bytes
+    https://www.fullbucket.de/music/dl.php?file=deputy_1_4_0_winvst
+    SHA-256 b39fc12f4c0f8264b20867046f65945bacdcf98d057691f524368166a9185dc1
+  macos-universal | 1.4.0 | 9,868,154 bytes
+    https://www.fullbucket.de/music/dl.php?file=deputy_1_4_0_mac
+    SHA-256 b4e1e7b722f1e8e1e996b0b5a07490bd18465905e4dec3743b512ace0f1f09f9
+
+Guitarix VST | Guitar and bass FX | Open source
+Linux VST3 guitar amplifier and effects based on Guitarix, for direct guitar recording and reamping.
+  Official source: https://github.com/brummer10/guitarix.vst/releases
+  linux-x86_64 | 0.5 | 6,255,652 bytes
+    https://github.com/brummer10/guitarix.vst/releases/download/v0.5/Guitarix.vst3.zip
+    SHA-256 7f52e04b9b24c96186dc69165510506f89e128ff11b012de30d635db195819d0
+
+Full Bucket Brigade Delay | Delay | Freeware
+Bucket-brigade delay emulation for dark repeats, modulation and feedback textures.
+  Official source: https://www.fullbucket.de/music/fbdelay.html
+  windows-x86_64 | 2.0.3 | 11,583,091 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbdelay_2_0_3_winvst
+    SHA-256 969082e584a24e424844eea53179353d8417bd0a0e33ac2e840057771a560311
+  macos-universal | 2.0.3 | 5,515,488 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbdelay_2_0_3_mac
+    SHA-256 9b7829cda9a982160610ab09603df3447d3f23aa3d694ef2d0a22562f8c338ee
+
+Full Bucket Frequency Shifter | Modulation | Freeware
+Stereo frequency shifter for inharmonic modulation, detuning and unusual doubling effects.
+  Official source: https://www.fullbucket.de/music/freqshifter.html
+  windows-x86_64 | 2.0.3 | 11,661,265 bytes
+    https://www.fullbucket.de/music/dl.php?file=freqshifter_2_0_3_winvst
+    SHA-256 105d2b1b93fee29d8f197c28bf210753da1484968860cd5ae2b036051f1ae333
+  macos-universal | 2.0.3 | 5,859,711 bytes
+    https://www.fullbucket.de/music/dl.php?file=freqshifter_2_0_3_mac
+    SHA-256 4c58b1079363dfa1cbaf0d93eb1c93f96f8a7077cff5d967361aca9a55a408b7
+
+Full Bucket Phaser | Modulation | Freeware
+Classic analog-style phase shifting for guitar, electric keys, drums and synth pads.
+  Official source: https://www.fullbucket.de/music/fbphaser.html
+  windows-x86_64 | 2.0.2 | 11,620,008 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbphaser_2_0_2_winvst
+    SHA-256 b17c5fca59b90160f68d376e74b8830a6bf7be89d2bc3d59635bc4fada46411e
+  macos-universal | 2.0.2 | 5,823,278 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbphaser_2_0_2_mac
+    SHA-256 f55d5d441c0c2b1ff1d93ef176364e3f8053fe76893a7c77ca19b4dda6428ccc
+
+Full Bucket Vocoder | Modulation | Freeware
+Multiband vocoder for imposing speech or rhythmic articulation onto a carrier signal.
+  Official source: https://www.fullbucket.de/music/fbvc.html
+  windows-x86_64 | 1.1.3 | 15,132,299 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbvc_1_1_3_winvst
+    SHA-256 289cf9312db69cc785af39e9684c1faf6267a136ed07065e05dfa390785e4d7b
+  macos-universal | 1.1.3 | 14,416,626 bytes
+    https://www.fullbucket.de/music/dl.php?file=fbvc_1_1_3_mac
+    SHA-256 34e2d4af33997cb311b668784510847541253b36f536bf47337d7424a021b80a
+
+Full Bucket Tricent | Synthesizers | Freeware
+Vintage ensemble instrument combining polysynth, brass and string sections for layered patches.
+  Official source: https://www.fullbucket.de/music/tricent.html
+  windows-x86_64 | 1.1.4 | 15,851,726 bytes
+    https://www.fullbucket.de/music/dl.php?file=tricent_1_1_4_winvst
+    SHA-256 0deecfc692ae638812d403e42225688ab5acadf20c307ac49741bdaafac66a18
+  macos-universal | 1.1.4 | 9,869,725 bytes
+    https://www.fullbucket.de/music/dl.php?file=tricent_1_1_4_mac
+    SHA-256 982d8e70ffbbd23fe0be2dd9f2db59f99ea37cf0df1893ffb8ab513db3ada4e1
+
+Full Bucket PECS | Synthesizers | Freeware
+Vintage string machine for slowly moving ensemble pads and layered keyboard textures.
+  Official source: https://www.fullbucket.de/music/pecs.html
+  windows-x86_64 | 1.0.4 | 16,037,522 bytes
+    https://www.fullbucket.de/music/dl.php?file=pecs_1_0_4_winvst
+    SHA-256 84f5070c65f53be10b1ba5d76318b4885fec5221e8293f66018baf3fa722e85e
+  macos-universal | 1.0.4 | 9,407,718 bytes
+    https://www.fullbucket.de/music/dl.php?file=pecs_1_0_4_mac
+    SHA-256 58d0087d4a46049207e3d29a6cefdc55802ec93f256772b855c8708c76f989ef
+
+Chow Kick | Synthesizers | BSD-3-Clause
+Kick drum synthesizer based on resonant circuit models, with controls for pitch and decay.
+  Official source: https://github.com/Chowdhury-DSP/ChowKick/releases
+  windows-x86_64 | v1.2.0 | 5,791,948 bytes
+    https://github.com/Chowdhury-DSP/ChowKick/releases/download/v1.2.0/ChowKick-Win-64bit-1.2.0.exe
+    SHA-256 d136b3938111a118d64e1dfc01f6b153a8c3ee5641001aed31b42cb033616c82
+  macos-universal | v1.2.0 | 18,907,522 bytes
+    https://github.com/Chowdhury-DSP/ChowKick/releases/download/v1.2.0/ChowKick-Mac-1.2.0.dmg
+    SHA-256 de1833ac2bfd7f9d74ba61cb64f3fb7c600de348cba6b46d9c05c8df14d158f7
+  linux-x86_64 | v1.2.0 | 4,371,620 bytes
+    https://github.com/Chowdhury-DSP/ChowKick/releases/download/v1.2.0/ChowKick-Linux-x64-1.2.0.deb
+    SHA-256 2c1328c65bd4af1c188f96d088d71527eccbdc5c434cafe57c8352f53969bb2f
+
+PaulXStretch | Modulation | GPL-3.0 with exception
+Extreme time stretching for turning audio into evolving drones, pads and granular textures.
+  Official source: https://github.com/essej/paulxstretch/releases
+  windows-x86_64 | v1.6.0 | 5,891,920 bytes
+    https://github.com/essej/paulxstretch/releases/download/v1.6.0/paulxstretch-1.6.0-win.exe
+    SHA-256 98017a1cd98219bdb4e7b3029d520928e602592921455f2e726a92ead488b226
+  macos-universal | v1.6.0 | 29,398,028 bytes
+    https://github.com/essej/paulxstretch/releases/download/v1.6.0/paulxstretch-1.6.0-mac.dmg
+    SHA-256 c5bcba5215076f629c3442902eaba4825a7f71ac33fc2d793c7cb729bdeb17ad
+
+YSFX | Utilities | Apache-2.0
+Hosts JSFX scripts as plugins, opening up a range of amp, dynamics and sound design processors.
+  Official source: https://github.com/JoepVanlier/ysfx/releases
+  windows-x86_64 | v0.0.47 | 7,008,223 bytes
+    https://github.com/JoepVanlier/ysfx/releases/download/v0.0.47/YSFX.Windows.64-bit.portable.VST3.zip
+    SHA-256 4f2f67b54efcc5cfcd3fb6a941226ca0dffa52c089ed68800d7e2ace026d4529
+  macos-universal | v0.0.47 | 16,378,632 bytes
+    https://github.com/JoepVanlier/ysfx/releases/download/v0.0.47/YSFX.macOS.VST3.zip
+    SHA-256 811c7a48fd906b940466df9f5deb96dc697fde858fd7cece1d038e5f1af34d43
+  linux-x86_64 | v0.0.47 | 10,480,126 bytes
+    https://github.com/JoepVanlier/ysfx/releases/download/v0.0.47/YSFX.Linux.64-bit.VST3.zip
+    SHA-256 ddec5baad68ca6e3973053ab29338afb55c8ff4babf4329078c7d7d6ff27b0d8
+
+YK Chorus | Modulation | GPL-2.0
+Stereo chorus based on TAL DSP, with vintage ensemble movement for keys and guitar.
+  Official source: https://github.com/SpotlightKid/ykchorus/releases
+  windows-x86_64 | v0.2.4 | 2,166,789 bytes
+    https://github.com/SpotlightKid/ykchorus/releases/download/v0.2.4/ykchorus-0.2.4-bin-win64.zip
+    SHA-256 caecf42b652d3cf5b15a41ce68b1de404b88dd872e4ee25696540f571e938b7e
+
+Sunset Circuits | Synthesizers | GPL-3.0
+Multi-engine synthesizer with an arpeggiator and step sequencer for animated bass, lead and chord patches.
+  Official source: https://github.com/dusk-audio/dusk-audio-plugins/releases
+  windows-x86_64 | sunset-circuits-v1.0.9 | 4,018,958 bytes
+    https://github.com/dusk-audio/dusk-audio-plugins/releases/download/sunset-circuits-v1.0.9/sunset-circuits-windows.zip
+    SHA-256 b79139708c4d2d2775f0b9fb60219400d57c13a7eb1f36bbf00d70d92bd30206
+  macos-universal | sunset-circuits-v1.0.9 | 11,863,998 bytes
+    https://github.com/dusk-audio/dusk-audio-plugins/releases/download/sunset-circuits-v1.0.9/sunset-circuits-macos.zip
+    SHA-256 a37799711628aae1154b4abec5117b96dd46e8347c37dd8accd308f1e3405da1
+  linux-x86_64 | sunset-circuits-v1.0.9 | 5,941,451 bytes
+    https://github.com/dusk-audio/dusk-audio-plugins/releases/download/sunset-circuits-v1.0.9/sunset-circuits-linux.zip
+    SHA-256 4e73133ec5b683802895f741b438fbed870c9fc92f878afb9214e14d45e1e5ef
+
+EasyMeter | Analysis and meters | MIT
+Real-time metering with multiple visualizations for checking level, frequency balance and stereo behavior.
+  Official source: https://github.com/bgivenb/EasyMeter/releases
+  windows-x86_64 | v0.2.0 | 3,397,918 bytes
+    https://github.com/bgivenb/EasyMeter/releases/download/v0.2.0/EasyMeter-0.2.0-Windows-VST3-unsigned.zip
+    SHA-256 3cbfdf6b7d3fc48d14fd558b35bd2c383becc346a53d16281cd1c196f63c2eac
+  macos-universal | v0.2.0 | 5,038,384 bytes
+    https://github.com/bgivenb/EasyMeter/releases/download/v0.2.0/EasyMeter-0.2.0-macOS-universal-VST3-unsigned.zip
+    SHA-256 ab3e35bb4ec7fe0167cc73545e20a0e1e72eeacf2c5dc08442a817dda983551b
+
+Spectrum | Analysis and meters | MIT
+GPU-accelerated spectrum analyzer for comparing frequency balance during mixing.
+  Official source: https://github.com/tadmn/spectrum/releases
+  windows-x86_64 | v2.0.0 | 7,514,545 bytes
+    https://github.com/tadmn/spectrum/releases/download/v2.0.0/Spectrum-Windows.exe
+    SHA-256 85b9aea5fc40680181645befff234f6f3751610fb4abb81a849fb9b703280ed4
+  macos-universal | v2.0.0 | 7,312,063 bytes
+    https://github.com/tadmn/spectrum/releases/download/v2.0.0/Spectrum-macOS.pkg
+    SHA-256 27c547b92055c1c3e7bf52ea620a0bbabed0a68a8878cd24b0e636722fac60b0
+  linux-x86_64 | v2.0.0 | 11,399,889 bytes
+    https://github.com/tadmn/spectrum/releases/download/v2.0.0/Spectrum-Linux.tar.gz
+    SHA-256 52afec4c6616a8c23dd549ba0d5ebb4baea02b6c9042fb7c277329aa46936953
+
+rverse | Sound design | MIT
+Shapes an impact sample into a reverse swell followed by the original hit for transitions.
+  Official source: https://github.com/SamuFL/rverse/releases
+  windows-x86_64 | v1.1.0 | 2,400,811 bytes
+    https://github.com/SamuFL/rverse/releases/download/v1.1.0/RVRSE-1.1.0-Windows.zip
+    SHA-256 f99dd33f2be6d54970a9edd2fd9d55e3aef5142fbc6d6aef3fae5f1a65ad4195
+  macos-universal | v1.1.0 | 7,935,641 bytes
+    https://github.com/SamuFL/rverse/releases/download/v1.1.0/RVRSE-1.1.0-macOS.pkg
+    SHA-256 d6071e3e9509383cb8e132526f3925db31bab3c20bb859de016d5aa03ab7ef76
+
+Morass | Dynamics | GPL-3.0
+Vocal channel strip for shaping dynamics and tone from a single effects interface.
+  Official source: https://github.com/bogware/morass/releases
+  windows-x86_64 | v1.0.3 | 6,938,777 bytes
+    https://github.com/bogware/morass/releases/download/v1.0.3/Morass-1.0.3-windows.zip
+    SHA-256 0eeab33babad611b8ab335063ed4daa6a8073e8802d972079df7b9a9528d3c43
+  macos-universal | v1.0.3 | 14,897,985 bytes
+    https://github.com/bogware/morass/releases/download/v1.0.3/Morass-1.0.3.pkg
+    SHA-256 f6a547ea5ab3d9afa2c3f0a8b1727531c437de6c8d6656f4d70bd9e355e2d297
+  linux-x86_64 | v1.0.3 | 9,698,164 bytes
+    https://github.com/bogware/morass/releases/download/v1.0.3/Morass-1.0.3-linux.tar.gz
+    SHA-256 073291e1eef054b40209d18ff9c407dcd94aa5879e9dff735122c1dd867dd30c
+
+Full Bucket Fury-800 | Synthesizers | Freeware
+Poly-800-inspired synth for vintage digital oscillators, stepped envelopes and resonant analog filtering.
+  Official source: https://www.fullbucket.de/music/fury800.html
+  windows-x86_64 | 2.5.1 | 14,871,587 bytes
+    https://www.fullbucket.de/music/dl.php?file=fury800_2_5_1_winvst
+    SHA-256 a994cea515fd3e85dbdb85e7a8ec3f071e2ddfb15ffafb9fcc2b0428d6beb2a6
+  macos-universal | 2.5.1 | 8,665,896 bytes
+    https://www.fullbucket.de/music/dl.php?file=fury800_2_5_1_mac
+    SHA-256 beefbf4c9b8b1c2a7d0f8a0a8f00d3212121ab547abf978d671ab63abbddcbe9
+
+Full Bucket FB-7999 | Synthesizers | Freeware
+DW-series-inspired digital waveform synth for glassy keys, basses and atmospheric patches.
+  Official source: https://www.fullbucket.de/music/fb7999.html
+  windows-x86_64 | 1.1.7 | 13,321,155 bytes
+    https://www.fullbucket.de/music/dl.php?file=fb7999_1_1_7_winvst
+    SHA-256 0efd8516b562fe76934176be075d4ea800d07f5d352e80631f97f1fdb962a23c
+  macos-universal | 1.1.7 | 7,177,137 bytes
+    https://www.fullbucket.de/music/dl.php?file=fb7999_1_1_7_mac
+    SHA-256 81197af340d6bc61924d2f83713a712994f52cde4eb1dc9cd029b2957620c60c
+
+Full Bucket Bucket Pops | Drums | Freeware
+Vintage rhythm-box emulation for electronic percussion and old-school drum patterns.
+  Official source: https://www.fullbucket.de/music/bucketpops.html
+  windows-x86_64 | 1.1.6 | 15,904,804 bytes
+    https://www.fullbucket.de/music/dl.php?file=bucketpops_1_1_6_winvst
+    SHA-256 23419f95cb0c8a6ebfd2d8b7bc423e7905e007ac67692d02581f5939c6e0c856
+  macos-universal | 1.1.6 | 10,086,942 bytes
+    https://www.fullbucket.de/music/dl.php?file=bucketpops_1_1_6_mac
+    SHA-256 fb3b35c8af0ac3506594f94281b7f9ca1ab607a010324c5c30fec36f3e9994f4
+
+Full Bucket Grain Strain | Modulation | Freeware
+Granular audio effect for turning incoming signals into shifting textures and sound design layers.
+  Official source: https://www.fullbucket.de/music/grainstrain.html
+  windows-x86_64 | 1.1.2 | 14,666,820 bytes
+    https://www.fullbucket.de/music/dl.php?file=grainstrain_1_1_2_winvst
+    SHA-256 f0675926ca48d8efc65a1c182e1083dea24b42a685cc8a73567c0eb5d56a0197
+  macos-universal | 1.1.2 | 8,460,498 bytes
+    https://www.fullbucket.de/music/dl.php?file=grainstrain_1_1_2_mac
+    SHA-256 427ff723b4070b1dfd465c7ee5a045fcc2263ca981256aba36d8e44ee9112055
+
+Full Bucket MPS | Synthesizers | Freeware
+Physical-modeling synth for plucked, struck and resonating tones with expressive performance controls.
+  Official source: https://www.fullbucket.de/music/mps.html
+  windows-x86_64 | 2.0.0 | 11,241,116 bytes
+    https://www.fullbucket.de/music/dl.php?file=mps_2_0_0_winvst
+    SHA-256 765d3db9ce8a69c16665847ae6e556d0fb8d8dd5d7ec9e79587a6ed62c72c99a
+  macos-universal | 2.0.0 | 5,486,922 bytes
+    https://www.fullbucket.de/music/dl.php?file=mps_2_0_0_mac
+    SHA-256 258280b64fcbd47846a48e9bf06089c400f334e9391c5489fedaab3359dfb713
+
+Full Bucket MatriQSIX | Synthesizers | Freeware
+Matrix-6-inspired analog polysynth for layered pads, stabs and modulation-heavy patches.
+  Official source: https://www.fullbucket.de/music/matriqsix.html
+  windows-x86_64 | 0.5.5 | 17,894,458 bytes
+    https://www.fullbucket.de/music/dl.php?file=matriqsix_0_5_5_winvst
+    SHA-256 de34114c25c99da04463fb2d4a81e32d638f840bf86ee8a8ed6f697fbad6c543
+  macos-universal | 0.5.5 | 19,387,847 bytes
+    https://www.fullbucket.de/music/dl.php?file=matriqsix_0_5_5_mac
+    SHA-256 c36b332758e8164c1bec6c8b36de92cb0030747e624432be408046d66ebe4b0a
+
+OPNplug | Synthesizers | BSL-1.0
+OPN2 FM instrument for game-console-style basses, leads and metallic percussion.
+  Official source: https://github.com/jpcima/ADLplug/releases
+  windows-x86_64 | v1.0.2 | 18,709,184 bytes
+    https://github.com/jpcima/ADLplug/releases/download/v1.0.2/OPNplug-1.0.2-win64.7z
+    SHA-256 f65675b01c4a43fd85bd1c9a188fd1725bd2595719ca878e466ef83b42fdc8e2
+  linux-x86_64 | v1.0.2 | 3,876,232 bytes
+    https://github.com/jpcima/ADLplug/releases/download/v1.0.2/opnplug_amd64.deb
+    SHA-256 284fb7271dbdf399d3bc06464bf06726fa97554becfecf3b998615cf976e0fc6
+
+Vaporizer2 | Synthesizers | GPL-3.0
+Wavetable and sample-based synth with wavetable editing, flexible modulation and effects.
+  Official source: https://github.com/VASTDynamics/Vaporizer2/releases
+  windows-x86_64 | v3.5.0 | 421,509,729 bytes
+    https://github.com/VASTDynamics/Vaporizer2/releases/download/v3.5.0/Vaporizer2_installer_win_3.5.0.zip
+    SHA-256 75891d485ffa1f98b6a975e7dc0def3ca45f1cb70437a2370ac778b736cdd11e
+
+ADLplug | Synthesizers | BSL-1.0
+OPL3 FM instrument for retro game sounds, crunchy bass and classic chip-style patches.
+  Official source: https://github.com/jpcima/ADLplug/releases
+  windows-x86_64 | v1.0.2 | 18,562,585 bytes
+    https://github.com/jpcima/ADLplug/releases/download/v1.0.2/ADLplug-1.0.2-win64.7z
+    SHA-256 bad70fcb3b9debcebb2abe840bfd93fa40f743ab8f02bb3f438d104a044f6882
+  linux-x86_64 | v1.0.2 | 3,822,930 bytes
+    https://github.com/jpcima/ADLplug/releases/download/v1.0.2/adlplug_amd64.deb
+    SHA-256 7e3f433f93f861f475e80d571e79ab0ada157590b276179d82f07797cb27d01b
+
+Venn Audio Free Suite | Plugin suites | Freeware
+Collection of mixing and sound design effects, including dynamics, EQ, clipping and bit crushing.
+  Official source: https://www.vennaudio.com/free-suite/
+  windows-x86_64 | 1.5.7 | 78,807,872 bytes
+    https://www.vennaudio.com/downloads/Free%20Suite/Free%20Suite_Windows_1.5.7_Setup.exe
+    SHA-256 d85c73d882e70e318875709b8e75131fb5559cafafc78b0ab299d542f52b9104
+  macos-universal | 1.5.7 | 219,915,227 bytes
+    https://www.vennaudio.com/downloads/Free%20Suite/Free%20Suite_MacOS_1.5.7_Release.dmg
+    SHA-256 3806736065e905dc12a7da40873b02069106fad89d12c0836eadf2b4748ce21a
+  linux-x86_64 | 1.5.7 | 43,282,437 bytes
+    https://www.vennaudio.com/downloads/Free%20Suite/Free%20Suite_Linux_1.5.7_release.zip
+    SHA-256 da71e2efa09b2a21cfd2843a877a73a5f90882dc544107a9955fa0fd66c4793b
+
+Blue Cat Freeware Plug-ins Pack II | Plugin suites | Freeware
+Collection with an amp simulator, modulation, EQ, gain tools, a spectrum analyzer and a network receiver.
+  Official source: https://www.bluecataudio.com/Products/Bundle_FreewarePack/
+  windows-x86_64 | Freeware Pack II | 244,328,208 bytes
+    https://www.bluecataudiofiles.com/Vault/Products/BlueCatFreewarePackVST3-x64Setup.exe
+    SHA-256 3ffe38ae1f645a0d54c02a64b4a4d9de7da272690b23fa1bf2970aedbb5a4c23
+  macos-universal | Freeware Pack II | 310,261,308 bytes
+    https://www.bluecataudio.com/Vault/Products/Bundle_FreewarePack/BlueCatFreewarePackVST3.dmg
+    SHA-256 59e3f4f64782fd38dc50c6ddc07971e6d5bb74eaf23c531bb26b6477b3366b8b
+
+LSP Plugins | Plugin suites | LGPL-3.0
+Linux mixing and mastering suite with EQ, dynamics, convolution, analyzers and routing tools.
+  Official source: https://lsp-plug.in/?page=download
+  linux-x86_64 | 1.2.37 | 38,726,486 bytes
+    https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.37/lsp-plugins-1.2.37-Linux-x86_64.7z
+    SHA-256 bbdfbfce4591ea07e7ac9dac0b1aca8ea7ccf9d850aafbf9ac0a347a1340ee55
+
+Cockos ReaPlugs | Plugin suites | Freeware
+Windows VST2 suite with ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaFIR and utility plugins.
+  Official source: https://www.reaper.fm/reaplugs/
+  windows-x86_64 | 2.36 | 1,192,256 bytes
+    https://www.reaper.fm/reaplugs/reaplugs236_x64-install.exe
+    SHA-256 1654f1f78d746fc87a6f6d078a8f928ea61c7b49997b1f2c07dfc870f8fa6c10
+
+ToneTwist Plugs | Plugin suites | Mixed open source
+Open source guitar pedal models for overdrive, fuzz, distortion and tone shaping.
+  Official source: https://github.com/brummer10/ToneTwistPlugs/releases
+  windows-x86_64 | v0.8 | 41,634,555 bytes
+    https://github.com/brummer10/ToneTwistPlugs/releases/download/v0.8/ToneTwistPlugs-v0.8-win64.zip
+    SHA-256 6db38cd1ceb6c64693f2bed52771b2a0fd74465c2bf9615f11f53d5a0239a560
+  macos-universal | v0.8 | 36,860,876 bytes
+    https://github.com/brummer10/ToneTwistPlugs/releases/download/v0.8/ToneTwistPlugs-v0.8-macos-universal.dmg
+    SHA-256 adc5ddf4d6e524c17c77e157f40e1a6ef0240262f6a62507b05fcc823c21cef5
+  linux-x86_64 | v0.8 | 5,766,968 bytes
+    https://github.com/brummer10/ToneTwistPlugs/releases/download/v0.8/ToneTwistPlugs-v0.8-linux-x86_64.tar.xz
+    SHA-256 9c71f06e12f8d93cfff08daa7709738c0e6ef5c98ae5629fdcf0d7cf10aa1dda
+
+DISTRHO DPF-Plugins | Plugin suites | Mixed open source
+Open source collection of synths, amp effects, EQ and modulation. Some entries overlap the catalog’s standalone DPF picks.
+  Official source: https://github.com/DISTRHO/DPF-Plugins/releases
+  windows-x86_64 | v1.7 | 74,524,341 bytes
+    https://github.com/DISTRHO/DPF-Plugins/releases/download/v1.7/DPF-Plugins-v1.7-win64.zip
+    SHA-256 fdc609e0936e9c999395b9ddd98a9a72739cb672d8838ab71849469aee50ad98
+  macos-universal | v1.7 | 57,933,584 bytes
+    https://github.com/DISTRHO/DPF-Plugins/releases/download/v1.7/DPF-Plugins-v1.7-macos-universal.dmg
+    SHA-256 94b996c898a7ba160561113d1c48c4700a6ef65d33f4092ea7289b1af44059e1
+  linux-x86_64 | v1.7 | 9,827,340 bytes
+    https://github.com/DISTRHO/DPF-Plugins/releases/download/v1.7/DPF-Plugins-v1.7-linux-x86_64.tar.xz
+    SHA-256 8088e362f9f68fea179abe9f96b83fca07693224ffcf46837c24ff8b59b119cb
+
+HISTORICAL CATALOG CHECK, 2 NOVEMBER 2026
+ML STUDIO - PLUGIN DOWNLOADS
 Catalog checked 2 November 2026
 
 93 free plugins: 59 open-source entries and 34 freeware entries.

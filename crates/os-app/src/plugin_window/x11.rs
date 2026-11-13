@@ -485,6 +485,16 @@ impl FrameWindow {
         }
     }
 
+    pub fn set_sampler_track(&self, on: bool) {
+        self.f.state.borrow_mut().sampler_track = on;
+    }
+
+    pub fn cancel_sampler_track_step(&self) -> bool {
+        let cancelled = self.f.state.borrow_mut().track_step.take().is_some();
+        if cancelled { self.f.dirty.set(true); os_clap::wake(); }
+        cancelled
+    }
+
     /// Shows or hides the gear strip (mixer effects open without it).
     pub fn set_strip(&self, on: bool) {
         if self.f.state.borrow().strip != on {

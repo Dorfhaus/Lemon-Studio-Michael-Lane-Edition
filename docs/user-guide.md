@@ -487,6 +487,16 @@ On a strip with built-in processing, enable the sections you need and adjust fil
 For processing order, use Mixer effect slots and drag effects to arrange them. Use slot enable, the track's effects switch, and the strip's own enable switches to isolate a stage during troubleshooting.
 Related: Choose the Mixer layout and built-in strip | Add, reorder and bypass effects
 
+### Use SSL 360 Link in Channel Strip view
+Keywords: SSL 360 Link VST3 wrapper third party channel strip mapping setup scan Solid State Logic
+Install the free SSL 360 Link VST3 from Solid State Logic separately. Open Settings > Plugins > Find new plugins. In Mixer > Channel Strip view, click a strip's + or open its strip menu, then Choose channel strip > Solid State Logic > SSL 360 Link. It appears after a successful scan. The setup article remains available from the strip menu even before installation.
+In Link, open Configure Link > PLUG-INS, scan for your installed VST3 effects and load one. Use a factory map when available, or make a user map in Link. Link hosts VST3 effects, not instruments. Factory maps cover selected plugins; arbitrary effects are not automatically mapped. See SSL's SSL 360 Link User Guide for its mapping workflow.
+The Mixer displays Link's actual editor and controls. Its full interface remains accessible, including its plugin browser and mapping pages. Use Link's zoom control if needed. ML Studio's built-in strip knobs are not automatically mapped to the wrapped plugin. Available controls, metering and processing depend on Link and the loaded effect.
+To configure in a separate window, choose Open strip in plugin window; its D button detaches it for another monitor. Choose Dock original interface here to bring it back. Use an existing effect can dock a Link instance already in that insert's effect slots.
+Save the project to retain the wrapper's saved state. Copy this rack and settings to all inserts creates independent plugin instances using the wrapper's state; Fill all insert channels with starts fresh instances. These operations need a free effect slot on each destination. Remove strip (keep bypassed effect) restores the built-in strip and keeps the effect bypassed. Undo restores the assignment. Keep Link, the hosted plugin and any user maps installed when moving projects between computers.
+Settings > Visibility > Mixer > SSL 360 Link in Channel Strip picker hides the picker entry and setup shortcut without changing loaded effects or project data.
+Related: Find installed plugins | Choose a channel strip and use its processors | Insert effects, wet/dry mix and plugin bypass
+
 ### Insert effects, wet/dry mix and plugin bypass
 Keywords: FX slot plugin order 64 expandable effects bypass wet dry multi add move effect smart disable
 Select a Mixer insert and click an empty effect slot to load a plugin. Open the plugin from a filled slot, then adjust its own mix or the slot's wet/dry control. Keep an eye on output level when comparing bypassed and processed sound. Use the insert effects switch to compare the whole chain.
@@ -547,7 +557,7 @@ Keywords: plugin downloads favorites freeware open source portable compatibility
 
 Open Browser > Plugin Downloads. Show opens filters for Favorites, Native download, Portable install, Open source and Freeware. Sort switches between categories and alphabetical names. Search matches every word across names, descriptions and licences. Reset filters and search returns to the full catalog.
 
-Click the star beside a plugin to save it to your profile's download favorites. These are separate from favorites in the installed Plugin Picker. Download cards distinguish portable packages, installers/archives and website-only entries. Get from developer opens the official website; some free plugins require a vendor account or manager. Complete the vendor's installation, then click Scan Plugins. A downloaded installer is not proof the plugin is installed.
+Click the star beside a plugin to save it to your profile's download favorites. These are separate from favorites in the installed Plugin Picker. Plugin Downloads shows verified packages for your platform. Click the download arrow to get the official installer or archive directly. Use the Plugin suites category to browse bundles. Complete the installation or extract the plugin archive, then click Scan Plugins.
 
 Direct downloads are checked against the catalog checksum before opening. Cancel stops the current download. Downloads opens the package folder. Hide the discovery controls under Settings > Visibility > Browser > Plugin Downloads filters and favorites. Hiding them shows the unfiltered category browser and preserves your saved favorites and choices. Hiding the whole tab does not remove any installed plugins.
 
@@ -593,6 +603,17 @@ Turn up **Feed** to add tempo-synced note repeats. Adjust their spacing, count, 
 These settings are saved with the sampler channel. **Settings > Visibility > Plugin windows > Sampler note effects** hides the controls and keeps their playback settings active.
 Load a sample into a sampler channel. Set the start and end, pitch or root note, and loop behavior to suit the sound. Open Piano Roll and play notes at different pitches to check it.
 Use the channel's envelopes and filters to shape playback. Keep long files on disk when supported if you need to reduce memory use.
+Related: Route ML Sampler to the Mixer
+
+### Route ML Sampler to the Mixer
+Keywords: sampler track mixer insert destination master right click drag wheel
+
+Click **TRACK** in the ML Sampler window to open the miniature Mixer picker. Choose a destination by name or number, or scroll the mouse wheel over **TRACK** to change it one insert at a time. **0** is Master. With the default controls, you can also drag **TRACK** onto a visible Mixer track.
+
+To change track numbers by dragging, right-click **TRACK** and turn on **Drag up/down to change Mixer track**. Hold the left mouse button on the number and drag up for higher track numbers or down for lower ones. The number updates as you drag. Release to apply the route as one undoable change, or press **Esc** while holding to cancel. A quick click still opens the picker, and the wheel still steps through tracks. This preference is off by default and saved in your profile.
+
+The same right-click menu can open the picker, show the assigned track in the Mixer, or route the sampler to Master. You can hide the menu under **Settings > Visibility > Plugin windows > Sampler Mixer track menu**.
+Related: Play and shape samples in ML Sampler | Route audio with the miniature Mixer picker
 
 ### Design sounds with ML Wave
 Keywords: synth oscillator wavetable modulation lfo envelope unassign
@@ -920,12 +941,14 @@ Keywords: workspace visibility remove button toolbar settings tabs clip picker
 ![visibility | Workspace Visibility groups and search](assets/guide/visibility.jpg)
 Guide: visibility
 Open Settings > General > Workspace Visibility, or choose the Visibility tab. Expand a section or search for the control, then toggle it.
+Search accepts several words across a section and its controls. For example, **plugin sampler** finds the sampler controls under Plugin windows.
 These choices save to your profile and follow you between projects. Use the Playlist menu's Show clip picker panel switch to open or close the picker itself.
 Restore default visibility brings back the default show/hide choices. Existing toolbar layout settings still apply.
 
 ### Move the Settings window
 Keywords: settings options menu move drag position title header floating
 Drag the Settings window by its title bar to move it within the workspace. File, Options and other dropdown menus stay anchored to their menu buttons.
+Each Settings page remembers its expanded and collapsed sections during the session. Clicking the selected tab keeps your scroll position.
 
 The User Guide has its own Detach command. Use it to place the guide on another monitor.
 Related: Put ML Studio windows on several monitors
@@ -994,6 +1017,23 @@ File shows the User data folder and the factory content location. Add or remove 
 Keywords: settings plugins formats search folder find new plugins rescan all rescan plugins with errors combine formats prefer vst clap hide favorite
 In Settings > Plugins, enable the folders you want scanned. Add a folder for an installation outside the standard locations. Find new plugins scans additions and Rescan all rebuilds scan results. Use Rescan plugins with errors when retrying failed scans.
 Combine formats of the same plugin and the format preference affect which variants appear in the picker. Use the table to filter, favorite, or hide plugins. Use the plugin window's D control to detach or attach its editor. Projects keep the plugin identity and still need a compatible installation on each computer.
+
+### Customize Traditional Mixer insert knobs
+Keywords: theme traditional FL style mixer plugin insert slot mix dry wet knob ring outline circle color full mixer
+Open Settings > Theme > Traditional FL-style mixer view > Customize insert knobs. Choose **Full Mixer** to use the same knob-cap artwork as the Full Mixer finish, including Mixer Skin Designer artwork. Traditional, Dial and Ring are also available. Inherit restores the theme's original choice.
+The **Thin value ring** shows the wet/dry amount. **Outer circle** is the separate surround. Show or hide each independently, choose each color, and set widths from 0 to 2 pixels. The live examples show 0%, 50% and 100%. These settings affect Traditional insert slots; routing, wet/dry values, automation and Full Mixer styling stay intact.
+Use Apply theme to keep your edits, Cancel edits to restore the starting appearance, and Undo/Redo while experimenting. Reset section restores this area's controls together. Save a preset or Export theme to reuse the look.
+Settings > Visibility > Theme customization can hide the Traditional insert knob settings without erasing their saved appearance.
+Related: Themes, icons, cursor and mixer design
+
+### Grade colors across the workspace
+Keywords: theme saturation brightness contrast hue colors all workspace playlist piano roll browser menus rack mixer
+Open Settings > Theme > Open Theme Editor. Expand an area or search for it. There are separate controls for Toolbar & shared controls, Browser, Window frames, Playlist, Mixer, Attached mixer inspector, Channel Rack, Menus & dialogs, Piano Roll, Control finishes, Piano Roll note groups, Workspace, Shared dial controls and Traditional FL-style mixer view.
+Each area's palette has hue, saturation, brightness and contrast. Hue 180 and the other values at 100 leave that area unchanged. Saturation 0 makes its palette grayscale; values above 100 increase saturation. Adjustments tint custom colors in the same area too. The original values stay in the theme so Reset and Undo can restore them. The main Theme page's Adjustments remain the controls for the overall theme.
+Shared dial controls now include the unfilled track and outer-border colors, independent visibility for the value ring, track and border, and ring/pointer widths. These settings select the shared themed dial renderer. Full Mixer authored finishes keep their own designer controls.
+Apply, Cancel, Undo/Redo, preset saving and portable theme export include these settings. Reset section restores its colors, shapes and area adjustments together. Workspace Visibility > Theme customization > Area color adjustments hides those controls without changing the theme.
+Area adjustments operate on the app's named color palette. Fixed artwork, the Vintage appearance overlay and third-party plugin editors retain their own designs; turn Vintage off to use editable themes. No project colors, plugin parameters or audio are rewritten. Color grading happens when the theme changes, not during playback or each repaint.
+Related: Customize Traditional Mixer insert knobs
 
 ### Themes, icons, cursor and mixer design
 Keywords: settings theme appearance skins adjustments theme editor mixer skin designer icons fonts cursor packs note colors brightness
@@ -1094,7 +1134,7 @@ Open the main menus at the top of the workspace. The small menu button inside an
 - A right arrow opens a submenu. Move onto the row and into its submenu to reach the command. A check mark shows an on/off choice. A radio mark shows the selected member of a mutually exclusive group.
 - A greyed command needs a different selection or project state, or is unavailable in this build. For example, a project must be saved before it can revert to its own backup. Audio, pattern and automation clips offer different commands.
 - The key printed beside a command is its shortcut in the relevant context. Settings > Controls can change the effective binding. When Typing keyboard to piano is active, many bare letter keys play notes.
-- A menu's wheel moves among available rows. A menu that spans several columns can scroll sideways to reveal more items. Click outside or press Escape to close without choosing a command. Under General > Input, Open main menus on hover changes how the main menu titles open.
+- A menu's wheel moves among available rows. A menu that spans several columns can scroll sideways to reveal more items. Click outside or press Escape to close without choosing a command. With General > Input > Open main menus on hover enabled, click a main menu to start. Hover over other menu titles or submenu arrows to open them, and click a command to run it. Press Escape or click outside to end menu navigation.
 Related: Main menu command index | Customize menus | Keyboard and mouse shortcuts
 
 ### File menu

@@ -21,7 +21,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_MENU};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, GetCapture, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_ESCAPE, VK_MENU};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::*;
@@ -92,6 +92,7 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
                     }
                     // The host owns project undo; do not also undo inside the native editor.
                     if wp==usize::from(b'Z') && down(VK_CONTROL) {os_clap::wake();return 1;}
+                    if !up && wp == usize::from(VK_ESCAPE) { os_clap::wake(); }
                 }
             }
         }
@@ -515,6 +516,19 @@ impl FrameWindow {
         }
     }
 
+    pub fn set_sampler_track(&self, on: bool) {
+        self.state.borrow_mut().sampler_track = on;
+    }
+
+    pub fn cancel_sampler_track_step(&self) -> bool {
+        let cancelled = self.state.borrow_mut().track_step.take().is_some();
+        if cancelled { unsafe {
+            if GetCapture() == self.hwnd { ReleaseCapture(); }
+            InvalidateRect(self.hwnd, std::ptr::null(), 0);
+        } }
+        cancelled
+    }
+
     /// Shows or hides the gear strip (mixer effects open without it).
     pub fn set_strip(&self, on: bool) {
         if self.state.borrow().strip != on {
@@ -868,8 +882,10 @@ unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 0
             }
             WM_CAPTURECHANGED => {
+                let stepping = w.state.borrow().track_step.is_some();
                 w.state.borrow_mut().release();
                 unhold(w);
+                if stepping { InvalidateRect(hwnd, std::ptr::null(), 0); }
                 0
             }
             WM_MOUSEWHEEL => {

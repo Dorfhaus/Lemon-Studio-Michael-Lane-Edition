@@ -120,6 +120,11 @@ pub(super) fn knob(
     cap: Color,
     hover: bool,
 ) {
+    knob_impl(ui, id, x, y, r, value, cap, hover, false);
+}
+
+fn knob_impl(ui: &mut Ui, id: KnobId, x: f32, y: f32, r: f32, value: f32,
+    cap: Color, hover: bool, body_only: bool) {
     if ui.t.style.vintage_2005 {
         let size = (r * 2.0 + 2.0).round().clamp(7.0, 22.0);
         let bounds = Rect::new(x - size / 2.0, y - size / 2.0, size, size);
@@ -129,7 +134,7 @@ pub(super) fn knob(
     if ui.mixer_skin.uses(crate::mixer_skin::Part::Knob) {
         let t = ui.mixer_skin.palette(ui.t);
         let bipolar = (id.default_value() - 0.5).abs() < 0.0001;
-        return crate::mixer_skin::knob(ui.c, t, ui.mixer_skin, x, y, r, value, bipolar, hover);
+        return crate::mixer_skin::knob_body(ui.c, t, ui.mixer_skin, x, y, r, value, bipolar, hover, body_only);
     }
     match ui.mixer_finish {
         Finish::Theme => {
@@ -138,7 +143,9 @@ pub(super) fn knob(
                 ui.t.appearance
                     .knob
                     .unwrap_or(os_theme::appearance::Knob::Ring);
-            os_ui::kit::styled_knob(ui.c, ui.t, x, y, r, value, bipolar, hover, style);
+            let mut appearance = ui.t.appearance;
+            appearance.knob_body_only = body_only;
+            os_ui::kit::styled_knob_appearance(ui.c, ui.t, x, y, r, value, bipolar, hover, style, &appearance);
             return;
         }
         Finish::Original => {
@@ -146,7 +153,7 @@ pub(super) fn knob(
             return;
         }
         Finish::CleanModern => clean::knob(ui, x, y, r, value, cap, hover),
-        Finish::Analog => analog::knob(ui, x, y, r, value, Color::rgb(0x484848), hover),
+        Finish::Analog => analog::knob_body(ui, x, y, r, value, Color::rgb(0x484848), hover, body_only),
     }
     let neutral = if (id.default_value() - 0.5).abs() < 0.0001 {
         0.5
@@ -154,7 +161,7 @@ pub(super) fn knob(
         0.0
     };
     let value = value.clamp(0., 1.);
-    if (value - neutral).abs() > 0.0001 {
+    if !body_only && (value - neutral).abs() > 0.0001 {
         let lo = value.min(neutral);
         let start = (-1.25 + 1.5 * lo) * PI;
         let radius = if ui.mixer_finish == Finish::Analog {
@@ -171,5 +178,42 @@ pub(super) fn knob(
             1.5,
             Color::rgb(0x2096f3),
         );
+    }
+}
+
+/// Traditional insert slots retain their old rendering until explicitly customized.
+/// Cap artwork is shared with Full Mixer; decorations are independent and bounded.
+pub(crate) fn insert_knob(ui: &mut Ui, id: KnobId, x: f32, y: f32, q: f32, value: f32) {
+    let a = ui.t.appearance;
+    if !a.insert_custom {
+        super::mixer_knob(ui, x, y, 10.5 * q, 12.0 * q, value, Some(false));
+        ui.c.stroke_circle(x, y, 11.8 * q, 1.5, ui.t.s(0x55595c));
+        return;
+    }
+    let hover = ui.hovering(Rect::new(x - 13.0 * q, y - 13.0 * q, 26.0 * q, 26.0 * q));
+    if a.insert_full_knob {
+        knob_impl(ui, id, x, y, 7.5 * q, value, Color::rgb(0xc2c7c9), hover, true);
+    } else {
+        let mut appearance = a;
+        appearance.knob_body_only = true;
+        if a.insert_traditional_knob { appearance.knob = None; }
+        if let Some(style) = a.insert_knob { appearance.knob = Some(style); }
+        os_ui::kit::knob_appearance(ui.c, ui.t, x, y, 8.5 * q, value, false,
+            os_ui::kit::KnobLook::Mixer { halo: 10.0 * q, arc: false }, os_ui::kit::State::hover(hover), &appearance);
+        // The legacy Console ball uses its arc as the value indicator. Keep a
+        // pointer readable when the user hides that arc and its surround.
+        if appearance.knob.is_none() && !ui.t.style.lemon() && !ui.t.style.vintage_2005 {
+            let angle = (0.75 + 1.5 * value.clamp(0.0, 1.0)) * PI;
+            ui.c.line(x + 2.0 * q * angle.cos(), y + 2.0 * q * angle.sin(),
+                x + 6.5 * q * angle.cos(), y + 6.5 * q * angle.sin(), 1.2 * q, ui.t.glyph);
+        }
+    }
+    let ring_width = a.insert_ring_width.unwrap_or(1.0) * q;
+    if a.insert_ring != Some(false) && ring_width > 0.0 && value > 0.0 {
+        ui.c.arc(x, y, 10.6 * q, 0.75 * PI, 1.5 * PI * value.clamp(0.0, 1.0), ring_width, ui.t.insert_knob_ring);
+    }
+    let rim_width = a.insert_rim_width.unwrap_or(1.0) * q;
+    if a.insert_rim != Some(false) && rim_width > 0.0 {
+        ui.c.stroke_circle(x, y, 12.8 * q, rim_width, ui.t.insert_knob_rim);
     }
 }

@@ -121,6 +121,8 @@ const PRESETS_W: f32 = 80.0;
 const MIN_FRAME_W: f32 = 180.0;
 const DETACH_SPACE: f32 = 23.0;
 pub(crate) const DETACH_VISIBILITY: &str = "visible_plugin-window-detach";
+pub(crate) const SAMPLER_TRACK_MENU_VISIBILITY: &str = "visible_sampler-track-menu";
+pub(crate) const SAMPLER_TRACK_DRAG: &str = "sampler_track_drag";
 
 fn c_frame() -> Color {
     os_theme::current().s(0x25292b)
@@ -212,6 +214,8 @@ pub enum FrameEvent {
     TrackHover(i32,i32),
     TrackDrop(i32,i32),
     PickTrack,
+    TrackMenu(i32, i32),
+    CommitTrackStep { from: u16, to: u16 },
     /// The window was clicked: it comes to the front of the app's window stack (docked windows, Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     Raise,
@@ -280,6 +284,13 @@ const BOX_DRAG: f32 = 10.0;
 /// The RANGE box's limit, semitones.
 const RANGE_MAX: i32 = 48;
 
+struct TrackStep {
+    origin: (f32, f32),
+    from: u16,
+    to: u16,
+    moved: bool,
+}
+
 struct State {
     info: ChannelInfo,
     strip: bool,
@@ -314,6 +325,8 @@ struct State {
     maxed_at_press: Option<((i32, i32), (f32, f32))>,
     events: Vec<FrameEvent>,
     track_drag: Option<(i32,i32,f32,f32,f32,f32,bool)>,
+    sampler_track: bool,
+    track_step: Option<TrackStep>,
     drag: Option<(Knob, f32, f32)>,
     /// Title-bar move in progress: cursor and window position (screen px) at the press. Done by hand: the system's
     /// move loop (HTCAPTION) blocks the UI thread, which would freeze all drawing while a window moves.
@@ -358,6 +371,8 @@ impl State {
             maxed_at_press: None,
             events: Vec::new(),
             track_drag: None,
+            sampler_track: false,
+            track_step: None,
             drag: None,
             moving: None,
             armed: None,
@@ -432,11 +447,26 @@ impl State {
         self.events.push(e);
         os_clap::wake();
     }
+    fn displayed_track(&self) -> u16 {
+        self.track_step.as_ref().map_or(self.info.track, |drag| drag.to)
+    }
+
+    fn sampler_track_steps(&self) -> bool {
+        self.sampler_track && crate::settings_file::flag(SAMPLER_TRACK_DRAG, false)
+    }
+
     /// The title bar's hint for a strip value box.
     fn box_text(&self, k: Knob) -> String {
         match k {
             Knob::Range => format!("Pitch range: \u{b1}{} semitones", self.info.range),
-            _ => format!("Target mixer track: {}  (click to choose; drag to route; wheel to change)", track_name(self.info.track)),
+            _ => {
+                let drag = if self.sampler_track_steps() { "drag up/down to step" } else { "drag to route" };
+                let menu = if self.sampler_track && crate::workspace_visibility::shown(SAMPLER_TRACK_MENU_VISIBILITY) {
+                    "; right-click for options"
+                } else { "" };
+                format!("Target mixer track: {}  (click to choose; {drag}; wheel to change{menu})",
+                    track_name(self.displayed_track()))
+            }
         }
     }
     fn size(&self) -> (f32, f32) {
@@ -728,7 +758,12 @@ fn title_bar(c: &mut Canvas, st: &State, w: f32) {
     let room = (p.x - 8.0 - nx).max(0.0);
     let nw = c.text_width(f, &st.info.name).min(room);
     c.text_clip(f, nx, ty, room, c_text(), &st.info.name);
-    let target = format!("({})", st.info.target);
+    let pending_track = st.displayed_track();
+    let target = if pending_track == st.info.track {
+        format!("({})", st.info.target)
+    } else {
+        format!("({})", track_name(pending_track))
+    };
     let tx = nx + nw + c.text_width(f, " ");
     let troom = (p.x - 8.0 - tx).max(0.0);
     c.text_clip(f, tx, ty, troom, c_grey(), &target);
@@ -831,7 +866,8 @@ fn strip(c: &mut Canvas, st: &State, w: f32) {
     }
     let lemon = lemon_look();
     caption(c, if lemon { range_rect(dx).cx() } else { 484.0 + dx }, "RANGE");
-    let track = if st.info.track == 0 { "---".to_string() } else { st.info.track.to_string() };
+    let track = st.displayed_track();
+    let track = if track == 0 { "---".to_string() } else { track.to_string() };
     value_box(c, at(track_rect(dx)), &track);
     caption(c, if lemon { track_rect(dx).cx() } else { 537.0 + dx }, "TRACK");
     // Greyed out (`strip_off`): from ON on in an effect's window.
@@ -1043,6 +1079,13 @@ impl State {
                 self.drag = Some((k, y, self.knob_value(k)));
                 Reply::Hold
             }
+            Some(Part::Track) if self.sampler_track_steps() => {
+                self.box_hint = Some(Knob::Track);
+                self.track_step = Some(TrackStep {
+                    origin: (x, y), from: self.info.track, to: self.info.track, moved: false,
+                });
+                Reply::Hold
+            }
             Some(Part::Track) if double => {
                 self.drag = None;
                 self.events.push(FrameEvent::ShowTrack);
@@ -1092,6 +1135,14 @@ impl State {
         if let Some(r) = self.misc_button(x, y, Btn::Right, screen) {
             return r;
         }
+        if self.sampler_track && self.track_step.is_none() && part_at(self, x, y) == Some(Part::Track)
+            && crate::workspace_visibility::shown(SAMPLER_TRACK_MENU_VISIBILITY)
+        {
+            let (sx, sy) = screen(x, y);
+            self.events.push(FrameEvent::TrackMenu(sx, sy));
+            os_clap::wake();
+            return Reply::None;
+        }
         // No channel behind the window: the strip's knobs do nothing.
         if let (Some(Part::Knob(i)), Some(_)) = (part_at(self, x, y), self.info.misc) {
             let (sx, sy) = screen(x, y);
@@ -1134,6 +1185,17 @@ impl State {
                 self.sizing = Some(s);
                 self.events.push(FrameEvent::Resize(want.0, want.1));
                 os_clap::wake();
+            }
+            return Reply::None;
+        }
+        if let Some(step) = self.track_step.as_mut() {
+            let dy = step.origin.1 - y;
+            step.moved |= (x - step.origin.0).hypot(dy) > 4.;
+            let to = i32::from(step.from).saturating_add((dy / BOX_DRAG).round() as i32)
+                .clamp(0, i32::from(self.info.max_track)) as u16;
+            if step.moved && step.to != to {
+                step.to = to;
+                return Reply::Repaint;
             }
             return Reply::None;
         }
@@ -1211,6 +1273,18 @@ impl State {
     /// The left button was released at (x, y): an armed title-bar button acts if the mouse is still over it, then
     /// everything a release ends ends (`release`).
     fn left_up(&mut self, x: f32, y: f32) -> Reply {
+        if self.track_step.is_some() {
+            self.motion(x, y, false);
+            let step = self.track_step.take().unwrap();
+            if step.moved && step.from != step.to {
+                self.events.push(FrameEvent::CommitTrackStep { from: step.from, to: step.to });
+            } else if !step.moved && part_at(self, x, y) == Some(Part::Track) {
+                self.events.push(FrameEvent::PickTrack);
+            }
+            self.box_hint = (part_at(self, x, y) == Some(Part::Track)).then_some(Knob::Track);
+            os_clap::wake();
+            return Reply::Repaint;
+        }
         if let Some((sx,sy,kx,ky,x0,y0,moved))=self.track_drag.take() {
             let (w,h)=self.size();
             if moved && x>=0. && y>=0. && x<w && y<h {self.events.push(FrameEvent::TrackHoverEnd);}
@@ -1247,6 +1321,7 @@ impl State {
     /// The button was released (or the mouse lost otherwise): drags end, a held Misc key is let go, an armed title-bar
     /// button is let go without acting.
     fn release(&mut self) {
+        self.track_step = None;
         if self.track_drag.take().is_some_and(|d|d.6){self.events.push(FrameEvent::TrackHoverEnd);}
         self.armed = None;
         self.drag = None;
@@ -1279,6 +1354,9 @@ impl State {
             let v = self.knob_value(k) + notches / 64.0;
             self.set_knob(k, v);
             return Reply::Repaint;
+        }
+        if part == Some(Part::Track) && self.track_step.is_some() {
+            return Reply::None;
         }
         if matches!(part, Some(Part::Range | Part::Track)) && notches != 0.0 {
             // One step per notch, up = higher.
@@ -1737,6 +1815,63 @@ mod tests {
         st.left_down(tx, y, true, &screen);
         assert_eq!(st.events.last(), Some(&FrameEvent::ShowTrack));
         assert!(st.drag.is_none());
+    }
+
+    #[test]
+    fn sampler_track_menu_and_opt_in_drag_preview_then_commit() {
+        let screen = |x: f32, y: f32| (x as i32, y as i32);
+        let mut st = state(true, "Insert 8");
+        st.sampler_track = true;
+        st.info.track = 8;
+        st.info.max_track = 20;
+        let (x, y) = (537. + st.size().0 - STRIP_RIGHT, 47.);
+        assert!(!st.sampler_track_steps());
+        assert_eq!(st.left_down(x, y, false, &screen), Reply::Capture);
+        st.release();
+        st.right_down(x, y, &screen);
+        assert_eq!(st.events, [FrameEvent::TrackMenu(x as i32, y as i32)]);
+        st.events.clear();
+
+        crate::settings_file::set_flag(SAMPLER_TRACK_DRAG, true);
+        assert_eq!(st.left_down(x, y, false, &screen), Reply::Hold);
+        st.left_up(x + 1., y + 1.);
+        assert_eq!(st.events, [FrameEvent::PickTrack]);
+        st.events.clear();
+
+        assert_eq!(st.left_down(x, y, true, &screen), Reply::Hold);
+        assert_eq!(st.motion(x, y - 30., false), Reply::Repaint);
+        assert_eq!(st.displayed_track(), 11);
+        assert!(st.box_text(Knob::Track).contains("Insert 11"));
+        assert_eq!(st.info.track, 8);
+        assert!(st.events.is_empty());
+        st.left_up(x, y + 20.);
+        assert_eq!(st.events, [FrameEvent::CommitTrackStep { from: 8, to: 6 }]);
+        st.events.clear();
+
+        st.left_down(x, y, false, &screen);
+        st.motion(x, y + 500., false);
+        assert_eq!(st.displayed_track(), 0);
+        st.motion(x, y - 500., false);
+        assert_eq!(st.displayed_track(), 20);
+        st.release();
+        assert_eq!(st.displayed_track(), 8);
+        st.left_up(x, y);
+        assert!(st.events.is_empty());
+
+        st.left_down(x, y, false, &screen);
+        st.motion(x, y - 30., false);
+        st.left_up(x, y);
+        assert!(st.events.is_empty());
+        st.wheel(x, y, 1.);
+        assert_eq!(st.events, [FrameEvent::Track(9)]);
+        st.events.clear();
+
+        crate::settings_file::set_flag(SAMPLER_TRACK_MENU_VISIBILITY, false);
+        st.right_down(x, y, &screen);
+        assert!(st.events.is_empty());
+        assert!(st.sampler_track_steps());
+        st.sampler_track = false;
+        assert_eq!(st.left_down(x, y, false, &screen), Reply::Capture);
     }
 
     /// The frame fits the tab shown: the Misc page's size while it is open (larger or smaller than the plugin's

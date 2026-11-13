@@ -66,7 +66,7 @@ pub fn rows(s: &State) -> Vec<Row> {
     }
     let plugin_row=|(i,p):(usize,&Plugin)|Row{key:format!("5:plugin/{i}"),depth:1,label:p.name.clone(),icon:Icon::Plug,cat:1,open:None,bright:true,item:Item::None,path:None};
     let words:Vec<_>=q.split_whitespace().collect();
-    let matching=|p:&Plugin|accepts(p,f) && {let hay=format!("{} {} {} {} {}",p.name,p.category,p.description,p.info,p.license).to_lowercase();words.iter().all(|w|hay.contains(w))};
+    let matching=|p:&Plugin|download(p).is_some() && accepts(p,f) && {let hay=format!("{} {} {} {} {}",p.name,p.category,p.description,p.info,p.license).to_lowercase();words.iter().all(|w|hay.contains(w))};
     if by_name {
         let mut found:Vec<_>=catalog().iter().enumerate().filter(|(_,p)|matching(p)).collect();
         found.sort_by_key(|(_,p)|p.name.to_lowercase());out.extend(found.into_iter().map(plugin_row));return out;
@@ -84,7 +84,9 @@ pub fn rows(s: &State) -> Vec<Row> {
     out
 }
 pub fn detail_height(s: &State) -> f32 { ((s.screen.1-crate::views::browser::list_top(s)-28.)*0.55).clamp(155.,280.) }
-fn selected(s:&State)->Option<usize> { s.browser_sel.as_deref().and_then(row_index) }
+fn selected(s: &State) -> Option<usize> {
+    s.browser_sel.as_deref().and_then(row_index).filter(|&i| download(&catalog()[i]).is_some())
+}
 include!("plugin_thumbnails.rs");
 fn thumbnail(ui:&mut Ui,i:usize,r:Rect) {
     if let Some((w,h,pixels))=thumbnails().get(i).and_then(|p|p.as_ref()) {ui.c.image(r,*w,*h,pixels);}else{ui.c.fill_rrect(r,4.,ui.t.sunken);icons::draw(ui.c,Icon::Plug,r,ui.t.browser_search);}
@@ -173,11 +175,11 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
             let p=&catalog()[i];thumbnail(ui,i,Rect::new(rr.x+3.,y+6.,48.,30.));
             let x=rr.x+57.;let w=(rr.w-if discovery(){108.}else{83.}).max(0.);
             ui.c.text_clip(Font::new(14),x,y+4.,w,ui.t.text,&p.name);
-            ui.c.text_clip(Font::new(11),x,y+24.,w,ui.t.text_dim,&format!("{} / {}",if download(p).is_none(){"Website only"}else if download(p).is_some_and(|d|!d.install.is_empty()){"Portable"}else{"Installer / archive"},p.license));
+            ui.c.text_clip(Font::new(11),x,y+24.,w,ui.t.text_dim,&format!("{} / {}",if download(p).is_some_and(|d|!d.install.is_empty()){"Portable"}else{"Installer / archive"},p.license));
             if discovery(){let star=Rect::new(rr.right()-50.,y+10.,23.,25.);button(ui,star.intersect(&list),if favorite(p){"★"}else{"☆"},Action::PluginDownload(i,6),"Save or remove favorite",true);}
             let dl=Rect::new(rr.right()-25.,y+10.,23.,25.);
-            ui.hit(dl.intersect(&list),Action::PluginDownload(i,if download(p).is_none(){1}else{0}),format!("Get {}. {}",p.name,p.note));
-            icons::draw(ui.c,Icon::Download,dl,if download(p).is_some(){ui.t.browser_search}else{ui.t.text_faint});
+            ui.hit(dl.intersect(&list),Action::PluginDownload(i,0),format!("Get {}. {}",p.name,p.note));
+            icons::draw(ui.c,Icon::Download,dl,ui.t.browser_search);
         } else if row.key.starts_with("5:discover/") {
             let reset=28.;let sort=48.;let gap=4.;let fw=(rr.w-reset-sort-2.*gap).max(30.);
             button(ui,Rect::new(rr.x,y+9.,fw,27.).intersect(&list),FILTERS[filter()],Action::PluginDownload(0,8),"Choose which plugins to show",true);
@@ -202,12 +204,12 @@ pub fn paint(ui:&mut Ui,s:&State,r:Rect) {
             wrapped(ui,&p.description,Rect::new(x,top+64.,w,(bottom-135.-top-64.).max(0.)),ui.t.text);
         } else {wrapped(ui,&p.description,Rect::new(x,top,w,(bottom-135.-top).max(0.)),ui.t.text);}
     } else {
-        ui.c.text_clip(Font::new(15),x,panel.y+5.,w,ui.t.text,&format!("{} free plugins",catalog().len()));
+        ui.c.text_clip(Font::new(15),x,panel.y+5.,w,ui.t.text,&format!("{} free downloads",catalog().iter().filter(|p|download(p).is_some()).count()));
         wrapped(ui,"Choose a category, then a plugin. Hover for information. Portable plugins install automatically. Other downloads open their installer or archive.",Rect::new(x,panel.y+29.,w,(dh-165.).max(0.)),ui.t.text_dim);
     }
-    let tip=download(p).map_or("Open the developer website for platform support and installation. Then Scan Plugins.".to_string(),|d|format!("{} / {:.1} MB. {} {} Finish installation, then Scan Plugins.",d.version,d.size as f64/1048576.,d.note,p.note));
-    let label=if download(p).is_none(){"Get from developer"}else if st.busy&&same {"Downloading..."}else if download(p).is_some_and(|d|!d.install.is_empty()) {"Download + Install"}else{"Download + Open"};
-    button(ui,Rect::new(x,bottom-130.,w,24.),label,Action::PluginDownload(i,if download(p).is_none(){1}else{0}),&tip,selected(s).is_some()&&!st.busy);
+    let tip=download(p).map_or("Choose a plugin to download for this platform.".to_string(),|d|format!("{} / {:.1} MB. {} {} Finish installation, then Scan Plugins.",d.version,d.size as f64/1048576.,d.note,p.note));
+    let label=if st.busy&&same {"Downloading..."}else if download(p).is_some_and(|d|!d.install.is_empty()) {"Download + Install"}else{"Download + Open"};
+    button(ui,Rect::new(x,bottom-130.,w,24.),label,Action::PluginDownload(i,0),&tip,selected(s).is_some()&&!st.busy);
     let half=(w-5.)/2.;
     button(ui,Rect::new(x,bottom-102.,half,21.),if p.freeware {"Website"} else {"Source"},Action::PluginDownload(i,1),&p.source,selected(s).is_some());
     button(ui,Rect::new(x+half+5.,bottom-102.,half,21.),"License",Action::PluginDownload(i,5),&p.license_url,selected(s).is_some());
@@ -231,15 +233,16 @@ fn cancelled()->bool {status().lock().unwrap().cancel}
 fn allowed_url(url:&str)->bool {
     let Some(rest)=url.strip_prefix("https://")else{return false};
     let host=rest.split('/').next().unwrap_or("").to_ascii_lowercase();
-    ["github.com","release-assets.githubusercontent.com","objects.githubusercontent.com","www.airwindows.com","airwindows.com","socalabs.com","www.socalabs.com","www.dropbox.com","dl.dropboxusercontent.com","www.tokyodawn.net","www.voxengo.com","cdn.youlean.co","xferrecords.com","klanghelm.com","dl.u-he.com","tal-software.com","0911754ed6a6961486bafb46cc7496df.r2.cloudflarestorage.com","www.vitling.xyz","www.fullbucket.de","blaukraut.info"].contains(&host.as_str())
+    ["github.com","release-assets.githubusercontent.com","objects.githubusercontent.com","www.airwindows.com","airwindows.com","socalabs.com","www.socalabs.com","www.dropbox.com","dl.dropboxusercontent.com","www.tokyodawn.net","www.voxengo.com","cdn.youlean.co","xferrecords.com","klanghelm.com","dl.u-he.com","tal-software.com","0911754ed6a6961486bafb46cc7496df.r2.cloudflarestorage.com","www.vitling.xyz","www.fullbucket.de","blaukraut.info","tytel.org","www.sonicbits.com","ymck.net","acondigital.com","valhallaproduction.s3.us-west-2.amazonaws.com","www.auburnsounds.com","www.vennaudio.com","www.bluecataudio.com","www.reaper.fm","cdn.decentsamples.com"].contains(&host.as_str())
         || host=="klanghelmfree.s3.eu-central-1.amazonaws.com" || host=="uhe-dl.b-cdn.net"
+        || host == "www.bluecataudiofiles.com"
         || host.ends_with(".githubusercontent.com") || host.ends_with(".dropboxusercontent.com")
 }
 fn safe_name(name:&str)->bool{!name.is_empty() && name.len()<180 && name.chars().all(|c|c.is_ascii_alphanumeric()||"._-".contains(c)) && !name.starts_with('.')}
 fn validate(d:&Download)->Result<(),String>{
     if !allowed_url(&d.url)||!safe_name(&d.filename)||d.size==0||d.size>2*1024*1024*1024||d.sha256.len()!=64||!d.sha256.bytes().all(|c|c.is_ascii_hexdigit()) {return Err("This catalog entry needs a download update. Open Source to visit the maker.".into())}
     if d.install.iter().any(|r|!member_allowed(r,&d.install)||!r.ends_with(".vst3")&&!r.ends_with(".dll")&&!r.ends_with(".clap")) {return Err("Invalid portable plugin paths".into())}
-    if ![".exe",".msi",".zip",".dmg",".pkg",".deb",".tar.gz",".tar.xz"].iter().any(|e|d.filename.ends_with(e)){return Err("Unsupported package type".into())} Ok(())
+    if ![".exe",".msi",".zip",".dmg",".pkg",".deb",".tar.gz",".tar.xz",".7z"].iter().any(|e|d.filename.ends_with(e)){return Err("Unsupported package type".into())} Ok(())
 }
 fn hex(bytes:&[u8])->String{bytes.iter().map(|b|format!("{b:02x}")).collect()}
 fn verified(path:&Path,d:&Download)->bool {
@@ -350,7 +353,7 @@ fn install_portable(archive:&Path,d:&Download,id:&str,root:&Path)->Result<PathBu
 }
 fn start(i:usize){
     let Some(p)=catalog().get(i)else{return};let mut s=status().lock().unwrap();
-    if s.busy || s.ready.is_some() || s.installed.is_some(){return}let Some(d)=download(p).cloned()else{s.index=Some(i);s.message="No compatible native download. See Source for the maker's options.".into();s.changed=true;return};
+    if s.busy || s.ready.is_some() || s.installed.is_some(){return}let Some(d)=download(p).cloned()else{s.index=Some(i);s.message="No verified download for this platform.".into();s.changed=true;return};
     *s=Status{busy:true,index:Some(i),changed:true,message:"Connecting to the official download...".into(),..Default::default()};drop(s);
     std::thread::spawn(move||{
         let result=cache().and_then(|root| {
@@ -414,7 +417,9 @@ mod tests {
         discovery_row(&mut app,"5:discover/reset");
         discovery_row(&mut app,"5:discover/sort");
         let names:Vec<_>=rows(&app.state).into_iter().filter(|r|row_index(&r.key).is_some()).map(|r|r.label.to_lowercase()).collect();
-        assert_eq!(names.len(),catalog().len());assert!(names.windows(2).all(|a|a[0]<=a[1]));
+        assert_eq!(names.len(),catalog().iter().filter(|p|download(p).is_some()).count());assert!(names.windows(2).all(|a|a[0]<=a[1]));
+        app.state.browser_search = "komplete start".into();
+        assert!(!rows(&app.state).iter().any(|row| row_index(&row.key).is_some()));
         app.state.browser_search="reverb ambient".into();
         assert!(rows(&app.state).iter().any(|r|row_index(&r.key).is_some_and(|i|catalog()[i].id=="valhalla-supermassive")));
         crate::prefs::set_text("catalog_filter","1");
@@ -434,12 +439,14 @@ mod tests {
     }
     #[test]
     fn catalog_and_download_integrity(){
-        let mut cats=std::collections::HashMap::new();let mut ids=std::collections::HashSet::new();assert_eq!(catalog().len(),101);
+        let mut cats=std::collections::HashMap::new();let mut ids=std::collections::HashSet::new();assert_eq!(catalog().len(),158);
+        assert!(catalog()[101..].iter().all(|p| !p.downloads.is_empty()));
+        assert_eq!(catalog()[101..].iter().filter(|p| p.category == "Plugin suites").count(), 6);
         for p in catalog(){assert!(ids.insert(&p.id));*cats.entry(&p.category).or_insert(0)+=1;
             assert!(p.source.starts_with("https://"));assert!(p.info.len()>50);assert!(!p.license.is_empty());
-            assert!(p.downloads.is_empty() || for_platform(p,"windows-x86_64").is_some(),"{}",p.name);
+            assert!(p.downloads.iter().all(|d| ["windows-x86_64", "macos-x86_64", "macos-aarch64", "macos-universal", "linux-x86_64"].contains(&d.platform.as_str())), "{}", p.name);
             for d in &p.downloads{validate(d).unwrap_or_else(|e|panic!("{} {}: {e}",p.name,d.platform));}
-        }assert!(cats.len()>=10);assert_eq!(catalog().iter().filter(|p|p.freeware).count(),42);
+        }assert!(cats.len()>=10);assert_eq!(catalog().iter().filter(|p|p.freeware).count(),80);
         assert!(!member_allowed("bundle/../bad.dll",&["bundle".into()]));
         assert!(!member_allowed("C:/bad.dll",&["C:".into()]));
         assert!(!member_allowed("plugin.dll.exe",&["plugin.dll".into()]));
@@ -457,8 +464,8 @@ mod tests {
     fn catalog_browser_search_and_layout(){
         crate::prefs::set_text(DISCOVERY_VISIBILITY,"0");
         let mut app=App::new(None);app.state.show_browser=true;app.browser_act(&Action::BrowserTab(TAB));
-        assert_eq!(app.state.browser_tab,TAB);assert_eq!(rows(&app.state).len(),catalog().iter().map(|p|&p.category).collect::<std::collections::HashSet<_>>().len());
-        app.browser_act(&Action::BrowserRow(0));assert_eq!(rows(&app.state).len(),catalog().iter().map(|p|&p.category).collect::<std::collections::HashSet<_>>().len()+catalog().iter().filter(|p|p.category=="Synthesizers").count());
+        assert_eq!(app.state.browser_tab,TAB);assert_eq!(rows(&app.state).len(),catalog().iter().filter(|p|download(p).is_some()).map(|p|&p.category).collect::<std::collections::HashSet<_>>().len());
+        app.browser_act(&Action::BrowserRow(0));assert_eq!(rows(&app.state).len(),catalog().iter().filter(|p|download(p).is_some()).map(|p|&p.category).collect::<std::collections::HashSet<_>>().len()+catalog().iter().filter(|p|download(p).is_some() && p.category=="Synthesizers").count());
         app.browser_act(&Action::BrowserRow(1));assert!(app.drag.is_none());assert_eq!(selected(&app.state),Some(0));
         app.state.browser_search="oxygen".into();assert_eq!(rows(&app.state).len(),2);assert_eq!(rows(&app.state)[1].label,"oXygen");
         app.state.browser_search.clear();
@@ -506,6 +513,22 @@ mod tests {
         assert_eq!(count,18);
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    #[ignore = "Explicit download check for the catalog expansion. Packages are not opened."]
+    fn expanded_catalog_download_roundtrip() {
+        let dir = PathBuf::from(std::env::var_os("ML_CATALOG_CHECK_DIR").expect("set the scratch download directory"));
+        let ids = std::env::var("ML_CATALOG_CHECK_IDS").unwrap_or_else(|_| {
+            "helm,magical-8bit-plug-2,valhalla-freq-echo,acon-digital-multiply-2,cockos-reaplugs".into()
+        });
+        for id in ids.split(',') {
+            let plugin = catalog().iter().find(|p| p.id == id).expect(id);
+            let package = for_platform(plugin, "windows-x86_64").expect(id);
+            let path = fetch(package, &dir).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert!(verified(&path, package), "{id}");
+            println!("Verified {} bytes for {}", package.size, plugin.name);
+        }
+    }
+
     #[test]
     #[ignore="Explicit official freeware download check, no installer executes"]
     fn freeware_download_roundtrip(){
