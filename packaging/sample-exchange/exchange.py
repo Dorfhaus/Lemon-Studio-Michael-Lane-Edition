@@ -1,4 +1,4 @@
-"""Lemon Studio's Windows Development sample exchange."""
+"""ML Studio's Windows Development sample exchange."""
 
 import sys, os, traceback, ctypes
 from pathlib import Path
@@ -43,9 +43,9 @@ def request(cred,path,data=None,token=''):
  except HTTPError as e:raise ValueError(f'{e.code}: '+e.read(250).decode(errors='replace'))
 def main():
  host=psutil.Process(int(sys.argv[1]));expected=Path(__file__).resolve().parents[1]/'lemonstudio-development.exe'
- if Path(host.exe()).resolve()!=expected or host.pid!=os.getppid():raise RuntimeError('Open Sample Exchange in Lemon Studio Development.')
+ if Path(host.exe()).resolve()!=expected or host.pid!=os.getppid():raise RuntimeError('Open Sample Exchange in ML Studio Development.')
  cred=credentials();cache=Path(sys.argv[2])/'Sample Exchange';cache.mkdir(parents=True,exist_ok=True)
- root=TkinterDnD.Tk();root.title('Lemon Studio  /  Sample Exchange');root.geometry('850x570');root.configure(bg='#10191e')
+ root=TkinterDnD.Tk();root.title('ML Studio  /  Sample Exchange');root.geometry('850x570');root.configure(bg='#10191e')
  root.update_idletasks()
  # Own the companion window from Studio so it follows the DAW in the window stack.
  owners=[]
@@ -135,7 +135,7 @@ def main():
   if not token:return status.set('Sign in first.')
   def choose(v):
    old=v['newsletter'];label='Unsubscribe from' if old else 'Subscribe to'
-   if messagebox.askyesno('Optional email preference',label+' Lemon Studio news and product updates by email?',parent=root):task(lambda:request(cred,'/newsletter',{'subscribe':not old},token),status.set)
+   if messagebox.askyesno('Optional email preference',label+' ML Studio news and product updates by email?',parent=root):task(lambda:request(cred,'/newsletter',{'subscribe':not old},token),status.set)
   task(lambda:request(cred,'/me',token=token),choose)
  bar=ttk.Frame(root);bar.pack(fill='x',**pad)
  for label,fn in [('Preview',lambda:cache_sample(True)),('Stop',lambda:winsound.PlaySound(None,0)),('Vote',vote),('Upload WAV',upload),('Refresh',refresh),('Sign in',auth),('Create preview account',lambda:auth(True))]:ttk.Button(bar,text=label,command=fn).pack(side='left')

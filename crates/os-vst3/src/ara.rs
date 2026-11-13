@@ -440,7 +440,7 @@ impl Document {
             });
             let props = ARADocumentProperties {
                 structSize: size_of::<ARADocumentProperties>(),
-                name: c"Lemon Studio audio clip".as_ptr(),
+                name: c"ML Studio audio clip".as_ptr(),
             };
             let inst = sized((factory.api.createDocumentControllerWithDocument.unwrap())(
                 &*host_instance,

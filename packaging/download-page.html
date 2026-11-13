@@ -131,7 +131,19 @@
 <p>The recorded history of the Michael Lane edition, from 28 October 2026. Related iterations are grouped into user-facing changes. Dates describe development; public build numbers identify published milestones. Original Lemon Studio development predates this edition.</p>
 <label for="change-search">Search changes</label><input id="change-search" type="search" placeholder="Try Chop, mixer or recording">
 <p id="change-empty" hidden>No changes match your search.</p>
-<details class="change-entry" open><summary>2026-11-12</summary><ul>
+<details class="change-entry" open><summary>2026-11-13</summary><ul>
+<li>Improved playback buffering, including large ASIO buffer sizes, and reduced repeated memory allocation during rendering.</li>
+<li>Host-loaded plugin state presets prepare while the current instance keeps playing, then switch only the selected instrument or effect with a short smoothing ramp. Held notes restart with the new sound; routing and automation remain connected. Failed loads preserve the current preset. Native program/bank selectors, plugin-internal preset browsers and existing effect tails are not covered by this transition.</li>
+<li>Attached Playlist and Mixer routing now follows explicit instrument and audio-track assignments. Attaching or detaching alone does not reroute the project, and the ordinary unattached Playlist keeps its existing workflow.</li>
+<li>Follow playhead is optional and off by default. Continuous following moves smoothly, and manual scrolling remains available.</li>
+<li>Save custom window layouts with positions and sizes and assign keyboard shortcuts to recall them. The last open, closed and resized window state is remembered across app restarts.</li>
+<li>Route selected Channel Rack tracks together or to consecutive Mixer inserts. Changing a selected row&#x27;s Mixer number applies to the selected group. The Channel Rack expands to fit newly added channels.</li>
+<li>Choose the typing-keyboard piano octave from its keyboard options.</li>
+<li>Playlist Audio Timing now offers transient-detection Sensitivity. Adjust which attacks are detected before applying timing correction.</li>
+<li>Windows updates verify that the installer helper starts before closing the app. Failed update handoffs keep the current session open and provide clearer retry and diagnostic information.</li>
+<li>Help &gt; About opens the build information. The illustrated offline User Guide includes searchable articles, detailed menus, linked topics and image enlargement, and can be detached onto another monitor.</li>
+</ul></details>
+<details class="change-entry"><summary>2026-11-12</summary><ul>
 <li>Attach the Mixer to the Playlist for mixer-ordered tracks with per-track recording, Piano Roll and instrument insertion. The Mixer stays open, and detaching restores your Playlist arrangement while retaining new edits and recordings.</li>
 <li>The attached inspector includes the Mixer EQ, scrollable effects and color-coded sends. Resize or collapse sections, hide the inspector, or choose the optional Full channel strip. Enable Playlist record and instrument buttons in Workspace Visibility to use them with the Mixer detached.</li>
 <li>Time Warper and Vocal Tuning apply completed gestures automatically. Pitch and timing have separate per-clip Undo and Redo histories that survive saving and reopening. Copies and slices inherit the edits and can be changed independently.</li>
@@ -165,7 +177,7 @@
 <li>High-quality resampling runs faster. Closing during an export cancels the render before plugin shutdown.</li>
 </ul></details>
 <details class="change-entry"><summary>2026-11-10</summary><ul>
-<li>Windows, macOS (Apple silicon and Intel), and Linux: include the approved original FL Studio 2005 artwork inside Lemon Studio, restoring the classic toolbar, Channel Rack, knobs, faders and displays without requiring a separate skin folder.</li>
+<li>Windows, macOS (Apple silicon and Intel), and Linux: include the approved original FL Studio 2005 artwork inside ML Studio, restoring the classic toolbar, Channel Rack, knobs, faders and displays without requiring a separate skin folder.</li>
 <li>The same artwork is delivered through normal automatic updates and fresh installations; existing projects, settings and the selected theme are preserved.</li>
 <li>Include the original vintage cursor pack on every platform, automatically selected by the FL Studio 2005 theme and also available for other themes. Existing local skin overrides remain supported.</li>
 <li>Automatically retain only the two newest rollback backups and remove older updater-owned backups after successful updates or startup. Clear completed authenticated update downloads while protecting active and pending downloads, projects and preferences. The Windows installer performs the same cleanup.</li>
@@ -275,7 +287,7 @@
 <li>Plugin Picker supports multiple selections, bulk favorites and a persistent Blacklist tab with Restore. Hidden plugins stay out of normal selection without deleting files or unloading existing project instances.</li>
 <li>Playlist tracks support individual saved heights and header resizing. Ctrl-drag selection can start over clips. Mixer track groups move together while preserving routing, effects and automation, and share FX bypass and solo actions.</li>
 <li>Slimmer editing tool cursors and Alt-click resets for Playlist clip fades and gain.</li>
-<li>Make It Fit now combines MiniBPM tempo analysis with Lemon Studio&#x27;s onset detector and explicit BPM labels, with safeguards for silence, steady tones and ambiguous rhythmic estimates.</li>
+<li>Make It Fit now combines MiniBPM tempo analysis with ML Studio&#x27;s onset detector and explicit BPM labels, with safeguards for silence, steady tones and ambiguous rhythmic estimates.</li>
 <li>Select Playlist audio stems and run Make It Fit on a selected reference clip to apply one timing ratio to the selection, preserving clip start positions and using pitch-preserving Pro stretching.</li>
 <li>Channel Rack sample menus and Lemon Sampler&#x27;s Time menu now offer tempo detection, Make It Fit, source BPM entry, beat/bar lengths and Reset stretching. Fitting works without a Playlist clip and supports Undo.</li>
 <li>Piano Roll Stretch is an independent toggle alongside Pencil and Brush. Drag a selected note&#x27;s right edge to scale the selected notes&#x27; timing and lengths; note bodies retain group movement. Right-click empty space to turn Stretch off.</li>
@@ -338,7 +350,7 @@
 <li>Routing can auto-scroll at the mixer edges. Windows Channel Strip Mixer View supports selecting a track directly from its native editor and reduces editor reopening during scrolling.</li>
 <li>The Piano Roll MIDI parts menu lets you overlay notes and switch the editable pattern and channel. Alt-click resets velocity in the Piano Roll and Channel Rack graph editor.</li>
 <li>Choose a Lemon Wave editor size in its window menu. Sort the plugin picker by name, vendor or category, enable the optional Tesla toolbar button, and switch on load bars in the performance monitor.</li>
-<li>Improved plugin-focused undo shortcut handling and reduced unnecessary SSL-style mixer drawing. The Help menu links to the Lemon Studio Discord.</li>
+<li>Improved plugin-focused undo shortcut handling and reduced unnecessary SSL-style mixer drawing. The Help menu links to the ML Studio Discord.</li>
 <li>Fixed independent Channel Rack pattern loops, remembered rack visibility, small-screen layouts and Windows Lemon Chop sizing. Improved forum repainting and access to the Mixer toolbar shortcut.</li>
 <li>The startup logo now carries Michael Lane Edition in gold lettering along the outer groove of the animated record. The loading status stays below the artwork.</li>
 <li>Community Samples is available in the Browser on Windows, Linux and Mac. Browse by sound type and genre, see waveforms, preview audio and drag samples directly into the Playlist.</li>
@@ -403,9 +415,9 @@
 <li>Improved unsaved-change and autosave tracking for reported hosted-plugin edits, and stop saving when a hosted plugin cannot supply its state.</li>
 <li>Project and backup saves now use temporary-file replacement and report backup failures. Cleanup protects original warp sources, and ZIP imports use independent extraction folders rather than reusing stale equal-size files.</li>
 <li>Recording overflow now preserves elapsed time with silence for missing frames instead of shifting subsequent audio earlier. Lost-input warnings remain; missing audio cannot be recovered.</li>
-<li>Redesigned the download page with Michael Lane Edition directly below Lemon Studio, a detailed feature overview, the updated Wave section and the full searchable Change Log. Complete DAW builds and matching source are published on the website and GitHub.</li>
+<li>Redesigned the download page with Michael Lane Edition directly below ML Studio, a detailed feature overview, the updated Wave section and the full searchable Change Log. Complete DAW builds and matching source are published on the website and GitHub.</li>
 <li>Includes Windows, Linux x64, Apple-silicon Mac and Intel Mac packages. Mac is ad-hoc signed, not notarized; Intel checks use Rosetta and Linux runtime/audio testing remains unperformed. Existing ARA and third-party compatibility limitations remain.</li>
-<li>Lemon Wave is now included directly in Lemon Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.</li>
+<li>Lemon Wave is now included directly in ML Studio and organized under Instruments / Synth on fresh installations and upgrades. The new instrument interface adds dual wavetable oscillators, table import, warp controls, phase/random/unison blend, two modulation rows and eight factory presets. Existing saved Wave patches remain supported.</li>
 <li>Built-in instruments and effects are categorized without a plugin scan; Master Assistant is grouped under Utility. Installed copies of built-in Wave are not duplicated.</li>
 <li>Added per-note MPE pitch, pressure and slide editing, live recording, independent unison playback, lower/upper zone settings, response controls, native project recall and expressive MIDI import/export. Compatible instruments and patch mappings are required; physical controllers and every third-party patch have not been tested.</li>
 <li>Added individual audio Clip Effects with independent plugin chains, bypass, copy/paste settings, parameter automation and project recall. Clip FX uses available mixer inserts and leaves source audio unchanged.</li>
@@ -464,7 +476,7 @@
 <li>Added a miniature mixer routing picker to sample controls and clip menus; fixed macOS picker focus.</li>
 <li>Added opt-in local AI control with an authenticated control interface.</li>
 <li>Separated development and production profiles and their sample libraries; fresh public profiles no longer inherit personal library paths.</li>
-<li>Added optional Lemon Studio Starter Pack installation and an empty sample-library starting point.</li>
+<li>Added optional ML Studio Starter Pack installation and an empty sample-library starting point.</li>
 <li>Made fresh launches show the mixer above the Playlist.</li>
 <li>Adopted .lmn as the native project extension while preserving supported existing project opening.</li>
 <li>Fixed common editing shortcuts and routed keys to the focused editor.</li>

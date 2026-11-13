@@ -10,12 +10,16 @@ const MAX_ANCHORS: usize = 1024;
 #[derive(Clone, Copy)]
 pub(super) struct Onset {
     pub(super) time: f64,
-    strength: f32,
+    pub(super) strength: f32,
     brightness: f32,
     sustain: f32,
 }
 
 pub(super) fn detect(audio: &Audio) -> Vec<Onset> {
+    detect_with_threshold(audio, 0.09)
+}
+
+pub(super) fn detect_with_threshold(audio: &Audio, threshold: f32) -> Vec<Onset> {
     let rate = f64::from(audio.sample.rate);
     let step = (rate * HOP).round().max(1.) as usize;
     let mut envelope = Vec::new();
@@ -52,7 +56,7 @@ pub(super) fn detect(audio: &Audio) -> Vec<Onset> {
     let mut found: Vec<Onset> = Vec::new();
     for i in 3..(scores.len() - 9) {
         let strength = scores[i];
-        if strength < 0.09 || scores[i - 3..=i + 3].iter().any(|&other| other > strength) {
+        if strength < threshold || scores[i - 3..=i + 3].iter().any(|&other| other > strength) {
             continue;
         }
         let (after, bright) = avg(i, i + 3);

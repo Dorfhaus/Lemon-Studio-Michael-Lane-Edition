@@ -1,4 +1,4 @@
-LEMON STUDIO - PLUGIN DOWNLOADS
+ML STUDIO - PLUGIN DOWNLOADS
 Catalog checked 2 November 2026
 
 93 free plugins: 59 open-source entries and 34 freeware entries.
@@ -9,13 +9,13 @@ publish incomparable usage figures. Established projects were prioritized, then
 specialist tools were selected for category coverage, clear source licenses and
 free official binary downloads without an account or subscription.
 
-Use the download-arrow icon in Lemon Studio's browser. Expand a category or
+Use the download-arrow icon in ML Studio's browser. Expand a category or
 search by plugin name/type. Click a row to see its preview, version, size, source
 and license; click its download arrow or the action button to download.
 Hover over a plugin for a short information card explaining its purpose, useful
 applications and any free-edition limitations. Nothing downloads on hover.
 
-WINDOWS: 18 portable entries install into this Lemon Studio profile and start a
+WINDOWS: 18 portable entries install into this ML Studio profile and start a
 plugin scan automatically. The other 75 open the maker's installer or archive. Finish its
 installation, then click Scan Plugins. No silent installer/elevation is used.
 MAC/LINUX: compatible official installers or archives open after downloading.
@@ -827,7 +827,7 @@ changing an entry. Pin the new size and SHA-256, inspect portable archive roots
 and PE architecture, and keep thumbnail provenance. Never infer asset names from
 version strings or silently fall back to unverified/source archives. Recheck
 category counts and download/portable tests when changing packages. No binary
-plugin payloads are included in Lemon Studio's repository or application.
+plugin payloads are included in ML Studio's repository or application.
 
 
 FREEWARE EXPANSION - 1 November 2026

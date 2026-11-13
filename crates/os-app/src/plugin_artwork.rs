@@ -32,6 +32,9 @@ fn native()->&'static Images{
         ("ML Tesla", include_bytes!("../assets/plugin-picker/tesla_empty.png") as &[u8]),
     ].into_iter().filter_map(|(name,bytes)|Canvas::decode_png(bytes).map(|p|(key(name),Arc::new(p)))).collect())
 }
+pub(crate) fn stock(name: &str) -> Option<&'static Image> {
+    native().get(&key(name)).map(Arc::as_ref)
+}
 pub(crate) fn custom_path(uid:&str)->Option<PathBuf>{
     use sha2::{Sha256,Digest};
     os_paths::user_file("Plugin pictures").map(|p|p.join(format!("{:x}.png",Sha256::digest(uid.as_bytes()))))

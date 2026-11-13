@@ -10,6 +10,7 @@ name = "lemonstudio"
 path = "src/main.rs"
 
 [features]
+rt-audit = ["os-dsp/rt-audit"]
 default = ["master-assistant"]
 master-assistant = []
 # Compatibility alias for existing personal build commands.

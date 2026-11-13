@@ -13,6 +13,7 @@ pub struct Track {
     pub level: f64,
 }
 pub struct Form {
+    pub rack: Option<(Vec<usize>, bool)>,
     pub row: usize,
     pub channel: String,
     pub current: u16,
@@ -60,6 +61,7 @@ pub fn open(app: &mut App, row: usize) {
         .collect();
     tracks.sort_by_key(|t| t.index);
     let mut f = Form {
+        rack: None,
         row,
         channel: ch
             .name
@@ -77,4 +79,17 @@ pub fn open(app: &mut App, row: usize) {
     }
     app.state.playlist.popup = None;
     app.show_form(Body::RoutePicker(f));
+}
+
+pub fn open_rack(app: &mut App, row: usize, spread: bool) {
+    let rows = crate::rack_controls::rows(&app.state, row);
+    if rows.is_empty() { return; }
+    open(app, row);
+    if rows.len() == 1 && !spread { return; }
+    if let Some(crate::dialog::Modal { body: Body::RoutePicker(f), .. }) = app.state.dialogs.last_mut() {
+        if rows.len() > 1 {
+            f.channel = format!("{} selected channels{}", rows.len(), if spread { " - consecutive tracks" } else { "" });
+        }
+        f.rack = Some((rows, spread));
+    }
 }

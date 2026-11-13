@@ -169,7 +169,7 @@ pub struct SettingsUi {
     pub tab: usize,
     /// Page scroll in pixels.
     pub scroll: f32,
-    pub help: crate::help::View,
+    pub help: crate::help::Search,
     pub visibility_search: crate::dialog::Field,
     pub visibility_search_focused: bool,
     pub menu_editor: crate::menu_layout::Editor,
@@ -1330,7 +1330,9 @@ fn group_open(st: &SettingsUi, gr: &Group) -> bool {
 
 /// Total content height of the current page (for scrolling).
 pub fn content_h(s: &State) -> f32 {
-    if crate::help::is_open(s) { return s.settings.help.content_height.get(); }
+    if crate::help::is_open(s) {
+        return if s.settings.tab == crate::help::PAGE { s.guide.content_height() } else { s.settings.help.content_height.get() };
+    }
     page(s.settings.tab, s).iter().map(|gr| group_h(gr, group_open(&s.settings, gr)) + 6.0).sum::<f32>() + 16.0
 }
 
@@ -1410,11 +1412,6 @@ fn paint_window(ui: &mut Ui, s: &State) {
             }
         } else {
             ui.c.fill_rect(tr, body);
-            for k in 0..7 {
-                // slanted right edge
-                let k = k as f32;
-                ui.c.fill_rect(Rect::new(tr.right() + k, tr.y + 2.0 + k * 4.0, 1.0, tr.h - 2.0 - k * 4.0), body);
-            }
         }
         let col = if on && lemon {
             lk::ink_on_lit(ui.t)
@@ -1662,13 +1659,9 @@ fn paint_group(ui: &mut Ui, s: &State, gr: &Group, r: Rect, open: bool, clip: Re
         let f = Font::new(13).bold();
         let title = Language::current().text(gr.title);
         let tw = ui.c.text_width(f, title);
-        let hdr = Rect::new(r.x + 1.0, r.y + 1.0, tw + 14.0, 24.0);
         if !lemon {
+            let hdr = Rect::new(r.x + 1.0, r.y + 1.0, r.w - 2.0, 24.0);
             ui.c.fill_rect(hdr, t.s(0x222427));
-            for k in 0..6 {
-                let k = k as f32;
-                ui.c.fill_rect(Rect::new(hdr.right() + k, hdr.y, 1.0, hdr.h - k * 4.0), t.s(0x222427));
-            }
         }
         ui.c.text(f, r.x + if lemon { 8.0 } else { 4.0 }, r.y + 4.0, if lemon { t.accent } else { t.text }, title);
         if !gr.note.is_empty() {

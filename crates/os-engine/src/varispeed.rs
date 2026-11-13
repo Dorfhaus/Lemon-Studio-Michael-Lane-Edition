@@ -15,14 +15,20 @@ impl Varispeed {
     pub fn process(&mut self, audio: &mut Vec<f32>, target: f64) {
         if audio.is_empty() { return; }
         if target == 1.0 && self.ratio == 1.0 && !self.active {
-            self.history = audio[audio.len().saturating_sub(64)..].to_vec();
+            self.history.clear();
+            self.history.extend_from_slice(&audio[audio.len().saturating_sub(64)..]);
             self.phase = 0.0;
             return;
         }
         self.active = true;
         let frames = audio.len() / 2;
         let mut input = std::mem::take(&mut self.history);
-        if input.len() < 64 { let mut pad = vec![0.0; 64-input.len()]; pad.extend(input); input=pad; }
+        if input.len() < 64 {
+            let len=input.len();
+            input.resize(64,0.0);
+            input.copy_within(..len,64-len);
+            input[..64-len].fill(0.0);
+        }
         input.extend_from_slice(audio);
         audio.clear();
         // Sixteen frames of lookahead are supplied by a fixed causal delay. History
@@ -36,7 +42,10 @@ impl Varispeed {
             self.phase += self.ratio;
         }
         self.phase -= frames as f64;
-        self.history = input[input.len()-64..].to_vec();
+        let tail=input.len()-64;
+        input.copy_within(tail..,0);
+        input.truncate(64);
+        self.history = input;
     }
 }
 

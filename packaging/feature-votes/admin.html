@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lemon Studio • Community desk</title><link rel="stylesheet" href="admin.css?v=20261105desk"><script src="admin.js?v=20261105desk" defer></script><script src="feedback-admin.js?v=20261103" defer></script></head>
-<body><div class="shell"><header><a class="brand" href="admin.php"><span class="lemon">◒</span><span>LEMON STUDIO<small>COMMUNITY DESK</small></span></a><span class="private">● Owner access</span><button id="logout" hidden>Sign out</button></header>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ML Studio • Community desk</title><link rel="stylesheet" href="admin.css?v=20261105desk"><script src="admin.js?v=20261105desk" defer></script><script src="feedback-admin.js?v=20261103" defer></script></head>
+<body><div class="shell"><header><a class="brand" href="admin.php"><span class="lemon">◒</span><span>ML STUDIO<small>COMMUNITY DESK</small></span></a><span class="private">● Owner access</span><button id="logout" hidden>Sign out</button></header>
 <main><h1 class="desk-title">Moderation dashboard</h1>
 <p id="notice" role="status" aria-live="polite"></p>
 <section id="login" class="panel login"><div class="eyebrow">PRIVATE WORKSPACE</div><h2>Welcome back, Michael.</h2><p>Sign in to manage community feedback, discussions and updates.</p><form id="login-form"><label for="password">Owner password</label><input id="password" type="password" autocomplete="current-password" required maxlength="256"><button class="primary" type="submit">Open dashboard <span>→</span></button></form><small class="muted">Opened from your Desktop shortcut? Paste the password it copied for you.</small></section>
@@ -8,7 +8,7 @@
 <div class="desk-tools"><button id="desk-toggle" type="button">Collapse all</button></div>
 <details id="desk-announcements" class="desk-panel" open>
 <summary>Announcements</summary>
-<div class="desk-content"><p class="muted">Draft or publish an update for the Lemon Studio community.</p><div id="announcements"></div></div>
+<div class="desk-content"><p class="muted">Draft or publish an update for the ML Studio community.</p><div id="announcements"></div></div>
 </details>
 <details id="desk-feedback" class="desk-panel">
 <summary>Feedback inbox</summary>
@@ -24,7 +24,7 @@
 <summary>Feature board</summary>
 <div class="desk-content"><div class="stats"><article><span id="count">0</span><small>COMMUNITY IDEAS</small></article><article><span id="votes">0</span><small>ACTIVE VOTES</small></article><article><span id="planned">0</span><small>PLANNED / IN PROGRESS</small></article><article><span id="hidden">0</span><small>HIDDEN IDEAS</small></article></div>
 <button id="refresh">Refresh ideas</button><div class="filters"><input id="search" type="search" placeholder="Search suggestions or #ID" aria-label="Search suggestions"><select id="filter" aria-label="Filter suggestions"><option value="all">All suggestions</option><option value="visible">Public suggestions</option><option value="hidden">Hidden suggestions</option><option value="locked">Voting closed</option><option>Open</option><option>Planned</option><option>In progress</option><option>Completed</option><option>Declined</option></select><select id="sort" aria-label="Sort suggestions"><option value="score">Most supported</option><option value="new">Newest first</option></select></div>
-<p class="caption">Status labels and your comments are public on visible suggestions. Updated Lemon Studio voting tabs refresh automatically within about a minute, or users can click Refresh. Hiding an idea hides its comments too.</p>
+<p class="caption">Status labels and your comments are public on visible suggestions. Updated ML Studio voting tabs refresh automatically within about a minute, or users can click Refresh. Hiding an idea hides its comments too.</p>
 <div id="ideas" class="ideas"></div><footer>Votes belong to anonymous identities, not verified people. Review context before blocking. Blocks apply across the board and can be reversed.</footer></div>
 </details>
 <details id="desk-activity" class="desk-panel">
@@ -32,6 +32,6 @@
 <div class="desk-content"><p class="caption">Last 60 changes</p><div id="activity"></div></div>
 </details>
 </section>
-</main><footer class="bottom">LEMON STUDIO <span>Made for making music.</span></footer></div>
+</main><footer class="bottom">ML STUDIO <span>Made for making music.</span></footer></div>
 <dialog id="voters"><div class="toolbar"><div><p class="eyebrow">VOTE REVIEW</p><h2 id="voters-title">Voter identities</h2></div><button id="close-voters">Close</button></div><p class="muted">Blocking stops this identity from voting or submitting and excludes all its votes. It cannot identify or permanently ban a person.</p><div id="voter-list"></div><div class="toolbar"><button id="previous">← Previous</button><span id="page"></span><button id="next">Next →</button></div></dialog>
 </body></html>

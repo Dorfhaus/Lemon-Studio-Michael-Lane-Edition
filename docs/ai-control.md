@@ -26,10 +26,10 @@ Whisper Base and Qwen3.5-0.8B Q4_0 run locally at below-normal process priority.
 
 ## Connect
 
-1. Enable AI in Lemon Studio.
-2. Click **Save setup on Desktop**. It writes `Lemon Studio AI Setup/Personal MCP.json` or `Development MCP.json` plus instructions. These describe an MCP stdio server: the current Lemon executable with `--ai-mcp` and this profile's connection-file path.
+1. Enable AI in ML Studio.
+2. Click **Save setup on Desktop**. It writes `ML Studio AI Setup/Personal MCP.json` or `Development MCP.json` plus instructions. These describe an MCP stdio server: the current Lemon executable with `--ai-mcp` and this profile's connection-file path.
 3. Import/configure that server in a compatible assistant. This does not install or configure a particular AI product.
-4. Connect, then approve the named client inside Lemon Studio within 60 seconds. The assistant cannot click its own approval or close the AI permission panel.
+4. Connect, then approve the named client inside ML Studio within 60 seconds. The assistant cannot click its own approval or close the AI permission panel.
 5. Turning AI off revokes sessions immediately. Restart the assistant connection after enabling again. Sessions expire after 15 minutes without a request; clients may ping to keep them alive.
 
 Remember stores the client name and private connection key in this profile. It suppresses the approval only after the user manually enables AI. The name is self-declared, not a vendor certificate; trust is possession of the local key plus the approved name. Do not grant access to untrusted programs. Forget revokes the key and requires fresh approval. Personal and development profiles remain separate. The generated setup JSON does not contain the key.

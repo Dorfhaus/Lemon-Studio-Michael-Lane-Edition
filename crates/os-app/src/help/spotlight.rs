@@ -61,6 +61,7 @@ pub(super) enum Target {
 pub(super) struct Visit {
     target: Target,
     article_scroll: f32,
+    detached: bool,
 }
 
 impl Target {
@@ -308,28 +309,28 @@ pub(super) fn enabled() -> bool {
 }
 
 pub(crate) fn active(s: &State) -> bool {
-    s.settings.help.spotlight.is_some() && enabled()
+    s.guide.spotlight.is_some() && enabled()
 }
 
 pub(super) fn show(app: &mut App) {
-    if !is_open(&app.state) || !enabled() {
+    let detached = app.state.native_view == Some(Win::Guide) && super::detached_open(&app.state);
+    if (!is_open(&app.state) && !detached) || !enabled() {
         return;
     }
     let s = &mut app.state;
-    let Some(target) = s
-        .settings
-        .help
-        .topic
+    let Some(target) = s.guide.topic()
         .and_then(|index| topics().get(index))
         .and_then(|topic| topic.destination)
     else {
         return;
     };
-    s.settings.help.spotlight = Some(Visit {
+    s.guide.spotlight = Some(Visit {
         target,
-        article_scroll: s.settings.scroll,
+        article_scroll: s.guide.scroll,
+        detached,
     });
     s.settings.open = false;
+    s.native_input = None;
     match target.destination() {
         Destination::Toolbar => {}
         Destination::Editor(win) => {
@@ -352,17 +353,22 @@ pub(super) fn return_to_guide(app: &mut App) {
     if !enabled() {
         return;
     }
-    let st = &mut app.state.settings;
-    if let Some(visit) = st.help.spotlight.take() {
-        st.open = true;
-        st.tab = PAGE;
-        st.scroll = visit.article_scroll;
+    let s = &mut app.state;
+    if let Some(visit) = s.guide.spotlight.take() {
+        if visit.detached {
+            s.guide.detached_open = true;
+            s.guide.focus_window = true;
+        } else {
+            s.settings.open = true;
+            s.settings.tab = PAGE;
+        }
+        s.guide.scroll = visit.article_scroll;
         app.invalidate();
     }
 }
 
 pub(super) fn dismiss(app: &mut App) {
-    if app.state.settings.help.spotlight.take().is_some() {
+    if app.state.guide.spotlight.take().is_some() {
         app.invalidate();
     }
 }
@@ -425,7 +431,7 @@ pub(crate) fn paint(ui: &mut Ui, s: &State) {
     {
         return;
     }
-    let Some(visit) = &s.settings.help.spotlight else {
+    let Some(visit) = &s.guide.spotlight else {
         return;
     };
     let (w, h) = ui.c.size();

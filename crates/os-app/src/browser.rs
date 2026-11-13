@@ -495,7 +495,7 @@ impl App {
         match item {
             Item::Pattern(n) => {
                 if let Some((track, tick)) = spot {
-                    pl::snapshot(s);
+                    pl::snapshot_placement(s, "Playlist edit", [ClipSource::Pattern(n)]);
                     s.playlist.source = Some(ClipSource::Pattern(n));
                     s.playlist.picker = PickKind::Pattern;
                     let i = pl::place(s, track, tick);
@@ -510,7 +510,7 @@ impl App {
                 let (kind, index) = (ch.kind, ch.index);
                 if let Some((track, tick)) = spot {
                     if matches!(kind, ChannelKind::AudioClip | ChannelKind::Automation) {
-                        pl::snapshot(s);
+                        pl::snapshot_placement(s, "Playlist edit", [ClipSource::Channel(index)]);
                         s.playlist.source = Some(ClipSource::Channel(index));
                         s.playlist.picker = if kind == ChannelKind::AudioClip { PickKind::Audio } else { PickKind::Automation };
                         let i = pl::place(s, track, tick);

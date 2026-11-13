@@ -1,6 +1,6 @@
-# Lemon Studio Starter Pack
+# ML Studio Starter Pack
 
-The empty Samples browser offers **Add my sample folder**, **Drag samples or folders here**, and **Download Lemon Studio Starter Pack**. There is one curated pack, no pack selector. The browser arrow menu also offers the download for existing libraries, or Cancel while downloading. Search with no matches and empty Favorites keep their usual messages.
+The empty Samples browser offers **Add my sample folder**, **Drag samples or folders here**, and **Download ML Studio Starter Pack**. There is one curated pack, no pack selector. The browser arrow menu also offers the download for existing libraries, or Cancel while downloading. Search with no matches and empty Favorites keep their usual messages.
 
 Version 1 contains 263 unchanged CC0 WAV files (296,600,789 bytes, approximately 283 MiB):
 
@@ -14,7 +14,7 @@ This is a practical starter selection, not a complete multisampled instrument li
 
 No network access or download thread starts until the user clicks Download. Individual pinned WAVs download over HTTPS without redirects, with bounded lengths and SHA-256 validation. A temporary, hidden staging directory is renamed into the final library only after every sample has been verified and copied. There are no installers or executable downloads. Cancellation/network errors stay inline, successful cached files can be reused on retry, and existing destination contents are never overwritten. Connection/read timeouts bound offline waits; cancellation is observed between network reads (up to 15 seconds if a read is stalled).
 
-The pack lives in the active profile's Samples/Lemon Studio Starter Pack folder. Download cache lives in Sample Downloads/Starter Pack v1 (allow about 570 MiB total storage). If the user's library points elsewhere, the finished pack is added as an extra browser root, without changing that library preference. Personal and Development profiles remain separate. No samples are downloaded at startup or included in the application binary.
+The pack lives in the active profile's Samples/ML Studio Starter Pack folder. Existing Starter Pack folders continue to be used. Download cache lives in Sample Downloads/Starter Pack v1 (allow about 570 MiB total storage). If the user's library points elsewhere, the finished pack is added as an extra browser root, without changing that library preference. Personal and Development profiles remain separate. No samples are downloaded at startup or included in the application binary.
 
 Dropping a folder uses the existing folder flow. Audio files dropped onto the Samples browser become persistent references in the browser, without copying/moving originals or adding project channels; keep those source files in place. Dropping onto the playlist/rack keeps existing behavior. References can be managed in the browser extra-search-folder settings.
 

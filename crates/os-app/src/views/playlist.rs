@@ -471,6 +471,9 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
             ui.c.stroke_rrect(m, 0.0, 4.0, Color::rgb(0x252015));
             ui.c.stroke_rrect(m, 0.0, 2.0, Color::rgb(0x2096f3));
         }
+        Some(Overlay::TrackInsertion(y)) => {
+            ui.c.fill_rect(Rect::new(grid.x, y.clamp(grid.y, grid.bottom() - 2.0), grid.w, 2.0), t.accent);
+        }
         Some(Overlay::Slice { tick, t0, t1 }) => {
             let x = g.x_of(tick as f32);
             let (y0,y1)=(g.y_of(t0).min(g.y_of(t1)),(g.y_of(t0)+g.rows.height(t0)).max(g.y_of(t1)+g.rows.height(t1))-3.);
@@ -494,7 +497,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     }
     // Playhead.
     if f.playing && f.song {
-        let x = g.x_of(f.tick as f32);
+        let x = g.x64(f.visual_tick) as f32;
         ui.c.fill_rect(Rect::new(x, grid.y, 1.5, grid.h), t.playhead);
     }
     ui.c.pop_clip();
@@ -701,8 +704,8 @@ fn ruler_paint(ui: &mut Ui, s: &State, g: &PGeom, ruler: Rect, f: &FrameInfo) {
     }
     // Song position: a flag ◤ on the playhead while playing the song, else on the start position (§7: its left edge
     // on the position, its top along the ruler's top).
-    let tick = if f.playing && f.song { f.tick as f32 } else { s.playlist.pos as f32 };
-    let x = g.x_of(tick);
+    let tick = if f.playing && f.song { f.visual_tick } else { f64::from(s.playlist.pos) };
+    let x = g.x64(tick) as f32;
     if vintage {
         ui.c.fill_rect(Rect::new(ruler.x, ruler.y, ruler.w, 1.0), Color::rgb(0x647079));
         ui.c.fill_rect(Rect::new(ruler.x, ruler.bottom() - 2.0, ruler.w, 1.0), Color::rgb(0x080b12));
@@ -1005,7 +1008,8 @@ fn clip_paint(ui: &mut Ui, s: &State, g: &PGeom, i: usize, c: &Clip, brightness:
         ui.c.fill_rect(Rect::new(inner.right() - 1.0, inner.y, 1.0, 1.0), outline);
     }
     if inner.w > 3.0 && !lemon {
-        ui.c.fill_rect(Rect::new(inner.x + 1.0, inner.y + 1.0, inner.w - 2.0, 1.0), dim(high));
+        // Round the shared edge with the gradient below at fractional display scales.
+        ui.c.fill_cell(Rect::new(inner.x + 1.0, inner.y + 1.0, inner.w - 2.0, 1.0), dim(high));
         ui.c.fill_rect_gradient(Rect::new(inner.x + 1.0, inner.y + 2.0, inner.w - 2.0, title_h - 3.0), dim(top), dim(bottom), 0.0);
     }
     // Body: a slightly darker first row and a darker last row.
@@ -1497,7 +1501,7 @@ fn header(ui: &mut Ui, s: &State, g: &PGeom, row: u16, x: f32, w: f32) {
         ui.c.fill_rect(Rect::new(left, hr.bottom() - k, hr.right() - left, k), bottom);
     }
     let hint = if crate::attached_mixer::active(s) {
-        "Select the linked mixer channel. Ctrl/Cmd+Shift-drag selects tracks and clips. Source order follows the Mixer."
+        "Drag to reorder the track. Click to select its mixer channel. Ctrl/Cmd+Shift-drag selects tracks and clips."
     }else if crate::workspace_visibility::shown(crate::playlist_tools::RANGE_SELECTION_VISIBILITY) {
         "Drag to move. Ctrl/Cmd+Shift-drag selects tracks and their clips."
     } else {

@@ -41,6 +41,8 @@ pub enum Command {
     Quantize,
     Grid,
     Strength,
+    Sensitivity,
+    SetSensitivity(u8),
     Undo,
     Redo,
     Next,
@@ -48,7 +50,9 @@ pub enum Command {
 pub struct Form {
     pub arrangement: usize,
     pub transients: Vec<f64>,
-    pub analysis: Option<Arc<Mutex<Option<Vec<f64>>>>>,
+    pub analysis: Option<Arc<Mutex<Option<Vec<(f64, f32)>>>>>,
+    candidates: Vec<(f64, f32)>,
+    pub sensitivity: u8,
     pub grid: usize,
     pub strength: usize,
     pub offset: f64,
@@ -79,6 +83,15 @@ pub struct Form {
 pub const EXTRA: f32 = crate::vocal::EXTRA;
 const GRIDS: [f64; 6] = [1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0];
 const GRID_NAMES: [&str; 6] = ["1/4", "1/8", "1/16", "1/32", "1/8 triplet", "1/16 triplet"];
+pub const SENSITIVITY_VISIBILITY: &str = "visible_warp-sensitivity";
+fn sensitivity() -> u8 {
+    crate::settings_file::get("warp_transient_sensitivity").and_then(|v|v.parse().ok()).filter(|&v|v<=100).unwrap_or(50)
+}
+fn filter_transients(f: &mut Form) {
+    let threshold=0.09*10f32.powf((50.-f.sensitivity as f32)/50.);
+    f.transients=f.candidates.iter().filter(|(_,strength)|*strength>=threshold).take(1022).map(|&(t,_)|t).collect();
+    f.selection.retain(|t|f.transients.contains(t)||f.edit.points.iter().any(|p|p.0==*t));
+}
 pub fn expanded(s: &State, row: u16) -> bool {
     if !crate::workspace_visibility::shown("visible_playlist-warp") {
         return false;
@@ -355,6 +368,8 @@ fn prepare(
         arrangement,
         transients: vec![],
         analysis: None,
+        candidates: Vec::new(),
+        sensitivity: sensitivity(),
         grid: 2,
         strength: 4,
         offset: clip.position as f64 / ppq.max(1) as f64,
@@ -439,6 +454,14 @@ fn run(app: &mut App, c: Command, _confirmed: bool) {
         app.invalidate();
         return;
     }
+    if c == Command::Sensitivity {
+        if let Some(f)=app.state.playlist.warp.as_ref() {
+            use pl::{PItem,Cmd,Mark,Popup};
+            let items=(0..=100).step_by(10).map(|n|PItem::new(format!("{n}%{}",if n==50{" (default)"}else{""}),Cmd::WarpSensitivity(n)).mark(Mark::Radio(n==f.sensitivity))).collect();
+            app.state.playlist.popup=Some(Popup{x:app.mouse.0,y:app.mouse.1,items,sub:None,scroll:[0;2],cascade:Vec::new()});
+        }
+        app.invalidate();return;
+    }
     if c == Command::Close {
         app.drag = None;
         clear_form(app);
@@ -486,6 +509,12 @@ fn run(app: &mut App, c: Command, _confirmed: bool) {
         }
         Command::Grid => f.grid = (f.grid + 1) % GRIDS.len(),
         Command::Strength => f.strength = (f.strength + 1) % 5,
+        Command::Sensitivity => {},
+        Command::SetSensitivity(value) => {
+            f.sensitivity=value.min(100);
+            crate::settings_file::write("warp_transient_sensitivity",&f.sensitivity.to_string());
+            filter_transients(f);
+        },
         Command::Undo => {
             if let Some(points) = f.undo.pop() {
                 f.redo.push(std::mem::replace(&mut f.edit.points, points));
@@ -510,10 +539,9 @@ fn run(app: &mut App, c: Command, _confirmed: bool) {
             std::thread::spawn(move || {
                 let start = (a * sample.rate as f64).round() as usize;
                 let end = ((b * sample.rate as f64).round() as usize).min(sample.frames());
-                let times = crate::vocal_align::transient_times(sample, start, end)
+                let times = crate::vocal_align::transient_candidates(sample, start, end)
                     .into_iter()
-                    .take(1022)
-                    .map(|t| a + t)
+                    .map(|(t,strength)| (a + t,strength))
                     .collect();
                 if let Ok(mut result) = done.lock() {
                     *result = Some(times);
@@ -694,6 +722,13 @@ pub fn wheel(app: &mut App, dx: f32, dy: f32, ctrl: bool) -> bool {
     ) {
         return false;
     }
+    if app.top_hit(app.mouse.0,app.mouse.1).is_some_and(|h|h.action==Action::Warp(Command::Sensitivity)) {
+        if let Some(f)=app.state.playlist.warp.as_ref() {
+            let next=(i32::from(f.sensitivity)+(dx+dy).signum() as i32).clamp(0,100) as u8;
+            command(app,Command::SetSensitivity(next));
+        }
+        return true;
+    }
     let Some(f) = app.state.playlist.warp.as_mut() else {
         return false;
     };
@@ -751,6 +786,7 @@ pub fn poll(app: &mut App) {
                         crate::audio_edits::attach(&mut app.state,form.clip,analyzed);
                         form.initial_points=vec![];
                     }
+                    form.sensitivity=sensitivity();
                     app.state.playlist.warp = Some(form);
                     commit(app);
                     command(app, Command::Analyze);
@@ -765,7 +801,7 @@ pub fn poll(app: &mut App) {
     let updating=app.state.playlist.warp.as_ref().is_some_and(|f|crate::vocal::doc(&app.state,f.clip).is_some_and(|d|crate::audio_edits::changed(d)&&d.render_key!=crate::vocal::key(d)));
     let Some(f)=app.state.playlist.warp.as_mut()else{return};
     if let Some(times)=f.analysis.as_ref().and_then(|j|j.lock().ok()?.take()){
-        f.transients=times;f.analysis=None;
+        f.candidates=times;filter_transients(f);f.analysis=None;
     }
     f.message=if app.state.playlist.vocal.message.starts_with("Vocal tuning:"){app.state.playlist.vocal.message.clone()}else if updating{"Updating audio timing...".into()}else{"Ready. Timing edits update automatically after each gesture.".into()};
     if f.legacy_notice{f.message.push_str(" Earlier processing is baked into this legacy source; its separate controls could not be recovered.");}
@@ -987,11 +1023,13 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
         if applying { ui.t.text_faint } else { ui.t.text },
     );
 
-    let card_width = ((area.w - 10.) / 3.).min(180.);
+    let show_sensitivity=crate::workspace_visibility::shown(SENSITIVITY_VISIBILITY);
+    let card_width = ((area.w - 10.) / if show_sensitivity {4.}else{3.}).min(180.);
+    let sensitivity=format!("{}%",f.sensitivity);
     let strength = format!("{}%", f.strength * 25);
     let selected = f.selection.len().to_string();
     let inspector_y = top + 34.;
-    for (i, (label, value, control)) in [
+    let mut cards=vec![
         (
             "GRID",
             GRID_NAMES[f.grid],
@@ -1003,10 +1041,9 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
             Some((Command::Strength, "Click to cycle quantize strength")),
         ),
         ("SELECTED", selected.as_str(), None),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ];
+    if show_sensitivity {cards.insert(2,("SENSITIVITY",sensitivity.as_str(),Some((Command::Sensitivity,"Higher sensitivity detects quieter attacks. Click to choose; wheel adjusts 1%. Existing timing markers stay unchanged."))));}
+    for (i, (label, value, control)) in cards.into_iter().enumerate() {
         let card = Rect::new(
             area.x + 5. + i as f32 * card_width,
             inspector_y,
@@ -1199,6 +1236,50 @@ fn inline_editor(ui: &mut Ui, s: &State, g: &pl::PGeom, area: Rect, f: &Form) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transient_sensitivity_filters_quiet_attacks_without_changing_timing() {
+        let source=std::env::temp_dir().join(format!("ml-sensitive-attacks-{}.wav",std::process::id()));
+        let rate=16000u32;let mut audio=vec![0f32;rate as usize*3*2];
+        for (time,amplitude) in [(0.2,0.7),(0.8,0.03),(1.4,0.3),(2.1,0.06)] {
+            let start=(time*rate as f64) as usize;
+            for i in 0..1600 {let value=amplitude*(-(i as f32)/350.).exp()*(i as f32*0.43).cos();audio[(start+i)*2]=value;audio[(start+i)*2+1]=-value;}
+        }
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&source).unwrap(),rate,&audio).unwrap();
+        let source_bytes=std::fs::read(&source).unwrap();
+        let mut app=App::new(None);app.state.project=crate::app::test_project();app.state.tempo=120.;
+        app.state.project.channels[0].sample_path=Some(source.to_string_lossy().into());
+        let ppq=app.state.project.ppq;
+        pl::arr_mut(&mut app.state).clips=vec![os_model::Clip::new(0,ppq as u32*6,0,ClipSource::Channel(0))];
+        command(&mut app,Command::Toggle(0));wait_loaded(&mut app);
+        // A choice made during detection is the choice applied when the result arrives.
+        command(&mut app,Command::SetSensitivity(100));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        while app.state.playlist.warp.as_ref().unwrap().analysis.is_some() && std::time::Instant::now()<deadline {poll(&mut app);std::thread::sleep(std::time::Duration::from_millis(2));}
+        assert!(app.state.playlist.warp.as_ref().unwrap().analysis.is_none());
+        let project=app.state.project.clone();let points=app.state.playlist.warp.as_ref().unwrap().edit.points.clone();
+        let detailed=app.state.playlist.warp.as_ref().unwrap().transients.len();assert_eq!(detailed,4);
+        command(&mut app,Command::SetSensitivity(50));
+        let f=app.state.playlist.warp.as_ref().unwrap();
+        let original=crate::vocal_align::transient_times(f.sample.clone(),0,f.sample.frames());
+        assert_eq!(f.transients,original,"default matches the previous detector");assert!(f.transients.len()<detailed);
+        let mut count=0;
+        for n in (0..=100).step_by(10) {command(&mut app,Command::SetSensitivity(n));let f=app.state.playlist.warp.as_ref().unwrap();assert!(f.transients.len()>=count);count=f.transients.len();assert_eq!(f.edit.points,points);}
+        assert_eq!(app.state.project,project);
+        let mut canvas=os_ui::Canvas::new(1600,1000,1.25).unwrap();app.state.z=vec![crate::app::Win::Playlist];app.paint(&mut canvas,None);
+        let r=app.hits.iter().find(|h|h.action==Action::Warp(Command::Sensitivity)).unwrap().rect;
+        app.mouse_move(r.cx(),r.cy());command(&mut app,Command::Sensitivity);
+        assert!(app.state.playlist.popup.as_ref().unwrap().items.iter().any(|p|p.cmd==pl::Cmd::WarpSensitivity(50)));
+        app.key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),false,false);
+        assert!(app.state.playlist.popup.is_none());assert_eq!(app.state.playlist.warp.as_ref().unwrap().sensitivity,100);
+        assert!(wheel(&mut app,0.,-1.,false));assert_eq!(app.state.playlist.warp.as_ref().unwrap().sensitivity,99);
+        crate::workspace_visibility::toggle(SENSITIVITY_VISIBILITY);app.paint(&mut canvas,None);
+        assert!(!app.hits.iter().any(|h|h.action==Action::Warp(Command::Sensitivity)));
+        assert_eq!(app.state.playlist.warp.as_ref().unwrap().edit.points,points);
+        command(&mut app,Command::Close);command(&mut app,Command::Toggle(0));wait_loaded(&mut app);
+        assert_eq!(app.state.playlist.warp.as_ref().unwrap().sensitivity,99);
+        assert_eq!(std::fs::read(&source).unwrap(),source_bytes);command(&mut app,Command::Close);
+        std::fs::remove_file(source).unwrap();
+    }
     fn wait_loaded(app: &mut App) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.state.playlist.warp_loading.is_some() && std::time::Instant::now() < deadline {

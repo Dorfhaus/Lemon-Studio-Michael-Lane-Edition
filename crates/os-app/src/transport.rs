@@ -21,9 +21,9 @@
 //! newer request must not stop it.
 //!
 //! Every stream renders ahead of its device: a feeder thread renders whole ticks into a lock-free queue and the
-//! device callback only copies from it (spec: audio/implementing.md "Playing live"), so a busy engine (an edit being
-//! swapped in, a heavy tick) never costs a silent block. The queue keeps one device block and a margin queued (one
-//! block more, but 3 to 6 ms: `margin`); a block it could not fill counts as an underrun (`Transport::underruns`).
+//! device callback only copies from it (spec: audio/implementing.md "Playing live"). The reserve absorbs bounded
+//! rendering delays; sustained overload can still exhaust it. The queue keeps one device block and a margin queued (one
+//! block more, and at least 3 ms: `margin`); a block it could not fill counts as an underrun (`Transport::underruns`).
 //!
 //! The streams are not device streams: they all play through one output device (`device::OutputDevice`, which mixes
 //! them), since an ASIO driver serves one stream per program. It opens with the audio settings (`audio_cfg`: device,
@@ -61,12 +61,10 @@ const PAUSED: u8 = 2;
 const FADE_SECONDS: f64 = 0.006;
 /// How long a stopped stream stays alive to finish its fade before it is dropped.
 const CLOSE_AFTER: Duration = Duration::from_millis(40);
-/// What a stream keeps queued beyond the block its device is about to take (spec: audio/devices.md "Render-ahead"):
-/// one block more, since some drivers ask for two blocks back to back, but at least `MARGIN_MIN` seconds (the feeder
-/// has to wake and render a tick between two blocks) and at most `MARGIN_MAX`. Together with the block and part of a
-/// tick it is what a live edit or note waits for.
+/// A complete spare device block protects two callbacks before the feeder runs.
+/// Small recording buffers keep the existing 3 ms minimum. Larger buffers trade
+/// latency for resilience; never cap the reserve below a device block.
 const MARGIN_MIN: f64 = 0.003;
-const MARGIN_MAX: f64 = 0.006;
 /// A stream's queue: samples (interleaved stereo) and ticks it can hold, and the room the feeder leaves for one more
 /// tick (a tick at 10 BPM and 24 PPQ at 192 kHz is 96 000 samples).
 const QUEUE_SAMPLES: usize = 1 << 19;
@@ -118,9 +116,11 @@ pub struct Shared {
     pace: Mutex<Option<Pace>>,
     /// Peaks per mixer track (L, R) since the mixer meters last read them (`TrackPeaks`).
     tracks: Mutex<TrackPeaks>,
-    /// Device blocks the queue could not fill since the program started.
+    /// Combined lifetime failure count, retained for existing UI/reset behavior.
     underruns: AtomicU64,
     underrun_baseline: AtomicU64,
+    dropout_causes: [AtomicU64; 3],
+    missing_frames: AtomicU64,
     /// How far the playback and live streams render ahead of the device.
     ahead: AheadStats,
     /// Time spent rendering per second of audio (f32 bits), over the last quarter second of playback.
@@ -136,6 +136,18 @@ pub struct Shared {
     engine_voices: Mutex<Vec<Weak<AtomicU32>>>,
 }
 
+#[derive(Clone, Copy)]
+enum DropoutCause { Queue, Plugin, Driver }
+impl Shared {
+    fn dropout(&self, cause: DropoutCause, count: u64) {
+        self.dropout_causes[cause as usize].fetch_add(count, Ordering::Relaxed);
+        self.underruns.fetch_add(count, Ordering::Relaxed);
+    }
+    fn dropout_counts(&self) -> [u64; 3] {
+        std::array::from_fn(|i|self.dropout_causes[i].load(Ordering::Relaxed))
+    }
+}
+
 /// The frames queued when the device asked for a block, since they were last taken (`AheadStats::take`): what the
 /// engine rendered ahead of the device, so what an edit or a note played by hand waits for before the device has it.
 pub struct Ahead {
@@ -145,6 +157,7 @@ pub struct Ahead {
     pub blocks: u64,
     /// The longest time between two blocks, µs: a driver that stalled (and then catches up) shows here.
     pub gap: u64,
+    pub min_gap: u64,
 }
 
 /// `Ahead`, gathered by the device's callback.
@@ -154,11 +167,12 @@ struct AheadStats {
     sum: AtomicU64,
     blocks: AtomicU64,
     gap: AtomicU64,
+    min_gap: AtomicU64,
 }
 
 impl Default for AheadStats {
     fn default() -> Self {
-        AheadStats { min: AtomicU64::new(u64::MAX), max: AtomicU64::new(0), sum: AtomicU64::new(0), blocks: AtomicU64::new(0), gap: AtomicU64::new(0) }
+        AheadStats { min: AtomicU64::new(u64::MAX), max: AtomicU64::new(0), sum: AtomicU64::new(0), blocks: AtomicU64::new(0), gap: AtomicU64::new(0), min_gap: AtomicU64::new(u64::MAX) }
     }
 }
 
@@ -171,6 +185,7 @@ impl AheadStats {
         self.blocks.fetch_add(1, Ordering::Relaxed);
         if let Some(g) = gap {
             self.gap.fetch_max(g.as_micros() as u64, Ordering::Relaxed);
+            self.min_gap.fetch_min(g.as_micros() as u64, Ordering::Relaxed);
         }
     }
 
@@ -180,7 +195,8 @@ impl AheadStats {
         let sum = self.sum.swap(0, Ordering::Relaxed);
         let (min, max) = (self.min.swap(u64::MAX, Ordering::Relaxed), self.max.swap(0, Ordering::Relaxed));
         let gap = self.gap.swap(0, Ordering::Relaxed);
-        (blocks > 0).then(|| Ahead { min, max, mean: sum as f64 / blocks as f64, blocks, gap })
+        let min_gap = self.min_gap.swap(u64::MAX, Ordering::Relaxed);
+        (blocks > 0).then(|| Ahead { min, max, mean: sum as f64 / blocks as f64, blocks, gap, min_gap: if min_gap==u64::MAX {0}else{min_gap} })
     }
 }
 
@@ -409,6 +425,12 @@ impl Drop for PickerTicket {
 pub(crate) type WarpBuffer = Option<Arc<os_engine::Sample>>;
 type PlaybackUpdate = (Project, WarpBuffer);
 
+pub(crate) fn apply_preset(engine: &mut Engine, key: usize, plugin: os_host::SharedPlugin) {
+    if let Some((track, slot)) = crate::plugins::fx_of(key) {
+        engine.replace_effect_preset(track as usize, slot as usize, plugin);
+    } else { engine.replace_instrument_preset(key, plugin); }
+}
+
 enum Cmd {
     /// Project, mode, start tick (the piano roll's play-start marker in pattern mode), request generation, and the
     /// transport settings as they were asked for.
@@ -431,6 +453,8 @@ enum Cmd {
     PreviewFor(Box<Project>, Option<Duration>, Arc<os_engine::Sample>),
     /// The hosted instruments changed (in `Transport::instruments`): rebuild the engines.
     Instruments,
+    /// Already activated on the UI; replace only this node, keeping the running graph.
+    Preset(usize, os_host::SharedPlugin),
     /// Live note (typing keyboard): channel (rack position), key, velocity; `NoteOff` releases.
     NoteOn(usize, u16, u8),
     NoteOff(usize, u16),
@@ -559,6 +583,17 @@ impl Transport {
             slot.fx = list;
         }
         let _ = self.tx.send(Cmd::Instruments);
+    }
+
+    pub(crate) fn preset(&self, key: usize, plugin: os_host::SharedPlugin) {
+        if let Ok(mut hosts) = self.instruments.lock() {
+            if let Some((t, s)) = crate::plugins::fx_of(key) {
+                if let Some(h) = hosts.fx.iter_mut().find(|h| h.0 == t as usize && h.1 == s as usize) { h.2 = plugin.clone(); }
+                else { hosts.fx.push((t as usize, s as usize, plugin.clone())); }
+            } else if let Some(h) = hosts.inst.iter_mut().find(|h| h.0 == key) { h.1 = plugin.clone(); }
+            else { hosts.inst.push((key, plugin.clone())); }
+        }
+        let _ = self.tx.send(Cmd::Preset(key, plugin));
     }
 
     /// Peak per mixer track (L, R) heard since the last call (the mixer meters' feed); resets them.
@@ -1145,15 +1180,21 @@ struct Feeder {
 
 /// Frames a stream keeps queued beyond a device block of `block` frames (see `MARGIN_MIN`).
 fn margin(block: u64, rate: u32) -> u64 {
-    let frames = |seconds: f64| (f64::from(rate) * seconds) as u64;
-    block.clamp(frames(MARGIN_MIN), frames(MARGIN_MAX))
+    block.max((f64::from(rate) * MARGIN_MIN) as u64)
 }
 
 impl Feeder {
+    fn needs_refill(&self) -> bool {
+        let block=self.queue.block.load(Ordering::Relaxed) as u64;
+        !self.ctl.paused.load(Ordering::Relaxed) && !self.queue.ended.load(Ordering::Acquire)
+            && self.queue.queued()<2*(block+margin(block,self.rate)) && self.queue.has_room()
+    }
+
     /// Renders whole ticks until the queue holds one device block (`block` frames before the device has asked) and
     /// the margin beyond it, or the engine has played out. It stops at the first tick that gets there, so the device
     /// finds the block, the margin and less than a tick more queued.
     fn fill(&mut self, block: usize) {
+        let _audit = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Feeder);
         let block = block.max(self.queue.block.load(Ordering::Relaxed)) as u64;
         let want = 2 * (block + margin(block, self.rate));
         let Ok(mut e) = self.engine.lock() else { return };
@@ -1218,7 +1259,7 @@ impl Feeder {
         // A hosted plugin that missed a tick (busy elsewhere) is heard as a gap: a dropout like an empty block.
         let missed = e.take_missed();
         if missed > 0 {
-            self.shared.underruns.fetch_add(missed, Ordering::Relaxed);
+            self.shared.dropout(DropoutCause::Plugin, missed);
         }
         if frames > 0 && self.meters {
             self.busy += t0.elapsed();
@@ -1301,7 +1342,13 @@ impl FeedThread {
                     set_feeder_priority(priority);
                     while !stop.load(Ordering::Acquire) {
                         feeder.fill(0);
-                        std::thread::park_timeout(Duration::from_millis(5));
+                        // A callback can consume more while this bounded fill is running.
+                        // Release the engine between passes, but do not sleep on an unfilled queue.
+                        if feeder.needs_refill() {
+                            std::thread::yield_now();
+                        } else {
+                            std::thread::park_timeout(Duration::from_millis(5));
+                        }
                     }
                 }
             })
@@ -1683,6 +1730,12 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                     swap(s, &mut library,false);
                 }
             }
+            Ok(Cmd::Preset(key, plugin)) => {
+                for s in [session.as_mut(), live.as_mut()].into_iter().flatten() {
+                    if let Ok(mut e) = s.engine.lock() { apply_preset(&mut e, key, plugin.clone()); }
+                    s.feed.wake();
+                }
+            }
             Ok(Cmd::Listen(on)) => {
                 listen = on;
                 listen_retry = true;
@@ -2057,7 +2110,7 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
         shared.preview_active.store(preview.is_some(),Ordering::Release);
         // Stopped streams are dropped once their fade is over; then the instruments are silenced for good.
         closing.retain(|(_, since)| since.elapsed() < CLOSE_AFTER);
-        shared.underruns.fetch_add(device.take_xruns(), Ordering::Relaxed);
+        shared.dropout(DropoutCause::Driver, device.take_xruns());
         // A device that failed (it went away, a driver asked to be reset): the playback is held where it was heard and
         // the other streams go; it goes on when the device opens again (spec: audio/devices.md).
         if lost.is_none() {
@@ -2189,15 +2242,18 @@ fn audio_thread(rx: Receiver<Cmd>, shared: Arc<Shared>, latest: Arc<Mutex<Option
                 let rate = f64::from(shared.sample_rate.load(Ordering::Relaxed).max(1));
                 let latency = shared.opened.lock().ok().and_then(|o| o.as_ref().and_then(|i| i.latency)).map_or(String::new(), |l| format!("; the device adds {l}"));
                 eprintln!(
-                    "[transport] ahead of the device: {}..{} frames, {:.0} on average ({:.1} ms), {} blocks of {} (at most {:.1} ms apart){latency}; {} dropouts",
+                    "[transport] ahead of the device: {}..{} frames, {:.0} on average ({:.1} ms), {} blocks of {} ({:.3}..{:.3} ms apart){latency}; {} dropouts (queue/plugin/driver={:?}, missing_frames={})",
                     a.min,
                     a.max,
                     a.mean,
                     a.mean * 1000.0 / rate,
                     a.blocks,
                     shared.block.load(Ordering::Relaxed),
+                    a.min_gap as f64 / 1000.0,
                     a.gap as f64 / 1000.0,
-                    shared.underruns.load(Ordering::Relaxed)
+                    shared.underruns.load(Ordering::Relaxed),
+                    shared.dropout_counts(),
+                    shared.missing_frames.load(Ordering::Relaxed)
                 );
             }
         }
@@ -2391,7 +2447,7 @@ impl Session {
         let mut feeder = Feeder::new(engine.clone(), queue.clone(), shared.clone(), ctl.clone(), rate);
         feeder.meters = !preview;
         feeder.live=kind==Kind::Live;
-        feeder.fill(PREFILL_FRAMES.max(fixed.unwrap_or(0) as usize));
+        feeder.fill(fixed.map(|b|b as usize).unwrap_or(PREFILL_FRAMES));
         let feed = FeedThread::spawn(feeder);
         let mut r = Renderer::new(queue, ctl.clone(), done.clone(), shared.clone(), rate);
         r.tap = !preview;
@@ -2466,6 +2522,7 @@ impl Renderer {
     /// Plays `stereo.len() / 2` frames (interleaved L/R) from the queue. A paused stream, once faded out, reads
     /// nothing, so its position and the queued ticks stay exactly where they were.
     fn render_block(&mut self, stereo: &mut [f32], extra: &mut [f32], playback_at: Option<Instant>) {
+        let _audit = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Callback);
         let target = if self.ctl.paused.load(Ordering::Relaxed) { 0.0 } else { 1.0 };
         if self.gain == 0.0 && target == 0.0 {
             stereo.fill(0.0);
@@ -2511,7 +2568,8 @@ impl Renderer {
             if target==0. {for f in stereo[got..].chunks_exact_mut(2) {f.copy_from_slice(&self.last);}}
             else {stereo[got..].fill(0.0);}
             if !ended && target!=0. {
-                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                self.shared.dropout(DropoutCause::Queue, 1);
+                self.shared.missing_frames.fetch_add(((stereo.len()-got)/2) as u64, Ordering::Relaxed);
             }
         }
         if let Some(t) = &self.wake {
@@ -2631,6 +2689,33 @@ mod tests {
                 }
                 assert!(preview.finished(), "switching Loop off lets the preview finish");
             }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "rt-audit")]
+    fn steady_mix_allocation_audit() {
+        use os_dsp::rt_audit::{take,Role};
+        for cents in [-1200,0,1200] {
+        let (_,mut project) = looping_engine();
+        project.varispeed_cents=cents;
+        let mut engine=Engine::new(&project,&mut SampleLibrary::default(),48000,PlayMode::Pattern(1));
+        struct Signal;
+        impl os_engine::engine::MixerInput for Signal {
+            fn render(&mut self,_:u32,tracks:&mut[Vec<f32>]) {tracks[0].fill(0.1);}
+        }
+        engine.clear_schedule();engine.set_awake(true);
+        engine.set_mixer_input(Box::new(Signal));
+        let (mut r,_,_) = renderer(engine);
+        r.inline.as_mut().unwrap().meters=false;
+        let mut samples=[0.;256];
+        for _ in 0..100 {r.render(&mut samples);}
+        take(Role::Callback);take(Role::Feeder);
+        for _ in 0..1000 {r.render(&mut samples);assert!(samples.iter().any(|s|s.abs()>0.01));}
+        let callback=take(Role::Callback);let feeder=take(Role::Feeder);
+        eprintln!("WARM_RENDER cents={cents} callback={callback:?} feeder={feeder:?}");
+        assert_eq!((callback.allocations,callback.frees),(0,0));
+        assert_eq!((feeder.allocations,feeder.frees),(0,0));
         }
     }
 
@@ -2780,6 +2865,18 @@ mod tests {
         assert!(buses[1][0] > 0.29); m.stop();
     }
 
+
+    #[test]
+    fn feeder_rechecks_deficit_without_spinning_on_pause_or_end() {
+        let (e,_) = looping_engine();let (mut r,ctl,_) = renderer(e);
+        let mut f=r.inline.take().unwrap();f.queue.block.store(1024,Ordering::Relaxed);
+        assert!(f.needs_refill());f.fill(0);assert!(!f.needs_refill());
+        r.render(&mut [0.;2048]);assert!(f.needs_refill());
+        ctl.paused.store(true,Ordering::Relaxed);assert!(!f.needs_refill());
+        ctl.paused.store(false,Ordering::Relaxed);f.queue.ended.store(true,Ordering::Release);
+        assert!(!f.needs_refill());f.queue.ended.store(false,Ordering::Release);
+        f.fill(0);assert!(!f.needs_refill());
+    }
 
     #[test]
     fn overloaded_feeder_releases_engine_when_consumer_keeps_draining() {
@@ -3026,6 +3123,10 @@ mod tests {
                 assert!(calls > 0, "stress test must exercise the dependency scheduler");
             }
             println!("STRESS size={size} seconds={seconds} callbacks={callbacks} edits={edits} underruns={underruns} gaps={gaps} invalid={invalid} scheduler_late={late} worst_callback_us={}", worst.as_micros());
+            #[cfg(feature = "rt-audit")]
+            for (name,role) in [("callback",os_dsp::rt_audit::Role::Callback),("feeder",os_dsp::rt_audit::Role::Feeder),("worker",os_dsp::rt_audit::Role::Worker)] {
+                eprintln!("RT_AUDIT {name} {:?}",os_dsp::rt_audit::take(role));
+            }
             assert_eq!(invalid, 0);
             assert_eq!(gaps, 0);
             assert_eq!(underruns, 0);
@@ -3080,16 +3181,20 @@ mod tests {
             [sample, sample]
         }).collect();
         os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 44100, &audio).unwrap();
+        let rate=std::env::var("LEMON_STRESS_RATE").ok().and_then(|v|v.parse::<u32>().ok()).unwrap_or(48000);
+        assert!([44100,48000,96000].contains(&rate));
+        let burst=std::env::var_os("LEMON_STRESS_BURSTS").is_some();
         let mut failures = Vec::new();
         for hosted in [false, true] {
             for size in [48usize, 128, 192, 512, 1024] {
                 let mut project = crate::app::test_project();
                 project.channels.truncate(if hosted { 3 } else { 2 });
                 project.tempo = Some(120.0);
+                project.mixer[0].slots_enabled=true;
                 project.patterns[0].notes = (0..2).map(|ch| os_model::Note { key: 60, length: 384, ..os_model::Note::step(ch, 0) }).collect();
                 let mut samplers = crate::plugins::Plugins::default();
                 samplers.available = crate::plugins::builtin();
-                samplers.set_rate(48000);
+                samplers.set_rate(rate);
                 let index = samplers.index_of(crate::plugins::LEMON_SAMPLER).unwrap();
                 for row in 0..2 {
                     project.channels[row].sample_path = Some(wav.to_string_lossy().into_owned());
@@ -3103,24 +3208,26 @@ mod tests {
                     project.channels[2].plugin = Some(descriptor.name.clone());
                     project.patterns[0].notes.extend([48, 55, 60, 64].map(|key| os_model::Note { key, length: 384, ..os_model::Note::step(2, 0) }));
                     let plugin = library.clone().create(&descriptor.id).unwrap();
-                    assert!(plugin.lock().unwrap().activate(48000));
+                    assert!(plugin.lock().unwrap().activate(rate));
                     if descriptor.is_instrument() {
                         instruments.push((2, plugin as SharedInstrument));
                     } else {
                         effect = Some(plugin);
                     }
                 }
-                let mut engine = Engine::with_instruments(&project, &mut host_library(None), 48000, PlayMode::Pattern(1), &instruments);
+                let mut engine = Engine::with_instruments(&project, &mut host_library(None), rate, PlayMode::Pattern(1), &instruments);
                 if let Some(plugin) = &effect { engine.set_effect(0, 0, plugin.clone()); }
                 engine.set_interpolation(16);
                 engine.set_looping(true);
                 let (mut renderer, _, shared) = renderer(engine);
                 renderer.tap = true;
                 let mut feeder = renderer.inline.take().unwrap();
-                feeder.fill(PREFILL_FRAMES.max(size));
+                feeder.rate=rate;
+                shared.sample_rate.store(rate,Ordering::Relaxed);
+                feeder.fill(size);
                 let mut feed = FeedThread::spawn(feeder);
                 renderer.wake = feed.thread();
-                let period = Duration::from_secs_f64(size as f64 / 48000.0);
+                let period = Duration::from_secs_f64(size as f64 / f64::from(rate));
                 let started = Instant::now();
                 let mut due = started;
                 let mut output = vec![0.0; size * 2];
@@ -3143,11 +3250,11 @@ mod tests {
                             if let Ok(mut p) = plugin.try_lock() { p.idle(); }
                         }
                     }
-                    due = at + period;
+                    due = if burst && calls%2==1 {at} else {at+period*if burst {2}else{1}};
                 }
                 feed.halt();
                 let underruns = shared.underruns.load(Ordering::Relaxed);
-                println!("QUEUE plugin={} frames={size} seconds={seconds} callbacks={calls} underruns={underruns} gaps={gaps} invalid={invalid} scheduler_late={late} worst_callback_us={} peak_render_load={peak_load:.3}", if hosted { descriptor.name.as_str() } else { "none" }, worst.as_micros());
+                println!("QUEUE rate={rate} burst={burst} plugin={} frames={size} seconds={seconds} callbacks={calls} underruns={underruns} gaps={gaps} invalid={invalid} scheduler_late={late} worst_callback_us={} peak_render_load={peak_load:.3} causes={:?} missing_frames={}", if hosted { descriptor.name.as_str() } else { "none" }, worst.as_micros(), shared.dropout_counts(), shared.missing_frames.load(Ordering::Relaxed));
                 if underruns != 0 || gaps != 0 || invalid != 0 { failures.push((hosted, size, underruns, gaps, invalid)); }
             }
         }
@@ -3156,23 +3263,27 @@ mod tests {
     }
 
     /// Native editor + the real app parameter tick and playback queue, without
-    /// opening a device or touching a personal project. Requires GUI authorization.
+    /// opening a device or touching a personal project. GUI authorization is required
+    /// unless LEMON_STRESS_HEADLESS is set. Synthetic delays need no installed plugin.
     #[cfg(windows)]
     #[test]
-    #[ignore = "visible installed editor; requires explicit GUI authorization and LEMON_STRESS_PLUGIN"]
+    #[ignore = "installed plugin; set LEMON_STRESS_HEADLESS or obtain explicit GUI authorization"]
     fn installed_editor_with_app_parameter_tick_and_queue() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         #[link(name="ole32")]
         unsafe extern "system" { fn CoInitializeEx(reserved:*mut std::ffi::c_void, flags:u32)->i32; }
         unsafe {CoInitializeEx(std::ptr::null_mut(),2);}
-        let path=std::env::var_os("LEMON_STRESS_PLUGIN").expect("explicit plugin path");
+        let path=std::env::var_os("LEMON_STRESS_PLUGIN").unwrap_or_else(|| "synthetic".into());
         let path=std::path::Path::new(&path);
         let format=match path.extension().and_then(|s|s.to_str()) {Some("dll")=>os_host::Format::Vst2,Some("clap")=>os_host::Format::Clap,_=>os_host::Format::Vst3};
-        let lib=crate::plugins::load_file(path,format).unwrap();
+        let lib=if let Ok(delay)=std::env::var("LEMON_STRESS_SYNTHETIC_MS") {crate::audio_test_plugin::library(delay.parse().unwrap())}
+            else {crate::plugins::load_file(path,format).unwrap()};
         let desc=lib.plugins().first().unwrap().clone();
+        eprintln!("PLUGIN name={} version={} path={}",desc.name,desc.version,desc.path.display());
         let instrument=desc.is_instrument();
         let seconds=std::env::var("LEMON_STRESS_SECONDS").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(4).clamp(1,10);
         let lifecycle=std::env::var_os("LEMON_STRESS_LIFECYCLE").is_some();
+        let headless=std::env::var_os("LEMON_STRESS_HEADLESS").is_some();
         let only_step=std::env::var("LEMON_STRESS_STEP").ok().and_then(|v|v.parse::<u32>().ok());
         let mut a=crate::app::App::new(None);
         a.plugins.set_rate(48000);
@@ -3181,7 +3292,7 @@ mod tests {
             else {a.plugins.effects=vec![available];a.plugins.create_effect(0,0,0,None).unwrap();crate::plugins::fx_key(0,0)};
         a.params_tick();
         let info=crate::plugin_window::ChannelInfo{name:"Isolated audio test".into(),target:"Master".into(),enabled:true,volume:0.78,pan:0.,pitch_cents:0,range:2,track:0,max_track:125,sidechain:None,misc:None};
-        a.plugins.open_window(key,info.clone()).unwrap();
+        if !headless {a.plugins.open_window(key,info.clone()).unwrap();}
         let initial_state=if lifecycle {a.plugins.state(key)} else {None};
         let plugin=a.plugins.hosted[&key].plugin.clone();
         let mut project=crate::app::test_project();
@@ -3190,18 +3301,33 @@ mod tests {
             project.patterns[0].notes.push(os_model::Note{key:60,length:384,..os_model::Note::step(project.channels[0].index,0)});
             vec![(0,plugin.clone() as SharedInstrument)]
         } else {Vec::new()};
+        if !instrument {project.mixer[0].slots_enabled=true;}
         let mut engine=Engine::with_instruments(&project,&mut host_library(None),48000,PlayMode::Pattern(1),&instruments);
-        if !instrument {engine.set_effect(0,0,plugin.clone());}engine.set_looping(true);
+        if !instrument {
+            struct Signal;
+            impl os_engine::engine::MixerInput for Signal {
+                fn render(&mut self,_:u32,tracks:&mut [Vec<f32>]) {tracks[0].fill(0.1);}
+            }
+            engine.set_effect(0,0,plugin.clone());
+            engine.set_mixer_input(Box::new(Signal));
+            engine.set_awake(true);
+        }
+        engine.set_looping(true);
         let (mut renderer,_,shared)=renderer(engine);
-        let mut feeder=renderer.inline.take().unwrap();feeder.fill(PREFILL_FRAMES);
+        let mut feeder=renderer.inline.take().unwrap();
+        let playing_engine=feeder.engine.clone();
+        feeder.fill(PREFILL_FRAMES);
         let mut feed=FeedThread::spawn(feeder);renderer.wake=feed.thread();
         let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done=stop.clone();
+        let audible=Arc::new(AtomicU64::new(0));
+        let heard=audible.clone();
         let worker=std::thread::spawn(move || {
             let mut output=[0.;256];let mut calls=0;
             while !done.load(Ordering::Acquire) {
                 let start=Instant::now();renderer.render(&mut output);calls+=1;
                 assert!(output.iter().all(|v|v.is_finite()));
+                heard.fetch_add(output.iter().filter(|v|v.abs()>0.00001).count() as u64, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_secs_f64(128./48000.).saturating_sub(start.elapsed()));
             }
             feed.halt();calls
@@ -3209,8 +3335,11 @@ mod tests {
         let mut failures=Vec::new();
         let mut saved=initial_state;
         for visible in [false,true,false] {
-            let window=a.plugins.hosted[&key].window.as_ref().unwrap().hwnd() as windows_sys::Win32::Foundation::HWND;
-            unsafe {ShowWindow(window,if visible {SW_SHOWNOACTIVATE}else{SW_HIDE});}
+            let sound_before=audible.load(Ordering::Relaxed);
+            if !headless {
+                let window=a.plugins.hosted[&key].window.as_ref().unwrap().hwnd() as windows_sys::Win32::Foundation::HWND;
+                unsafe {ShowWindow(window,if visible {SW_SHOWNOACTIVATE}else{SW_HIDE});}
+            }
             let before=shared.underruns.load(Ordering::Relaxed);
             let start=Instant::now();let mut ticks=0;let mut peak=0.0f32;
             let mut timings: [Vec<u128>; 3] = std::array::from_fn(|_| Vec::new());
@@ -3228,9 +3357,18 @@ mod tests {
                     let at=Instant::now();
                     match ticks {
                         3=>{saved=Some(a.plugins.state(key).expect("save state"));}
-                        5=>{assert!(a.plugins.set_state(key,saved.as_ref().unwrap()));}
+                        5=>{
+                            if std::env::var_os("LEMON_STRESS_IN_PLACE").is_some() {
+                                assert!(a.plugins.set_state(key,saved.as_ref().unwrap()));
+                            } else {
+                                crate::presets::restore_state(&mut a,key,saved.as_ref().unwrap()).unwrap();
+                                let next=a.plugins.hosted[&key].plugin.clone();
+                                assert!(!Arc::ptr_eq(&plugin,&next));
+                                apply_preset(&mut playing_engine.lock().unwrap(),key,next);
+                            }
+                        }
                         7=>{a.state.params.lists.remove(&key);a.params_tick();}
-                        9=>{a.plugins.close_window(key);a.plugins.open_window(key,info.clone()).unwrap();}
+                        9 if !headless=>{a.plugins.close_window(key);a.plugins.open_window(key,info.clone()).unwrap();}
                         _=>{}
                     }
                     if [3,5,7,9].contains(&ticks) {eprintln!("LIFECYCLE step={ticks} elapsed_us={}",at.elapsed().as_micros());}
@@ -3248,7 +3386,12 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             let dropouts=shared.underruns.load(Ordering::Relaxed)-before;
-            eprintln!("APP_QUEUE visible={visible} ticks={ticks} dropouts={dropouts} peak_audio_load={peak:.3}");
+            assert!(audible.load(Ordering::Relaxed)>sound_before, "preset phase must produce audio, not merely avoid underruns");
+            #[cfg(feature = "rt-audit")]
+            for (name,role) in [("callback",os_dsp::rt_audit::Role::Callback),("feeder",os_dsp::rt_audit::Role::Feeder),("worker",os_dsp::rt_audit::Role::Worker)] {
+                eprintln!("RT_AUDIT {name} {:?}",os_dsp::rt_audit::take(role));
+            }
+            eprintln!("APP_QUEUE headless={headless} phase={visible} ticks={ticks} dropouts={dropouts} peak_audio_load={peak:.3}");
             for (label, mut samples) in ["messages", "idle", "params"].into_iter().zip(timings) {
                 samples.sort_unstable();
                 if !samples.is_empty() {
@@ -3267,6 +3410,44 @@ mod tests {
         a.plugins.close_window(key);
         assert_eq!(plugin.lock().unwrap().stopped(),None);
         assert!(failures.is_empty(),"real app parameter polling starved playback: {failures:?}");
+    }
+
+    #[test]
+    fn playback_bursts_preserve_every_sample_and_position() {
+        struct Ramp(u64);
+        impl os_engine::engine::MixerInput for Ramp {
+            fn render(&mut self, _: u32, tracks: &mut [Vec<f32>]) {
+                for f in tracks[1].chunks_exact_mut(2) {
+                    let v=0.1+(self.0%10000) as f32*0.000001;
+                    f.copy_from_slice(&[v,-v]);self.0+=1;
+                }
+            }
+        }
+        for rate in [44100,48000,96000] {for (ppq,tempo) in [(96,137.),(24,90.)] {
+            for size in [16usize,32,64,96,128,192,512,1024,2048] {
+                let make=|| {
+                    let mut p=Project::default();p.ppq=ppq;p.tempo=Some(tempo);
+                    p.mixer=(0..2).map(os_model::MixerTrack::new).collect();
+                    let mut e=Engine::new(&p,&mut SampleLibrary::default(),rate,PlayMode::Song);
+                    e.clear_schedule();e.set_awake(true);e.set_mixer_input(Box::new(Ramp(0)));e
+                };
+                let mut expected=vec![0.;size*2*24];make().process(&mut expected);
+                assert!(expected.iter().any(|x|x.abs()>0.01));
+                let (mut r,_,shared)=renderer(make());r.tap=true;
+                shared.sample_rate.store(rate,Ordering::Relaxed);
+                let mut feeder=r.inline.take().unwrap();feeder.rate=rate;
+                let mut got=Vec::new();
+                // Deliberately deny the feeder a turn between a pair of device callbacks.
+                // This covers the callback schedule absent from steady-cadence stress tests.
+                for _ in 0..12 {
+                    feeder.fill(size);
+                    for _ in 0..2 {let mut block=vec![0.;size*2];r.render(&mut block);got.extend(block);}
+                    assert_eq!(shared.position.load(Ordering::Relaxed),got.len() as u64/2);
+                }
+                assert_eq!(shared.underruns.load(Ordering::Relaxed),0,"{rate}Hz {ppq}PPQ {size} frames");
+                assert_eq!(got,expected,"no inserted silence, repeated or skipped samples: {rate}/{ppq}/{size}");
+            }
+        }}
     }
 
     /// The queue hands out exactly what the engine renders, tick after tick, whatever the device's block size; the
@@ -3297,10 +3478,10 @@ mod tests {
         assert!(queued < 2048 + margin(2048, 48000) + 300, "{queued} frames queued");
     }
 
-    /// One more block, but 3 to 6 ms (spec: audio/devices.md "Render-ahead").
+    /// Small buffers keep their latency; large ones retain a full spare block.
     #[test]
-    fn the_margin_is_a_block_from_3_to_6_ms() {
-        assert_eq!([64, 128, 256, 512, 2048].map(|b| margin(b, 44100)), [132, 132, 256, 264, 264]);
+    fn the_margin_keeps_a_complete_device_block() {
+        assert_eq!([64, 128, 256, 512, 2048].map(|b| margin(b, 44100)), [132, 132, 256, 512, 2048]);
         assert_eq!([64, 128, 256, 512].map(|b| margin(b, 96000)), [288, 288, 288, 512]);
     }
 
@@ -3432,6 +3613,21 @@ mod tests {
             assert!(error < 0.00000003, "{rate}Hz {ppq}PPQ {block}frames batch{batch}: error {error}");
             assert_eq!(shared.underruns.load(Ordering::Relaxed), 0);
         }}}}
+    }
+
+    #[test]
+    fn dropout_diagnostics_separate_causes_and_callback_spacing() {
+        let (e,_) = looping_engine();let (mut r,_,shared)=renderer(e);r.inline=None;
+        r.render(&mut [1.;2048]);
+        shared.dropout(DropoutCause::Plugin,3);shared.dropout(DropoutCause::Driver,2);
+        assert_eq!(shared.dropout_counts(),[1,3,2]);
+        assert_eq!(shared.underruns.load(Ordering::Relaxed),6);
+        assert_eq!(shared.missing_frames.load(Ordering::Relaxed),1024);
+        let a=AheadStats::default();
+        a.record(2048,None);a.record(1024,Some(Duration::from_micros(100)));
+        a.record(2100,Some(Duration::from_millis(46)));
+        let snap=a.take().unwrap();assert_eq!((snap.min_gap,snap.gap),(100,46000));
+        assert!(a.take().is_none());
     }
 
     #[test]

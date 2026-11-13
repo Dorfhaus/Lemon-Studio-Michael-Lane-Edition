@@ -57,7 +57,7 @@ class Journal:
 
     def save(self):
         atomic_json(self.path,self.data)
-        lines=['Lemon Studio publishing',f"Build {self.data['identity'].get('version')} · source {self.data['identity'].get('commit','')[:10]}",'']
+        lines=['ML Studio publishing',f"Build {self.data['identity'].get('version')} · source {self.data['identity'].get('commit','')[:10]}",'']
         for name,step in self.data['steps'].items():
             lines.append(f"{name}: {step['status']}"+(f" — {step['error']}" if step.get('error') else ''))
         self.path.with_name('Progress.txt').write_text('\n'.join(lines)+'\n',encoding='utf-8')

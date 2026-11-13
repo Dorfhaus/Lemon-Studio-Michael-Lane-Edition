@@ -225,6 +225,7 @@ enum Work {
 }
 impl Work {
     fn run(self) {
+        let _audit = os_dsp::rt_audit::Scope::enter(os_dsp::rt_audit::Role::Worker);
         match self {
             Self::Mixer { mut job, reply } => {
                 job.priority.apply();

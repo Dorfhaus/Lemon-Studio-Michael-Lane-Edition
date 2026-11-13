@@ -11,7 +11,7 @@ async function load(){update(await request({action:'list'}));$('login').hidden=t
 async function change(body,question){if(question&&!confirm(question))return;update(await request(body));notice('Saved. Your change is live.');}
 function commentsFor(i){
  const id=Number(i.id),section=el('details',undefined,'public-comments'),comments=i.comments||[];
- section.append(el('summary',`Public comments (${comments.length})`),el('p','Shown to everyone as Michael · Lemon Studio. Up to 600 characters per comment.','caption'));
+ section.append(el('summary',`Public comments (${comments.length})`),el('p','Shown to everyone as Michael · ML Studio. Up to 600 characters per comment.','caption'));
  for(const c of comments){
   const row=el('div',undefined,'comment-editor'),label=el('label',`Michael · ${new Date(Number(c.created)*1000).toLocaleString()}`),input=el('textarea');
   input.value=c.body;input.maxLength=600;input.rows=3;input.setAttribute('aria-label',`Edit public comment ${c.id}`);

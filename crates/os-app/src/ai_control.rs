@@ -433,7 +433,7 @@ pub fn setup(app: &mut App) {
             .map(PathBuf::from)
             .ok_or("Home folder unavailable")?
             .join("Desktop");
-        let dir = desktop.join("Lemon Studio AI Setup");
+        let dir = desktop.join("ML Studio AI Setup");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(if exe.to_string_lossy().contains("development") {
             "Development MCP.json"

@@ -680,7 +680,7 @@ impl LemonSampler {
     fn event(&mut self, ev: NoteEvent<()>, blk: &mut dsp::Block, tempo: f64) {
         match ev {
             NoteEvent::NoteOn { note, velocity, voice_id, .. } => self.engine.note_on_id(note, velocity, voice_id, blk),
-            NoteEvent::NoteOff { note, .. } => self.engine.note_off(note, blk),
+            NoteEvent::NoteOff { note, voice_id, .. } => self.engine.note_off_id(voice_id, note, blk),
             NoteEvent::Choke { note, voice_id, .. } => self.engine.choke(voice_id, note, blk),
             // An audio clip's fades and gain, on its own voice.
             NoteEvent::PolyVolume { voice_id, note, gain, .. } => self.engine.volume(voice_id, note, gain),
@@ -691,6 +691,7 @@ impl LemonSampler {
                 params::START_OFFSET_POLY => self.engine.start_later(voice_id, normalized_offset, blk),
                 // The note's mod X / mod Y in knob units (the filter knobs' 0..1), added to the knobs for its voice.
                 7 => self.engine.note_drive(voice_id,normalized_offset),
+                params::ECHO_PITCH_POLY => self.engine.echo_pitch(voice_id, normalized_offset * 96.0),
                 params::MOD_X_POLY => self.engine.modulate(voice_id, Some(normalized_offset), None),
                 params::MOD_Y_POLY => self.engine.modulate(voice_id, None, Some(normalized_offset)),
                 _ => {}

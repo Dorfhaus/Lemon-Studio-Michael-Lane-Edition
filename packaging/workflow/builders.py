@@ -39,9 +39,9 @@ def windows(config,out,log):
     site=out/'lemon-studio';v=str(r.version());payload=out/'payload';payload.mkdir()
     for name in ('lemonstudio.exe','Lemon Studio Source.zip','LICENSE','THIRD-PARTY-NOTICES.txt'):shutil.copy2(site/'updates'/v/name,payload/name)
     shutil.copytree(cfg['runtime'],payload/'runtime');shutil.copy2(r.ROOT/'crates/os-app/assets/templates/Lemon Starter.flp',payload/'Lemon Starter.lmn')
-    (payload/'READ ME.txt').write_text('Lemon Studio — Michael Lane Edition\n'+r.BASE,encoding='utf-8')
+    (payload/'READ ME.txt').write_text('ML Studio — Michael Lane Edition\n'+r.BASE,encoding='utf-8')
     label=f'{v[:4]}.{v[4:6]}.{v[6:8]}.{int(v[8:])}'
-    installer=site/'downloads'/v/f'Lemon-Studio-Windows-Setup-{label}.exe';installer.parent.mkdir(parents=True)
+    installer=site/'downloads'/v/f'ML-Studio-Windows-Setup-{label}.exe';installer.parent.mkdir(parents=True)
     command(log,cfg['nsis'],f'/DPAYLOAD={payload}',f'/DOUTPUT={installer}',r.ROOT/'packaging/windows/LemonStudio.nsi',env=env)
     (site/'platforms').mkdir(exist_ok=True)
     atomic_json(site/'platforms/windows.json',dict(version=r.version(),label='Windows',url=installer.relative_to(site).as_posix(),source=f'updates/{v}/Lemon Studio Source.zip',sha256=digest(installer)))
@@ -65,10 +65,10 @@ def linux_compile(config,log):
 def linux_package(config,binary,win_plan,out,log):
     out=Path(out);out.mkdir(parents=True);site=out/'lemon-studio';v=str(r.version());env=environment(config,'linux')
     win_site=Path(win_plan).parent/'lemon-studio';source=site/'updates'/v/'Lemon Studio Source.zip';source.parent.mkdir(parents=True);shutil.copy2(win_site/'updates'/v/source.name,source)
-    archive=site/'linux'/v/f'Lemon-Studio-Linux-x86_64-{v}.tar.gz';archive.parent.mkdir(parents=True)
+    archive=site/'linux'/v/f'ML-Studio-Linux-x86_64-{v}.tar.gz';archive.parent.mkdir(parents=True)
     with tarfile.open(archive,'w:gz') as t:
         for src,name,mode in [(Path(binary),'lemonstudio',0o755),(r.ROOT/'packaging/linux/README.txt','README.txt',0o644),(r.ROOT/'LICENSE','LICENSE',0o644),(r.ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644), *r.LINUX_LAUNCHER_FILES]:
-            info=t.gettarinfo(str(src),'Lemon Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
+            info=t.gettarinfo(str(src),'ML Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
             with src.open('rb') as f:t.addfile(info,f)
     (site/'platforms').mkdir()
     atomic_json(site/'platforms/linux.json',dict(version=r.version(),label='Linux',url=archive.relative_to(site).as_posix(),source=f'updates/{v}/Lemon Studio Source.zip',sha256=digest(archive)))
@@ -84,7 +84,7 @@ def mac(config,arch,out,log):
     for rel in (manifest['url'],manifest['source']):
         dest=site/rel;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(out/Path(rel).name,dest)
     shutil.copy2(out/f'mac-{arch}.json',site/'platforms'/f'mac-{arch}.json')
-    command(log,r.sys.executable,r.ROOT/'packaging/prepare-unix-update.py','--platform','mac-'+arch,'--site',site,'--app',Path(env['CARGO_TARGET_DIR'])/'bundled/Lemon Studio.app',env=env)
+    command(log,r.sys.executable,r.ROOT/'packaging/prepare-unix-update.py','--platform','mac-'+arch,'--site',site,'--app',Path(env['CARGO_TARGET_DIR'])/'bundled/ML Studio.app',env=env)
     return r.write_plan(site,out,'mac-'+arch)
 
 

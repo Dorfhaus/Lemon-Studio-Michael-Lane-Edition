@@ -187,7 +187,9 @@ pub struct Projection {
     pub arrangement: Option<u16>,
     pub order: Vec<u16>,
     pub owners: Vec<Option<u16>>,
+    pub outputs:Vec<BTreeSet<u16>>,
     pub buses: Vec<u16>,
+    pub lane_count: usize,
 }
 pub fn active(s:&State)->bool{s.playlist.attached.is_some()}
 pub fn full_strip(s: &State) -> bool {
@@ -215,7 +217,7 @@ impl Projection {
     /// One pass through source assignments, then stable grouped rows sorted by mixer number.
     /// Mixed-source rows stay together in the ordinary arrangement section. Never split a pattern.
     pub fn build(s:&State)->Self {
-        let mut p=Self{arrangement:s.project.arrangement().map(|a|a.number),order:Vec::with_capacity(pl::TRACKS as usize),owners:vec![None;pl::TRACKS as usize],buses:vec![0]};
+        let mut p=Self{arrangement:s.project.arrangement().map(|a|a.number),order:Vec::with_capacity(pl::TRACKS as usize),owners:vec![None;pl::TRACKS as usize],outputs:Vec::new(),buses:vec![0],lane_count:0};
         let channels:HashMap<_,_>=s.project.channels.iter().filter(|c|c.kind!=ChannelKind::Automation).map(|c|(c.index,c.mixer_track)).collect();
         let patterns:HashMap<_,BTreeSet<_>>=s.project.patterns.iter().map(|pat|(pat.number,pat.notes.iter().filter_map(|n|channels.get(&n.channel).copied()).collect())).collect();
         let mut routes=vec![BTreeSet::new();pl::TRACKS as usize];
@@ -230,18 +232,33 @@ impl Projection {
         for &(ch,arr,row,_) in &s.project.instrument_lanes {
             if Some(arr)==p.arrangement && row<pl::TRACKS {occupied[row as usize]=true;if let Some(&m)=channels.get(&ch){routes[row as usize].insert(m);}}
         }
+        let arr=s.project.arrangement();
         let mut blocks:BTreeMap<u16,Vec<u16>>=BTreeMap::new();let mut fallback=Vec::new();let mut free=Vec::new();
         let mut first=0;
         while first<pl::TRACKS {
             let end=(first+1..pl::TRACKS).find(|r|!pl::track_info(s,*r).is_some_and(|t|t.grouped)).unwrap_or(pl::TRACKS);
             let mut owners=BTreeSet::new();let mut used=end>first+1;
+            // A deliberate lane binding takes precedence over the contents.
+            // Multi-channel patterns keep their own routing and stay on the lane.
+            if pl::track_info(s,first).is_some_and(|t|t.mode==os_model::PlaylistTrackMode::Free) {
+                used=true;
+            } else if let Some(m)=crate::playlist_links::linked_output(s,first).or_else(||pl::track_info(s,first).and_then(|t|t.attached_mixer.or(t.comp))) {
+                owners.insert(m);
+            } else {
+                for row in first..end {
+                    owners.extend(&routes[row as usize]);
+                    if let Some(m)=pl::track_info(s,row).and_then(|t|t.attached_mixer.or(t.comp)){owners.insert(m);}
+                }
+            }
             for row in first..end {
-                owners.extend(&routes[row as usize]);
-                if let Some(t)=pl::track_info(s,row){if let Some(m)=t.attached_mixer.or(t.comp){owners.insert(m);}
+                if let Some(t)=pl::track_info(s,row){
                     used|=t.name.is_some()||t.folder||t.frozen.is_some()||t.locked||t.attached_mixer.is_some()||t.comp.is_some();}
                 used|=occupied[row as usize];
             }
-            if owners.len()==1 && owners.first().is_some_and(|m|*m>0&&*m<=mixer::inserts(s)&&mixer::track(s,*m).is_some_and(|t|!t.clip_fx)) {
+            if owners.len()==1 && owners.contains(&0) && pl::track_info(s,first).is_some_and(|t|t.mode==os_model::PlaylistTrackMode::Instrument) {
+                for row in first..end {p.owners[row as usize]=Some(0);}
+                fallback.extend(first..end);
+            }else if owners.len()==1 && owners.first().is_some_and(|m|*m>0&&*m<=mixer::inserts(s)&&mixer::track(s,*m).is_some_and(|t|!t.clip_fx)) {
                 let m=*owners.first().unwrap();blocks.entry(m).or_default().extend(first..end);
                 for row in first..end{p.owners[row as usize]=Some(m);}
             }else if used {fallback.extend(first..end);}else{free.extend(first..end);}
@@ -254,11 +271,24 @@ impl Projection {
             if mixer::track(s,n).is_some_and(|m|m.clip_fx){continue;}
             if receives.contains(&n) && !direct.contains(&n) {p.buses.push(n);continue;}
             if let Some(rows)=blocks.remove(&n){p.order.extend(rows);}
-            else if let Some(row)=free.next(){p.owners[row as usize]=Some(n);p.order.push(row);}
+            else if !arr.is_some_and(|a| a.attached_hidden.contains(&n)) {
+                if let Some(row)=free.next(){p.owners[row as usize]=Some(n);p.order.push(row);}
+            }
         }
-        p.order.extend(fallback);p.order.extend(free);
+        p.order.extend(fallback);
+        p.lane_count=p.order.len();
+        if let Some(a) = arr.filter(|a| !a.attached_order.is_empty()) {
+            let mut rank = [usize::MAX; pl::TRACKS as usize];
+            for (i, &row) in a.attached_order.iter().enumerate() {
+                if let Some(r) = rank.get_mut(row as usize) { *r = i; }
+            }
+            // Reorder whole families. New source lanes follow the saved order.
+            p.order.sort_by_key(|&row| rank[pl::group_track(s, row).unwrap_or(row) as usize]);
+        }
+        p.order.extend(free);
         // Reserved clip-FX rows and malformed legacy bindings must still be reachable.
         let used:BTreeSet<_>=p.order.iter().copied().collect();p.order.extend((0..pl::TRACKS).filter(|r|!used.contains(r)));
+        p.outputs=routes;
         p
     }
 }
@@ -279,6 +309,10 @@ pub fn toggle(app:&mut App) {
         }
         s.wins[Win::Playlist.slot().unwrap()].mini = false;
         s.playlist_scroll.1=0.;
+        let p = projection(s);
+        if !p.order[..p.lane_count].contains(&s.playlist.track) {
+            s.playlist.track = p.order[0];
+        }
     }
     s.native_layout_generation=s.native_layout_generation.wrapping_add(1);
     s.playlist.popup=None;app.invalidate();
@@ -287,11 +321,170 @@ pub fn toggle(app:&mut App) {
 /// Persist only real editing/recording bindings; viewing an old project is non-mutating.
 pub fn bind(s:&mut State,row:u16,mixer:u16) {
     let a=pl::arr_mut(s);while a.tracks.len()<=row as usize{a.tracks.push(os_model::PlaylistTrack::new(a.tracks.len() as u32+1));}
-    a.tracks[row as usize].attached_mixer=Some(mixer);clear(s);
+    a.tracks[row as usize].attached_mixer=Some(mixer);
+    if active(s){pl::arr_mut(s).tracks[row as usize].mode=os_model::PlaylistTrackMode::Audio;}clear(s);
 }
+/// Retain the exact destination of an edit before projection sees its new contents.
+pub fn pin_lane(s: &mut State, row: u16) {
+    let Some(n) = owner(s, row) else { return };
+    let root = pl::group_track(s, row).unwrap_or(row);
+    if pl::track_info(s, root).and_then(|t| t.attached_mixer.or(t.comp)) != Some(n) {
+        pl::arr_mut(s).tracks[root as usize].attached_mixer = Some(n);
+    }
+}
+
+pub(crate) fn route_placement(s:&mut State,index:usize){crate::playlist_links::route_placement(s,index);}
+pub(crate) fn route_audio_placement(s:&mut State,index:usize,insert:u16){
+    let Some(ClipSource::Channel(id))=pl::clips(s).get(index).map(|c|c.source) else{return};
+    if let Some(next)=route_audio(s,id,insert){
+        pl::arr_mut(s).clips[index].source=ClipSource::Channel(next);
+        if s.project.audio_edits.iter().any(|doc|doc.channel==next){crate::audio_edits::isolate(s,index);}
+    }
+}
+
+fn route_audio(s: &mut State, id: u16, insert: u16) -> Option<u16> {
+    let mut channel = s.project.channel(id)?.clone();
+    if !channel.kind.is_sampler() || channel.mixer_track == insert
+        || s.project.clip_fx_channels.contains(&id)
+    {
+        return None;
+    }
+    let has_edits = crate::ara::is(&channel)
+        || crate::playlist_links::has_controls(s,id)
+        || s.project.audio_edits.iter().any(|edit| edit.channel == id)
+        || s.project.vocal_edits.iter().any(|edit| edit.channel == id);
+    channel.mixer_track = insert;
+    if !has_edits {
+        // Repeated placements can share one sampler for the same source settings and insert.
+        let existing = s.project.channels.iter().find(|candidate| {
+            candidate.mixer_track == insert
+                && candidate.sample_path == channel.sample_path
+                && !s.project.clip_fx_channels.contains(&candidate.index)
+                && !s.project.audio_edits.iter().any(|edit| edit.channel == candidate.index)
+                && !s.project.vocal_edits.iter().any(|edit| edit.channel == candidate.index)
+                && !crate::playlist_links::has_controls(s,candidate.index)
+                && {
+                    channel.index = candidate.index;
+                    *candidate == &channel
+                }
+        });
+        if let Some(existing) = existing { return Some(existing.index); }
+    }
+    channel.index = s.project.channels.iter().map(|ch| ch.index).max()?.checked_add(1)?;
+    let routed = channel.index;
+    s.project.channels.push(channel);
+    crate::vocal::clone_source(s, id, routed);
+    crate::playlist_links::clone_controls(s,id,routed);
+    crate::rack::autosize(s);
+    Some(routed)
+}
+
+pub fn lane_family(s: &State, row: u16) -> std::ops::Range<u16> {
+    let root = pl::group_track(s, row).unwrap_or(row);
+    let end = (root + 1..pl::TRACKS)
+        .find(|&r| !pl::track_info(s, r).is_some_and(|t| t.grouped)).unwrap_or(pl::TRACKS);
+    root..end
+}
+
+pub fn adjacent_lane(s: &State, row: u16, delta: i32) -> Option<u16> {
+    let family = lane_family(s, row);
+    let p = projection(s);
+    let at = p.order[..p.lane_count].iter().position(|&r| family.contains(&r))?;
+    if delta < 0 {
+        p.order[..at].iter().rev().copied().find(|&r| !pl::track_info(s, r).is_some_and(|t| t.grouped))
+    } else {
+        p.order[at..p.lane_count].iter().copied().find(|&r| !family.contains(&r) && !pl::track_info(s, r).is_some_and(|t| t.grouped))
+    }
+}
+
+pub fn move_lane(s: &mut State, row: u16, target: u16) {
+    let p = projection(s);
+    let order = &p.order[..p.lane_count];
+    let family = lane_family(s, row);
+    let destination = lane_family(s, target);
+    if family.contains(&target) { return; }
+    let (Some(from), Some(to)) = (order.iter().position(|&r| family.contains(&r)), order.iter().position(|&r| destination.contains(&r))) else { return };
+    let mut next: Vec<_> = order.iter().copied().filter(|r| !family.contains(r)).collect();
+    let index = if from < to {
+        next.iter().rposition(|r| destination.contains(r)).map(|i| i + 1)
+    } else {
+        next.iter().position(|r| destination.contains(r))
+    };
+    let Some(index) = index else { return };
+    next.splice(index..index, order.iter().copied().filter(|r| family.contains(r)));
+    if next == order { return; }
+    pl::snapshot_as(s, "Move attached Playlist track");
+    // Empty mixer lanes otherwise borrow a different row after an insertion.
+    for &r in order { pin_lane(s, r); }
+    pl::arr_mut(s).attached_order = next;
+    s.playlist.track = family.start;
+    s.playlist.header_selection = vec![family.start];
+    s.playlist.header_anchor = Some(family.start);
+    clear(s);
+}
+
+pub fn insert_lane(s: &mut State, before: u16) -> Option<String> {
+    if mixer::inserts(s) >= 4093 { return Some("The Mixer has reached its track limit".into()); }
+    let p = projection(s);
+    let order = &p.order[..p.lane_count];
+    let Some(row) = p.order.get(p.lane_count).copied() else { return Some("The Playlist has reached its track limit".into()); };
+    let before = lane_family(s, before).start;
+    let at = order.iter().position(|&r| r == before).unwrap_or(order.len());
+    let previous = s.selected_mixer;
+    let selection = s.mixer.sel.clone();
+    let n = mixer::inserts(s) + 1;
+    pl::snapshot_with(s, "Insert attached Playlist track", crate::history::Snap::MixerInsert {
+        n, count: 1, remove: true, previous, selection,
+    });
+    for &r in order { pin_lane(s, r); }
+    let mixer = mixer::add_track(s, None);
+    bind(s, row, mixer);
+    let mut next = order.to_vec();
+    next.insert(at, row);
+    pl::arr_mut(s).attached_order = next;
+    s.playlist.track = row;
+    s.playlist.header_selection = vec![row];
+    s.playlist.header_anchor = Some(row);
+    clear(s);
+    None
+}
+
+pub fn delete_lanes(s: &mut State, rows: &[u16]) -> Option<String> {
+    let mut rows = rows.to_vec();
+    rows.retain(|&r| r < pl::TRACKS);
+    if rows.is_empty() { return None; }
+    if rows.iter().any(|&r| pl::track_info(s, r).is_some_and(|t| t.locked || t.frozen.is_some())) {
+        return Some("Unlock or unfreeze the track before deleting it".into());
+    }
+    let p = projection(s);
+    let mut next: Vec<_> = p.order[..p.lane_count].iter().copied().filter(|r| !rows.contains(r)).collect();
+    let hidden: BTreeSet<_> = rows.iter().filter_map(|&r| p.owners[r as usize])
+        .filter(|&n| !next.iter().any(|&r| p.owners[r as usize] == Some(n))).collect();
+    let selected_at = p.order.iter().position(|r| rows.contains(r)).unwrap_or(0);
+    pl::snapshot_as(s, "Delete attached Playlist tracks");
+    for &r in &next { pin_lane(s, r); }
+    // Reuse the ordinary deletion path for its clip, group and automation cleanup.
+    rows.sort_unstable();
+    rows.dedup();
+    for &row in rows.iter().rev() {
+        pl::delete_track(s, row);
+        next.iter_mut().filter(|r| **r > row).for_each(|r| *r -= 1);
+    }
+    let selected = next.get(selected_at).or_else(|| next.last()).copied().unwrap_or(0);
+    let a = pl::arr_mut(s);
+    a.attached_order = next;
+    a.attached_hidden.extend(hidden);
+    a.attached_hidden.sort_unstable();
+    a.attached_hidden.dedup();
+    s.playlist.track = selected;
+    clear(s);
+    select_lane(s, s.playlist.track);
+    None
+}
+
 pub fn select_lane(s:&mut State,row:u16) {
     let Some(n)=owner(s,row) else{return};mixer::select(s,n,false);
-    if let Some(ch)=s.project.channels.iter().position(|c|c.mixer_track==n&&matches!(c.kind,ChannelKind::Plugin|ChannelKind::Sampler)) {
+    if let Some(ch)=crate::playlist_links::instrument(s,row).or_else(||instrument(s,n)) {
         s.selected_channel=ch;s.rack.select_only(ch);
     }
 }
@@ -304,13 +497,13 @@ pub fn record_armed(s:&State,row:u16)->bool{
     if !active(s){return crate::playlist_tracks::armed(s,row);}
     let Some(n)=owner(s,row)else{return false};
     if s.mixer.recording.inputs.contains_key(&n){return s.mixer.recording.armed.contains(&n);}
-    instrument(s,n).is_some_and(|ch|ch==s.selected_channel&&s.rec.armed&&crate::record::Opt::Notes.on())
+    crate::playlist_links::mode(s,row)!=os_model::PlaylistTrackMode::Audio && crate::playlist_links::instrument(s,row).or_else(||instrument(s,n)).is_some_and(|ch|ch==s.selected_channel&&s.rec.armed&&crate::record::Opt::Notes.on())
 }
 pub fn record_lane(app:&mut App,row:u16)->Option<String>{
     if !active(&app.state){return crate::playlist_tracks::record(app,row);}
     let s=&app.state;let n=owner(s,row)?;
     if mixer::locked(s,n)||pl::track_info(s,row).is_some_and(|t|t.locked||t.frozen.is_some()){return Some("Unlock or unfreeze this lane before recording".into());}
-    let notes=(!s.mixer.recording.inputs.contains_key(&n)).then(||instrument(s,n)).flatten();
+    let notes=(crate::playlist_links::mode(s,row)!=os_model::PlaylistTrackMode::Audio&&!s.mixer.recording.inputs.contains_key(&n)).then(||crate::playlist_links::instrument(s,row).or_else(||instrument(s,n))).flatten();
     if let Some(ch)=notes {
         let armed=record_armed(s,row);app.end_take();
         let s=&mut app.state;select_lane(s,row);s.selected_channel=ch;s.playlist.track=row;s.song_mode=true;
@@ -385,6 +578,7 @@ pub fn add_instrument_at(app:&mut App,index:usize,row:u16)->Option<String>{
     s.project.channels[ch].mixer_track=n;
     bind(s,row,n);let arr=pl::arr_mut(s);let number=arr.number;arr.tracks[row as usize].name=Some(name);arr.tracks[row as usize].color=color;
     s.project.instrument_lanes.push((s.project.channels[ch].index,number,row,s.pattern.max(1)));
+    if active(s){pl::arr_mut(s).tracks[row as usize].mode=os_model::PlaylistTrackMode::Instrument;}
     s.playlist.track=row;s.selected_mixer=n;
     s.history.wrap_attached_instrument(snapshot,n,selected);
     s.history.end_sequence_named(previous,"Insert instrument track");
@@ -400,6 +594,7 @@ pub fn insert_on_lane(app:&mut App,index:usize,n:u16,row:u16)->Option<String>{
     let s=&mut app.state;let ch=s.selected_channel;s.project.channels[ch].mixer_track=n;
     bind(s,row,n);let arr=pl::arr_mut(s).number;
     s.project.instrument_lanes.push((s.project.channels[ch].index,arr,row,s.pattern.max(1)));
+    if active(s){pl::arr_mut(s).tracks[row as usize].mode=os_model::PlaylistTrackMode::Instrument;}
     s.selected_mixer=n;s.history.end_sequence_named(previous,"Insert instrument on mixer track");app.invalidate();result
 }
 pub fn piano(app:&mut App,row:u16,right_click:bool)->Option<String>{
@@ -409,13 +604,13 @@ pub fn piano(app:&mut App,row:u16,right_click:bool)->Option<String>{
         crate::playlist_tracks::open_instrument_menu(app, crate::plugin_menu::Target::LaneInstrument(n, row));
         return None;
     }
-    if instrument(&app.state,n).is_none(){
+    if crate::playlist_links::instrument(&app.state,row).or_else(||instrument(&app.state,n)).is_none(){
         let i=app.plugins.available.iter().position(|p|p.desc.name==crate::plugins::LEMON_SAMPLER)?;
         let message=insert_on_lane(app,i,n,row);
-        if instrument(&app.state,n).is_none(){return message;}
+        if crate::playlist_links::instrument(&app.state,row).or_else(||instrument(&app.state,n)).is_none(){return message;}
         app.state.pending_open=None;
     }
-    if let Some(ch)=instrument(&app.state,n){app.act(crate::app::Action::RackRoll(ch));}
+    if let Some(ch)=crate::playlist_links::instrument(&app.state,row).or_else(||instrument(&app.state,n)){app.act(crate::app::Action::RackRoll(ch));}
     None
 }
 
@@ -529,6 +724,31 @@ mod tests {
         toggle(&mut reopened);assert_eq!(pl::track_info(&reopened.state,row).unwrap().attached_mixer,Some(n));
         toggle(&mut a);assert_eq!(a.state.project,after);
     }
+    #[test]
+    fn attached_detach_button_has_even_margins_and_rim() {
+        for scale in [1.0, 1.25, 1.5] {
+            let mut a = app();
+            toggle(&mut a);
+            a.state.raise(Win::Playlist);
+            let mut c = os_ui::Canvas::new(1600, 1000, scale).unwrap();
+            a.paint(&mut c, None);
+            let button = a.hits.iter().find(|h| h.action == Action::Mix(mixer::MHit::AttachPlaylist)).unwrap().rect;
+            let panel = a.live_rect(crate::app::Live::AttachedInspector).unwrap();
+            assert!(button.w + 24.0 < panel.w);
+            assert!((button.cx() - panel.cx()).abs() <= 1.0 / scale);
+            let left = (button.x * scale).round() as u32;
+            let right = (button.right() * scale).round() as u32 - 1;
+            for y in ((button.y + 3.0) * scale).ceil() as u32..((button.bottom() - 3.0) * scale).floor() as u32 {
+                for inset in 0..3 {
+                    assert_eq!(c.pixmap.pixel(left + inset, y), c.pixmap.pixel(right - inset, y), "button rim at {scale}");
+                }
+            }
+            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+                c.pixmap.save_png(std::path::PathBuf::from(dir).join(format!("detach-{scale}.png"))).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn attach_and_detach_buttons_are_blue_in_each_mixer_view() {
         for style in [mixer::WIDE, mixer::TRADITIONAL, crate::rack_mixer::VIEW] {
@@ -901,6 +1121,143 @@ mod tests {
         assert_eq!(pl::clips(&a.state),before.arrangement().unwrap().clips.as_slice());
         crate::history::undo(&mut a.state);assert_eq!(a.state.project,before);
     }
+    #[test]
+    fn attached_header_commands_and_drag_keep_the_mixer_and_detached_order() {
+        let mut a = app();
+        let mut canvas = os_ui::Canvas::new(1440, 900, 1.0).unwrap();
+        a.state.wins[Win::Playlist.slot().unwrap()].maxed = true;
+        let before = a.state.project.clone();
+        toggle(&mut a);
+        let original = projection(&a.state).order.clone();
+        let (top, lower) = (original[0], original[1]);
+        assert_eq!((top, lower), (7, 1));
+        a.paint(&mut canvas, None);
+        let header = |a: &App, row| a.hits.iter().find(|h| h.action == Action::PlHeader(row)).unwrap().rect;
+        let from = header(&a, top);
+        let to = header(&a, lower);
+        a.mouse_move(from.x + 16.0, from.y + 8.0);
+        a.mouse_down();
+        a.mouse_move(from.x + 16.0, to.cy());
+        assert!(matches!(a.state.playlist.overlay, Some(pl::Overlay::TrackInsertion(_))));
+        a.mouse_up();
+        assert_eq!(projection(&a.state).order[..2], [lower, top]);
+        assert_eq!(pl::clips(&a.state), before.arrangement().unwrap().clips);
+        assert_eq!(a.state.project.mixer, before.mixer);
+        assert_eq!(a.state.project.channels, before.channels);
+        assert!(crate::history::undo(&mut a.state).is_some());
+        assert_eq!(projection(&a.state).order, original);
+        assert!(crate::history::redo(&mut a.state).is_some());
+        assert_eq!(projection(&a.state).order[..2], [lower, top]);
+        pl::run(&mut a, pl::Cmd::TrackUp(top));
+        assert_eq!(projection(&a.state).order, original);
+        pl::run(&mut a, pl::Cmd::TrackDown(top));
+        assert_eq!(projection(&a.state).order[..2], [lower, top]);
+        let file = os_flp::project::create(&a.state.project).unwrap();
+        let loaded = os_flp::project::load(&file).unwrap();
+        assert_eq!(loaded.arrangement().unwrap().attached_order, a.state.project.arrangement().unwrap().attached_order);
+        toggle(&mut a);
+        assert_eq!(pl::Rows::new(&a.state).order, (0..pl::TRACKS).collect::<Vec<_>>());
+        assert_eq!(pl::clips(&a.state), before.arrangement().unwrap().clips);
+        toggle(&mut a);
+        assert_eq!(projection(&a.state).order[..2], [lower, top]);
+    }
+
+    #[test]
+    fn attached_insert_and_delete_are_undoable_without_removing_mixer_routing() {
+        let mut a = app();
+        toggle(&mut a);
+        let before = a.state.project.clone();
+        let order = projection(&a.state).order.clone();
+        let top = order[0];
+        assert_eq!(pl::run(&mut a, pl::Cmd::TrackInsert(top)), None);
+        let new = a.state.playlist.track;
+        assert_eq!(projection(&a.state).order[..2], [new, top]);
+        let inserted = a.state.project.clone();
+        assert_eq!(inserted.mixer.len(), before.mixer.len() + 1);
+        assert_eq!(inserted.channels, before.channels);
+        assert_eq!(crate::history::undo(&mut a.state), Some("Insert attached Playlist track"));
+        assert_eq!(a.state.project, before);
+        assert_eq!(crate::history::redo(&mut a.state), Some("Insert attached Playlist track"));
+        assert_eq!(a.state.project, inserted);
+        let row = a.state.playlist.track;
+        pl::run(&mut a, pl::Cmd::TrackDelete(row));
+        let deleted = a.state.project.clone();
+        assert_eq!(deleted.mixer, inserted.mixer);
+        assert_eq!(deleted.channels, inserted.channels);
+        let insert = inserted.arrangement().unwrap().tracks[row as usize].attached_mixer.unwrap();
+        assert!(lane(&a.state, insert).is_none(), "a removed lane does not immediately reappear");
+        let mut file = os_flp::project::create(&inserted).unwrap();
+        os_flp::project::apply(&deleted, &mut file).unwrap();
+        let loaded = os_flp::project::load(&file).unwrap();
+        assert_eq!(loaded.arrangement().unwrap().attached_hidden, vec![insert]);
+        assert_eq!(crate::history::undo(&mut a.state), Some("Delete attached Playlist tracks"));
+        assert_eq!(a.state.project, inserted);
+        assert_eq!(crate::history::redo(&mut a.state), Some("Delete attached Playlist tracks"));
+        assert_eq!(a.state.project, deleted);
+        let row = lane(&a.state, 1).unwrap();
+        assert!(pl::clips(&a.state).iter().any(|c| c.track == row));
+        pl::run(&mut a, pl::Cmd::TrackDelete(row));
+        assert!(lane(&a.state, 1).is_none());
+        assert_eq!(a.state.project.channels, inserted.channels);
+        assert_eq!(a.state.project.mixer, inserted.mixer);
+        assert_eq!(pl::clips(&a.state).len(), 3);
+    }
+
+    #[test]
+    fn attached_pattern_and_audio_placements_stay_on_the_clicked_lane() {
+        let mut a = app();
+        let pattern = a.state.project.patterns.first_mut().unwrap();
+        pattern.notes = vec![os_model::Note::step(0, 0), os_model::Note::step(1, 0)];
+        let pattern = ClipSource::Pattern(pattern.number);
+        let mixer = a.state.project.mixer.clone();
+        let channels = a.state.project.channels.clone();
+        toggle(&mut a);
+        let row = lane(&a.state, 2).expect("empty mixer lane");
+        let order = projection(&a.state).order.clone();
+        let mut canvas = os_ui::Canvas::new(1440, 900, 1.0).unwrap();
+        a.state.wins[Win::Playlist.slot().unwrap()].maxed = true;
+        let click = |a: &mut App, c: &mut os_ui::Canvas, row, tick| {
+            a.paint(c, None);
+            let grid = a.pl_grid().unwrap();
+            let g = pl::PGeom::new(&a.state, grid);
+            a.mouse_move(g.x_of(tick), g.y_of(row) + 12.0);
+            a.mouse_down();
+            a.mouse_up();
+        };
+        a.state.playlist.source = Some(pattern);
+        click(&mut a, &mut canvas, row, 384.0);
+        assert_eq!(pl::clips(&a.state).last().unwrap().source, pattern);
+        assert_eq!(pl::clips(&a.state).last().unwrap().track, row);
+        assert_eq!(projection(&a.state).order, order);
+        assert_eq!(owner(&a.state, row), Some(2));
+        a.paint(&mut canvas, None);
+        let grid = a.pl_grid().unwrap();
+        let g = pl::PGeom::new(&a.state, grid);
+        let r = g.clip_rect(pl::clips(&a.state).last().unwrap());
+        assert!(grid.contains(r.cx(), r.cy()));
+        assert_eq!(pl::clip_at(&a.state, &g, r.cx(), r.cy()), Some(pl::clips(&a.state).len() - 1));
+        a.state.playlist.source = Some(ClipSource::Channel(0));
+        click(&mut a, &mut canvas, row, 768.0);
+        let ClipSource::Channel(routed)=pl::clips(&a.state).last().unwrap().source else{panic!()};
+        assert_ne!(routed,0);assert_eq!(a.state.project.channel(routed).unwrap().mixer_track,2);
+        assert_eq!(projection(&a.state).order, order);
+        let n = pl::clips(&a.state).len();
+        a.state.playlist.sel = vec![n - 1];
+        pl::copy(&mut a.state);
+        a.state.playlist.track = lane(&a.state, 1).unwrap();
+        a.state.playlist.pos = 1152;
+        pl::run(&mut a, pl::Cmd::Paste);
+        assert_eq!(pl::clips(&a.state)[n].track, a.state.playlist.track);
+        assert_eq!(pl::clips(&a.state)[n].position, 1152);
+        assert_eq!(a.state.project.mixer, mixer);
+        assert_eq!(&a.state.project.channels[..channels.len()],channels.as_slice());
+        let ClipSource::Channel(pasted)=pl::clips(&a.state)[n].source else{panic!()};
+        assert_eq!(a.state.project.channel(pasted).unwrap().mixer_track,1);
+        toggle(&mut a);
+        assert_eq!(pl::clips(&a.state).len(), n + 1);
+        assert_eq!(pl::clips(&a.state)[n - 2].track, row);
+    }
+
     #[test]
     fn attached_projection_is_bounded_and_cached_for_dense_projects(){
         let mut a=app();a.state.project.mixer=(0..130).map(MixerTrack::new).collect();

@@ -263,6 +263,7 @@ struct Voice {
     pos: f64,
     /// Key rate times the sample / host rate ratio.
     key_step: f64,
+    echo_pitch: f64,
     /// Host tuning of this key's voices, semitones (portamento glides; spec: audio/channel-voices.md).
     tune: f64,
     /// The note's own pan (−1..1) and its filter offsets in knob units, from the host per note (CLAP note expression
@@ -712,6 +713,7 @@ impl Engine {
             vel,
             pos,
             key_step,
+            echo_pitch: 0.0,
             tune: 0.0,
             note_pan: 0.0,
             drive:0.,mod_x: 0.0,
@@ -734,10 +736,14 @@ impl Engine {
     }
 
     pub fn note_off(&mut self, key: u8, b: &Block) {
+        self.note_off_id(None, key, b);
+    }
+
+    pub fn note_off_id(&mut self, id: Option<i32>, key: u8, b: &Block) {
         let close = Close::new(&declick(b.declick), f64::from(self.rate));
         let vol_env = b.targets[VOL].env.is_some();
         let looped = self.shape().is_some_and(|(n, _)| self.loop_frames(b, n).1.is_some());
-        for v in self.voices.iter_mut().filter(|v| v.key == key && v.off.is_none()) {
+        for v in self.of_note(id, key).filter(|v| v.off.is_none()) {
             v.off = Some(v.age);
             // A looping voice without a volume envelope closes at the note's end; a one-shot voice without one
             // ignores it (spec: audio/sampler.md "The end of a voice").
@@ -771,6 +777,12 @@ impl Engine {
     pub fn tune(&mut self, key: u8, semitones: f64) {
         for v in self.voices.iter_mut().filter(|v| v.key == key) {
             v.tune = semitones;
+        }
+    }
+
+    pub fn echo_pitch(&mut self, id: i32, semitones: f32) {
+        for v in self.of_note(Some(id), 0) {
+            v.echo_pitch = f64::from(semitones.clamp(-48.0, 48.0));
         }
     }
 
@@ -984,7 +996,7 @@ fn render_voice(
         let pan = pan_gains(m0.pan);
         let (p0, p1) = (if v.gain < 0.0 { pan } else { v.pan }, pan);
         // The pitch factor: a resampling step, or a realtime voice's transposition (with the stretch's PITCH).
-        let step = v.key_step * 2f64.powf((b.cents + m0.cents + v.tune * 100.0 + b.ts_cents) / 1200.0) * rs;
+        let step = v.key_step * 2f64.powf((b.cents + m0.cents + (v.tune + v.echo_pitch) * 100.0 + b.ts_cents) / 1200.0) * rs;
         // A realtime voice plays the sample by resampling while there is nothing to stretch (the root key, no PITCH,
         // MUL 1 or TIME the sample's own duration); its stretcher starts the first time there is, and stays. **(OS)**
         if let (Some(x), Src::Ram(s)) = (rt.as_mut(), src) {

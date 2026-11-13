@@ -292,7 +292,7 @@ struct HostData {
     run: Mutex<Vec<(u32, bool, u64)>>,
 }
 
-static HOST_NAME: &CStr = c"Lemon Studio";
+static HOST_NAME: &CStr = c"ML Studio";
 static HOST_URL: &CStr = c"";
 static HOST_VERSION: &CStr = c"0.0.1";
 
@@ -550,6 +550,7 @@ const NAMED_VOICES: usize = 512;
 #[derive(Clone, Copy, Default)]
 struct NoteParams {
     drive:Option<u32>,
+    echo_pitch: Option<u32>,
     mods: [Option<(u32, f64)>; 2],
 }
 
@@ -1166,10 +1167,16 @@ impl Plugin {
                     if !(*self.params).get_info.is_some_and(|g| g(self.plugin, i, &mut info)) {
                         continue;
                     }
+                    let n = CStr::from_ptr(info.name.as_ptr()).to_string_lossy();
+                    // NIH-plug accepts this internal per-note modulation, but
+                    // deliberately omits the modulation flag for hidden parameters.
+                    if n == "Sampler echo pitch" && info.flags & CLAP_PARAM_IS_HIDDEN != 0 {
+                        np.echo_pitch = Some(info.id);
+                        continue;
+                    }
                     if info.flags & CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID == 0 {
                         continue;
                     }
-                    let n = CStr::from_ptr(info.name.as_ptr()).to_string_lossy();
                     if n=="Per-note drive"{np.drive=Some(info.id);continue;}
                     let k = if n == os_host::NOTE_MOD_X {
                         0
@@ -1452,9 +1459,9 @@ impl Plugin {
                 let id = if fresh {
                     self.next_note_id = self.next_note_id.wrapping_add(1) & 0x7fff_ffff;
                     self.next_note_id
-                } else if e.kind == Kind::Choke {
-                    let at = self.named.iter().position(|v| Some(v.0) == e.voice);
-                    at.map_or(-1, |i| self.named.remove(i).1)
+                } else if let Some(voice) = e.voice {
+                    let Some(at) = self.named.iter().position(|v| v.0 == voice) else { continue };
+                    self.named.remove(at).1
                 } else {
                     -1
                 };
@@ -1466,6 +1473,7 @@ impl Plugin {
                 }
                 match e.kind {
                     Kind::On => self.ledger.start(e.key, id),
+                    Kind::Off if id >= 0 => self.ledger.release_voice(id),
                     Kind::Off => self.ledger.release(e.key),
                     Kind::Choke if id >= 0 => self.ledger.choke_voice(id),
                     Kind::Choke | Kind::Tune | Kind::Gain => self.ledger.choke(e.key),
@@ -1518,6 +1526,10 @@ impl Plugin {
                     if let Some(param)=np.drive && e.levels.drive>0.{
                         self.mods.push(param_mod(e.time,param,id,e.key,f64::from(e.levels.drive)));
                         seq.push(Seq::Mod(self.mods.len()-1));
+                    }
+                    if let Some(param) = np.echo_pitch.filter(|_| e.levels.echo_pitch != 0.0) {
+                        self.mods.push(param_mod(e.time, param, id, e.key, f64::from(e.levels.echo_pitch) / 96.0));
+                        seq.push(Seq::Mod(self.mods.len() - 1));
                     }
                     let own = [e.levels.mod_x, e.levels.mod_y];
                     let mut sent = [0.0; 2];
@@ -1926,6 +1938,10 @@ impl os_engine::Instrument for Plugin {
         }
     }
 
+    fn voice_release(&mut self, offset: u32, key: u8, voice: u32) {
+        self.queue.push(Ev { voice: Some(voice), ..Ev::new(offset, Kind::Off, key, 0.0) });
+    }
+
     fn voice_choke(&mut self, offset: u32, key: u8, voice: u32) {
         self.queue.push(Ev { voice: Some(voice), ..Ev::new(offset, Kind::Choke, key, 0.0) });
     }
@@ -2331,7 +2347,7 @@ mod tests {
         let mut p = Plugin::new(&lib, &lib.plugins[0].id).unwrap();
         assert!(os_host::Plugin::activate(&mut p, 48000));
         let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
-        let own = os_engine::NoteLevels { drive:0., pan: 0.5, mod_x: 0.25, mod_y: -0.5 };
+        let own = os_engine::NoteLevels { echo_pitch: 0., drive:0., pan: 0.5, mod_x: 0.25, mod_y: -0.5 };
         // Off: a plain note.
         p.note_start(3, 60, 0.8, 0.0, own);
         p.process_fx(48000, &mut l, &mut r);
@@ -2340,7 +2356,7 @@ mod tests {
         assert!(p.use_note_levels());
         assert!(p.note_levels.is_some_and(|n| n.mods == [None, None]));
         let param = os_host::Plugin::param_info(&p, 0).unwrap().id;
-        p.note_levels = Some(NoteParams { drive:None, mods: [Some((param, 2.0)), None] });
+        p.note_levels = Some(NoteParams { mods: [Some((param, 2.0)), None], ..NoteParams::default() });
         p.channel_levels(os_engine::ChannelLevels { mod_x: 0.25, ..Default::default() });
         p.note_start(5, 61, 0.8, 0.0, own);
         p.process_fx(48000, &mut l, &mut r);
@@ -3006,6 +3022,90 @@ mod tests {
         assert_eq!(notes, vec![(CLAP_EVENT_NOTE_CHOKE, a, 60, 5)]);
         assert_eq!(p.exprs.iter().map(|x| (x.note_id, x.value)).collect::<Vec<_>>(), vec![(b, 0.5)]);
         let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn sampler_note_effects_render_through_linked_clap() {
+        use os_model::{Arpeggio, Channel, ChannelKind, ChannelMisc, Echo, Project};
+        const RATE: u32 = 48000;
+        let wav = std::env::temp_dir().join(format!("ml-sampler-note-effects-{}.wav", std::process::id()));
+        let tone = (0..2400).flat_map(|i| {
+            let value = (i as f32 * std::f32::consts::TAU * 440.0 / RATE as f32).sin() * 0.25;
+            [value, value]
+        }).collect::<Vec<_>>();
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), RATE, &tone).unwrap();
+        let channel = Channel {
+            index: 0, kind: ChannelKind::Sampler, name: None, plugin: None, plugin_state: None, color: None,
+            enabled: true, volume: 0.78125, pan: 0.0, pitch_cents: 0, mixer_track: 0,
+            sample_path: Some(wav.to_string_lossy().into_owned()), layer_children: vec![],
+            envelopes: Default::default(), rack: Default::default(), misc: Default::default(), sound: Default::default(),
+        };
+        let render = |misc: ChannelMisc, clip: bool, sequenced: bool| {
+            let mut plugin = sampler_of(&wav);
+            plugin.use_note_levels();
+            plugin.use_voice_gains();
+            let ch = Channel { kind: if clip { ChannelKind::AudioClip } else { ChannelKind::Sampler }, misc, ..channel.clone() };
+            let mut project = Project { ppq: 96, tempo: Some(120.0), channels: vec![ch], ..Default::default() };
+            if sequenced {
+                project.patterns.push(os_model::Pattern {
+                    number: 1,
+                    notes: vec![os_model::Note { length: 48, ..os_model::Note::step(0, 0) }],
+                    ..Default::default()
+                });
+            }
+            if clip {
+                project.arrangements.push(os_model::Arrangement {
+                    clips: vec![os_model::Clip::new(0, 96, 0, os_model::ClipSource::Channel(0))],
+                    ..Default::default()
+                });
+            }
+            let mut engine = os_engine::Engine::new(&project, &mut Default::default(), RATE, os_engine::PlayMode::Song);
+            engine.set_instrument(0, Arc::new(Mutex::new(plugin)));
+            if !clip && !sequenced {
+                engine.clear_schedule();
+                engine.note_on(0, 60, 100);
+            }
+            let mut output = vec![0.0; 2 * RATE as usize / 2];
+            engine.process(&mut output[..24000]);
+            if !clip && !sequenced { engine.note_off(0, 60); }
+            engine.process(&mut output[24000..]);
+            assert!(output.iter().all(|value| value.is_finite()));
+            output
+        };
+        let peak = |out: &[f32], from: usize, to: usize, side: usize| {
+            out[from * 2..to * 2].chunks_exact(2).map(|f| f[side].abs()).fold(0.0f32, f32::max)
+        };
+        let dry = render(ChannelMisc::default(), false, false);
+        assert!(peak(&dry, 100, 1200, 0) > 0.05);
+        let mut tracked = ChannelMisc::default();
+        tracked.tracking[1].mid = 0;
+        tracked.tracking[1].pan = 1.0;
+        let tracked = render(tracked, false, false);
+        assert!(peak(&tracked, 200, 1200, 1) > peak(&tracked, 200, 1200, 0) * 1.5);
+        let echo = Echo { feed: 0.4, time: 0.125, echoes: 2, pan: 0.5, ping_pong: true, pitch: 1.0, ..Echo::default() };
+        let arp = Arpeggio { direction: 1, chord: 1, ..Arpeggio::default() };
+        let delayed = render(ChannelMisc { echo, ..Default::default() }, false, false);
+        let peak_late = peak(&delayed, 6100, 7100, 1);
+        assert!(peak_late > 0.03 && peak(&dry, 6100, 7100, 1) == 0.0, "{peak_late}");
+        assert!(peak_late > peak(&delayed, 6100, 7100, 0) * 1.5);
+        assert!(peak(&delayed, 12100, 12600, 0) > peak(&delayed, 12100, 12600, 1) * 2.0);
+        let crossings = |out: &[f32], from: usize, to: usize, side: usize| {
+            out[from * 2..to * 2].chunks_exact(2).zip(out[(from + 1) * 2..].chunks_exact(2))
+                .filter(|(a, b)| a[side] <= 0.0 && b[side] > 0.0).count()
+        };
+        let cycles = crossings(&delayed, 6100, 7100, 1);
+        assert!((17..=20).contains(&cycles), "echo pitch should be one octave up: {cycles} cycles");
+        let fat = render(ChannelMisc { echo: Echo { fat: true, ..Echo::default() }, ..Default::default() }, false, false);
+        assert!(fat.iter().zip(&dry).any(|(a, b)| (a - b).abs() > 0.02));
+        let arped = render(ChannelMisc { arp, ..Default::default() }, false, false);
+        assert!(peak(&arped, 6100, 7400, 0) > 0.05, "held note advances to second chord tone");
+        assert!(peak(&arped, 12500, 14000, 0) < 1e-5, "release stops further steps");
+        let pattern = render(ChannelMisc { arp, ..Default::default() }, false, true);
+        assert!(peak(&pattern, 6100, 7400, 0) > 0.05, "scheduled note arpeggiates");
+        assert!(peak(&pattern, 12500, 14000, 0) < 1e-5, "arpeggiator follows scheduled note length");
+        let clip = render(ChannelMisc::default(), true, false);
+        assert_eq!(clip, render(ChannelMisc { echo, arp, ..Default::default() }, true, false));
+        let _ = std::fs::remove_file(wav);
     }
 
     /// Two overlapping audio clips of one sample through Lemon Sampler, as Lemon Studio plays them: one audio clip

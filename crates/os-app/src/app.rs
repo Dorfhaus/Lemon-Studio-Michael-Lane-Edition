@@ -31,6 +31,7 @@ pub enum Win {
     ChannelRack,
     PianoRoll,
     Browser,
+    Guide,
     Plugin,
     /// The Plugin performance monitor (spec: ui/plugin-performance.md).
     Perf,
@@ -64,6 +65,7 @@ impl Win {
     pub fn min_size(self) -> (f32, f32) {
         match self {
             Win::Browser => (260.0, 280.0),
+            Win::Guide => (430.0, 320.0),
             Win::Playlist => (520.0, 220.0),
             Win::Mixer => (560.0, 435.0),
             Win::PianoRoll => (540.0, 320.0),
@@ -401,6 +403,8 @@ pub enum Scroll {
     PlPick,
     /// The settings window's page (spec: ui/settings.md).
     Settings,
+    /// The User Guide reading pane.
+    Guide,
     /// Settings ▸ Plugins: the plugin table (whole rows).
     PlugTable,
     /// A popup menu wider than the window, and its open submenu (whole columns; spec: ui/menus.md "Menus wider than
@@ -431,14 +435,14 @@ impl Bar {
     }
 
     /// Content pixels per pixel of thumb travel.
-    fn ratio(&self) -> f32 {
+    pub(crate) fn ratio(&self) -> f32 {
         if let Some(total)=self.content_span {return total/self.len().max(1.);}
         let travel = self.len() - self.thumb;
         if travel > 0.0 { self.max / travel } else { 0.0 }
     }
 
     /// Where the thumb starts along the track at scroll `pos`.
-    fn thumb_at(&self, pos: f32) -> f32 {
+    pub(crate) fn thumb_at(&self, pos: f32) -> f32 {
         if let Some(total)=self.content_span {return pos.clamp(0.,self.max)/total*self.len();}
         if self.max > 0.0 { pos / self.max * (self.len() - self.thumb) } else { 0.0 }
     }
@@ -490,7 +494,7 @@ pub(crate) fn scroll_win(t: Scroll) -> Option<Win> {
         | Scroll::AttachedEffects | Scroll::AttachedSends => Some(Win::Playlist),
         Scroll::MixerX => Some(Win::Mixer),
         Scroll::RackX | Scroll::RackY => Some(Win::ChannelRack),
-        Scroll::Settings | Scroll::PlugTable | Scroll::Popup | Scroll::PopupSub | Scroll::PopupDeep(_) => None,
+        Scroll::Settings | Scroll::Guide | Scroll::PlugTable | Scroll::Popup | Scroll::PopupSub | Scroll::PopupDeep(_) => None,
     }
 }
 
@@ -613,7 +617,7 @@ pub(crate) struct Shown {
     pub playing: bool,
     pub paused: bool,
     pub tick: f64,
-    pub piano_tick: Option<f64>,
+    pub visual_tick: Option<f64>,
     pub song: bool,
     pub sounding: Vec<(u16, u16)>,
     /// The tempo playback plays at (tempo automation moves it); `None` while stopped.
@@ -1241,6 +1245,7 @@ pub struct State {
     pub wins: [WinState; 3],
     /// Size of the shell window in logical pixels (set each paint).
     pub screen: (f32, f32),
+    pub guide: crate::help::View,
     pub native_view: Option<Win>,
     pub native_input: Option<Win>,
     pub native_detached: Vec<Win>,
@@ -1433,7 +1438,7 @@ pub struct App {
     pub(crate) detached_eq_visible: bool,
     /// Playback state the frame shows (see `Shown`).
     shown: Shown,
-    piano_head: piano::PlayheadClock,
+    playhead_clock: piano::PlayheadClock,
     /// Rects of last frame's overlays (menus, popups...): docked plugin windows are clipped under them.
     overlays: Vec<Rect>,
     #[cfg(any(windows,target_os="macos"))] pub rack_parent:isize,
@@ -1461,6 +1466,7 @@ pub struct App {
     /// note key), the octave shift, and whether the transport has the project for live notes.
     typing_held: Vec<(KeyCode, usize, u16)>,
     pub typing_octave: i32,
+    pub(crate) startup_editor_layout: Option<serde_json::Value>,
     pub(crate) typing_layout: crate::typing_layout::Layout,
     typing_synced: bool,
     /// The piano-roll key held with the mouse, sounding as a live note until released: (rack row, key).
@@ -1741,6 +1747,7 @@ impl App {
                     WinState { rect: Rect::new(480.0, 140.0, 1000.0, 640.0), maxed: true, mini: false },
                 ],
                 screen: (1920.0, 1080.0),
+                guide: Default::default(),
                 native_view: None, native_input: None, native_detached: Vec::new(), native_frames:Vec::new(), native_layout_generation:0,
                 display_scale: 1.0,
                 ui_scale: 1.0,
@@ -1758,7 +1765,7 @@ impl App {
             live: Vec::new(),
             detached_eq_visible: false,
             shown: Shown::default(),
-            piano_head: piano::PlayheadClock::default(),
+            playhead_clock: piano::PlayheadClock::default(),
             overlays: Vec::new(),
             #[cfg(any(windows,target_os="macos"))] rack_parent:0,
             canvas_off: (0, 0),
@@ -1773,7 +1780,8 @@ impl App {
             hover_rect: None,
             damage: Damage::Full,
             typing_held: Vec::new(),
-            typing_octave: 0,
+            typing_octave: crate::typing_layout::octave(),
+            startup_editor_layout: None,
             typing_layout: crate::typing_layout::Layout::load(),
             typing_synced: false,
             mouse_note: None,
@@ -1886,6 +1894,7 @@ impl App {
     }
 
     pub fn open(&mut self, path: PathBuf) {
+        self.startup_editor_layout = None;
         if self.collaboration.active() { crate::collaboration::leave(self); }
         // A MIDI file opened as a project (the command line, say) is imported as a dropped one is (spec:
         // ui/midi-files.md §10.6).
@@ -2334,7 +2343,20 @@ impl App {
         use crate::dialog::Next;
         match n {
             Next::Close => self.want_exit = true,
-            Next::Update => { self.restart_update = true; self.want_exit = true; },
+            Next::Update => {
+                match crate::updates::on_exit(true, self.state.path.as_deref()) {
+                    Ok(()) => {
+                        self.restart_update = true;
+                        self.want_exit = true;
+                    }
+                    Err(error) => {
+                        use crate::dialog::{Kind, spans};
+                        let message = format!("Could not restart to update: {error}");
+                        crate::updates::report_error(&message);
+                        self.tell(Kind::Error, "Update could not start", spans(&[&message]));
+                    }
+                }
+            }
             Next::Quit => self.quit_answer = Some(true),
             Next::NewProject => {
                 self.new_project();
@@ -2524,6 +2546,8 @@ impl App {
                 }
             }
             Then::MarkerProfile(mode)=>{if let Some(path)=file {crate::marker_profiles::chosen(self,&path,mode);}},
+            Then::WorkspaceLayout(save) => { if let Some(path) = file { crate::workspace_layout::chosen(self, &path, save); } }
+            Then::DeleteWorkspaceLayout(path) => { if reply == Reply::Button(Answer::Yes) { crate::workspace_layout::deleted(self, &path); } }
             Then::SaveToolbarPreset => {
                 if let Some(p) = file {
                     self.toolbar_saved(p);
@@ -3493,8 +3517,13 @@ impl App {
         let s = self.scrolled.get_or_insert((0.0, 0.0));
         *s = (s.0 + d.0, s.1 + d.1);
         // A held clip follows content coordinates even when only the viewport moved.
-        if let (Some(Drag::Pl(d @ crate::playlist::PlDrag::Move { .. })), Some(grid)) = (self.drag.clone(), self.pl_grid) {
-            crate::playlist::drag_move(self, d, grid);
+        use crate::playlist::PlDrag;
+        if let (Some(Drag::Pl(drag)), Some(grid)) = (&self.drag, self.pl_grid) {
+            if matches!(drag, PlDrag::Move { .. })
+                || (d.0 != 0.0 && matches!(drag, PlDrag::ResizeL { .. } | PlDrag::ResizeR { .. }))
+            {
+                crate::playlist::drag_move(self, drag.clone(), grid);
+            }
         }
     }
 
@@ -3741,7 +3770,7 @@ impl App {
     /// Auto scrolling switch (toolbar, OPTIONS menu): followed from the next move of the playhead.
     pub fn toggle_autoscroll(&mut self) {
         let on = crate::autoscroll::toggle();
-        self.state.message = Some(if on { "Auto scrolling on" } else { "Auto scrolling off" }.into());
+        self.state.message = Some(if on { "Follow playhead on" } else { "Follow playhead off" }.into());
         self.invalidate();
     }
 
@@ -3753,15 +3782,17 @@ impl App {
         if !set.on || !now.playing || now.paused || matches!(self.drag, Some(Drag::Scroll { .. } | Drag::BarZoom { .. } | Drag::BarEdge { .. } | Drag::BarRows { .. } | Drag::TrackSize { .. })) {
             return;
         }
-        let tick = now.tick as f32;
         let ppq = f32::from(self.state.project.ppq.max(4));
+        let tick = now.visual_tick.unwrap_or(now.tick);
         if now.song {
+            if matches!(self.drag, Some(Drag::Pl(_) | Drag::PlRowResize { .. })) {
+                return;
+            }
             let Some(g) = self.pl_grid.filter(|_| self.state.shown(Win::Playlist)) else { return };
             let left = self.state.playlist_scroll.0;
-            let x = tick * self.state.playlist_bar_w / (ppq * 4.0);
+            let ppt = self.state.playlist_bar_w / (ppq * 4.0);
+            let x = (tick * f64::from(ppt)) as f32;
             if let Some(v) = crate::autoscroll::follow(left, g.w, x, set.continuous) {
-                // In whole steps the drawn pixels can move by (`playlist_scrolled`).
-                let v = blit_step(self.px_scale).map_or(v, |q| left + ((v - left) / q).round() * q);
                 let before = self.state.playlist_scroll;
                 self.scroll_set(Scroll::PlaylistX, v);
                 self.playlist_scrolled(before);
@@ -3769,7 +3800,7 @@ impl App {
         } else {
             let Some(g) = self.piano_grid.filter(|_| self.state.shown(Win::PianoRoll)) else { return };
             let left = self.scroll_get(Scroll::PianoX);
-            let x = now.piano_tick.unwrap_or(now.tick) as f32 * self.state.piano.px_per_beat / ppq;
+            let x = tick as f32 * self.state.piano.px_per_beat / ppq;
             if let Some(v) = crate::autoscroll::follow(left, g.w, x, set.continuous) {
                 self.scroll_set(Scroll::PianoX, v);
                 if self.scroll_get(Scroll::PianoX) != left {
@@ -4279,7 +4310,7 @@ impl App {
             playing,
             paused: self.transport.paused(),
             tick: self.transport.tick(),
-            piano_tick: None,
+            visual_tick: None,
             song: self.transport.song(),
             sounding: {
                 let mut notes:Vec<_>=self.transport.sounding().into_iter().filter_map(|(row,k)|self.state.project.channels.get(row as usize).map(|c|(c.index,k))).collect();
@@ -4296,12 +4327,12 @@ impl App {
     /// between pattern and song repaint everything.
     fn playback_damage(&mut self) {
         let mut now = self.play_state();
-        if now.playing && !now.paused && self.state.shown(Win::PianoRoll) {
+        if now.playing && !now.paused && (self.state.shown(Win::PianoRoll) || (now.song && self.state.shown(Win::Playlist))) {
             let rate = f64::from(self.state.project.ppq.max(4))
                 * now.tempo.unwrap_or(self.state.tempo).max(1.) / 60.;
-            now.piano_tick = Some(self.piano_head.sample(std::time::Instant::now(), self.transport.watch().generation(), now.tick, rate));
+            now.visual_tick = Some(self.playhead_clock.sample(std::time::Instant::now(), self.transport.watch().generation(), now.tick, rate));
         } else {
-            self.piano_head = piano::PlayheadClock::default();
+            self.playhead_clock = piano::PlayheadClock::default();
         }
         self.show_playback(now);
     }
@@ -4330,10 +4361,10 @@ impl App {
         if !now.playing {
             return;
         }
-        let (old_piano, new_piano) = (old.piano_tick.unwrap_or(old.tick), now.piano_tick.unwrap_or(now.tick));
-        if old_piano != new_piano && self.state.shown(Win::PianoRoll) {
+        let (old_visual, new_visual) = (old.visual_tick.unwrap_or(old.tick), now.visual_tick.unwrap_or(now.tick));
+        if old_visual != new_visual && self.state.shown(Win::PianoRoll) {
             if let Some(g) = self.piano_geom() {
-                for tick in [old_piano, new_piano] {
+                for tick in [old_visual, new_visual] {
                     if let Some(x) = piano::playhead_x(&self.state, &g, tick, now.song) {
                         self.damage_rect(Rect::new(x - 2.0, g.grid.y, 5.0, g.grid.h).intersect(&g.grid));
                     }
@@ -4342,26 +4373,22 @@ impl App {
         }
         if now.tick != old.tick {
             self.damage_live(Live::Clock);
-            let (pl, rack) = (self.state.shown(Win::Playlist), self.state.shown(Win::ChannelRack));
-            if now.song && pl {
-                if let Some(g) = self.pl_grid {
-                    let pg = crate::playlist::PGeom::new(&self.state, g);
-                    // The playhead line and the ruler's song-position triangle (and the marker lane between them).
-                    let top = g.y - 22.0 - crate::playlist::MARKER_H;
-                    for t in [old.tick, now.tick] {
-                        // The flag's outline reaches x + 10.5 (views/playlist.rs ruler_paint).
-                        let x = pg.x_of(t as f32);
-                        self.damage_rect(Rect::new(x - 8.0, top, 20.0, g.bottom() - top));
-                    }
-                }
-            }
-            if !now.song && rack {
+            if !now.song && self.state.shown(Win::ChannelRack) {
                 for r in views::rack::step_columns(&self.state, old.tick, now.tick) {
                     self.damage_rect(r);
                 }
             }
         }
-        if now.tick != old.tick || old_piano != new_piano {
+        if old_visual != new_visual {
+            if now.song && self.state.shown(Win::Playlist) && let Some(grid) = self.pl_grid {
+                let g = crate::playlist::PGeom::new(&self.state, grid);
+                let top = views::playlist::ruler_rect(&self.state, grid).y;
+                let timeline = Rect::new(grid.x, top, grid.w, grid.bottom() - top);
+                for tick in [old_visual, new_visual] {
+                    let x = g.x64(tick) as f32;
+                    self.damage_rect(Rect::new(x - 8.0, top, 20.0, timeline.h).intersect(&timeline));
+                }
+            }
             self.auto_scroll();
         }
     }
@@ -4553,16 +4580,8 @@ impl App {
                 }
             }
         }
-        if edge_due && matches!(self.drag, Some(Drag::Pl(crate::playlist::PlDrag::Move { .. }))) {
-            if let Some(grid) = self.pl_grid {
-                let edge = |pos: f32, lo: f32, hi: f32| {
-                    if pos > hi - 18. { 12. } else if pos < lo + 18. { -12. } else { 0. }
-                };
-                let before = self.state.playlist_scroll;
-                self.scroll_set(Scroll::PlaylistX, before.0 + edge(self.mouse.0, grid.x, grid.right()));
-                self.scroll_set(Scroll::PlaylistY, before.1 + edge(self.mouse.1, grid.y, grid.bottom()));
-                self.playlist_scrolled(before);
-            }
+        if edge_due {
+            self.playlist_drag_edge_scroll();
         }
         crate::stem_separation::tick(self);
         crate::headphones::tick(self);
@@ -4744,7 +4763,8 @@ impl App {
         let font = if appearance.ui_font == 0 && self.theme.colors.style.lemon() { 2 } else { appearance.ui_font };
         canvas.set_theme_font(font, self.theme_font.bytes.clone());
         // The CPU panel's View FPS counts painted frames.
-        self.state.cpu.frame();
+        let guide_only = self.state.native_view == Some(Win::Guide);
+        if !guide_only { self.state.cpu.frame(); }
         // A playlist scroll's moves (`take_damage`) go first; the damage they left is painted with the rest.
         debug_assert!(damage.is_none() || self.scrolled.is_none(), "take_damage resolves a scroll before a partial paint");
         self.moved.clear();
@@ -4777,7 +4797,10 @@ impl App {
                 views::toolbar::wrap(layout, width, self.state.toolbar_actions.width(self.state.vintage_2005))
             });
         }
-        crate::layout::apply_startup_layout(&mut self.state);
+        if !guide_only {
+            crate::layout::apply_startup_layout(&mut self.state);
+            if crate::rack::size_after_channel_change(&mut self.state) && damage.is_some() {self.invalidate();}
+        }
         // The main window or the workspace shrank: the windows keep their part in it (`win_clamp::keep_all`). Moved
         // during a partial paint, the next frame is painted whole.
         let reflowed = self.state.native_view.is_none() && crate::win_clamp::reflow_workspace(&mut self.state);
@@ -4820,13 +4843,17 @@ impl App {
             live: &mut self.live,
             flat: !vintage && self.state.toolbar.flat,
         };
+        if guide_only {
+            crate::help::paint_detached(&mut ui, &self.state);
+            return;
+        }
         let info = views::FrameInfo {
             title,
             hint: self.hint.clone(),
             playing: self.shown.playing,
             paused: self.shown.paused,
             tick: self.shown.tick,
-            piano_tick: self.shown.piano_tick.unwrap_or(self.shown.tick),
+            visual_tick: self.shown.visual_tick.unwrap_or(self.shown.tick),
             song: self.shown.song,
             tempo: self.shown.tempo.unwrap_or(self.state.tempo),
             peaks: self.transport.peaks(),
@@ -5375,7 +5402,7 @@ impl App {
         }
         if matches!(tab, crate::help::PAGE | crate::change_log::PAGE) {
             st.scroll = 0.;
-            crate::help::reset(&mut st.help);
+            if tab == crate::change_log::PAGE { crate::help::reset(&mut st.help); }
             self.invalidate();
             return;
         }
@@ -7143,6 +7170,30 @@ impl App {
         self.bars.iter().find(|b| b.target == t).copied()
     }
 
+    fn playlist_drag_edge_scroll(&mut self) {
+        use crate::playlist::PlDrag;
+        let Some(grid) = self.pl_grid.filter(|_| self.state.shown(Win::Playlist)) else { return };
+        let before = self.state.playlist_scroll;
+        let moving = match &self.drag {
+            Some(Drag::Pl(PlDrag::Move { .. })) => true,
+            Some(Drag::Pl(PlDrag::ResizeL { x0, scroll_x, .. } | PlDrag::ResizeR { x0, scroll_x, .. }))
+                if (self.mouse.0 - x0).abs() > 1.0 || before.0 != *scroll_x => false,
+            _ => return,
+        };
+        let edge = |pos: f32, lo: f32, hi: f32| {
+            let margin = 18.0_f32.min((hi - lo) / 2.0);
+            if pos > hi - margin { 12.0 } else if pos < lo + margin { -12.0 } else { 0.0 }
+        };
+        let dx = edge(self.mouse.0, grid.x, grid.right());
+        if dx != 0.0 {
+            self.scroll_set(Scroll::PlaylistX, before.0 + dx);
+        }
+        if moving {
+            self.scroll_set(Scroll::PlaylistY, before.1 + edge(self.mouse.1, grid.y, grid.bottom()));
+        }
+        self.playlist_scrolled(before);
+    }
+
     pub(crate) fn playlist_placement_edge(&self, x: f32) -> Option<crate::playlist::PlacementEdge> {
         let grid = self.pl_grid?;
         let edge_width = (grid.w * 0.1).min(128.);
@@ -7202,6 +7253,7 @@ impl App {
             Scroll::RackY => s.rack_scroll,
             Scroll::PlPick => s.playlist.pick_scroll,
             Scroll::Settings => s.settings.scroll,
+            Scroll::Guide => s.guide.scroll,
             Scroll::PlugTable => s.plugdb.top as f32 * views::settings::TABLE_ROW_H,
             Scroll::PopupDeep(depth) => s.playlist.popup.as_ref().and_then(|p|p.cascade.get(depth-2)).map_or(0.0,|e|e.1 as f32),
             Scroll::Popup | Scroll::PopupSub => s.playlist.popup.as_ref().map_or(0.0, |p| p.scroll[usize::from(t == Scroll::PopupSub)] as f32),
@@ -7243,6 +7295,7 @@ impl App {
             Scroll::RackY => s.rack_scroll = v,
             Scroll::PlPick => s.playlist.pick_scroll = v,
             Scroll::Settings => s.settings.scroll = v,
+            Scroll::Guide => s.guide.scroll = v,
             Scroll::PlugTable => s.plugdb.top = (v / views::settings::TABLE_ROW_H).round() as usize,
             Scroll::PopupDeep(depth) => {
                 let Some(p)=s.playlist.popup.as_mut() else {return};
@@ -7505,7 +7558,7 @@ impl App {
                 return self.invalidate();
             }
             Some(Action::Typing) => {
-                self.state.playlist.popup = Some(self.typing_layout.menu(x, y));
+                self.state.playlist.popup = Some(self.typing_layout.menu(x, y, self.typing_octave));
                 return self.invalidate();
             }
             Some(Action::AutoScroll) => {
@@ -7659,12 +7712,20 @@ impl App {
         }
     }
     fn drop_sampler_track(&mut self,row:usize,x:f32,y:f32) {
+        self.drop_channel_track(row, x, y, false);
+    }
+    fn drop_channel_track(&mut self,row:usize,x:f32,y:f32,rack:bool) {
         // Respect the top window: dropping onto a covering window is not a mixer drop.
         if !self.top_hit(x,y).is_some_and(|h|matches!(h.action,Action::Mix(_)|Action::Fader(_)|Action::Knob(_)|Action::RackStrip(_))) {return;}
         let Some(t)=self.hits.iter().rev().find_map(|h|match h.action {
             Action::Mix(crate::mixer::MHit::Strip(t)) if h.rect.contains(x,y)=>Some(t),_=>None
         }) else {return;};
-        self.route_sample_to(row,t);
+        if rack {
+            let rows = crate::rack_controls::rows(&self.state, row);
+            if rows.len() == 1 { self.route_sample_to(row,t); return; }
+            self.state.message = crate::rack_controls::route(&mut self.state, &rows, t, false);
+            self.sync_live(); self.invalidate();
+        } else { self.route_sample_to(row,t); }
     }
 
     pub(crate) fn route_sample_to(&mut self,row:usize,t:u16) {
@@ -7718,6 +7779,7 @@ impl App {
     fn cancel_channel_route(&mut self) -> bool {
         let Some(Drag::ChannelRoute { popup_item, .. }) = self.drag else { return false };
         self.drag = None;
+        self.rack_click = None;
         self.pressed = None;
         self.state.browser_drag = None;
         if popup_item.is_some() {
@@ -7831,14 +7893,14 @@ impl App {
             self.state.browser_drag = None;
             let (x, y) = self.mouse;
             if started || (x - origin.0).hypot(y - origin.1) > 4.0 {
-                self.drop_sampler_track(row, x, y);
+                self.drop_channel_track(row, x, y, popup_item.is_none());
             } else if let Some(index) = popup_item {
                 let action = Action::PlPopup(index);
                 if self.top_hit(x, y).is_some_and(|h| h.action == action) {
                     self.act(action);
                 }
             } else {
-                crate::route_picker::open(self, row);
+                crate::route_picker::open_rack(self, row, false);
             }
             self.invalidate();
             return;
@@ -8247,6 +8309,7 @@ impl App {
         if self.menu_wheel(dx, dy, shift) {
             return;
         }
+        if crate::help::wheel(self, -(dx + dy) * 63.) { return; }
         if crate::warp::wheel(self, dx, dy, ctrl) { return; }
         if crate::input_bindings::wheel(self, dx, dy, shift, ctrl) { return; }
         if crate::vocal::navigation::wheel(self,dx,dy,shift,ctrl){return;}
@@ -8582,11 +8645,8 @@ impl App {
                 let max = crate::mixer::max_insert(&s.project);
                 if let Some(src) = s.project.channels.get(i).map(|c| c.mixer_track) {
                     let dst = (i32::from(src) + d).clamp(0, i32::from(max)) as u16;
-                    if crate::mixer::locked(s, src) || crate::mixer::locked(s, dst) {
-                        self.hint = crate::mixer::LOCK_MESSAGE.into();
-                        return None;
-                    }
-                    s.project.channels[i].mixer_track = dst;
+                    let rows = crate::rack_controls::rows(s, i);
+                    s.message = crate::rack_controls::route(s, &rows, dst, false);
                     self.hint = Cow::Owned(format!("Target mixer track: {}", views::rack::insert_name(dst)));
                     s.piano.dirty = true;
                 }
@@ -8742,7 +8802,19 @@ impl App {
             return;
         }
         use winit::keyboard::{Key, NamedKey};
+        if crate::attached_mixer::active(&self.state)&&matches!(key,Key::Named(NamedKey::Escape))&&matches!(self.drag,Some(Drag::Pl(crate::playlist::PlDrag::Move{..}|crate::playlist::PlDrag::Paint{..}))) {
+            self.drag=None;self.pressed=None;self.state.playlist.overlay=None;self.state.playlist.last_clip=None;
+            crate::history::undo(&mut self.state);self.invalidate();return;
+        }
         if matches!(key,Key::Named(NamedKey::Escape)) && (crate::warp::cancel_drag(self) || (matches!(self.drag,Some(Drag::Vocal(_))) && crate::vocal::cancel_drag(self))){return;}
+        if matches!(key, Key::Named(NamedKey::Escape)) && matches!(self.drag, Some(Drag::Pl(crate::playlist::PlDrag::Track { .. }))) {
+            self.drag = None;
+            self.pressed = None;
+            self.state.playlist.overlay = None;
+            self.state.playlist.drop_folder = None;
+            self.invalidate();
+            return;
+        }
         if matches!(key, Key::Named(NamedKey::Escape)) && self.cancel_rack_rows() { return; }
         if matches!(key,Key::Named(NamedKey::Escape)) && matches!(self.drag,Some(Drag::MixSelect{..})) {self.drag=None;self.pressed=None;return;}
 
@@ -9160,8 +9232,7 @@ impl App {
             && matches!(code, KeyCode::KeyP | KeyCode::KeyB | KeyCode::KeyC | KeyCode::KeyE | KeyCode::KeyG) { return false; }
         if matches!(code, KeyCode::NumpadAdd | KeyCode::NumpadSubtract) {
             let d = if code == KeyCode::NumpadAdd { 1 } else { -1 };
-            self.typing_octave = (self.typing_octave + d).clamp(-4, 5);
-            self.state.message = Some(format!("Typing keyboard octave {:+}", self.typing_octave));
+            crate::typing_layout::set_octave(self, self.typing_octave + d);
             self.invalidate();
             return true;
         }
@@ -10643,11 +10714,7 @@ impl App {
             (HELP_MENU, HELP_GUIDE) => crate::help::open(self),
             (HELP_MENU, HELP_CHANGE_LOG) => self.open_settings(crate::change_log::PAGE),
             (HELP_MENU, 7) => {if let Err(e)=crate::donate::open_url("https://discord.gg/CDYs4rQEk"){self.state.message=Some(e);}}
-            (HELP_MENU, HELP_ABOUT) => {
-                // The Windows build includes the ASIO SDK, which is under version 3 only (THIRD-PARTY-NOTICES.txt §9).
-                let licence = if cfg!(windows) { "the GNU GPL v3" } else { "the GNU GPL v3 or later" };
-                self.state.message = Some(format!("ML Studio {} (pre-alpha), free software under {licence}", env!("CARGO_PKG_VERSION")));
-            }
+            (HELP_MENU, HELP_ABOUT) => self.open_settings(views::settings::ABOUT),
             (ADD_MENU | TOOLS_MENU, i) if item_at(menu, i).is_some_and(|it| it.label == "Pattern") => {
                 let at = crate::patterns::box_at_mouse(self.mouse);
                 if let Some(m) = crate::patterns::run(&mut self.state, crate::patterns::Cmd::FindFirst, at) {
@@ -11023,7 +11090,12 @@ fn sampler_channel(i: u16, name: &str, mixer_track: u16) -> Channel {
 pub(crate) fn channel_info(p: &Project, row: usize) -> Option<crate::plugin_window::ChannelInfo> {
     let ch = p.channels.get(row)?;
     Some(crate::plugin_window::ChannelInfo {
-        name: ch.name.clone().unwrap_or_else(|| format!("Channel {}", ch.index + 1)),
+        name: match ch.name.as_deref() {
+            Some(name) if ch.kind.is_sampler() => crate::plugins::canonical_name(name).to_owned(),
+            Some(name) => name.to_owned(),
+            None if ch.kind.is_sampler() => crate::plugins::LEMON_SAMPLER.to_owned(),
+            None => format!("Channel {}", ch.index + 1),
+        },
         // The mixer track's own name when it has one, else "Master" / "Insert N".
         target: p
             .mixer
@@ -14739,11 +14811,11 @@ mod tests {
         assert!((right.thumb_at(at) + right.thumb - right.track.w).abs() < 0.1, "thumb reaches the right edge");
 
         app.scroll_set(Scroll::PianoX, 0.);
-        let play = Shown { playing: true, tick: 20., piano_tick: Some(20.), ..Shown::default() };
+        let play = Shown { playing: true, tick: 20., visual_tick: Some(20.), ..Shown::default() };
         app.show_playback(play.clone());
         frame(&mut app, &mut canvas, None);
         let _ = app.take_damage();
-        app.show_playback(Shown { piano_tick: Some(23.1), ..play });
+        app.show_playback(Shown { visual_tick: Some(23.1), ..play });
         let damage = app.take_damage();
         assert!(matches!(&damage, Some(Some(rects)) if rects.iter().any(|r| !r.intersect(&app.piano_grid.unwrap()).is_empty())));
         frame_damage(&mut app, &mut canvas, damage);
@@ -14770,7 +14842,7 @@ mod tests {
         app.state.project.patterns[0].notes.extend((0..16).step_by(4).map(|k| Note::step(1, k * 24)));
         crate::playlist::place(&mut app.state, 0, 0);
         crate::playlist::place(&mut app.state, 1, 384);
-        let play = |tick: f64, song: bool, sounding: Vec<(u16, u16)>| Shown { playing: true, paused: false, tick, piano_tick: None, song, sounding, tempo: None };
+        let play = |tick: f64, song: bool, sounding: Vec<(u16, u16)>| Shown { playing: true, paused: false, tick, visual_tick: None, song, sounding, tempo: None };
         // Floating windows side by side, so every playback region is on screen.
         for (w, r) in [(Win::Playlist, Rect::new(220.0, 90.0, 1000.0, 480.0)), (Win::PianoRoll, Rect::new(220.0, 90.0, 1000.0, 480.0)), (Win::Mixer, Rect::new(230.0, 590.0, 1500.0, 480.0))] {
             let ws = &mut app.state.wins[w.slot().unwrap()];
@@ -15286,7 +15358,7 @@ mod tests {
         // Song playback: the playhead moves between steps.
         let pg = pl::PGeom::new(&app.state, g);
         let tick = f64::from(pg.tick_at(g.x + 400.0));
-        let shown = |tick: f64| Shown { playing: true, paused: false, tick, piano_tick: None, song: true, sounding: Vec::new(), tempo: None };
+        let shown = |tick: f64| Shown { playing: true, paused: false, tick, visual_tick: None, song: true, sounding: Vec::new(), tempo: None };
         app.show_playback(shown(tick));
         full(&mut app, &mut a);
         // The playhead's damage before a step was taken where it was drawn; its pixels move with the step.
@@ -17557,19 +17629,20 @@ LemonStudioStyle.button-radius=8
         crate::metronome::set_volume(0);
     }
 
-    /// Auto scrolling (spec: ui/auto-scrolling.md §1-2): the toolbar button and OPTIONS > Auto scrolling toggle the
+    /// Follow playhead: the toolbar button and Options menu toggle the
     /// switch (the button lit while on); right-click on the button toggles continuous scrolling.
     #[test]
     fn auto_scrolling_button_and_menu() {
         let Ok(mut c) = Canvas::new(1920, 1080, 1.0) else { return };
         let mut app = App::new(None);
+        app.state.bar.layout = crate::toolbar::PRESETS[0].layout();
+        crate::settings_file::set_flag("visible_modes", true);
         frame(&mut app, &mut c, None);
         assert!(!crate::autoscroll::on());
         let r = hit_rect(&app, &Action::AutoScroll);
-        assert_eq!((r.x, r.y), (613.0, 45.0));
         click(&mut app, &mut c, r);
         assert!(crate::autoscroll::on());
-        let opt = (0..60).find(|&i| views::menus::item_at(views::menus::OPTIONS_MENU, i).is_some_and(|it| it.label == "Auto scrolling")).unwrap();
+        let opt = (0..60).find(|&i| views::menus::item_at(views::menus::OPTIONS_MENU, i).is_some_and(|it| it.label == "Follow playhead")).unwrap();
         app.menu_item(views::menus::OPTIONS_MENU, opt);
         assert!(!crate::autoscroll::on());
         app.mouse_move(r.cx(), r.cy());
@@ -17584,7 +17657,7 @@ LemonStudioStyle.button-radius=8
 
     /// Auto scrolling follows the playhead (spec: ui/auto-scrolling.md §5): the playlist in song mode, the piano roll in
     /// pattern mode; continuous at a third of the width, paged by a quarter page at 7/8; not while paused or off. The
-    /// playlist's scroll is drawn by moving pixels: each frame must equal a full repaint.
+    /// playback repaint must agree with a full repaint, including fractional scroll offsets.
     #[test]
     fn auto_scrolling_follows_the_playhead() {
         let Ok(mut a) = Canvas::new(1920, 1080, 1.0) else { return };
@@ -17598,7 +17671,7 @@ LemonStudioStyle.button-radius=8
             ws.maxed = false;
             ws.rect = Rect::new(220.0, 90.0, 1000.0, 480.0);
         }
-        let play = |tick: f64, song: bool| Shown { playing: true, paused: false, tick, piano_tick: None, song, sounding: Vec::new(), tempo: None };
+        let play = |tick: f64, song: bool| Shown { playing: true, paused: false, tick, visual_tick: None, song, sounding: Vec::new(), tempo: None };
         crate::autoscroll::toggle();
 
         // Song mode, playlist in front.
@@ -17662,6 +17735,73 @@ LemonStudioStyle.button-radius=8
         frame_damage(&mut app, &mut a, d);
         frame(&mut app, &mut b, None);
         assert_same(&a, &b, "piano roll step");
+    }
+
+    #[test]
+    fn playlist_follow_uses_the_display_clock_and_keeps_manual_scroll_when_off() {
+        use crate::playlist as pl;
+        use std::time::{Duration, Instant};
+
+        let mut canvas = Canvas::new(1440, 900, 1.25).unwrap();
+        let mut full = Canvas::new(1440, 900, 1.25).unwrap();
+        let mut app = App::new(None);
+        app.state.project = test_project();
+        app.state.z = vec![Win::Playlist];
+        app.state.wins[Win::Playlist.slot().unwrap()].maxed = true;
+        let bar_ticks = u32::from(app.state.project.ppq) * 4;
+        pl::arr_mut(&mut app.state).clips = vec![
+            os_model::Clip::new(0, 400 * bar_ticks, 0, os_model::ClipSource::Pattern(1)),
+        ];
+        frame(&mut app, &mut canvas, None);
+        let grid = app.pl_grid.unwrap();
+        let ppt = f64::from(pl::PGeom::new(&app.state, grid).ppt);
+        let play = |tick, visual_tick| Shown {
+            playing: true,
+            song: true,
+            tick,
+            visual_tick: Some(visual_tick),
+            ..Shown::default()
+        };
+
+        assert!(!crate::autoscroll::on());
+        let before = app.bar(Scroll::PlaylistX).unwrap();
+        let offscreen = f64::from(grid.w) * 2.0 / ppt;
+        app.show_playback(play(0., 0.));
+        app.show_playback(play(offscreen, offscreen));
+        let damage = app.take_damage();
+        frame_damage(&mut app, &mut canvas, damage);
+        assert_eq!(app.state.playlist_scroll.0, 0.);
+        let after = app.bar(Scroll::PlaylistX).unwrap();
+        assert_eq!((after.thumb, after.max), (before.thumb, before.max));
+        let scroll = app.state.playlist_scroll;
+        app.scroll_set(Scroll::PlaylistX, grid.w);
+        app.playlist_scrolled(scroll);
+        app.show_playback(play(offscreen + 50., offscreen + 50.));
+        assert_eq!(app.state.playlist_scroll.0, grid.w);
+
+        crate::autoscroll::toggle();
+        let start = Instant::now();
+        let rate = 90. / ppt; // 1.44 logical pixels per frame.
+        let anchor = (f64::from(grid.w) * 1.5) / ppt;
+        let mut clock = piano::PlayheadClock::default();
+        let mut previous = None;
+        for i in 0..12 {
+            // Simulate a position report only every three UI frames.
+            let raw = anchor + f64::from(i / 3 * 48) * rate / 1000.;
+            let display = clock.sample(start + Duration::from_millis(i as u64 * 16), 1, raw, rate);
+            app.show_playback(play(raw, display));
+            let left = app.state.playlist_scroll.0;
+            if let Some(previous) = previous {
+                let step: f32 = left - previous;
+                assert!(step > 0.8 && step < 2.0, "fractional follow step {step}");
+            }
+            previous = Some(left);
+            let damage = app.take_damage();
+            frame_damage(&mut app, &mut canvas, damage);
+        }
+        frame(&mut app, &mut full, None);
+        assert_same(&canvas, &full, "continuous follow at 125% scale");
+        crate::autoscroll::toggle();
     }
 
     /// CPU panel (spec: ui/main-window.md §13): the menu's View FPS / Misc / Refresh change what it shows; a double
@@ -18583,7 +18723,7 @@ LemonStudioStyle.button-radius=8
             let owner = pl::clips(&app.state)[1].clone();
             app.state.playlist.stretch = true;
             assert!(pl::stretch_clip(&mut app.state, 1, &owner, owner.position, 768));
-            pl::drag_end(&mut app, pl::PlDrag::ResizeR { x0: 0.0, orig: vec![(1, owner)] },
+            pl::drag_end(&mut app, pl::PlDrag::ResizeR { x0: 0.0, scroll_x: 0.0, orig: vec![(1, owner)] },
                 Rect::new(0.0, 0.0, 1200.0, 800.0));
             let extended = pl::clips(&app.state)[3].clone();
             assert_eq!(extended.end(), 1920);
@@ -23917,6 +24057,98 @@ LemonStudioStyle.button-radius=8
     }
 
     #[test]
+    fn playlist_resize_follows_horizontal_edges_with_pointer_held() {
+        use crate::playlist as pl;
+        use os_model::{Clip, ClipSource};
+        let mut canvas = Canvas::new(1280, 900, 1.0).unwrap();
+        for left in [false, true] {
+            let (mut app, _, _, bar) = ruler_app(&mut canvas);
+            let original = Clip::new(2 * bar, 10 * bar, 1, ClipSource::Pattern(1));
+            pl::arr_mut(&mut app.state).clips = vec![original.clone()];
+            app.state.playlist.tool = pl::PlTool::Draw;
+            app.state.playlist_bar_w = 400.0;
+            app.state.playlist_scroll.0 = if left { 760.0 } else { 4540.0 };
+            app.alt = true;
+            frame(&mut app, &mut canvas, None);
+            let grid = app.pl_grid().unwrap();
+            let g = pl::PGeom::new(&app.state, grid);
+            let r = g.clip_rect(&original);
+            let start = if left { r.x + 1.0 } else { r.right() - 1.0 };
+            let edge = if left { grid.right() - 2.0 } else { grid.x + 2.0 };
+            let tick_edge = |app: &mut App| {
+                app.edge_tick = std::time::Instant::now() - std::time::Duration::from_millis(40);
+                app.tick();
+            };
+            app.mouse_move(start, r.y + 3.0);
+            app.mouse_down();
+            assert!(matches!(app.drag, Some(Drag::Pl(pl::PlDrag::ResizeL { .. } | pl::PlDrag::ResizeR { .. }))));
+            app.mouse_move(edge, r.y + 3.0);
+            for _ in 0..4 {
+                let before_scroll = app.state.playlist_scroll;
+                let before_length = pl::clips(&app.state)[0].length;
+                tick_edge(&mut app);
+                assert_eq!(app.state.playlist_scroll.0 - before_scroll.0, if left { 12.0 } else { -12.0 });
+                assert_eq!(app.state.playlist_scroll.1, before_scroll.1);
+                let clip = &pl::clips(&app.state)[0];
+                assert!(clip.length < before_length, "a held pointer continues trimming as the view scrolls");
+                assert_eq!(clip.track, original.track);
+                if left { assert_eq!(clip.end(), original.end()); }
+                else { assert_eq!(clip.position, original.position); }
+                let view = pl::PGeom::new(&app.state, grid);
+                let dragged = if left { clip.position } else { clip.end() };
+                assert!((view.x_of(dragged as f32) - edge).abs() < 2.0);
+                let damage = app.take_damage();
+                frame_damage(&mut app, &mut canvas, damage);
+            }
+            app.mouse_move(grid.cx(), r.y + 3.0);
+            let stopped = app.state.playlist_scroll;
+            tick_edge(&mut app);
+            assert_eq!(app.state.playlist_scroll, stopped);
+            app.mouse_move(edge, r.y + 3.0);
+            app.mouse_up();
+            tick_edge(&mut app);
+            assert_eq!(app.state.playlist_scroll, stopped);
+            crate::history::undo(&mut app.state).unwrap();
+            let clip = &pl::clips(&app.state)[0];
+            assert_eq!((clip.position, clip.length, clip.window), (original.position, original.length, original.window));
+        }
+    }
+
+    #[test]
+    fn playlist_clip_title_has_no_gap_below_highlight_at_fractional_scale() {
+        use crate::playlist as pl;
+        let wav = std::env::temp_dir().join(format!("lemon-title-seam-{}.wav", std::process::id()));
+        os_engine::wav::write_f32_stereo(&mut std::fs::File::create(&wav).unwrap(), 48000, &[0.25; 192000]).unwrap();
+        for scale in [1.0, 1.25, 1.5, 1.75] {
+            let mut canvas = Canvas::new(1600, 1100, scale).unwrap();
+            let (mut app, _, _, bar) = ruler_app(&mut canvas);
+            app.set_design(Design::Citrus, false);
+            pl::arr_mut(&mut app.state).clips.clear();
+            pl::add_audio_clip(&mut app.state, &wav.to_string_lossy(), 1, 0).unwrap();
+            pl::arr_mut(&mut app.state).clips[0].color = Some(os_model::Rgb::new(200, 70, 60));
+            pl::arr_mut(&mut app.state).clips[0].length = bar * 2;
+            app.state.playlist.sel.clear();
+            for zoom in [185.0, 335.0, 725.0] {
+                app.state.playlist_bar_w = zoom;
+                for scroll in [0.0, 1.0, 2.0, 3.0] {
+                    app.state.playlist_scroll.1 = scroll;
+                    frame(&mut app, &mut canvas, None);
+                    let grid = app.pl_grid().unwrap();
+                    let r = pl::PGeom::new(&app.state, grid).clip_rect(&pl::clips(&app.state)[0]);
+                    let x = ((r.right().min(grid.right()) - 16.0) * scale).round() as u32;
+                    let y0 = ((r.y + 2.0) * scale).round() as u32;
+                    let y1 = ((r.y + 6.0) * scale).round() as u32;
+                    for y in y0..y1 {
+                        let pixel = canvas.pixmap.pixel(x, y).unwrap();
+                        assert!(pixel.red() >= 174, "dark seam at scale {scale}, zoom {zoom}, scroll {scroll}, pixel {x}, {y}: {pixel:?}");
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
     fn audio_clip_menu_hover_shows_pointing_finger() {
         use crate::playlist::{self as pl,PlTool};use crate::playlist_tools as pt;
         let mut c=Canvas::new(1920,1080,1.).unwrap();let(mut app,_,_,_)=ruler_app(&mut c);
@@ -24306,6 +24538,45 @@ LemonStudioStyle.button-radius=8
         // Undo brings the collapse back.
         app.key(&winit::keyboard::Key::Character("z".into()), true, false);
         assert!(pl::Rows::new(&app.state).strip(1));
+    }
+
+    #[test]
+    fn playlist_custom_track_height_scales_and_reopens_at_saved_zoom() {
+        use crate::playlist as pl;
+        let mut c = Canvas::new(1600, 1000, 1.0).unwrap();
+        let (mut app, _, _, _) = ruler_app(&mut c);
+        app.state.playlist.row_h = 72.0;
+        frame(&mut app, &mut c, None);
+        let divider = hit_rect(&app, &Action::PlRowResize(1));
+        app.mouse_move(divider.cx(), divider.cy());
+        app.mouse_down();
+        app.mouse_move(divider.cx(), divider.cy() + 36.0);
+        app.mouse_up();
+        assert_eq!(pl::Rows::new(&app.state).base_height(1), 108.0);
+        let grid = app.pl_grid().unwrap();
+        for (zoom, custom) in [(36.0, 54.0), (96.0, 144.0), (72.0, 108.0)] {
+            pl::set_row_h(&mut app.state, grid, grid.y, zoom);
+            let rows = pl::Rows::new(&app.state);
+            assert_eq!(rows.base_height(0), zoom);
+            assert_eq!(rows.base_height(1), custom);
+            assert_eq!(rows.clip_h_for(1), custom - 3.0);
+            assert_eq!(rows.top(2), zoom + custom);
+        }
+        pl::store_view(&mut app.state);
+        let mut file = os_flp::project::create(&app.state.project).unwrap();
+        let reopen = |file: &os_flp::FlpFile, app: &mut App| {
+            app.state.project = os_flp::project::load(&os_flp::FlpFile::parse(&file.to_bytes().unwrap()).unwrap()).unwrap();
+            pl::load_view(&mut app.state);
+            assert_eq!(pl::Rows::new(&app.state).base_height(1), 108.0);
+            pl::set_row_h(&mut app.state, grid, grid.y, 48.0);
+            assert_eq!(pl::Rows::new(&app.state).base_height(1), 72.0);
+        };
+        reopen(&file, &mut app);
+        let chunk = file.chunks.iter_mut().find(|c| c.tag == os_flp::Tag(*b"LSTH")).unwrap();
+        let os_flp::ChunkBody::Raw(data) = &mut chunk.body else { panic!("track height data") };
+        data[0] = 1;
+        data[5..9].copy_from_slice(&108.0_f32.to_le_bytes());
+        reopen(&file, &mut app);
     }
 
     /// Double-clicking an audio clip opens its channel's Lemon Sampler and selects the channel in the rack; one
@@ -25234,6 +25505,29 @@ LemonStudioStyle.button-radius=8
             assert_eq!((popup.x, popup.y), anchor);
             app.state.playlist.popup = None;
             app.state.menu_open = None;
+        }
+    }
+
+    #[test]
+    fn citrus_settings_tabs_and_headers_are_rectangular() {
+        use crate::views::settings::{self, SAct};
+        let mut app = App::new(None);
+        let mut canvas = Canvas::new(1600, 1100, 1.25).unwrap();
+        let scale = canvas.scale;
+        app.set_design(Design::Citrus, false);
+        app.open_settings(settings::VISIBILITY);
+        frame(&mut app, &mut canvas, None);
+        let tr = hit_rect(&app, &Action::Settings(SAct::Tab(settings::THEME)));
+        let x = ((tr.right() + 2.0) * scale) as u32;
+        let top = ((tr.y + 1.0) * scale) as u32;
+        let bottom = ((tr.bottom() - 2.0) * scale) as u32;
+        assert_eq!(canvas.pixmap.pixel(x, top), canvas.pixmap.pixel(x, bottom), "no slanted tab overhang");
+        let header = hit_rect(&app, &Action::Settings(SAct::Group("Toolbar panels")));
+        let y = ((header.y + 3.0) * scale) as u32;
+        let pixel_at = |offset| canvas.pixmap.pixel(((header.x + offset) * scale) as u32, y).unwrap();
+        assert_eq!(pixel_at(10.0), pixel_at(250.0), "section header spans its full width");
+        if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+            canvas.pixmap.save_png(PathBuf::from(dir).join("settings-straight-edges.png")).unwrap();
         }
     }
 
@@ -26760,7 +27054,10 @@ LemonStudioStyle.button-radius=8
         right(&mut app, &mut c, help, (help.cx() + 40.0, help.cy()));
         assert!(app.state.message.is_none());
         right(&mut app, &mut c, help, (help.cx(), help.cy()));
-        assert!(app.state.message.as_deref().is_some_and(|m| m.starts_with("ML Studio ")), "{:?}", app.state.message);
+        assert!(app.state.settings.open);
+        assert_eq!(app.state.settings.tab, views::settings::ABOUT);
+        app.settings_act(views::settings::SAct::Close);
+        frame(&mut app, &mut c, None);
         // Undo: EDIT > Undo; its right click does nothing yet.
         let undo = hit_rect(&app, &Action::Util(Util::Undo));
         app.state.message = None;
@@ -26803,6 +27100,38 @@ LemonStudioStyle.button-radius=8
 
     /// The time display's right-click menu (spec: ui/time-display.md §1, §3): every mode and middle unit works, one
     /// dot each; a left click goes between Bar and M:S:CS, and from SMPTE to Bar.
+    #[test]
+    fn transport_clock_digits_share_a_bottom_line() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let mut canvas = Canvas::new(1920, 1080, scale).unwrap();
+            let mut app = App::new(None);
+            app.set_design(Design::Lemon, false);
+            app.state.clock.mode = crate::clock::Mode::Msc;
+            frame(&mut app, &mut canvas, None);
+            let r = hit_rect(&app, &Action::Clock);
+            let small = os_ui::Font::light(22, 8);
+            let small_right = r.right() - 10.0;
+            let small_left = small_right - canvas.text_width(small, "00");
+            let bottom = |left: f32, right: f32| {
+                let x0 = (left * scale).round() as u32;
+                let x1 = (right * scale).round() as u32;
+                let y0 = ((r.y + 12.0) * scale).round() as u32;
+                let y1 = (r.bottom() * scale).round() as u32;
+                (y0..y1).rev().find(|&y| (x0..x1).any(|x| {
+                    let p = canvas.pixmap.pixel(x, y).unwrap();
+                    p.blue() > p.red().saturating_add(45)
+                })).expect("visible clock digits")
+            };
+            let big_y = bottom(r.x + 2.0, small_left - 8.0);
+            let small_y = bottom(small_left, small_right);
+            // Hinting can give different font sizes a one-logical-pixel ink overshoot.
+            assert!(big_y.abs_diff(small_y) as f32 <= scale, "digit bottoms at {scale}: {big_y} and {small_y}");
+            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
+                canvas.pixmap.save_png(PathBuf::from(dir).join(format!("clock-{scale}.png"))).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn time_display_modes() {
         use crate::clock::{Mode, RATES};

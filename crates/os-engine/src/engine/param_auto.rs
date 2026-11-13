@@ -129,6 +129,12 @@ impl ParamAuto {
             .map(move |e| (e.offset - a, e.index, e.value))
     }
 
+    pub fn resend_slot(&mut self, track: usize, slot: usize) {
+        let mine = |tg: &Target| matches!(*tg, Target::SlotParam(t, s, _) if usize::from(t) == track && usize::from(s) == slot);
+        self.last.retain(|tg, _| !mine(tg));
+        self.last_tick.retain(|tg, _| !mine(tg));
+    }
+
     /// A busy instrument missed channel `c`'s values: send them again at the next step.
     pub fn resend_channel(&mut self, c: usize) {
         let mine = |tg: &Target| matches!(*tg, Target::ChannelParam(ch, _) if usize::from(ch) == c);
@@ -354,6 +360,28 @@ mod tests {
         assert!(seen.iter().all(|&(f, _, _)| f < 96000));
         assert_eq!(seen[0].0, 0);
         assert!(seen.windows(2).all(|w| w[1].0 - w[0].0 <= 64), "a value at least every 64 frames");
+    }
+
+    #[test]
+    fn preset_handoff_resends_unchanged_automation_and_keeps_effect_routing() {
+        for effect in [false, true] {
+            let mut p = project(if effect { os_model::target::slot_param(1,3,7) } else { os_model::target::channel_param(0,7) });
+            for point in &mut p.automations[0].points { point.value = 0.625; }
+            let mut e = Engine::new(&p, &mut SampleLibrary::default(), 48000, PlayMode::Song);
+            let old = Arc::new(Mutex::new(Probe::default()));
+            let new = Arc::new(Mutex::new(Probe::default()));
+            if effect { e.set_effect(1,3,old.clone()); e.set_effect_ports(1,3,2,3); }
+            else { e.set_instrument(0,old.clone()); }
+            run(&mut e, 4096, 256);
+            assert!(!old.lock().unwrap().seen.is_empty());
+            if effect {
+                e.replace_effect_preset(1,3,new.clone());
+                let fx = e.tracks[1].effects.iter().find(|f|f.slot==3).unwrap();
+                assert_eq!(fx.ports, [2,3]);
+            } else { e.replace_instrument_preset(0,new.clone()); }
+            run(&mut e, 4096, 256);
+            assert!(new.lock().unwrap().seen.iter().any(|&(_, i, v)| i==7 && (v-0.625).abs()<0.00001));
+        }
     }
 
     /// A slot plugin parameter target drives the hosted effect of that slot; a seek resends the value there.

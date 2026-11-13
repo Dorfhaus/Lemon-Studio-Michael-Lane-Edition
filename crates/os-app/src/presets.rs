@@ -625,7 +625,7 @@ pub fn load_into(app: &mut App, key: usize, path: &Path) -> Option<String> {
     };
     Some(match first {
         Ok((_, body)) => match apply(app, key, &body) {
-            Some(missing) => {
+            Ok(missing) => {
                 app.plugins.mark_edited(key);
                 app.plugins.set_preset(key, Some(path.to_path_buf()));
                 auto_name(app, key, path);
@@ -634,19 +634,47 @@ pub fn load_into(app: &mut App, key: usize, path: &Path) -> Option<String> {
                     false => format!("Preset: {} ({} has no {})", shown_name(path), d.name, missing.join(", ")),
                 }
             }
-            None => format!("{} did not take the preset {}", d.name, shown_name(path)),
+            Err(error) => format!("{}: {error}", shown_name(path)),
         },
         Err(e) => e,
     })
 }
 
-/// Puts `body` into the instance under `key`: the names of listed parameters it does not have, `None` when it did
-/// not take it.
-fn apply(app: &mut App, key: usize, body: &Body) -> Option<Vec<String>> {
+/// Puts `body` into the instance under `key`, reporting missing parameters or a load error.
+fn apply(app: &mut App, key: usize, body: &Body) -> Result<Vec<String>, String> {
     match body {
-        Body::State(s) => app.plugins.set_state(key, s).then(Vec::new),
-        Body::Params(p) => app.plugins.apply_params(key, p),
+        Body::State(s) => restore_state(app, key, s).map(|_| Vec::new()),
+        Body::Params(p) => app.plugins.apply_params(key, p).ok_or_else(|| "Plugin declined the parameters".into()),
     }
+}
+
+/// State preparation is complete before the transport sees the replacement. Keep
+/// the old editor alive until its instance has left every playing engine.
+pub(crate) fn restore_state(app: &mut App, key: usize, state: &[u8]) -> Result<(), String> {
+    let next = app.plugins.prepare_preset(key, state)?;
+    commit_prepared(app, key, next);
+    Ok(())
+}
+
+fn commit_prepared(app: &mut App, key: usize, next: crate::plugins::Hosted) {
+    #[cfg(plugin_windows)]
+    let reopen = app.plugins.hosted.get(&key).is_some_and(|h| h.window.is_some());
+    app.plugins.install_preset(key, next);
+    if crate::plugins::fx_of(key).is_none() {
+        if let Some(range) = app.state.project.channels.get(key).and_then(|c| c.plugin_state.as_deref()).and_then(os_flp::wrapper::bend_range) {
+            app.plugins.set_bend_range(key, range);
+        }
+    }
+    app.state.params.lists.remove(&key);
+    #[cfg(plugin_windows)]
+    if reopen {
+        let info = if crate::plugins::fx_of(key).is_some() {
+            crate::mixer::fx_info(&app.state.project, &app.state.mixer, key)
+        } else { crate::app::channel_info(&app.state.project, key) };
+        if let Some(info) = info { let _ = app.plugins.open_window(key, info); }
+    }
+    app.params_tick();
+    app.transport.preset(key, app.plugins.hosted[&key].plugin.clone());
 }
 
 /// A preset at `path` went into the instance under `key` (the ◀ ▶ arrows or the Presets lists): while "Auto name
@@ -969,6 +997,29 @@ pub fn pending_tick(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_preset_commits_new_state_and_rejection_keeps_old_instance() {
+        use std::sync::Arc;
+        let mut app = crate::app::App::new(None);
+        app.state.project = crate::app::test_project();
+        let lib = crate::audio_test_plugin::library(20);
+        let desc = lib.plugins()[0].clone();
+        app.plugins.available = vec![crate::plugins::Available { lib, desc }];
+        app.plugins.create(0, 0).unwrap();
+        let old = app.plugins.hosted[&0].plugin.clone();
+        super::restore_state(&mut app, 0, &[2]).unwrap();
+        let new = app.plugins.hosted[&0].plugin.clone();
+        assert!(!Arc::ptr_eq(&old, &new));
+        assert_eq!(app.plugins.state(0), Some(vec![2]));
+        assert_eq!(old.lock().unwrap().save_state(), Some(vec![1]));
+        assert!(super::restore_state(&mut app, 0, &[0]).is_err());
+        assert!(Arc::ptr_eq(&new, &app.plugins.hosted[&0].plugin));
+        assert_eq!(app.plugins.state(0), Some(vec![2]));
+        app.plugins.available[0].desc.path = "different-plugin-version".into();
+        assert!(super::restore_state(&mut app, 0, &[1]).is_err(), "a rescan cannot substitute another library with the same plugin ID");
+        assert!(Arc::ptr_eq(&new, &app.plugins.hosted[&0].plugin));
+
+    }
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
@@ -1370,5 +1421,25 @@ mod tests {
         assert!(msg.starts_with("Preset: Quarter") && msg.contains("No such knob"), "{msg}");
         assert!((app.plugins.param_value(0, knob.id).unwrap() - 0.25).abs() < 1e-3);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parameter_undo_targets_the_prepared_instance() {
+        let (mut app, dir, _guard) = hosted_sampler("prepared-undo");
+        let state = app.plugins.state(0).unwrap();
+        restore_state(&mut app, 0, &state).unwrap();
+        let list = app.state.params.lists.get(&0).unwrap();
+        let index = list.params.iter().position(|p| !p.read_only && !p.hidden && p.steps == 0).unwrap();
+        let id = list.params[index].id;
+        let before = app.plugins.param_value(0, id).unwrap();
+        let after = if before < 0.5 { 0.75 } else { 0.25 };
+        let setting = crate::prefs::check(&crate::prefs::UNDO_KNOB_TWEAKS);
+        crate::prefs::set_check(&crate::prefs::UNDO_KNOB_TWEAKS, true);
+        crate::history::param(&mut app.state, 0, index, Some(before), after);
+        assert!(crate::params::set_param_value(&app.state, 0, index, after));
+        app.undo_key(false);
+        assert!((app.plugins.param_value(0, id).unwrap() - before).abs() < 1e-6);
+        crate::prefs::set_check(&crate::prefs::UNDO_KNOB_TWEAKS, setting);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -43,6 +43,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         (crate::prefs::INTERFACE_LANGUAGE.label, crate::prefs::language::VISIBILITY),
     ]),
     ("Input customization", &[
+        ("Typing keyboard octave menu", crate::typing_layout::OCTAVE_VISIBILITY),
         ("MIDI controller setup", crate::controller::VISIBILITY),
         ("Smart disable setting", "visible_smart-disable"),
         ("Advanced audio settings", crate::views::settings::AUDIO_ADVANCED_VISIBILITY),
@@ -78,6 +79,7 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         (crate::theme_adjust::PLAYLIST_BRIGHTNESS, crate::theme_adjust::PLAYLIST_BRIGHTNESS_VISIBILITY),
         ("Vocal tuning button", "visible_playlist-vocal-tuning"),
         ("Audio warp editor", "visible_playlist-warp"),
+        ("Audio timing detection sensitivity", crate::warp::SENSITIVITY_VISIBILITY),
         ("Attached mixer inspector", crate::attached_mixer::VISIBILITY),
         ("Attach to Playlist button in Mixer", crate::attached_mixer::BUTTON_VISIBILITY),
         ("Attached track record buttons", crate::attached_mixer::RECORD_VISIBILITY),
@@ -114,13 +116,17 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Place Pattern to Playlist button", "visible_piano-place-pattern"),
     ]),
     ("Channel Rack", &[
+        ("Mixer routing menu", crate::rack_controls::ROUTING_VISIBILITY),
         ("Live MIDI note glow", crate::midi_play::RACK_ACTIVITY),
         ("Loop mode button", "visible_rack-loop"),
         ("Graph editor shortcut", "visible_rack-graph"),
         ("Channel selection outline", crate::rack_drag::OVERLAY_VISIBILITY),
     ]),
     #[cfg(plugin_windows)]
-    ("Plugin windows", &[("Detach button", crate::plugin_window::DETACH_VISIBILITY)]),
+    ("Plugin windows", &[
+        ("Detach button", crate::plugin_window::DETACH_VISIBILITY),
+        ("Sampler note effects", crate::misc_page::NOTE_EFFECTS_VISIBILITY),
+    ]),
     ("Plugin Picker", &[
         ("Effect Chain multi-selection and dragging", crate::plugin_picker::chains::BATCH_VISIBILITY),
     ]),
@@ -143,10 +149,12 @@ pub(crate) const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ("Mini EQ bypass button", crate::mini_eq::BYPASS_VISIBILITY),
     ]),
     ("Workspace", &[
+        ("Custom window layout menu", crate::workspace_layout::VISIBILITY),
         (crate::prefs::DOUBLE_CLICK_RESET.label, "visible_double-click-reset"),
         (crate::prefs::HOVER_MENUS.label, "visible_hover-main-menus"),
         ("Advanced Export tab", crate::export_form::ADVANCED_VISIBILITY),
-        ("Search User Guide menu item", crate::help::VISIBILITY),
+        ("User Guide menu item", crate::help::VISIBILITY),
+        ("User Guide: Detach button", crate::help::DETACH_VISIBILITY),
         (crate::change_log::LABEL, crate::change_log::VISIBILITY),
         ("User Guide: Show me where", crate::help::SPOTLIGHT_VISIBILITY),
         ("Background logo and version", "visible_watermark"),

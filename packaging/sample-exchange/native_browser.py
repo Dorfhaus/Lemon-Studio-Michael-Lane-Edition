@@ -1,4 +1,4 @@
-"""Private Community Samples service for the native Lemon Studio Browser."""
+"""Private Community Samples service for the native ML Studio Browser."""
 import json
 import os
 import re
@@ -67,7 +67,7 @@ def upload_audio(path):
                                "-fs", str(MAX_BYTES + 65536), str(out)], capture_output=True,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if proc.returncode:
-            raise ValueError("Could not decode this audio file. Check that it plays in Lemon Studio.")
+            raise ValueError("Could not decode this audio file. Check that it plays in ML Studio.")
         if out.stat().st_size > MAX_BYTES:
             raise ValueError("The decoded WAV exceeds the 5 MB community limit. Choose a shorter excerpt.")
         audio = out.read_bytes()
@@ -130,13 +130,13 @@ def run(job, root):
         if action == "terms":
             messagebox.showinfo("Royalty-free upload terms", TERMS, parent=window)
         elif action == "choose":
-            path = filedialog.askopenfilename(parent=window, filetypes=[("Lemon Studio audio", AUDIO_TYPES), ("All files", "*.*")])
+            path = filedialog.askopenfilename(parent=window, filetypes=[("ML Studio audio", AUDIO_TYPES), ("All files", "*.*")])
             if path:
                 return {"path": path}
         elif action == "newsletter":
             old = request(cred, "/me", token=token)["newsletter"]
             if messagebox.askyesno("Email preferences", ("Unsubscribe from" if old else "Subscribe to") +
-                                    " Lemon Studio news by email?", parent=window):
+                                    " ML Studio news by email?", parent=window):
                 request(cred, "/newsletter", {"subscribe": not old}, token)
                 return {"message": "Email preference saved."}
         else:
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     try:
         host = psutil.Process(int(sys.argv[1]))
         if host.pid != os.getppid() or Path(host.exe()).resolve() != Path(__file__).resolve().parents[1] / "lemonstudio-development.exe":
-            raise ValueError("Open Community Samples in Lemon Studio Development.")
+            raise ValueError("Open Community Samples in ML Studio Development.")
         result = run(json.loads(sys.stdin.buffer.read()), Path(sys.argv[2]) / "Sample Exchange")
     except Exception as error:
         result = {"error": str(error)}

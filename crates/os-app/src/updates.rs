@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 #[path = "update_retention.rs"]
 mod retention;
 
-pub const VERSION: u64 = 2026111301;
+pub const VERSION: u64 = 2026111302;
 #[cfg(windows)]
 pub const FEED: &str = "https://michaellanemusic.de/lemon-studio/updates/stable.json";
 #[cfg(windows)]
@@ -87,7 +87,7 @@ fn checked_file(path: &Path, file: &File) -> Result<()> {
 }
 fn cache() -> Result<PathBuf> {
     #[cfg(windows)]
-    let dir=PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("No local application folder")?).join("Lemon Studio").join("Updates");
+    let dir=PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("No local application folder")?).join(os_paths::APP_NAME).join("Updates");
     #[cfg(not(windows))]
     let dir=os_paths::user_dir().ok_or("No user application folder")?.join("Updates"); fs::create_dir_all(&dir)?; Ok(dir)
 }
@@ -96,17 +96,30 @@ fn get(url: &str, max: u64) -> Result<Vec<u8>> {
     let mut bytes=Vec::new(); response.into_reader().take(max+1).read_to_end(&mut bytes)?;
     if bytes.len() as u64>max {return Err("Download exceeds expected size".into())} Ok(bytes)
 }
+
+#[cfg(not(target_os="macos"))]
+fn check_install_writable(root: &Path) -> Result<()> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let probe = root.join(format!(".lemon-write-check-{}-{stamp}", std::process::id()));
+    fs::create_dir(&probe)?;
+    fs::remove_dir(probe)?;
+    Ok(())
+}
 #[cfg(target_os="macos")]
 fn writable_bundle(exe:&Path) -> Result<()> {
     let bundle=exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("Run ML Studio from Applications")?;
     if bundle.extension().and_then(|s|s.to_str())!=Some("app") {return Err("Run the installed ML Studio app from Applications to update".into());}
     let parent=bundle.parent().ok_or("No Applications folder")?;
-    let probe=parent.join(format!(".lemon-write-check-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
-    let file=fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|_|"Move ML Studio out of the DMG into a writable Applications folder, reopen it there, then retry Update")?;
-    drop(file);fs::remove_file(probe)?;Ok(())
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let probe = parent.join(format!(".lemon-write-check-{}-{stamp}", std::process::id()));
+    let file = fs::OpenOptions::new().write(true).create_new(true).open(&probe)
+        .map_err(|e| format!("Move ML Studio to a writable Applications folder, reopen it there, then retry Update ({e})"))?;
+    drop(file);
+    fs::remove_file(probe)?;
+    Ok(())
 }
 fn check() -> Result<Option<PathBuf>> {
-    let bytes=get(FEED,65536)?;
+    let bytes=get(FEED,65536).map_err(|e| format!("Could not fetch the update feed ({e})"))?;
     // Authenticate even a current/older release, before interpreting its version.
     let signed: Signed=serde_json::from_slice(&bytes)?;
     public_key()?.verify_strict(signed.payload.as_bytes(), &Signature::from_slice(&unhex(&signed.signature)?)?)?;
@@ -123,7 +136,7 @@ fn check() -> Result<Option<PathBuf>> {
         fs::create_dir_all(dest.parent().ok_or("No payload directory")?)?;
         if checked_file(&dest,file).is_ok() {continue}
         let url=format!("{ROOT}{}/{}",manifest.version,file.name.replace(' ',"%20"));
-        let data=get(&url,file.size)?;
+        let data=get(&url,file.size).map_err(|e| format!("Could not download {} ({e})", file.name))?;
         let part=dir.join(format!("{}.part",file.name));
         let mut out=fs::File::create(&part)?; out.write_all(&data)?; out.sync_all()?; drop(out);
         checked_file(&part,file)?; fs::rename(&part,&dest)?;
@@ -131,10 +144,17 @@ fn check() -> Result<Option<PathBuf>> {
     fs::write(dir.join("signed.json"),bytes)?;
     Ok(Some(dir))
 }
-pub fn start() {
+pub fn start(previous_failure: Option<&str>) {
     // Maintenance never touches the audio/UI thread or pending newer update payloads.
     std::thread::spawn(|| { if let Ok(exe)=std::env::current_exe() { let _=retention::run(&exe,VERSION,None); } });
-    status().lock().unwrap().started=true; request();
+    let mut status = status().lock().unwrap();
+    status.started = true;
+    if let Some(error) = previous_failure {
+        status.message = format!("Update check failed: {error}");
+    } else {
+        drop(status);
+        request();
+    }
 }
 pub fn request() {
     let mut s=status().lock().unwrap();
@@ -145,7 +165,10 @@ pub fn request() {
         match result {
             Ok(Some(dir)) => {s.ready=Some(dir);s.message="Update ready. Click to restart, or it will install when you close ML Studio.".into();}
             Ok(None) => s.message="ML Studio is up to date.".into(),
-            Err(e) => s.message=format!("Update check failed: {e}. Click Update to retry."),
+            Err(e) => {
+                s.message=format!("Update check failed: {e}. Click Update to retry.");
+                report_error(&s.message);
+            }
         }
     });
 }
@@ -162,8 +185,28 @@ pub fn display() -> (&'static str,String) {
 pub fn report_result(message: &str) {
     if let Ok(dir)=cache() {let _=fs::write(dir.join("last-update-result.txt"),message);}
 }
+
+pub fn report_error(message: &str) {
+    if let Ok(dir) = cache() {
+        let _ = fs::write(dir.join("last-update-error.txt"), message);
+    }
+}
+
+fn last_error() -> Result<Option<String>> {
+    match fs::read_to_string(cache()?.join("last-update-error.txt")) {
+        Ok(message) => Ok(Some(message)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
 pub fn take_result() -> Option<String> {
     let file=cache().ok()?.join("last-update-result.txt");
+    // An older updater may have installed this build and left its restart notice in the old cache.
+    #[cfg(windows)]
+    let file=if !file.exists() {
+        let legacy=PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Lemon Studio/Updates/last-update-result.txt");
+        if legacy.is_file() {legacy} else {file}
+    } else {file};
     let message=fs::read_to_string(&file).ok()?;
     let _=fs::remove_file(file);
     #[cfg(windows)]
@@ -178,14 +221,26 @@ pub fn take_result() -> Option<String> {
     Some(message)
 }
 
-/// Starts a separate copy of this trusted executable; it waits for our process to exit normally.
+/// Starts a copy of the running executable and waits for it to acknowledge the handoff.
 pub fn on_exit(restart: bool, project: Option<&Path>) -> Result<()> {
-    let Some(stage)=status().lock().unwrap().ready.clone() else {return Ok(())};
-    let exe=std::env::current_exe()?; let helper=stage.join(if cfg!(windows) {"lemon-update-helper.exe"} else {"lemon-update-helper"});
-    fs::copy(&exe,&helper)?;
+    let Some(stage) = status().lock().unwrap().ready.clone() else {
+        return if restart { Err("No downloaded update is ready".into()) } else { Ok(()) };
+    };
+    let exe = std::env::current_exe()?;
+    let root = exe.parent().ok_or("No installation directory")?;
+    if exe.file_name().and_then(|name| name.to_str()) != Some(EXE) {
+        return Err("This copy uses a different executable name. Use the ML Studio installer to update it.".into());
+    }
+    #[cfg(target_os="macos")]
+    writable_bundle(&exe)?;
+    #[cfg(not(target_os="macos"))]
+    check_install_writable(root).map_err(|e| format!("ML Studio cannot write to its installation folder ({e}). Use the installer or choose a writable installation folder."))?;
+
+    let helper = stage.join(if cfg!(windows) { "lemon-update-helper.exe" } else { "lemon-update-helper" });
+    fs::copy(&exe, &helper).map_err(|e| format!("Could not prepare the updater ({e})"))?;
     #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(&helper,fs::Permissions::from_mode(0o700))?;}
     // The helper uses the same runtime DLLs as this build. Only copy beside it, never download/execute arbitrary helpers.
-    for entry in fs::read_dir(exe.parent().ok_or("No install directory")?)? {
+    for entry in fs::read_dir(root)? {
         let entry=entry?;
         if entry.path().extension().is_some_and(|s|s.eq_ignore_ascii_case("dll")) {fs::copy(entry.path(),stage.join(entry.file_name()))?;}
     }
@@ -193,12 +248,36 @@ pub fn on_exit(restart: bool, project: Option<&Path>) -> Result<()> {
     cmd.arg("--apply-update").arg(std::process::id().to_string()).arg(&exe).arg(&stage).arg(if restart{"restart"}else{"close"});
     if let Some(path)=project {cmd.arg(path);}
     #[cfg(windows)] {use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);}
-    let ready=stage.join("helper-ready"); let _=fs::remove_file(&ready);
-    cmd.spawn()?;
-    let until=Instant::now()+Duration::from_secs(5);
-    while !ready.exists() && Instant::now()<until {std::thread::sleep(Duration::from_millis(20));}
-    if !ready.exists(){return Err("Updater did not start; installation deferred".into())}
-    Ok(())
+    for name in ["helper-ready", "result.txt"] {
+        match fs::remove_file(stage.join(name)) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(format!("Could not reset the updater state ({e})").into()),
+        }
+    }
+    let child = cmd.spawn().map_err(|e| format!("Could not start the update helper ({e})"))?;
+    wait_for_helper(child, &stage, Duration::from_secs(10))
+}
+
+fn wait_for_helper(mut child: std::process::Child, stage: &Path, timeout: Duration) -> Result<()> {
+    let until = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let detail = fs::read_to_string(stage.join("result.txt"))
+                .ok().filter(|text| !text.is_empty()).unwrap_or_else(|| status.to_string());
+            return Err(format!("The update helper stopped before it was ready ({detail})").into());
+        }
+        if stage.join("helper-ready").is_file() {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            // This is the child we just launched. It must not apply later after a failed handoff.
+            child.kill()?;
+            child.wait()?;
+            return Err("The update helper did not respond in time. Try Restart again or use the installer.".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Commit only known app files. Originals stay in a versioned rollback directory; user data is never part of the transaction.
@@ -224,8 +303,8 @@ fn install_files(stage: &Path, target: &Path, manifest: &Manifest) -> Result<()>
             fs::copy(stage.join(&file.name),&temp)?; checked_file(&temp,&file)?;
             #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(&temp,fs::Permissions::from_mode(if file.name==EXE {0o755}else{0o644}))?;}
             if existed {fs::copy(&dest,&old)?;}
-            moved.push((dest.clone(),old,existed));
             fs::rename(&temp,&dest)?;
+            moved.push((dest,old,existed));
         }
         Ok(())
     })();
@@ -235,7 +314,10 @@ fn install_files(stage: &Path, target: &Path, manifest: &Manifest) -> Result<()>
             if *existed {if let Err(e)=fs::rename(old,dest){recovery_errors.push(e.to_string());}}
             else if dest.exists() {if let Err(e)=fs::remove_file(dest){recovery_errors.push(e.to_string());}}
         }
-        return Err(format!("Update failed: {error}; rollback errors: {recovery_errors:?}; backups: {}",backup.display()).into());
+        if recovery_errors.is_empty() {
+            return Err(format!("Could not replace the installed files ({error}). Close any other copies of ML Studio, then try again. If the folder is protected, use the installer.").into());
+        }
+        return Err(format!("Update failed: {error}. Restore failed: {recovery_errors:?}. Original files are in {}",backup.display()).into());
     }
     Ok(())
 }
@@ -286,13 +368,30 @@ fn wait_parent(pid:u32,stage:&Path)->Result<()> {
 #[cfg(windows)]
 fn wait_parent(pid: u32, stage: &Path) -> Result<()> {
     use windows_sys::Win32::{Foundation::{CloseHandle,WAIT_OBJECT_0},System::Threading::{OpenProcess,WaitForSingleObject,PROCESS_SYNCHRONIZE}};
-    unsafe {let handle=OpenProcess(PROCESS_SYNCHRONIZE,0,pid); if handle.is_null(){return Err("Cannot identify the closing process".into())}
-        fs::write(stage.join("helper-ready"),b"ready")?;
-        let result=WaitForSingleObject(handle,120000);CloseHandle(handle);if result!=WAIT_OBJECT_0{return Err("ML Studio is still running; update deferred".into())}}
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(format!("Cannot wait for ML Studio to close ({})", std::io::Error::last_os_error()).into());
+    }
+    let result = fs::write(stage.join("helper-ready"), b"ready")
+        .map(|_| unsafe { WaitForSingleObject(handle, 120000) });
+    unsafe { CloseHandle(handle); }
+    if result? != WAIT_OBJECT_0 {
+        return Err("ML Studio is still running. Open it again and retry the update after closing other sessions.".into());
+    }
     Ok(())
 }
+
+fn restart_app(target: &Path, project: Option<&Path>) -> Result<()> {
+    let mut cmd = std::process::Command::new(target);
+    cmd.current_dir(target.parent().ok_or("No installation directory")?);
+    if let Some(project) = project { cmd.arg(project); }
+    cmd.spawn()?;
+    Ok(())
+}
+
 pub fn helper(args: &[String]) -> i32 {
     let mut parent_closed=false;
+    let mut installed=false;
     let result: Result<()>=(|| {
         if args.len()<4 {return Err("Missing updater arguments".into())}
         let stage=PathBuf::from(&args[2]); let target=PathBuf::from(&args[1]);
@@ -300,17 +399,35 @@ pub fn helper(args: &[String]) -> i32 {
         wait_parent(args[0].parse()?, &stage)?;
         parent_closed=true;
         install(&stage,&target,&manifest)?;
+        installed=true;
         let _=retention::run(&target,manifest.version,Some(&stage));
-        fs::write(stage.join("result.txt"),format!("Installed {}",manifest.label))?;
+        let _=fs::write(stage.join("result.txt"),format!("Installed {}",manifest.label));
         report_result(&format!("ML Studio updated to {}.",manifest.label));
-        if args[3]=="restart" {let mut cmd=std::process::Command::new(&target);if let Some(p)=args.get(4){cmd.arg(p);}cmd.current_dir(target.parent().ok_or("No parent")?).spawn()?;}
+        if args[3]=="restart" { restart_app(&target, args.get(4).map(Path::new))?; }
         Ok(())
     })();
-    if result.is_err() && parent_closed && args.get(3).is_some_and(|s|s=="restart") {
-        // A failed transaction leaves the original app usable; reopen it with its saved project.
-        if let Some(target)=args.get(1) {let mut cmd=std::process::Command::new(target);if let Some(p)=args.get(4){cmd.arg(p);}let _=cmd.spawn();}
+    if let Err(e) = result {
+        let message = if installed {
+            format!("The update installed, but ML Studio could not reopen ({e}). Open it from your shortcut.")
+        } else {
+            format!("Automatic update was not completed: {e}")
+        };
+        report_error(&message);
+        report_result(&message);
+        if let Some(dir) = args.get(2) {
+            let _ = fs::write(Path::new(dir).join("result.txt"), &message);
+        }
+        // Write the error before the original app starts and looks for the result.
+        if !installed && parent_closed && args.get(3).is_some_and(|s| s == "restart") {
+            if let Err(e) = restart_app(Path::new(&args[1]), args.get(4).map(Path::new)) {
+                let message = format!("{message}\nML Studio could not reopen ({e}). Open it from your shortcut.");
+                report_error(&message);
+                report_result(&message);
+            }
+        }
+        return 1;
     }
-    if let Err(e)=result {report_result(&format!("Automatic update was not completed: {e}"));if let Some(dir)=args.get(2){let _=fs::write(Path::new(dir).join("result.txt"),format!("{e}"));} return 1} 0
+    0
 }
 
 /// Read-only release diagnostics, before any window, project or audio device is opened.
@@ -318,6 +435,10 @@ pub fn diagnostic(args: &[String]) -> i32 {
     let result: Result<String>=(|| {
         match args.first().map(String::as_str) {
             Some("--update-version") => Ok(VERSION.to_string()),
+            Some("--update-status") => {
+                let detail = last_error()?.unwrap_or_else(|| "No update error recorded.".into());
+                Ok(format!("ML Studio build {VERSION}\n{detail}"))
+            },
             Some("--cleanup-updates") => Ok(format!("Removed {} obsolete update folders; newest two rollback backups retained", retention::run(&std::env::current_exe()?,VERSION,None)?)),
             Some("--check-update-feed") => Ok(format!("{}",if check()?.is_some(){"Update downloaded and verified"}else{"Signed feed verified; up to date"})),
             Some("--verify-update") => {
@@ -370,8 +491,54 @@ mod tests {
         assert!(!app.state.dialogs.is_empty());
         app.dialog_done(Then::Discard(Next::Update),Reply::Button(Answer::Cancel));
         assert!(!app.want_exit && !app.restart_update);
+        app.dialog_done(Then::Discard(Next::Update),Reply::Button(Answer::No));
+        assert!(!app.want_exit && !app.restart_update, "failed handoff must leave the app open");
+        assert!(app.modal_open(), "the failure is shown in a dialog");
         status().lock().unwrap().ready=None;
         dialog::fake::live(false);
+
+        app.menu_item(crate::views::menus::HELP_MENU, crate::views::menus::HELP_ABOUT);
+        assert!(app.state.settings.open);
+        assert_eq!(app.state.settings.tab, crate::views::settings::ABOUT);
+    }
+
+    #[test]
+    fn updater_reports_helper_exit_and_rejects_timeout() {
+        let stage = std::env::temp_dir().join(format!("lemon-update-handoff-{}", std::process::id()));
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("result.txt"), "Signed update manifest could not be read").unwrap();
+        #[cfg(windows)]
+        let mut command = std::process::Command::new("cmd.exe");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000).args(["/d", "/c", "exit 42"]);
+        }
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", "exit 42"]);
+            command
+        };
+        let error = wait_for_helper(command.spawn().unwrap(), &stage, Duration::from_secs(5)).unwrap_err();
+        assert!(error.to_string().contains("Signed update manifest could not be read"));
+        #[cfg(windows)]
+        let mut waiting = std::process::Command::new("ping.exe");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            waiting.creation_flags(0x08000000).args(["-n", "5", "127.0.0.1"]);
+        }
+        #[cfg(unix)]
+        let mut waiting = {
+            let mut command = std::process::Command::new("/bin/sleep");
+            command.arg("5");
+            command
+        };
+        let error = wait_for_helper(waiting.spawn().unwrap(), &stage, Duration::ZERO).unwrap_err();
+        assert!(error.to_string().contains("did not respond in time"));
+        fs::remove_file(stage.join("result.txt")).unwrap();
+        fs::remove_dir(stage).unwrap();
     }
     #[cfg(unix)]
     #[test]

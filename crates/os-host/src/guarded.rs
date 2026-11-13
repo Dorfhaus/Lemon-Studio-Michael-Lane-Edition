@@ -118,6 +118,10 @@ impl<P: Plugin> Instrument for Guarded<P> {
         self.sleep.wake();
         self.run((), |p| p.voice_gain(offset, voice, gain))
     }
+    fn voice_release(&mut self, offset: u32, key: u8, voice: u32) {
+        self.sleep.wake();
+        self.run((), |p| p.voice_release(offset, key, voice))
+    }
     fn voice_choke(&mut self, offset: u32, key: u8, voice: u32) {
         self.sleep.wake();
         self.run((), |p| p.voice_choke(offset, key, voice))

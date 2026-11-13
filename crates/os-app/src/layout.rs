@@ -297,7 +297,7 @@ mod tests {
 /// No project, plugin, audio or UI initialization is needed.
 pub fn reset_preview_layout() -> Result<String,String> {
     let root=os_paths::user_dir().ok_or("No profile folder")?;
-    if root.file_name().and_then(|s|s.to_str())!=Some("Lemon Studio Public Preview") {
+    if !os_paths::is_preview_profile(&root) {
         return Err("Layout reset is restricted to the public preview profile".into());
     }
     let file=root.join("settings.txt");
@@ -372,7 +372,7 @@ pub fn restore_project_layout(s:&mut State){
 }
 pub fn restore_project_plugins(app:&mut crate::app::App){
     #[cfg(windows)] {
-        let Some(v)=project_layout(&app.state)else{return};let Some(editors)=v["editors"].as_array()else{return};
+        let Some(v)=app.startup_editor_layout.take().or_else(||project_layout(&app.state))else{return};let Some(editors)=v["editors"].as_array()else{return};
         for e in editors.iter().take(512){
             let (Some(key),Some(x),Some(y),Some(uid))=(e["key"].as_u64().and_then(|n|usize::try_from(n).ok()),e["position"][0].as_i64().and_then(|n|i32::try_from(n).ok()),e["position"][1].as_i64().and_then(|n|i32::try_from(n).ok()),e["uid"].as_str())else{continue};
             if app.plugins.descriptor(key).is_none_or(|d|d.uid()!=uid){continue;}

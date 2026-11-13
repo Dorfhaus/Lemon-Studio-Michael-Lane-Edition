@@ -1,6 +1,6 @@
 # Local public-preview profile
 
-The dedicated `lemonstudio-development` executable uses **Lemon Studio Public Preview** under the platform's normal application-data folder. This applies to a direct executable launch as well as the Desktop development launcher. An explicit `OPENSTUDIO_USER_DIR` still overrides it. The preview does not migrate a legacy OpenStudio profile. Public executable names retain the normal Lemon Studio profile.
+The dedicated `lemonstudio-development` executable uses **ML Studio Public Preview** under the platform's normal application-data folder. This applies to a direct executable launch as well as the Desktop development launcher. An explicit `OPENSTUDIO_USER_DIR` still overrides it. The preview does not migrate a legacy OpenStudio profile. New public profiles use **ML Studio**. Existing profiles continue to use their saved folders so project paths and personal settings carry over.
 
 A fresh preview uses the actual embedded Lemon Starter template and normal application defaults. Samples default to this profile's own `Samples` directory; no machine-specific sample drive is guessed. Existing personal sample locations belong in the `browser_samples_root` preference. An empty library says **No samples yet**. Samples, favorites, settings, plugin database, downloaded stem runtime/headphone profiles and AI trust are separate from the personal installation.
 

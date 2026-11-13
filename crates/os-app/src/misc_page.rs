@@ -168,11 +168,18 @@ impl M {
 
 /// Entries of FL 24.1's chords file, which the stored arpeggio chord `k >= 1` names (spec: audio/channel-misc.md
 /// "Settings", "The chords file").
-pub const CHORD_ENTRIES: i32 = 88;
+pub const CHORD_ENTRIES: i32 = os_model::chords::ENTRIES.len() as i32;
+pub const NOTE_EFFECTS_VISIBILITY: &str = "visible_sampler-note-effects";
+
+fn note_effect_panel(m: M) -> bool {
+    use M::*;
+    matches!(m, VolMid | VolPan | VolModX | VolModY | KeyMid | KeyPan | KeyModX | KeyModY
+        | ArpDir | ArpTime | ArpGate | ArpRange | ArpRepeat | ArpSlide | ArpChord
+        | EchoFeed | EchoPan | EchoModX | EchoModY | EchoPitch | EchoTime | Echoes | PingPong | FatMode)
+}
 
 /// The name of arpeggio chord `k` (`M::ArpChord`): -1 = the held notes, 0 = the note alone, `k >= 1` = entry `k` of
-/// the chords file. Only entries 1, 7, 10 and 72 are known (their intervals 4,3 / 4,4 / 4,3,2 / 3,2,2,3); the others
-/// show their number.
+/// the shared chord and scale table.
 pub fn chord_name(k: i32) -> String {
     match k {
         -1 => "Held notes".into(),
@@ -181,7 +188,7 @@ pub fn chord_name(k: i32) -> String {
         7 => "Augmented".into(),
         10 => "Major 6".into(),
         72 => "Minor pentatonic".into(),
-        k => format!("Chord {k}"),
+        k => os_model::chords::label(k as usize).into(),
     }
 }
 
@@ -217,8 +224,11 @@ impl MiscVals {
 
 /// Whether value `m` reaches the sound today: the level adjustments; polyphony, slide, porta / mono, swing and cut
 /// groups (the engine's note rules); root note, fine tuning and main pitch (the channel's pitch); "Add to key" when
-/// `v.sampler`. The others (gate, shift, full porta, tracking, arpeggiator, echo delay) are drawn greyed out.
+/// `v.sampler`. Tracking, arpeggiation and echoes are sampler note effects.
 pub fn works(m: M, v: &MiscVals) -> bool {
+    if note_effect_panel(m) {
+        return v.sampler;
+    }
     match m {
         M::LevelPan | M::LevelVol | M::LevelModX | M::LevelModY => true,
         M::PolyMax | M::PolySlide | M::Porta | M::Mono | M::TimeSwing | M::Cut | M::CutBy => true,
@@ -233,8 +243,8 @@ pub fn works(m: M, v: &MiscVals) -> bool {
 pub fn off_name(h: Hit, v: &MiscVals) -> Option<&'static str> {
     match h {
         Hit::Value(m) | Hit::Step(m, _) => (!works(m, v)).then(|| m.label()),
-        Hit::ArpDir(_) => Some("Arpeggiator"),
-        Hit::TrackTab(_) => Some("Tracking"),
+        Hit::ArpDir(_) => (!v.sampler).then_some("Arpeggiator"),
+        Hit::TrackTab(_) => (!v.sampler).then_some("Tracking"),
         Hit::Touch => Some("Multi-touch keyboard"),
         Hit::CutSelf | Hit::Reset | Hit::Key(_) | Hit::Keyboard | Hit::ScrollBar => None,
     }
@@ -284,6 +294,9 @@ pub fn note_name(key: i32) -> String {
 
 /// The hint value text.
 pub fn value_text(m: M, v: f32) -> String {
+    if m == M::ArpTime && v >= 1.0 {
+        return "Hold".into();
+    }
     match kind(m) {
         Kind::Knob { bipolar: true, .. } => format!("{:+.0}%", (v - 0.5) * 200.0),
         Kind::Knob { .. } => format!("{:.0}%", v * 100.0),
@@ -507,6 +520,12 @@ impl Default for MiscUi {
 
 pub fn hit(ui: &MiscUi, x: f32, y: f32) -> Option<Hit> {
     let (fx, fy) = (x + OX, y + OY);
+    if !crate::workspace_visibility::shown(NOTE_EFFECTS_VISIBILITY) && [3, 5, 6].iter().any(|&i| {
+        let (x0, x1, y0, y1, _, _) = PANELS[i];
+        (x0..=x1).contains(&fx) && (y0..=y1).contains(&fy)
+    }) {
+        return None;
+    }
     for &(m, cx, cy, _, ring, _, _, _) in &KNOBS {
         if ring > 0.0 && (fx - cx).powi(2) + (fy - cy).powi(2) <= (ring + 2.0).powi(2) {
             return Some(Hit::Value(track_m(m, ui.track_key)));
@@ -689,12 +708,14 @@ fn veil_off(c: &mut Canvas, t: &Palette, v: &MiscVals) {
     let veil = t.s(0x222525).with_alpha(crate::app::OFF_VEIL);
     let lemon = t.style.lemon();
     // Tracking, arpeggiator, echo delay.
-    for i in [3, 5, 6] {
-        let (x0, x1, y0, y1, _, _) = PANELS[i];
-        if lemon {
-            lk::plug_veil(c, rect(x0, x1, y0, y1));
-        } else {
-            c.fill_rect(rect(x0, x1, y0, y1), veil);
+    if !v.sampler && crate::workspace_visibility::shown(NOTE_EFFECTS_VISIBILITY) {
+        for i in [3, 5, 6] {
+            let (x0, x1, y0, y1, _, _) = PANELS[i];
+            if lemon {
+                lk::plug_veil(c, rect(x0, x1, y0, y1));
+            } else {
+                c.fill_rect(rect(x0, x1, y0, y1), veil);
+            }
         }
     }
     if lemon {
@@ -717,15 +738,17 @@ pub fn paint(c: &mut Canvas, t: &Palette, ax: f32, ay: f32, v: &MiscVals, ui: &M
     c.push_clip(Rect::new(ax, ay, PAGE_W, PAGE_H));
     // The Lemon design: Lemon Sampler's editor background around the panels.
     c.fill_rect(Rect::new(ax, ay, PAGE_W, PAGE_H), if lemon { plug::BG } else { t.s(0x202324) });
-    for &(x0, x1, y0, y1, tw, title) in &PANELS {
+    let show_note_effects = crate::workspace_visibility::shown(NOTE_EFFECTS_VISIBILITY);
+    for (i, &(x0, x1, y0, y1, tw, title)) in PANELS.iter().enumerate() {
+        if !show_note_effects && [3, 5, 6].contains(&i) { continue; }
         let r = rect(x0, x1, y0, y1);
         inst::panel(c, t, r);
         inst::panel_tab(c, t, r, tw, title);
     }
-    headers(c, t, v, ui);
+    if show_note_effects { headers(c, t, v, ui); }
     let accent = hi(t, 0xffa830);
     for &(m, cx, cy, r, ring, dot, cap, capy) in &KNOBS {
-        if r <= 0.0 {
+        if r <= 0.0 || (!show_note_effects && note_effect_panel(m)) {
             continue;
         }
         let mm = track_m(m, ui.track_key);
@@ -748,6 +771,7 @@ pub fn paint(c: &mut Canvas, t: &Palette, ax: f32, ay: f32, v: &MiscVals, ui: &M
         inst::caption(c, t, x, capy + dy(), cap, off || st.disabled);
     }
     for &(m, cx, cy, label, left) in &RADIOS {
+        if !show_note_effects && note_effect_panel(m) { continue; }
         let (x, y) = p(cx, cy);
         let st = state_of(ui, v, Hit::Value(m));
         inst::radio(c, t, x, y, v.get(m) >= 0.5, st);
@@ -759,6 +783,7 @@ pub fn paint(c: &mut Canvas, t: &Palette, ax: f32, ay: f32, v: &MiscVals, ui: &M
         }
     }
     for &(m, x0, x1, y0, y1, label, lx) in &SPINS {
+        if !show_note_effects && note_effect_panel(m) { continue; }
         let r = rect(x0, x1, y0, y1);
         let st = state_of(ui, v, Hit::Value(m));
         inst::label(c, t, lx + dx(), r.cy(), label, st.disabled);
@@ -767,28 +792,30 @@ pub fn paint(c: &mut Canvas, t: &Palette, ax: f32, ay: f32, v: &MiscVals, ui: &M
         let text = if dash && val == 0 { None } else { Some(val.to_string()) };
         spin_box(c, t, r, text.as_deref(), st);
     }
-    // Chord list.
-    let (x0, x1, y0, y1) = CHORD_BOX;
-    let cr = rect(x0, x1, y0, y1);
-    let st = state_of(ui, v, Hit::Value(M::ArpChord));
-    inst::label(c, t, 166.0 + dx(), cr.cy(), "Chord", st.disabled);
-    let chord = chord_name(v.get(M::ArpChord).round() as i32);
-    inst::list_box(c, t, cr, &chord, st);
+    if show_note_effects {
+        let (x0, x1, y0, y1) = CHORD_BOX;
+        let cr = rect(x0, x1, y0, y1);
+        let st = state_of(ui, v, Hit::Value(M::ArpChord));
+        inst::label(c, t, 166.0 + dx(), cr.cy(), "Chord", st.disabled);
+        let chord = chord_name(v.get(M::ArpChord).round() as i32);
+        inst::list_box(c, t, cr, &chord, st);
+    }
     // Buttons.
     let (x0, x1, y0, y1) = CUT_SELF;
     dark_button(c, t, rect(x0, x1, y0, y1), "Cut self", state_of(ui, v, Hit::CutSelf));
     let (x0, x1, y0, y1) = RESET;
     dark_button(c, t, rect(x0, x1, y0, y1), "Reset", state_of(ui, v, Hit::Reset));
-    // Tracking Mid slider: orange from the left end to the thumb.
-    let mid = track_m(M::VolMid, ui.track_key);
-    let (mx0, mx1, mcy) = MID_SLIDER;
-    let (sx0, scy) = p(mx0, mcy);
-    let sx1 = mx1 + dx();
-    let st = state_of(ui, v, Hit::Value(mid));
-    inst::label(c, t, 455.0 + dx(), scy, "Mid", st.disabled);
-    let (lo, hi) = range_of(mid);
-    let track = slider_track(c, t, sx0, sx1, scy, (v.get(mid) - lo) / (hi - lo), st, (!st.disabled).then_some(accent));
-    let _ = track;
+    if show_note_effects {
+        let mid = track_m(M::VolMid, ui.track_key);
+        let (mx0, mx1, mcy) = MID_SLIDER;
+        let (sx0, scy) = p(mx0, mcy);
+        let sx1 = mx1 + dx();
+        let st = state_of(ui, v, Hit::Value(mid));
+        inst::label(c, t, 455.0 + dx(), scy, "Mid", st.disabled);
+        let (lo, hi) = range_of(mid);
+        let track = slider_track(c, t, sx0, sx1, scy, (v.get(mid) - lo) / (hi - lo), st, (!st.disabled).then_some(accent));
+        let _ = track;
+    }
     // Root note row: the title is the panel's in the Lemon design (Lemon Sampler's root note panel).
     let root = v.get(M::Root).round() as i32;
     let title = format!("Root note: {}", note_name(root));
@@ -822,7 +849,7 @@ pub fn paint(c: &mut Canvas, t: &Palette, ax: f32, ay: f32, v: &MiscVals, ui: &M
     c.pop_clip();
 }
 
-/// Header contents that are not plain titles: tracking Vol / Key words, arpeggiator direction marks, echo ▸.
+/// Tracking tabs, arpeggiator directions and the echo section title.
 fn headers(c: &mut Canvas, t: &Palette, v: &MiscVals, ui: &MiscUi) {
     let lemon = t.style.lemon();
     // Titles: bold in the Lemon design, like the panels' own (`inst::panel_tab`).
@@ -897,11 +924,7 @@ fn headers(c: &mut Canvas, t: &Palette, v: &MiscVals, ui: &MiscUi) {
         }
     }
     c.text(tf, 205.0 + dx(), ty2, title_col, "Arpeggiator");
-    // Echo delay: ▸ then the title.
-    let mut g = Glyph::new();
-    let (ax, ay) = (330.0 + dx(), 196.5 + dy());
-    g.polygon(&[(ax - 2.0, ay - 4.0), (ax + 2.5, ay), (ax - 2.0, ay + 4.0)]);
-    c.glyph(if lemon { plug::DIM } else { t.tx(0xb4bfc7) }, &g);
+
     c.text(tf, 338.0 + dx(), ty2, title_col, "Echo delay / fat mode");
 }
 
@@ -1228,10 +1251,10 @@ mod tests {
         assert_eq!(off_name(Hit::Value(M::LevelVol), &v), None, "the engine plays the level adjustments");
         assert_eq!(off_name(Hit::Value(M::MainPitch), &v), None, "the main pitch switch moves the channel's pitch");
         assert_eq!(off_name(Hit::Value(M::AddKey), &v), None);
-        assert_eq!(off_name(Hit::Value(M::EchoFeed), &v), Some("Echo feedback"));
+        assert_eq!(off_name(Hit::Value(M::EchoFeed), &v), None);
         assert_eq!(off_name(Hit::Value(M::TimeGate), &v), Some("Note gate"));
         assert_eq!(off_name(Hit::Value(M::FullPorta), &v), Some("Full portamento"));
-        assert_eq!(off_name(Hit::ArpDir(2), &v), Some("Arpeggiator"));
+        assert_eq!(off_name(Hit::ArpDir(2), &v), None);
         assert_eq!(off_name(Hit::Touch, &v), Some("Multi-touch keyboard"));
         // Not a sampler: root note and fine tuning still tune the channel; only "Add to key" does nothing.
         v.sampler = false;

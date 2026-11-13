@@ -11,7 +11,7 @@ Detailed controls now opens a tabbed processing workspace. In Equalizer:
 
 There are15 bell bands. The yellow curve is the combined filter response; the softer curve shows the selected band. The assistant/reference system still fits its original band centres, so applying a new result restores those centres intentionally. Simple controls follows the edited response.
 
-This private Windows update keeps Lemon Studio's charcoal surfaces, cream text and lemon accents. It also preserves the latest Chop and mixer changes. It is not a published update. Please check the feel, display scaling and sound in your own projects.
+This private Windows update keeps ML Studio's charcoal surfaces, cream text and lemon accents. It also preserves the latest Chop and mixer changes. It is not a published update. Please check the feel, display scaling and sound in your own projects.
 
 Remaining processing stages now use full-sized rotary controls with editable values:
 - Dynamic EQ: Threshold and Max reduction for each of four bands.

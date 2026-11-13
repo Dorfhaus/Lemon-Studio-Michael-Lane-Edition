@@ -109,6 +109,8 @@ pub enum Then {
     DeletePreset(usize, PathBuf),
     /// Where to save the toolbar's layout as a preset (spec: ui/toolbar-menu.md §8).
     SaveToolbarPreset,
+    WorkspaceLayout(bool),
+    DeleteWorkspaceLayout(PathBuf),
     MarkerProfile(u8),
     /// The delete question for this toolbar preset file: Yes deletes it.
     DeleteToolbarPreset(PathBuf),
@@ -627,8 +629,14 @@ impl App {
             DHit::AiSetup=>crate::ai_control::setup(self),
             DHit::Voice(button) => crate::voice_assistant::button(self, button),
             DHit::RoutePick(t)=>{
-                let row=if let Body::RoutePicker(f)=&m.body {Some(f.row)} else {None};
-                if let Some(row)=row {self.answer(Reply::Button(Answer::Ok));self.route_sample_to(row,t);}
+                let target=if let Body::RoutePicker(f)=&m.body {Some((f.row, f.rack.clone()))} else {None};
+                if let Some((row, rack))=target {
+                    self.answer(Reply::Button(Answer::Ok));
+                    if let Some((rows, spread)) = rack {
+                        self.state.message = crate::rack_controls::route(&mut self.state, &rows, t, spread);
+                        self.sync_live(); self.invalidate();
+                    } else { self.route_sample_to(row,t); }
+                }
             }
             DHit::MixerCount => {
                 if let Body::MixerInsert(form) = &mut m.body {

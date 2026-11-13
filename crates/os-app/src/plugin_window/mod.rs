@@ -807,7 +807,13 @@ fn strip(c: &mut Canvas, st: &State, w: f32) {
         } else if active {
             c.fill_rect(cell, c_body());
         }
-        let col = if active { os_theme::current().a(0x49f1b1) } else { c_icon() };
+        let col = if active && st.pages.contains(&PageIcon::Sample) {
+            os_theme::design::lemon::MAIN
+        } else if active {
+            os_theme::current().a(0x49f1b1)
+        } else {
+            c_icon()
+        };
         let t = if i == n { crate::icons::Icon::Wrench } else { page_icon(st.pages[i]) };
         icon_at(c, t, cell.cx(), cell.cy(), 26.0, col);
     }

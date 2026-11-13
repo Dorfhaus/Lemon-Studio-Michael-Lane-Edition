@@ -1,7 +1,7 @@
 Lemon Chop — visual and interaction update
 2 November 2026 • Local development update
 
-The editor now has a larger 1040 × 860 layout, raised color-coded pads, Lemon Studio's shared dial design, clearer selected-pad / group / all-pad scope, numbered waveform cues, a position and zoom readout, and a full-sized beat-grid toolbar.
+The editor now has a larger 1040 × 860 layout, raised color-coded pads, ML Studio's shared dial design, clearer selected-pad / group / all-pad scope, numbered waveform cues, a position and zoom readout, and a full-sized beat-grid toolbar.
 
 Hover controls for guidance in the bottom strip. Drag knobs vertically; hold Ctrl for fine adjustments, double-click for a typed value, or right-click for options. The previous smooth pitch-drag fix is retained.
 

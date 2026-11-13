@@ -555,7 +555,7 @@ fn hint_panel(ui: &mut Ui, c: &Ctx) {
         ui.c.line(cx, cy, cx + 2.4, cy - 2.9, 1.4, t.text_dim.mix(light, level));
         ui.c.text_center(Font::new(8), Rect::new(bounds.x, cy + 6.0, bounds.w, 9.0), t.text_dim.mix(light, level), "MIDI");
     }
-    let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or(if t.style.vintage_2005 { "LEMON STUDIO  /  2005" } else { "" }) };
+    let hint: &str = if !f.hint.is_empty() { &f.hint } else { s.message.as_deref().unwrap_or(if t.style.vintage_2005 { "ML STUDIO  /  2005" } else { "" }) };
     let mut font=Font::new(11);
     for size in (9..=11).rev() {
         font=Font::new(size);
@@ -830,13 +830,15 @@ fn time(ui: &mut Ui, c: &Ctx) {
         let tick_x = right - kw;
         let step_x = tick_x - 8.0 - sw;
         let bar_x = (step_x - 8.0 - bw).max(tp.x + 2.0);
-        ui.c.text(big, bar_x, a.y(-3.0), g, &bar_s);
+        let big_y = a.y(-3.0);
+        let small_y = big_y + ui.c.ascent(big) - ui.c.ascent(small);
+        ui.c.text(big, bar_x, big_y, g, &bar_s);
         ui.c.fill_rect(Rect::new(step_x - 5.5, a.y(20.0), 2.0, 2.5), g);
         ui.c.fill_rect(Rect::new(step_x - 5.5, a.y(30.0), 2.0, 2.5), g);
-        ui.c.text(big, step_x, a.y(-3.0), g, &step_s);
+        ui.c.text(big, step_x, big_y, g, &step_s);
         ui.c.fill_rect(Rect::new(tick_x - 5.0, a.y(21.0), 2.0, 2.0), g);
         ui.c.fill_rect(Rect::new(tick_x - 5.0, a.y(29.5), 2.0, 2.0), g);
-        ui.c.text(small, tick_x, a.y(9.0), g, &tick_s);
+        ui.c.text(small, tick_x, small_y, g, &tick_s);
     }
     ui.c.pop_clip();
     if !t.style.vintage_2005 {
@@ -1241,7 +1243,7 @@ fn modes(ui: &mut Ui, c: &Ctx) -> bool {
     let (a, s) = (c.a, c.s);
     for (i, (icon, hint)) in [
         (Icon::TypingKeyboard, TYPING_HINT),
-        (Icon::AutoScroll, "Auto scrolling - right-click for continuous scrolling"),
+        (Icon::AutoScroll, "Follow playhead (right-click for scrolling mode)"),
         (Icon::StepEdit, "Step editing (Ctrl+E)"),
         (Icon::Link, "Enable groups (Shift+Alt+G)"),
         (Icon::MidiControl, "Multilink to controllers (Ctrl+J)"),

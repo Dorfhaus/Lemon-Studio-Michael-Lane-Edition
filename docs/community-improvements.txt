@@ -1,4 +1,4 @@
-LEMON STUDIO - LOCAL DEVELOPMENT UPDATE
+ML STUDIO - LOCAL DEVELOPMENT UPDATE
 2 November 2026
 
 Mixer polish
@@ -13,7 +13,7 @@ In PAT mode, selecting another pattern follows it at the current loop phase
 and releases the former pattern's held notes. Song playback stays in Song mode.
 
 Sampler audition
-The hosted Lemon Sampler open-file button uses Lemon Studio's sample chooser.
+The hosted Lemon Sampler open-file button uses ML Studio's sample chooser.
 Select a sample to audition it; Preview On/Off controls audition. Opening loads
 the selected sample; cancelling stops audition without replacing the channel.
 The standalone plugin keeps its own file chooser.

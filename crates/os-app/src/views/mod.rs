@@ -53,7 +53,7 @@ pub struct FrameInfo {
     /// Playback position in ticks of the running mode (a pattern wraps at its end), and whether that mode is
     /// the playlist. Every playhead and the time display read these, never the UI's own tempo or mode.
     pub tick: f64,
-    pub piano_tick: f64,
+    pub visual_tick: f64,
     pub song: bool,
     /// The tempo the toolbar shows: the one playback plays at (tempo automation moves it), else the project's.
     pub tempo: f64,
@@ -442,6 +442,12 @@ pub fn float_frame(ui: &mut Ui, s: &State, win: Win, r: Rect) -> Option<Rect> {
         ui.c.fill_rect(Rect::new(inner.x-1.,inner.y+23.,inner.w+2.,inner.h-22.),Color::rgb(0x202b32));
     } else if kit::lemon::on(t) {
         kit::float_frame(ui.c, t, r);
+        if win == Win::Playlist {
+            // The Playlist divider meets a square title bar. Fill the client
+            // well's upper corners so its vertical edge starts straight.
+            let top = Rect::new(inner.x - 1.0, inner.y + 22.0, inner.w + 2.0, (kit::lemon::r_panel(t) - 3.0).max(2.0));
+            ui.c.fill_cell(top, t.window_border.mix(t.window_title, 0.3));
+        }
     } else {
         ui.c.fill_rect(r, ui.t.s(0x191d1f));
         ui.c.fill_rect(r.inset(1.0), t.window_title);

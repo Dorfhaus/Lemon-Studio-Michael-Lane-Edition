@@ -1,6 +1,6 @@
 # Direct-host project collaboration
 
-One participant hosts from the running ML Studio application. No Lemon Studio
+One participant hosts from the running ML Studio application. No ML Studio
 website/server, cloud account or separate DAW instance is required. This is live
 project editing: each computer renders its own audio with its installed plugins.
 

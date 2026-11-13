@@ -25,23 +25,27 @@ pub const EMPTY: &str = "Empty";
 /// The settings file's keys: the picked template and the project file last opened or saved.
 const TEMPLATE_KEY: &str = "default_template";
 const LAST_KEY: &str = "last_project";
+const FACTORY_CATEGORY: &str = "ML Studio";
+const LEGACY_FACTORY_CATEGORY: &str = "Lemon Studio";
 
 /// Install this custom build's factory template into the native user library once.
 /// Existing templates and explicit user choices, including Empty, are preserved.
 pub(crate) fn install_factory_template() -> std::io::Result<()> {
     let Some(root) = root() else { return Ok(()) };
-    let path=file_in(&root,"Lemon Studio","Lemon Starter");
-    if !path.exists() {
+    let path=file_in(&root,FACTORY_CATEGORY,"Lemon Starter");
+    let legacy=file_in(&root,LEGACY_FACTORY_CATEGORY,"Lemon Starter");
+    if !path.exists() && !legacy.is_file() {
         std::fs::create_dir_all(path.parent().unwrap())?;
         use std::io::Write;
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut f)=>f.write_all(include_bytes!("../assets/templates/Lemon Starter.flp"))?,
             Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
             Err(e)=>return Err(e),
         }
     }
     if prefs::text(TEMPLATE_KEY).is_none() {
-        prefs::set_text(TEMPLATE_KEY, "Lemon Studio/Lemon Starter");
+        let category = if legacy.is_file() && !path.is_file() { LEGACY_FACTORY_CATEGORY } else { FACTORY_CATEGORY };
+        prefs::set_text(TEMPLATE_KEY, &format!("{category}/Lemon Starter"));
         crate::settings_file::write("startup_show_mixer", "1");
     }
     Ok(())
@@ -65,6 +69,12 @@ thread_local! {
 pub struct Category {
     pub name: String,
     pub templates: Vec<String>,
+}
+
+impl Category {
+    pub fn label(&self) -> &str {
+        if self.name == LEGACY_FACTORY_CATEGORY { FACTORY_CATEGORY } else { &self.name }
+    }
 }
 
 /// Template `name`'s file in category `cat`.
@@ -153,7 +163,7 @@ impl App {
                     PItem::new(t.clone(), Cmd::Template(pick)).mark(Mark::Radio(on))
                 })
                 .collect();
-            items.push(PItem { children, ..PItem::new(c.name, Cmd::Nothing) });
+            items.push(PItem { children, ..PItem::new(c.label().to_owned(), Cmd::Nothing) });
         }
         self.state.playlist.popup = Some(Popup { x, y: y + 1.0, items, sub: None, scroll: [0; 2], cascade: Vec::new() });
         self.invalidate();

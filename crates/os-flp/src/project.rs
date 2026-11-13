@@ -848,6 +848,7 @@ pub fn load(file: &FlpFile) -> Result<Project, ProjectError> {
     read_track_folders(file,&mut p);read_track_heights(file,&mut p);
     read_comp_groups(file, &mut p);
     read_attached_lanes(file, &mut p);
+    read_attached_order(file, &mut p);
     read_frozen_tracks(file, &mut p);
     read_extra_fx(file, &mut p);
     read_audio_warps(file,&mut p);
@@ -1669,6 +1670,7 @@ fn load_pl_track(events: &[Event], t: &PlTrackLoc, enc: TextEnc) -> PlaylistTrac
     let r = events[t.record].data().unwrap_or(&[]);
     let custom = t.color_flag.is_some_and(|i| int(&events[i]) != 0);
     PlaylistTrack {
+        mode: os_model::PlaylistTrackMode::Legacy,
         height:None,
         folder:false,
         frozen: None,
@@ -3296,6 +3298,7 @@ pub fn apply(project: &Project, file: &mut FlpFile) -> Result<(), ProjectError> 
     write_track_folders(project,file);write_track_heights(project,file);
     write_comp_groups(project, file);
     write_attached_lanes(project, file);
+    write_attached_order(project, file);
     write_frozen_tracks(project, file);
     write_extra_fx(project, file);
     write_audio_warps(project,file);
@@ -3841,6 +3844,7 @@ pub fn create(project: &Project) -> Result<FlpFile, ProjectError> {
     write_track_folders(project,&mut file);write_track_heights(project,&mut file);
     write_comp_groups(project, &mut file);
     write_attached_lanes(project, &mut file);
+    write_attached_order(project, &mut file);
     write_frozen_tracks(project, &mut file);
     write_extra_fx(project, &mut file);
     write_audio_warps(project,&mut file);
@@ -7050,8 +7054,50 @@ fn read_vocals(file:&FlpFile,p:&mut Project){
  }
 }
 
-fn read_track_heights(file:&FlpFile,p:&mut Project){for c in &file.chunks{if c.tag!=Tag(*b"LSTH"){continue;}let ChunkBody::Raw(d)=&c.body else{continue};if d.first()!=Some(&1){continue;}for r in d[1..].chunks_exact(8){let arr=u16::from_le_bytes([r[0],r[1]]);let row=u16::from_le_bytes([r[2],r[3]])as usize;let h=f32::from_le_bytes(r[4..8].try_into().unwrap());if h.is_finite()&&(16.0..=600.).contains(&h){if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==arr).and_then(|a|a.tracks.get_mut(row)){t.height=Some(h);}}}}}
-fn write_track_heights(p:&Project,file:&mut FlpFile){file.chunks.retain(|c|c.tag!=Tag(*b"LSTH"));let mut d=vec![1];for a in &p.arrangements{for(i,t)in a.tracks.iter().enumerate(){if let Some(h)=t.height{d.extend(a.number.to_le_bytes());d.extend((i as u16).to_le_bytes());d.extend(h.to_le_bytes());}}}if d.len()>1{file.chunks.push(Chunk{tag:Tag(*b"LSTH"),body:ChunkBody::Raw(d)});}}
+fn read_track_heights(file: &FlpFile, p: &mut Project) {
+    let default = PlaylistView::new(p.ppq);
+    let saved_zoom = p.playlist_view.unwrap_or(default).row_px() as f32 / default.row_px() as f32;
+    for chunk in &file.chunks {
+        if chunk.tag != Tag(*b"LSTH") {
+            continue;
+        }
+        let ChunkBody::Raw(data) = &chunk.body else { continue };
+        let Some((&version, records)) = data.split_first() else { continue };
+        for record in records.chunks_exact(8) {
+            let arrangement = u16::from_le_bytes([record[0], record[1]]);
+            let row = u16::from_le_bytes([record[2], record[3]]) as usize;
+            let height = f32::from_le_bytes(record[4..8].try_into().unwrap());
+            let height = match version {
+                // Version 1 stored the absolute height visible at the saved zoom.
+                1 if (16.0..=600.0).contains(&height) => height / saved_zoom,
+                2 if height > 0.0 && height <= 1800.0 => height,
+                _ => continue,
+            };
+            if let Some(track) = p.arrangements.iter_mut().find(|a| a.number == arrangement)
+                .and_then(|a| a.tracks.get_mut(row))
+            {
+                track.height = Some(height);
+            }
+        }
+    }
+}
+
+fn write_track_heights(p: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|c| c.tag != Tag(*b"LSTH"));
+    let mut data = vec![2];
+    for arrangement in &p.arrangements {
+        for (row, track) in arrangement.tracks.iter().enumerate() {
+            if let Some(height) = track.height {
+                data.extend(arrangement.number.to_le_bytes());
+                data.extend((row as u16).to_le_bytes());
+                data.extend(height.to_le_bytes());
+            }
+        }
+    }
+    if data.len() > 1 {
+        file.chunks.push(Chunk { tag: Tag(*b"LSTH"), body: ChunkBody::Raw(data) });
+    }
+}
 
 fn live_audio_edit(p:&Project,d:&os_model::audio_edit::Document)->bool{
  p.arrangements.iter().any(|a|a.number==d.arrangement&&a.clips.iter().any(|c|c.id()==d.clip&&c.source==ClipSource::Channel(d.channel)))
@@ -7085,7 +7131,15 @@ fn read_audio_edits(file:&FlpFile,p:&mut Project){
 
 // Optional versioned lane associations. Older readers retain ordinary clips and routing.
 const ATTACHED_LANES:Tag=Tag(*b"LSAM");
+const TRACK_MODES:Tag=Tag(*b"LSTM");
 fn read_attached_lanes(file:&FlpFile,p:&mut Project) {
+    for c in file.chunks.iter().filter(|c|c.tag==TRACK_MODES) {
+        let ChunkBody::Raw(d)=&c.body else {continue};
+        let Ok((1, entries))=serde_json::from_slice::<(u8,Vec<(u16,u16,os_model::PlaylistTrackMode)>)>(d) else {continue};
+        for (arr,row,mode) in entries {
+            if let Some(t)=p.arrangements.iter_mut().find(|a|a.number==arr).and_then(|a|a.tracks.get_mut(row as usize)){t.mode=mode;}
+        }
+    }
     for c in &file.chunks {if c.tag!=ATTACHED_LANES {continue;}let ChunkBody::Raw(d)=&c.body else{continue};
         if d.first()!=Some(&1) || (d.len()-1)%6!=0 {continue;}
         for r in d[1..].chunks_exact(6){let v=|i|u16::from_le_bytes([r[i],r[i+1]]);
@@ -7095,7 +7149,40 @@ fn read_attached_lanes(file:&FlpFile,p:&mut Project) {
     }
 }
 fn write_attached_lanes(p:&Project,file:&mut FlpFile){
+    file.chunks.retain(|c|c.tag!=TRACK_MODES);
+    let modes:Vec<_>=p.arrangements.iter().flat_map(|a|a.tracks.iter().enumerate().filter(|(_,t)|t.mode!=os_model::PlaylistTrackMode::Legacy).map(|(r,t)|(a.number,r as u16,t.mode))).collect();
+    if !modes.is_empty(){file.chunks.push(Chunk{tag:TRACK_MODES,body:ChunkBody::Raw(serde_json::to_vec(&(1u8,modes)).expect("track modes"))});}
     file.chunks.retain(|c|c.tag!=ATTACHED_LANES);let mut d=vec![1];
     for a in &p.arrangements {for (r,t) in a.tracks.iter().enumerate(){if let Some(m)=t.attached_mixer{for n in [a.number,r as u16,m]{d.extend(n.to_le_bytes());}}}}
     if d.len()>1{file.chunks.push(Chunk{tag:ATTACHED_LANES,body:ChunkBody::Raw(d)});}
+}
+
+// The ordinary arrangement and the existing LSAM bindings also work in older readers.
+const ATTACHED_ORDER: Tag = Tag(*b"LSAO");
+type AttachedOrder = (u16, Vec<u16>, Vec<u16>);
+
+fn read_attached_order(file: &FlpFile, p: &mut Project) {
+    for c in file.chunks.iter().filter(|c| c.tag == ATTACHED_ORDER) {
+        let ChunkBody::Raw(data) = &c.body else { continue };
+        let Ok((1, entries)) = serde_json::from_slice::<(u8, Vec<AttachedOrder>)>(data) else { continue };
+        for (number, mut order, mut hidden) in entries {
+            let Some(arr) = p.arrangements.iter_mut().find(|a| a.number == number) else { continue };
+            let mut rows = std::collections::HashSet::new();
+            order.retain(|&row| u32::from(row) < PLAYLIST_TRACKS && rows.insert(row));
+            let mut inserts = std::collections::HashSet::new();
+            hidden.retain(|&n| n != 0 && p.mixer.iter().any(|m| m.index == n && !m.clip_fx) && inserts.insert(n));
+            arr.attached_order = order;
+            arr.attached_hidden = hidden;
+        }
+    }
+}
+
+fn write_attached_order(p: &Project, file: &mut FlpFile) {
+    file.chunks.retain(|c| c.tag != ATTACHED_ORDER);
+    let entries: Vec<_> = p.arrangements.iter().filter(|a| !a.attached_order.is_empty() || !a.attached_hidden.is_empty())
+        .map(|a| (a.number, &a.attached_order, &a.attached_hidden)).collect();
+    if !entries.is_empty() {
+        let data = serde_json::to_vec(&(1u8, entries)).expect("attached order is serializable");
+        file.chunks.push(Chunk { tag: ATTACHED_ORDER, body: ChunkBody::Raw(data) });
+    }
 }

@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use os_ui::{Font, Rect};
 use crate::app::{Action, App, Ui};
 
-const NAME: &str = "Lemon Studio Starter Pack";
+const NAME: &str = "ML Studio Starter Pack";
+const LEGACY_NAME: &str = "Lemon Studio Starter Pack";
 const CREDITS: &str = include_str!("../assets/starter-pack/Credits.txt");
 const MANIFEST: &str = include_str!("../assets/starter-pack/catalog.json");
 #[derive(Debug, Deserialize)]
@@ -88,6 +89,10 @@ fn installed(dest: &Path) -> bool {
 fn install(root: &Path) -> Result<PathBuf,String> {
     let samples=root.join("Samples"); plain_dir(&samples)?;
     let dest=samples.join(NAME);
+    let legacy=samples.join(LEGACY_NAME);
+    if !dest.exists() && installed(&legacy) {
+        return Ok(legacy);
+    }
     if dest.exists() {
         if installed(&dest) {return Ok(dest)}
         return Err("A Starter Pack folder already exists. Keep or rename it before downloading again; your files were not changed.".into())
@@ -146,7 +151,10 @@ pub fn tick(app: &mut App) {
         if path.parent()!=Some(crate::views::browser::samples_root().as_path()) {app.add_browser_folder(path.clone());}
         app.state.browser_tab=0;app.state.browser_search.clear();app.state.browser_scroll=0.;
         let root=crate::views::browser::samples_root();
-        let key=if path.parent()==Some(root.as_path()) {format!("{}/{}",crate::views::browser::disk_key(&root),NAME)} else {crate::views::browser::disk_key(&path)};
+        let key=match path.file_name().filter(|_| path.parent()==Some(root.as_path())) {
+            Some(name) => format!("{}/{}",crate::views::browser::disk_key(&root),name.to_string_lossy()),
+            None => crate::views::browser::disk_key(&path),
+        };
         app.state.browser_open.insert(key);
     }
     app.state.message=Some(format!("Starter Pack: {message}"));app.invalidate();

@@ -10,7 +10,12 @@
 #![cfg_attr(not(plugin_windows), allow(dead_code))]
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
+#[cfg(feature = "rt-audit")]
+#[global_allocator]
+static AUDIO_AUDIT_ALLOCATOR: os_dsp::rt_audit::Allocator = os_dsp::rt_audit::Allocator;
 mod app;
+#[cfg(test)]
+mod audio_test_plugin;
 mod collaboration;
 mod marker_profiles;
 mod instrument_stack;
@@ -70,6 +75,7 @@ mod icons;
 mod init;
 mod knobs;
 mod layout;
+mod workspace_layout;
 mod loading;
 mod missing;
 mod import_report;
@@ -93,6 +99,7 @@ mod midi_play;
 mod mixer;
 mod attached_mixer;
 mod playlist_tracks;
+mod playlist_links;
 mod rack_mixer;
 #[cfg(any(windows,target_os="macos"))] mod strip_geometry;
 #[cfg(windows)] mod strip_editor;
@@ -190,7 +197,7 @@ mod strum;
 mod flam;
 mod flip;
 mod levels;
-mod chords;
+use os_model::chords;
 mod harmony;
 mod claw;
 mod limit;
@@ -949,6 +956,7 @@ impl ApplicationHandler for Shell {
             layout::save_main(m);
         }
         layout::save(&self.app.state);
+        workspace_layout::save_session(&self.app);
         #[cfg(target_os = "macos")]
         {
             if os_host::guard::tripped() {
@@ -1846,7 +1854,7 @@ fn screenshot(args: &[String]) {
         // Playback: what each tick repaints (spec: audio/transport.md; no device, the shown state is set directly).
         // About 4 ticks per frame = 60 frames a second at 140 BPM, 96 PPQ.
         for song in [false, true] {
-            let shown = |tick: f64, sounding: Vec<(u16, u16)>| app::Shown { playing: true, paused: false, tick, piano_tick: None, song, sounding, tempo: None };
+            let shown = |tick: f64, sounding: Vec<(u16, u16)>| app::Shown { playing: true, paused: false, tick, visual_tick: None, song, sounding, tempo: None };
             app.show_playback(shown(0.0, Vec::new()));
             let d = app.take_damage();
             app.paint_region(&mut canvas, d.flatten().as_deref());
@@ -1985,7 +1993,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("--apply-update") {
         std::process::exit(updates::helper(&args[1..]));
     }
-    if args.first().is_some_and(|s|matches!(s.as_str(), "--update-version" | "--check-update-feed" | "--verify-update" | "--cleanup-updates")) {
+    if args.first().is_some_and(|s|matches!(s.as_str(), "--update-version" | "--update-status" | "--check-update-feed" | "--verify-update" | "--cleanup-updates")) {
         std::process::exit(updates::diagnostic(&args));
     }
     if args.first().map(String::as_str)==Some("--capture-plugin-preview"){plugin_previews::child_main(&args[1..]);}
@@ -2028,6 +2036,7 @@ fn main() {
         app.startup_project();
         app.startup_form();
         layout::restore(&mut app.state);
+        workspace_layout::restore_session(&mut app);
         let report = format!(
             "user_dir={:?}\nstartup={}\ntemplate={:?}\ntitle={}\ntempo={}\nmixer_tracks={}\nmessage={:?}\n",
             os_paths::user_dir(), prefs::choice(&prefs::STARTUP_PROJECT), templates::file(),
@@ -2087,6 +2096,7 @@ fn main() {
     }
     // The windows where the last run left them.
     layout::restore(&mut app.state);
+    if start { workspace_layout::restore_session(&mut app); }
     // Keep the real launch result available when an installed app differs from a startup check.
     if let Some(report) = os_paths::user_file("startup-report.txt") {
         let _ = std::fs::write(&report, format!(
@@ -2147,15 +2157,28 @@ fn main() {
         ctrl_click: false,
         main_win: layout::main_win(),
     };
-    if let Some(result)=updates::take_result() { shell.app.state.message=Some(result); }
-    updates::start();
+    let result = updates::take_result();
+    let failure = result.as_deref().filter(|result| {
+        result.starts_with("Automatic update was not completed:")
+            || result.starts_with("Automatic update deferred:")
+            || result.starts_with("The update installed, but ML Studio could not reopen")
+    });
+    if let Some(result) = result.as_deref() {
+        if failure.is_some() {
+            shell.app.tell(dialog::Kind::Error, "ML Studio update", dialog::spans(&[result]));
+        } else {
+            shell.app.state.message = Some(result.into());
+        }
+    }
+    updates::start(failure);
     event_loop.run_app(&mut shell).expect("run");
     // After a contained plugin crash the process ends here, before plugin files are unloaded (a stopped plugin's code
     // must not run again).
     if os_host::guard::tripped() {
         os_host::guard::exit(0);
     }
-    if let Err(e) = updates::on_exit(shell.app.restart_update, shell.app.state.path.as_deref()) {
+    if !shell.app.restart_update && let Err(e) = updates::on_exit(false, None) {
+        updates::report_error(&format!("Automatic update deferred: {e}"));
         updates::report_result(&format!("Automatic update deferred: {e}"));
         eprintln!("Automatic update deferred: {e}");
     }

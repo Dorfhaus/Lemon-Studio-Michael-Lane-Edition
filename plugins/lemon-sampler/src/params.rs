@@ -156,6 +156,7 @@ pub const START_OFFSET_POLY: u32 = 0;
 /// audio/voice-levels.md "Final levels", audio/channel-filter.md "Knob positions").
 pub const MOD_X_POLY: u32 = 1;
 pub const MOD_Y_POLY: u32 = 2;
+pub const ECHO_PITCH_POLY: u32 = 8;
 
 /// A 0..1 knob shown in percent.
 pub fn knob(name: &str, default: f32) -> FloatParam {
@@ -500,6 +501,8 @@ pub struct SamplerParams {
     pub zone_lo: IntParam,
     #[id = "zone_hi"]
     pub zone_hi: IntParam,
+    #[id = "echo-pitch"]
+    pub echo_pitch: FloatParam,
 }
 
 impl Drop for SamplerParams {
@@ -574,6 +577,7 @@ impl Default for SamplerParams {
             env_modx: EnvParams::new("Mod X", 0),
             env_mody: EnvParams::new("Mod Y", 0),
             env_pitch: EnvParams::new("Pitch", 0),
+            echo_pitch: knob("Sampler echo pitch", 0.5).with_poly_modulation_id(ECHO_PITCH_POLY).hide(),
             note_drive: knob("Per-note drive",0.).with_poly_modulation_id(7).hide(),
             f_cut: knob("Filter frequency (modulation X)", 1.0).with_poly_modulation_id(MOD_X_POLY),
             f_res: knob("Filter bandwidth (modulation Y)", 0.0).with_poly_modulation_id(MOD_Y_POLY),

@@ -29,6 +29,6 @@ if grep -E '(^|[[:space:]])_AudioHardware(Create|Destroy)ProcessTap$' <<< "$APP_
     exit 1
 fi
 cargo run --locked --release -p bundle-app
-APP="$CARGO_TARGET_DIR/bundled/Lemon Studio.app"
+APP="$CARGO_TARGET_DIR/bundled/ML Studio.app"
 codesign --verify --deep --strict "$APP"
 python3 "$ROOT/packaging/mac/package-release.py" "$APP"

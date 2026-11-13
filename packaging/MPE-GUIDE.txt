@@ -1,4 +1,4 @@
-Lemon Studio Michael Lane Edition - MPE
+ML Studio Michael Lane Edition - MPE
 Local Windows development update, 3 November 2026
 
 Getting started

@@ -3,7 +3,7 @@
 // This file is part of Lemon Studio: https://github.com/ItsAlphaNeon/Lemon-Studio
 
 //! `cargo run -p bundle-app [-- --install]` (macOS): builds Lemon Studio in release mode and writes
-//! `<target>/bundled/Lemon Studio.app`: the program, its icon and an `Info.plist` that lets the Finder open `.flp`
+//! `<target>/bundled/ML Studio.app`: the program, its icon and an `Info.plist` that lets the Finder open `.flp`
 //! projects with it. `tools/logo/macos-icon.sh` generates `assets/lemonstudio.icns` from the ML Studio emblem.
 //! `Assets.car` stays in the signed bundle layout so existing updaters accept it. The bundle is signed ad hoc, as Apple
 //! silicon requires of any program it runs. `--install` copies it to `~/Applications`.
@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const NAME: &str = "Lemon Studio";
+const NAME: &str = "ML Studio";
 const EXE: &str = "lemonstudio";
 const IDENTIFIER: &str = "io.github.itsalphaneon.lemonstudio";
 
@@ -82,7 +82,7 @@ fn info_plist() -> String {
 	<key>CFBundleName</key>
 	<string>{NAME}</string>
 	<key>CFBundleDisplayName</key>
-	<string>Lemon Studio — Michael Lane Edition</string>
+	<string>ML Studio — Michael Lane Edition</string>
 	<key>CFBundleExecutable</key>
 	<string>{EXE}</string>
 	<key>CFBundleIdentifier</key>
@@ -102,14 +102,14 @@ fn info_plist() -> String {
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lemon Studio uses your audio input to record vocals and instruments into your projects.</string>
+	<string>ML Studio uses your audio input to record vocals and instruments into your projects.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Lemon Studio project</string>
+			<string>ML Studio project</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>

@@ -1,4 +1,4 @@
-LEMON STUDIO - CHANNEL STRIP MIXER VIEW
+ML STUDIO - CHANNEL STRIP MIXER VIEW
 Windows local development update - 2 November 2026
 
 The earlier custom-knob implementation was reverted. This view hosts the actual

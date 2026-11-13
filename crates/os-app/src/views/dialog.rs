@@ -899,7 +899,7 @@ fn route_picker_box(ui:&mut Ui,s:&State,m:&Modal,f:&crate::route_picker::Form){
  let r=place(s,m,840f32.min(s.screen.0-12.),462f32.min(s.screen.1-12.));
  frame(ui,r,"Send to mixer track");
  ui.c.text_clip(Font::new(12).bold(),r.x+14.,r.y+36.,r.w-28.,ui.t.text,&format!("Choose a destination for {}",f.channel));
- ui.c.text_clip(Font::new(10),r.x+14.,r.y+55.,r.w-28.,ui.t.text_dim,"Shared sample clips use the same routing. Use Make Unique first for independent routing.");
+ ui.c.text_clip(Font::new(10),r.x+14.,r.y+55.,r.w-28.,ui.t.text_dim,if let Some((_,spread))=&f.rack {if *spread {"Choose the first mixer insert. Channels follow in Channel Rack order."} else {"All selected channels will use this mixer destination."}} else {"Shared sample clips use the same routing. Use Make Unique first for independent routing."});
  field(ui,Rect::new(r.x+14.,r.y+75.,r.w-28.,26.),&f.search,true,DHit::RouteSearch,"Filter by track name or number");
  if f.search.text.is_empty(){ui.c.text_clip(Font::new(11),r.x+23.,r.y+81.,r.w-46.,ui.t.text_dim,"Find a track by name or number...");}
  let grid=Rect::new(r.x+14.,r.y+110.,r.w-28.,r.h-151.);

@@ -132,7 +132,7 @@ fn utility_bank(ui: &mut Ui, s: &State, x: f32, y: f32, recording: bool) {
         items.insert(0, (Icon::Plus, Action::PatternAdd, "New pattern", false));
     }
     if recording {
-        items.push((Icon::AutoScroll, Action::AutoScroll, "Auto scrolling", crate::autoscroll::on()));
+        items.push((Icon::AutoScroll, Action::AutoScroll, "Follow playhead", crate::autoscroll::on()));
     }
     if shown("visible_utilities") && !skin::has_frame("DiskBtns", 7) {
         items.push((Icon::Save, Action::Util(crate::app::Util::Save), "Save project", false));

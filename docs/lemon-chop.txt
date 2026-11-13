@@ -4,7 +4,7 @@ Lemon Chop — feature research and implementation notes
 Research date: 2 November 2026
 
 Purpose
-A separate Lemon Studio instrument inspired by Serato Sample's slicing workflow. Lemon Sampler remains unchanged. Original Rust implementation, Lemon's Pith visual components, Signalsmith audio stretching and the existing Lemon Demucs separator. The initial instrument shipped in build 2026110203. The polish pass described here is a local test build, awaiting hands-on review; it is not a claim of identical Serato DSP.
+A separate ML Studio instrument inspired by Serato Sample's slicing workflow. Lemon Sampler remains unchanged. Original Rust implementation, Lemon's Pith visual components, Signalsmith audio stretching and the existing Lemon Demucs separator. The initial instrument shipped in build 2026110203. The polish pass described here is a local test build, awaiting hands-on review; it is not a claim of identical Serato DSP.
 
 Research coverage
 The official product page and all functional chapters of the official manual were read: loading, source player, beatgrids, Autoset, cues, cue parameters, stems and miscellaneous. The sources below distinguish documented reference behaviour from this implementation.
@@ -27,7 +27,7 @@ Reference: per-cue level ±12 dB, filter, attack/release up to 10 seconds, rever
 https://support.serato.com/hc/en-us/articles/115000500413-Cue-parameters
 
 5. Stems
-Reference: vocals, melody, bass and drums, with mute/solo and waveform feedback. Lemon Chop calls Lemon Studio's existing installed separator from a background worker, validates all four aligned WAVs and retains their paths in the instrument state. Click a stem to toggle it; Shift-click to solo; double-click for its numeric level. It offers cancellation and no audio upload. Separation is a preparation step, not Serato's real-time proprietary engine. The waveform is recomputed on a worker from the actual stereo stem mix, including cancellation between stems; it refreshes shortly after a stem-level change. If the engine is missing, set it up through Lemon's existing audio-clip Stem separation action first.
+Reference: vocals, melody, bass and drums, with mute/solo and waveform feedback. Lemon Chop calls ML Studio's existing installed separator from a background worker, validates all four aligned WAVs and retains their paths in the instrument state. Click a stem to toggle it; Shift-click to solo; double-click for its numeric level. It offers cancellation and no audio upload. Separation is a preparation step, not Serato's real-time proprietary engine. The waveform is recomputed on a worker from the actual stereo stem mix, including cancellation between stems; it refreshes shortly after a stem-level change. If the engine is missing, set it up through Lemon's existing audio-clip Stem separation action first.
 https://support.serato.com/hc/en-us/articles/7645256113551-Stems
 
 6. Grid and automation
@@ -38,7 +38,7 @@ Reference automation covers global modes, pitch, tempo and cue parameters; undo/
 https://support.serato.com/hc/en-us/articles/115003945934-Miscellaneous
 
 Overall reference and current product extensions
-The product page also lists SLAB controller integration. The optional SLAB MIDI profile supports pages 1–2 (32 pads), velocity, play/stop preview, undo/redo, region navigation, trigger/piano switches, slice-size buttons, relative stem encoders and pitch/detune dial. Keep the Chop editor open for control actions. In Lemon Studio, a device with SLAB in its name gets pad notes translated before normal recording, while controls bypass note recording. Select the controller in the existing MIDI settings and use its general MIDI mode. Native Serato handshake, OLED/LED feedback, aftertouch, other pages and full DAW transport integration are not implemented; no physical SLAB was tested. Pitch 'n Time and Serato Stems algorithms are proprietary and are not included.
+The product page also lists SLAB controller integration. The optional SLAB MIDI profile supports pages 1–2 (32 pads), velocity, play/stop preview, undo/redo, region navigation, trigger/piano switches, slice-size buttons, relative stem encoders and pitch/detune dial. Keep the Chop editor open for control actions. In ML Studio, a device with SLAB in its name gets pad notes translated before normal recording, while controls bypass note recording. Select the controller in the existing MIDI settings and use its general MIDI mode. Native Serato handshake, OLED/LED feedback, aftertouch, other pages and full DAW transport integration are not implemented; no physical SLAB was tested. Pitch 'n Time and Serato Stems algorithms are proprietary and are not included.
 https://serato.com/sample
 
 Validation scope

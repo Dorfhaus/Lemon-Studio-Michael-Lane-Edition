@@ -1,4 +1,4 @@
-LEMON STUDIO - COMMON SHORTCUTS
+ML STUDIO - COMMON SHORTCUTS
 
 Mac: use Command for Ctrl and Option for Alt.
 

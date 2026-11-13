@@ -92,7 +92,7 @@ def login_connection(ftp,user,password,root):
     try:
         print('Signing in...',flush=True)
         ftp.login(user,password);ftp.prot_p()
-        step='opening the Lemon Studio folder'
+        step='opening the publishing folder'
         ftp.cwd(root)
         return ftp
     except ftplib.error_perm as ex:
@@ -131,7 +131,7 @@ def configure():
     except OSError as ex:
         raise RuntimeError('Login succeeded, but the separate FTP file-transfer connection timed out. The server\'s passive FTP data connection needs attention. Password was not saved.') from ex
     finally:ftp.close()
-    if b'Lemon Studio' not in data: raise RuntimeError('Wrong publishing folder; no credentials saved.')
+    if not any(brand in data for brand in (b'ML Studio', b'Lemon Studio')): raise RuntimeError('Wrong publishing folder; no credentials saved.')
     keyring.set_password(SERVICE,user,password)
     PRIVATE.mkdir(exist_ok=True);CONFIG.write_text(json.dumps(candidate,indent=2))
     if os.name!='nt': CONFIG.chmod(0o600)
@@ -170,7 +170,7 @@ def check_connection(upload=False):
     ftp=connect(cfg)
     try:
         data=bytearray();ftp.retrbinary('RETR index.html',data.extend)
-        if b'Lemon Studio' not in data:raise RuntimeError('Wrong publishing directory')
+        if not any(brand in data for brand in (b'ML Studio', b'Lemon Studio')):raise RuntimeError('Wrong publishing directory')
         if upload:
             # Only this unique disposable probe is created/replaced/deleted; no release files.
             name='connection-check-'+uuid.uuid4().hex+'.txt';temp=name+'.upload'
@@ -310,9 +310,9 @@ def build_windows(out,cfg):
     for name in ('lemonstudio.exe','Lemon Studio Source.zip','LICENSE','THIRD-PARTY-NOTICES.txt'):shutil.copy2(site/'updates'/v/name,payload/name)
     shutil.copytree(cfg['runtime'],payload/'runtime')
     shutil.copy2(ROOT/'crates/os-app/assets/templates/Lemon Starter.flp',payload/'Lemon Starter.lmn')
-    (payload/'READ ME.txt').write_text('Lemon Studio - Michael Lane edition\nDownloads and matching editable source: '+BASE+'\n')
+    (payload/'READ ME.txt').write_text('ML Studio - Michael Lane edition\nDownloads and matching editable source: '+BASE+'\n')
     label=f'{v[:4]}.{v[4:6]}.{v[6:8]}.{int(v[8:])}'
-    installer=site/'downloads'/v/f'Lemon-Studio-Windows-Setup-{label}.exe';installer.parent.mkdir(parents=True)
+    installer=site/'downloads'/v/f'ML-Studio-Windows-Setup-{label}.exe';installer.parent.mkdir(parents=True)
     run(cfg['nsis'],f'/DPAYLOAD={payload}',f'/DOUTPUT={installer}',ROOT/'packaging/windows/LemonStudio.nsi')
     # The isolated cross-compiler was installed by the initial Linux build.
     drive='Q:'
@@ -323,10 +323,10 @@ def build_windows(out,cfg):
         cross=dict(env,LEMON_MASTER_BUNDLE=linux_bundle,CARGO_ZIGBUILD_ZIG_PATH=str(tools/'python/ziglang/zig.exe'),CARGO_ZIGBUILD_CACHE_DIR=str(tools/'zig-cache'),PKG_CONFIG=str(tools/'pkg-config.cmd'),PKG_CONFIG_ALLOW_CROSS='1',PKG_CONFIG_LIBDIR=str(tools/'sysroot/usr/lib/x86_64-linux-gnu/pkgconfig'))
         run(tools/'python/bin/cargo-zigbuild.exe','zigbuild','--locked','--release','-p','os-app','--target','x86_64-unknown-linux-gnu.2.36',env=cross)
     finally:run('subst',drive,'/D')
-    linux=site/'linux'/v/f'Lemon-Studio-Linux-x86_64-{v}.tar.gz';linux.parent.mkdir(parents=True)
+    linux=site/'linux'/v/f'ML-Studio-Linux-x86_64-{v}.tar.gz';linux.parent.mkdir(parents=True)
     with tarfile.open(linux,'w:gz') as t:
         for src,name,mode in [(ROOT/'target/x86_64-unknown-linux-gnu/release/lemonstudio','lemonstudio',0o755),(ROOT/'packaging/linux/README.txt','README.txt',0o644),(ROOT/'LICENSE','LICENSE',0o644),(ROOT/'THIRD-PARTY-NOTICES.txt','THIRD-PARTY-NOTICES.txt',0o644), *LINUX_LAUNCHER_FILES]:
-            info=t.gettarinfo(str(src),'Lemon Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
+            info=t.gettarinfo(str(src),'ML Studio/'+name);info.mode=mode;info.uid=info.gid=0;info.uname=info.gname=''
             with src.open('rb') as f:t.addfile(info,f)
     (site/'platforms').mkdir(exist_ok=True)
     for scope,label,p in [('windows','Windows',installer),('linux','Linux',linux)]:
@@ -361,7 +361,7 @@ def build(publish_now):
         for rel in (m['url'],m['source']):
             p=site/rel;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(out/Path(rel).name,p)
         shutil.copy2(out/f'mac-{arch}.json',site/'platforms'/f'mac-{arch}.json')
-        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path(os.environ.get('CARGO_TARGET_DIR',Path.home()/'.cache/lemon-public-builds'/('mac-'+arch)))/'bundled/Lemon Studio.app')
+        run(sys.executable,ROOT/'packaging/prepare-unix-update.py','--platform',f'mac-{arch}','--site',site,'--app',Path(os.environ.get('CARGO_TARGET_DIR',Path.home()/'.cache/lemon-public-builds'/('mac-'+arch)))/'bundled/ML Studio.app')
         plan=write_plan(site,out,f'mac-{arch}')
     else:raise RuntimeError('Use the Windows desktop or MacBook for this release workflow.')
     # Archive the concrete publication plan and artifacts on the home server too.

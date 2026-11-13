@@ -311,7 +311,7 @@ pub fn paint(ui: &mut Ui, s: &State, r: Rect, f: &FrameInfo) {
     // Playhead: the pattern's own in pattern mode; in song mode where the song is in this pattern, while a clip of
     // it plays there.
     let head = if f.playing {
-        piano::playhead_x(s, &g, f.piano_tick, f.song)
+        piano::playhead_x(s, &g, f.visual_tick, f.song)
     } else if active_clip.is_some() && s.song_mode {
         piano::playhead_x(s, &g, f64::from(s.playlist.pos), true)
     } else {

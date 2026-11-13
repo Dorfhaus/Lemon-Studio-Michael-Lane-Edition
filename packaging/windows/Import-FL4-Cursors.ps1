@@ -60,4 +60,4 @@ New-Item -ItemType Directory -Path $folder -Force | Out-Null
 foreach ($name in $names) {
     [IO.File]::WriteAllBytes((Join-Path $folder "$name.bin"), $images[$name])
 }
-Write-Output "Imported $($names.Count) original cursor resources. Restart Lemon Studio to use them."
+Write-Output "Imported $($names.Count) original cursor resources. Restart ML Studio to use them."

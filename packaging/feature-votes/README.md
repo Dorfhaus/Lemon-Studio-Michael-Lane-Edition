@@ -1,4 +1,4 @@
-# Lemon Studio feature voting service
+# ML Studio feature voting service
 
 The native browser tab uses https://michaellanemusic.de/lemon-studio/features/api.php.
 The voting API and private owner dashboard are deployed independently of DAW installers/feeds.
@@ -42,7 +42,7 @@ On Michael's Windows PC the Desktop shortcut launches Desktop/Lemon Studio Moder
 
 Verification: original test.php still passes. admin-test.php covers old-schema migration, visibility, locks, statuses, blocked identities/vote exclusion and restoration, audit, voter review, CSRF, expiry and login throttling in an isolated temporary DB. Deployment additionally exercises real HTTP unauthorized access, login, CSRF, foreign Origin, moderation, and logout against a protected temporary route, removing test files/storage afterwards. Production verification is owner login plus read-only board/list, with no fake live votes or moderation. Native clients must update to show public status labels/comments; older versions can vote on Open unlocked suggestions and receive an inline rejection for archived statuses.
 
-Public comments: owner-only add/edit/remove, up to10 comments of600 Unicode characters per suggestion. Comments are plain text, authored as Michael / Lemon Studio, with creation/edit timestamps. Hidden suggestions never expose comments on the public board. Public API has no comment-write action; existing owner authentication and CSRF protect mutations. Additive public_comments table migration preserves votes/identities. Native HTTP response limit16MiB covers the bounded maximum board.
+Public comments: owner-only add/edit/remove, up to10 comments of600 Unicode characters per suggestion. Comments are plain text, authored as Michael / ML Studio, with creation/edit timestamps. Hidden suggestions never expose comments on the public board. Public API has no comment-write action; existing owner authentication and CSRF protect mutations. Additive public_comments table migration preserves votes/identities. Native HTTP response limit16MiB covers the bounded maximum board.
 
 
 ## Community sections and forum (2 November 2026)

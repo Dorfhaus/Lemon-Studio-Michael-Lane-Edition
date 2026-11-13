@@ -8,9 +8,23 @@ use crate::{
 use winit::keyboard::KeyCode;
 
 pub const ENABLED: &str = "typing_keyboard_enabled";
+pub const OCTAVE_VISIBILITY: &str = "visible_typing-octave";
+
+pub fn octave() -> i32 {
+    crate::settings_file::get("typing_keyboard_octave")
+        .and_then(|v| v.parse().ok()).filter(|v| (-4..=5).contains(v)).unwrap_or(0)
+}
+
+pub fn set_octave(app: &mut crate::app::App, octave: i32) {
+    app.typing_octave = octave.clamp(-4, 5);
+    crate::settings_file::write("typing_keyboard_octave", &app.typing_octave.to_string());
+    app.state.message = Some(format!("Typing keyboard base octave {}", app.typing_octave + 4));
+    app.invalidate();
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
+    Octave(i32),
     Root(u8),
     Scale(usize),
     Follow,
@@ -69,7 +83,7 @@ impl Layout {
         (0..128).contains(&note).then_some(note as u16)
     }
 
-    pub fn menu(self, x: f32, y: f32) -> Popup {
+    pub fn menu(self, x: f32, y: f32, octave: i32) -> Popup {
         let item = |name: &str, change, checked| {
             PItem::new(name.to_string(), Cmd::TypingLayout(change)).mark(Mark::Check(checked))
         };
@@ -89,19 +103,20 @@ impl Layout {
             .chain(67..=88)
             .map(|i| item(scale_name(i), Change::Scale(i), i == self.scale))
             .collect();
+        let mut items = vec![
+            PItem::sub(format!("Key: {}", ROOTS[self.root as usize]), roots),
+            PItem::sub(format!("Scale: {}", scale_name(self.scale)), scales),
+        ];
+        if crate::workspace_visibility::shown(OCTAVE_VISIBILITY) {
+            items.push(PItem::sub(format!("Octave: {}", octave + 4), (-4..=5).map(|o| {
+                item(&format!("{}{}", o + 4, if o == 0 { " (default)" } else { "" }), Change::Octave(o), o == octave)
+            }).collect()));
+        }
+        items.extend([PItem::sep(), item("Follow Piano Roll typing snap", Change::Follow, !self.independent)]);
         Popup {
             x,
             y,
-            items: vec![
-                PItem::sub(format!("Key: {}", ROOTS[self.root as usize]), roots),
-                PItem::sub(format!("Scale: {}", scale_name(self.scale)), scales),
-                PItem::sep(),
-                item(
-                    "Follow Piano Roll typing snap",
-                    Change::Follow,
-                    !self.independent,
-                ),
-            ],
+            items,
             sub: None,
             scroll: [0; 2],
             cascade: Vec::new(),
@@ -144,6 +159,32 @@ fn typing_semitone(code: KeyCode) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn octave_menu_shortcuts_persist_and_release_original_note() {
+        use crate::app::{App, Win};
+        let mut app=App::new(None);app.state.project=crate::app::test_project();app.state.z=vec![Win::ChannelRack];
+        app.toggle_typing();
+        assert!(app.typing_key(KeyCode::KeyZ,true,false,false));
+        assert_eq!(app.state.piano.typed.last().unwrap().1,48);
+        let menu=app.typing_layout.menu(0.,0.,app.typing_octave);
+        let octave_menu=menu.items.iter().find(|p|p.label=="Octave: 4").unwrap();
+        let command=octave_menu.children.iter().find(|p|p.cmd==Cmd::TypingLayout(Change::Octave(-2))).unwrap().cmd.clone();
+        crate::playlist::run(&mut app,command);
+        // Releasing after changing octave releases the held original pitch.
+        assert!(app.typing_key(KeyCode::KeyZ,false,false,false));assert!(app.state.piano.typed.is_empty());
+        assert!(app.typing_key(KeyCode::KeyZ,true,false,false));assert_eq!(app.state.piano.typed.last().unwrap().1,24);
+        app.typing_key(KeyCode::KeyZ,false,false,false);
+        assert_eq!(App::new(None).typing_octave,-2);
+        assert!(app.typing_key(KeyCode::NumpadAdd,true,false,false));assert_eq!(App::new(None).typing_octave,-1);
+        app.typing_layout.set(Change::Scale(67));set_octave(&mut app,-4);
+        assert!(app.typing_key(KeyCode::KeyZ,true,false,false));assert_eq!(app.state.piano.typed.last().unwrap().1,0);
+        app.typing_key(KeyCode::KeyZ,false,false,false);
+        crate::workspace_visibility::toggle(OCTAVE_VISIBILITY);
+        assert!(!app.typing_layout.menu(0.,0.,app.typing_octave).items.iter().any(|p|p.label.starts_with("Octave:")));
+        assert_eq!(app.typing_octave,-4);set_octave(&mut app,5);
+        assert_eq!(app.typing_layout.note(KeyCode::KeyQ,5,&app.state.piano.harmony),None);
+        crate::settings_file::write("typing_keyboard_octave","500");assert_eq!(octave(),0);
+    }
     #[test]
     fn selected_scale_plays_every_letter_position_and_remembers_typing() {
         use crate::app::{App, Win};

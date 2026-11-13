@@ -1134,17 +1134,30 @@ fn paint_slot_label(
 
 fn attached_button(ui:&mut Ui,r:Rect,label:&str,action:Action,on:bool){
     let primary = matches!(action, Action::Mix(MHit::AttachPlaylist));
+    let font = Font::new(11);
+    let r = if primary {
+        let width = (ui.c.text_width(font, label) + 24.0).min(r.w);
+        let scale = ui.c.scale;
+        let snap = |v: f32| (v * scale).round() / scale;
+        let x = snap(r.cx() - width / 2.0);
+        let y = snap(r.y);
+        Rect::new(x, y, snap(r.cx() + width / 2.0) - x, snap(r.bottom()) - y)
+    } else {
+        r
+    };
     let pressed = ui.down(r, &action);
     let hover=ui.hit(r,action,label.to_owned());
     if primary {
-        let blue = Color::rgb(0x2096f3);
+        let blue = os_theme::design::lemon::MAIN;
         let face = if pressed { blue.shade(-0.12) } else if hover { blue.shade(0.12) } else { blue };
-        os_ui::kit::bordered(ui.c, r, 3., blue.shade(-0.25), face);
-        ui.c.text_center(Font::new(11), r, Color::rgb(0x101820), label);
+        let rim = (ui.c.scale.round().max(1.0)) / ui.c.scale;
+        ui.c.fill_rrect(r, 3.0, blue.shade(-0.25));
+        ui.c.fill_rrect(r.inset(rim), 3.0 - rim, face);
+        ui.c.text_center(font, r, Color::rgb(0x101820), label);
         return;
     }
     ui.c.fill_rrect(r,3.,if on{ui.t.accent}else if hover{ui.t.button_hi}else{ui.t.button});
-    ui.c.text_center(Font::new(11),r,if on{ui.t.s(0x171b1e)}else{ui.t.text},label);
+    ui.c.text_center(font,r,if on{ui.t.s(0x171b1e)}else{ui.t.text},label);
 }
 
 use crate::attached_mixer::{self as attached, EFFECT_ROW_HEIGHT, LIST_HEADER_HEIGHT, SEND_ROW_HEIGHT, Section as InspectorSection};

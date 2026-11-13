@@ -122,7 +122,7 @@ function handle(PDO $db,array $in,string $ip,string $token): array {
 if(defined('LEMON_VOTES_TEST')){return;}
 header('Content-Type: application/json; charset=utf-8');header('Cache-Control: no-store');header('X-Content-Type-Options: nosniff');header("Content-Security-Policy: default-src 'none'");
 try {
-    if($_SERVER['REQUEST_METHOD']!=='POST'){reply(405,['error'=>'Use the Lemon Studio feature voting tab.']);}
+    if($_SERVER['REQUEST_METHOD']!=='POST'){reply(405,['error'=>'Use the ML Studio feature voting tab.']);}
     if(strtolower(explode(';',$_SERVER['CONTENT_TYPE']??'')[0])!=='application/json'){reply(415,['error'=>'JSON required.']);}
     // No cookie authentication or permissive CORS. Cross-site browser requests cannot send authorized JSON.
     if(isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN']!=='https://michaellanemusic.de'){reply(403,['error'=>'Origin not permitted.']);}

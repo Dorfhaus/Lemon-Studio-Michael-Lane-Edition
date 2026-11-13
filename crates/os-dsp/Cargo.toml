@@ -9,5 +9,8 @@ license.workspace = true
 # Time stretching and pitch shifting (MIT).
 signalsmith-stretch = "0.1.3"
 
+[features]
+rt-audit = []
+
 [build-dependencies]
 cc = "1"

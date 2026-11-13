@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Offline workflow articles, hosted in the same overlay as Settings.
-use crate::app::{Action, App, Scroll, State, Ui};
+//! Bundled user guide and shared controls for the offline Change Log.
+use crate::app::{Action, App, State, Ui};
 use crate::views::settings::{self, SAct};
-use os_ui::{Color, Font, Rect};
-use std::{cell::Cell, sync::OnceLock};
+use os_ui::{Font, Rect};
+use std::cell::Cell;
 use winit::keyboard::{Key, NamedKey};
 
+mod changelog;
+mod content;
 mod spotlight;
+mod wiki;
+
+use content::{chapters, results, topics};
 pub(crate) use spotlight::{active, paint as paint_spotlight};
 
-pub const LABEL: &str = "Search User Guide...";
+pub const LABEL: &str = "User Guide";
 pub const VISIBILITY: &str = "visible_help-guide";
 pub const SPOTLIGHT_VISIBILITY: &str = "visible_help-show-where";
+pub const DETACH_VISIBILITY: &str = "visible_help-guide-detach";
 pub const PAGE: usize = settings::TABS.len();
+const DETACHED_PREF: &str = "user_guide_detached";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hit {
@@ -20,7 +27,10 @@ pub enum Hit {
     Clear,
     Topic(usize),
     Section(usize),
+    Home,
     Back,
+    Picture,
+    Detach,
     ShowWhere,
     ReturnToGuide,
     DismissSpotlight,
@@ -28,213 +38,271 @@ pub enum Hit {
 }
 
 #[derive(Debug, Default)]
-pub struct View {
-    search: crate::dialog::Field,
+pub struct Search {
+    text: crate::dialog::Field,
     focused: bool,
-    topic: Option<usize>,
-    expanded: std::collections::BTreeSet<usize>,
-    results_scroll: f32,
-    spotlight: Option<spotlight::Visit>,
     pub content_height: Cell<f32>,
 }
 
-struct Topic {
-    category: &'static str,
-    title: &'static str,
-    keywords: &'static str,
-    paragraphs: Vec<&'static str>,
-    destination: Option<spotlight::Target>,
-    index: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Page {
+    #[default]
+    Home,
+    Chapter(usize),
+    Topic(usize),
 }
 
-fn topics() -> &'static [Topic] {
-    static TOPICS: OnceLock<Vec<Topic>> = OnceLock::new();
-    TOPICS.get_or_init(|| {
-        let mut category = "";
-        let mut topics: Vec<Topic> = Vec::new();
-        for line in include_str!("../../../docs/user-guide.md")
-            .lines()
-            .map(str::trim)
-        {
-            if let Some(name) = line.strip_prefix("## ") {
-                category = name;
-            } else if let Some(title) = line.strip_prefix("### ") {
-                topics.push(Topic {
-                    category,
-                    title,
-                    keywords: "",
-                    paragraphs: Vec::new(),
-                    destination: None,
-                    index: String::new(),
-                });
-            } else if !line.is_empty()
-                && let Some(topic) = topics.last_mut()
-            {
-                if topic.keywords.is_empty() {
-                    topic.keywords = line;
-                } else if let Some(key) = line.strip_prefix("Guide: ") {
-                    topic.destination = spotlight::Target::from_key(key);
-                } else {
-                    topic.paragraphs.push(line);
-                }
-            }
-        }
-        for topic in &mut topics {
-            topic.index = format!(
-                "{} {} {} {}",
-                topic.category,
-                topic.title,
-                topic.keywords,
-                topic.paragraphs.join(" ")
-            )
-            .to_lowercase();
-        }
-        topics
-    })
+#[derive(Debug, Default)]
+pub struct View {
+    search: Search,
+    page: Page,
+    back: Vec<(Page, f32)>,
+    pub scroll: f32,
+    picture: bool,
+    detached_open: bool,
+    pub focus_window: bool,
+    spotlight: Option<spotlight::Visit>,
 }
 
-fn results(query: &str) -> Vec<usize> {
-    let query = query.to_lowercase();
-    let terms: Vec<_> = query
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| {
-            !word.is_empty()
-                && !matches!(
-                    *word,
-                    "how" | "do" | "i" | "can" | "to" | "the" | "a" | "an" | "my" | "in" | "and"
-                )
-        })
-        .collect();
-    let mut matches: Vec<_> = topics()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, topic)| {
-            if !terms.iter().all(|term| topic.index.contains(term)) {
-                return None;
-            }
-            let title = topic.title.to_lowercase();
-            let rank = terms
-                .iter()
-                .map(|term| {
-                    if title.contains(term) {
-                        3
-                    } else if topic.keywords.contains(term) {
-                        2
-                    } else {
-                        0
-                    }
-                })
-                .sum::<u32>();
-            Some((index, rank))
-        })
-        .collect();
-    matches.sort_by_key(|&(index, rank)| (std::cmp::Reverse(rank), index));
-    matches.into_iter().map(|(index, _)| index).collect()
+impl View {
+    fn topic(&self) -> Option<usize> {
+        match self.page {
+            Page::Topic(index) => Some(index),
+            _ => None,
+        }
+    }
+
+    fn navigate(&mut self, page: Page) {
+        if self.page != page {
+            self.back.push((self.page, self.scroll));
+            self.page = page;
+            self.scroll = 0.;
+        }
+        self.picture = false;
+        self.search.focused = false;
+    }
+
+    fn home(&mut self) {
+        self.search.text.set("");
+        self.search.focused = false;
+        self.page = Page::Home;
+        self.back.clear();
+        self.picture = false;
+        self.scroll = 0.;
+    }
+
+    fn back(&mut self) {
+        self.picture = false;
+        self.search.focused = false;
+        if let Some((page, scroll)) = self.back.pop() {
+            self.page = page;
+            self.scroll = scroll;
+        } else {
+            self.home();
+        }
+    }
+
+    fn searching(&self) -> bool {
+        !matches!(self.page, Page::Topic(_)) && !self.search.text.text.trim().is_empty()
+    }
+
+    pub fn content_height(&self) -> f32 {
+        self.search.content_height.get()
+    }
+
+    pub fn scroll_by(&mut self, amount: f32, height: f32) {
+        let limit = (self.search.content_height.get() - height).max(0.);
+        self.scroll = (self.scroll + amount).clamp(0., limit);
+    }
 }
 
 pub fn is_open(s: &State) -> bool {
     s.settings.open && matches!(s.settings.tab, PAGE | crate::change_log::PAGE)
 }
 
-pub fn open(app: &mut App) {
-    if crate::workspace_visibility::shown(VISIBILITY) {
-        app.open_settings(PAGE);
-    }
+pub fn detached_open(s: &State) -> bool {
+    s.guide.detached_open
 }
 
-pub fn reset(view: &mut View) {
-    *view = View {
+pub fn open(app: &mut App) {
+    if !crate::workspace_visibility::shown(VISIBILITY) {
+        return;
+    }
+    if app.state.guide.detached_open
+        || (crate::workspace_visibility::shown(DETACH_VISIBILITY)
+            && crate::settings_file::flag(DETACHED_PREF, false))
+    {
+        app.state.guide.detached_open = true;
+        app.state.guide.focus_window = true;
+    } else {
+        app.open_settings(PAGE);
+    }
+    app.invalidate();
+}
+
+pub fn close_detached(app: &mut App) {
+    app.state.guide.detached_open = false;
+    app.state.guide.focus_window = false;
+    app.state.guide.picture = false;
+    app.invalidate();
+}
+
+pub fn fallback_to_docked(app: &mut App) {
+    close_detached(app);
+    crate::settings_file::set_flag(DETACHED_PREF, false);
+    app.open_settings(PAGE);
+}
+
+pub fn reset(search: &mut Search) {
+    *search = Search {
         focused: true,
         ..Default::default()
     };
 }
 
-pub fn act(app: &mut App, hit: Hit) {
-    match hit {
-        Hit::ShowWhere => return spotlight::show(app),
-        Hit::ReturnToGuide => return spotlight::return_to_guide(app),
-        Hit::DismissSpotlight => return spotlight::dismiss(app),
-        _ => {}
-    }
-    if !is_open(&app.state) {
-        return;
-    }
-    let st = &mut app.state.settings;
-    let view = &mut st.help;
-    match hit {
-        Hit::Search => {
-            view.focused = true;
-            view.search.select_all();
-        }
-        Hit::Clear => {
-            view.search.set("");
-            view.topic = None;
-            view.focused = true;
-            st.scroll = 0.;
-        }
-        Hit::Section(index) if view.topic.is_none() && view.search.text.trim().is_empty() => {
-            view.focused = false;
-            if !view.expanded.remove(&index) {
-                view.expanded.insert(index);
+pub fn act(app: &mut App, action: Hit) {
+    match action {
+        Hit::ShowWhere => spotlight::show(app),
+        Hit::ReturnToGuide => spotlight::return_to_guide(app),
+        Hit::DismissSpotlight => spotlight::dismiss(app),
+        _ if app.state.settings.open && app.state.settings.tab == crate::change_log::PAGE => {
+            let st = &mut app.state.settings;
+            match action {
+                Hit::Search => focus(&mut st.help),
+                Hit::Clear => {
+                    st.help.text.set("");
+                    st.help.focused = true;
+                    st.scroll = 0.;
+                }
+                Hit::Close => st.open = false,
+                _ => {}
             }
         }
-        Hit::Topic(index) if index < topics().len() => {
-            view.results_scroll = st.scroll;
-            view.topic = Some(index);
-            view.focused = false;
-            st.scroll = 0.;
-        }
-        Hit::Back => {
-            view.topic = None;
-            view.focused = false;
-            st.scroll = view.results_scroll;
-        }
-        Hit::Close => st.open = false,
-        Hit::Section(_) | Hit::Topic(_) | Hit::ShowWhere | Hit::ReturnToGuide | Hit::DismissSpotlight => {}
+        _ if is_open(&app.state) => guide_act(app, action, false),
+        _ => return,
     }
     app.invalidate();
 }
 
-pub fn key(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
-    if !is_open(&app.state)
-        && active(&app.state)
-        && *key == Key::Named(NamedKey::Escape)
-        && app.state.menu_open.is_none()
-        && app.state.playlist.popup.is_none()
-        && app.drag.is_none()
-    {
-        spotlight::dismiss(app);
-        return true;
+pub fn guide_act(app: &mut App, action: Hit, detached: bool) {
+    match action {
+        Hit::ShowWhere => return spotlight::show(app),
+        Hit::Detach if detached => return fallback_to_docked(app),
+        Hit::Detach if crate::workspace_visibility::shown(DETACH_VISIBILITY) => {
+            app.state.settings.open = false;
+            app.state.guide.detached_open = true;
+            app.state.guide.focus_window = true;
+            crate::settings_file::set_flag(DETACHED_PREF, true);
+            app.invalidate();
+        }
+        Hit::Close if detached => close_detached(app),
+        Hit::Close => {
+            app.state.settings.open = false;
+            app.state.guide.picture = false;
+        }
+        Hit::Search => focus(&mut app.state.guide.search),
+        Hit::Clear => {
+            app.state.guide.home();
+            app.state.guide.search.focused = true;
+        }
+        Hit::Home => app.state.guide.home(),
+        Hit::Section(index) if index < chapters().len() => {
+            let view = &mut app.state.guide;
+            view.search.text.set("");
+            view.navigate(Page::Chapter(index));
+        }
+        Hit::Topic(index) if index < topics().len() => app.state.guide.navigate(Page::Topic(index)),
+        Hit::Back => app.state.guide.back(),
+        Hit::Picture => app.state.guide.picture = !app.state.guide.picture,
+        _ => {}
     }
-    if !is_open(&app.state) {
-        return false;
-    }
-    let page_height = body(&app.state).h;
-    let st = &mut app.state.settings;
-    let view = &mut st.help;
+}
+
+fn focus(search: &mut Search) {
+    search.focused = true;
+    search.text.select_all();
+}
+
+fn find(key: &Key, ctrl: bool, alt: bool) -> bool {
+    ctrl && !alt
+        && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("f") || c.eq_ignore_ascii_case("k"))
+}
+
+fn page_step(key: &Key, height: f32) -> Option<f32> {
+    Some(match key {
+        Key::Named(NamedKey::PageDown) => height * 0.9,
+        Key::Named(NamedKey::PageUp) => -height * 0.9,
+        _ => return None,
+    })
+}
+
+pub fn guide_key(app: &mut App, key: &Key, ctrl: bool, alt: bool, detached: bool, height: f32) {
+    let view = &mut app.state.guide;
     match key {
-        Key::Named(NamedKey::Escape) if view.topic.is_some() => act(app, Hit::Back),
-        Key::Named(NamedKey::Escape) if !view.search.text.is_empty() => act(app, Hit::Clear),
-        Key::Named(NamedKey::Escape) => act(app, Hit::Close),
-        Key::Character(c) if ctrl && !alt && c.eq_ignore_ascii_case("f") => act(app, Hit::Search),
-        Key::Named(NamedKey::Enter) if st.tab == PAGE && view.topic.is_none() && !view.search.text.trim().is_empty() => {
-            if let Some(index) = results(&view.search.text).first().copied() {
-                act(app, Hit::Topic(index));
+        Key::Named(NamedKey::Escape) if view.picture => view.picture = false,
+        Key::Named(NamedKey::Escape) if !view.back.is_empty() => view.back(),
+        Key::Named(NamedKey::Escape) if !view.search.text.text.is_empty() => view.home(),
+        Key::Named(NamedKey::Escape) => guide_act(app, Hit::Close, detached),
+        Key::Named(NamedKey::ArrowLeft) if alt => view.back(),
+        Key::Named(NamedKey::Enter) if view.searching() => {
+            if let Some(index) = results(&view.search.text.text).first().copied() {
+                view.navigate(Page::Topic(index));
             }
         }
-        Key::Named(NamedKey::PageDown | NamedKey::PageUp) => {
-            let direction = if *key == Key::Named(NamedKey::PageDown) {
-                1.
-            } else {
-                -1.
-            };
-            let max = (view.content_height.get() - page_height).max(0.);
-            st.scroll = (st.scroll + direction * page_height * 0.9).clamp(0., max);
+        _ if find(key, ctrl, alt) => focus(&mut view.search),
+        _ if let Some(step) = page_step(key, height) => {
+            if !view.picture {
+                view.scroll_by(step, height);
+            }
         }
-        _ if view.focused => {
-            let previous = view.search.text.clone();
-            if view.search.key(key, ctrl, alt) && view.search.text != previous {
-                view.topic = None;
+        _ if view.search.focused => {
+            let before = view.search.text.text.clone();
+            if view.search.text.key(key, ctrl, alt) && view.search.text.text != before {
+                view.page = Page::Home;
+                view.back.clear();
+                view.picture = false;
+                view.scroll = 0.;
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn key(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
+    if !is_open(&app.state) {
+        if active(&app.state)
+            && *key == Key::Named(NamedKey::Escape)
+            && app.state.menu_open.is_none()
+            && app.state.playlist.popup.is_none()
+            && app.drag.is_none()
+        {
+            spotlight::dismiss(app);
+            return true;
+        }
+        return false;
+    }
+    if app.state.settings.tab == PAGE {
+        let height = body(&app.state).h;
+        guide_key(app, key, ctrl, alt, false, height);
+        return true;
+    }
+    let height = body(&app.state).h;
+    let st = &mut app.state.settings;
+    let search = &mut st.help;
+    match key {
+        Key::Named(NamedKey::Escape) if !search.text.text.is_empty() => {
+            search.text.set("");
+            st.scroll = 0.;
+        }
+        Key::Named(NamedKey::Escape) => st.open = false,
+        _ if find(key, ctrl, alt) => focus(search),
+        _ if let Some(step) = page_step(key, height) => {
+            st.scroll =
+                (st.scroll + step).clamp(0., (search.content_height.get() - height).max(0.));
+        }
+        _ if search.focused => {
+            let before = search.text.text.clone();
+            if search.text.key(key, ctrl, alt) && search.text.text != before {
                 st.scroll = 0.;
             }
         }
@@ -243,418 +311,88 @@ pub fn key(app: &mut App, key: &Key, ctrl: bool, alt: bool) -> bool {
     true
 }
 
-fn rect(s: &State) -> Rect {
-    let (width, height) = s.screen;
-    let w = (width - 24.).clamp(220., 840.);
-    let h = (height - 36.).clamp(180., 740.);
-    Rect::new(
-        ((width - w) / 2.).max(0.).round(),
-        ((height - h) / 2.).max(0.).round(),
-        w,
-        h,
-    )
-}
-
 pub fn body(s: &State) -> Rect {
-    let r = rect(s);
-    Rect::new(r.x + 16., r.y + 117., r.w - 38., r.h - 130.)
+    if s.settings.tab == PAGE {
+        wiki::body(s.screen, false)
+    } else {
+        changelog::changelog_body(s)
+    }
 }
 
-fn hit(hit: Hit) -> Action {
-    Action::Settings(SAct::Help(hit))
+pub fn paint(ui: &mut Ui, s: &State) {
+    if s.settings.tab == PAGE {
+        wiki::paint(ui, s, false);
+    } else {
+        changelog::paint(ui, s);
+    }
+}
+
+pub fn paint_detached(ui: &mut Ui, s: &State) {
+    wiki::paint(ui, s, true);
+}
+
+pub fn scroll_detached(app: &mut App, amount: f32, height: f32) {
+    if !app.state.guide.picture {
+        app.state.guide.scroll_by(amount, height);
+    }
+}
+
+pub fn detached_body_height(screen: (f32, f32)) -> f32 {
+    wiki::body(screen, true).h
+}
+
+pub fn wheel(app: &mut App, amount: f32) -> bool {
+    if !is_open(&app.state) || app.state.settings.tab != PAGE {
+        return false;
+    }
+    let height = body(&app.state).h;
+    if !app.state.guide.picture {
+        app.state.guide.scroll_by(amount, height);
+        app.invalidate();
+    }
+    true
+}
+
+fn hit(action: Hit) -> Action {
+    Action::Settings(SAct::Help(action))
 }
 
 fn button(ui: &mut Ui, r: Rect, label: &str, action: Hit) {
     let hover = ui.hit(r, hit(action), label.to_owned());
-    ui.c.fill_rrect(r, 4., if hover { ui.t.button_hi } else { ui.t.button });
-    ui.c.text_center(Font::new(12), r, ui.t.text, label);
+    ui.c.fill_rrect(r, 5., if hover { ui.t.button_hi } else { ui.t.button });
+    ui.c.text_center(Font::new(13), r, ui.t.text, label);
 }
 
-pub(crate) fn wrap_lines(ui:&mut Ui,font:Font,value:&str,width:f32)->Vec<String>{
- let mut out=Vec::new();
- for paragraph in value.lines(){
-  let mut line=String::new();
-  for word in paragraph.split_whitespace(){
-   let candidate=if line.is_empty(){word.to_string()}else{format!("{line} {word}")};
-   if ui.c.text_width(font,&candidate)<=width {line=candidate;continue;}
-   if !line.is_empty(){out.push(std::mem::take(&mut line));}
-   for ch in word.chars(){let candidate=format!("{line}{ch}");if !line.is_empty()&&ui.c.text_width(font,&candidate)>width {out.push(std::mem::take(&mut line));}line.push(ch);}
-  }
-  out.push(line);
- }
- out
-}
-
-pub fn paint(ui: &mut Ui, s: &State) {
-    let r = rect(s);
-    let body = body(s);
-    let st = &s.settings;
-    let view = &st.help;
-    let change_log = st.tab == crate::change_log::PAGE;
-    let t = ui.t;
-
-    ui.hit(r, Action::Settings(SAct::Body), "");
-    ui.c.fill_rrect(r.outset(4.), 10., Color::rgb(0x000000).with_alpha(80));
-    ui.c.fill_rrect(r, 8., t.window_title);
-    ui.c.fill_rrect(r.inset(1.), 7., t.s(0x25282b));
-
-    ui.c.text_clip(
-        Font::new(21).bold(),
-        r.x + 16.,
-        r.y + 12.,
-        r.w - 98.,
-        t.text,
-        if change_log { crate::change_log::LABEL } else { "ML Studio User Guide" },
-    );
-    button(
-        ui,
-        Rect::new(r.right() - 75., r.y + 12., 59., 26.),
-        "Close",
-        Hit::Close,
-    );
-    ui.c.text_clip(
-        Font::new(12),
-        r.x + 16.,
-        r.y + 41.,
-        r.w - 32.,
-        t.text_dim,
-        if change_log { "Michael Lane Edition release history · available offline" }
-        else { "Browse topics or search by feature, task, or shortcut. Available offline." },
-    );
-
-    let search = Rect::new(r.x + 16., r.y + 61., r.w - 100., 30.);
-    let hover = ui.hit(search, hit(Hit::Search), if change_log { "Search the Change Log" } else { "Search the User Guide" });
-    crate::views::sunken(ui, search, t.sunken);
-    settings::cell_text(
-        ui,
-        search,
-        &view.search.text,
-        view.focused.then_some(&view.search),
-        hover,
-    );
-    if view.search.text.is_empty() {
-        ui.c.text_clip(
-            Font::new(12),
-            search.x + 7.,
-            search.y + 7.,
-            search.w - 14.,
-            t.text_dim,
-            if change_log { "Search by date or change" } else { "Try audio timing, no sound, or Ctrl wheel" },
-        );
-    }
-    button(
-        ui,
-        Rect::new(search.right() + 7., search.y, 61., search.h),
-        "Clear",
-        Hit::Clear,
-    );
-
-    let matches = if change_log { Vec::new() } else { results(&view.search.text) };
-    let browse = !change_log && view.topic.is_none() && view.search.text.trim().is_empty();
-    let total = if browse {
-        let mut height = 0.;
-        let mut section = 0;
-        for (i, topic) in topics().iter().enumerate() {
-            if i == 0 || topics()[i - 1].category != topic.category {
-                height += 33.;
-                section = i;
-            }
-            if view.expanded.contains(&section) {
-                height += 47.;
-            }
-        }
-        height
-    } else {
-        view.content_height.get()
-    };
-    let offset = st.scroll.clamp(0., (total - body.h).max(0.));
-    ui.c.push_clip(body);
-    ui.clip_hit_rect(body, |ui| {
-        let mut y = body.y - offset;
-        if change_log {
-            y += crate::change_log::paint_rows(ui, body, offset, &view.search.text);
-        } else if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
-            for line in wrap_lines(ui, Font::new(12).bold(), topic.title, body.w) {
-                ui.c.text_clip(Font::new(12).bold(), body.x, y, body.w, t.text, &line);
-                y += 19.;
-            }
-            y += 9.;
-            for paragraph in &topic.paragraphs {
-                for line in wrap_lines(ui, Font::new(12), paragraph, body.w - 8.) {
-                    ui.c.text_clip(Font::new(12), body.x, y, body.w, t.text, &line);
-                    y += 19.;
-                }
-                y += 9.;
-            }
-        } else {
-            let mut section = 0;
-            for index in matches.iter().copied() {
-                let topic = &topics()[index];
-                if browse && (index == 0 || topics()[index - 1].category != topic.category) {
-                    section = index;
-                    let header = Rect::new(body.x, y, body.w, 29.);
-                    if header.bottom() > body.y && header.y < body.bottom() {
-                        let open = view.expanded.contains(&section);
-                        let hover = ui.hit(header, hit(Hit::Section(section)), topic.category);
-                        ui.c.fill_rrect(header, 4., if hover { t.button_hi } else { t.button });
-                        let (cx, cy) = (header.x + 12., header.cy());
-                        let arrow = if open {
-                            [(cx - 4., cy - 2.), (cx + 4., cy - 2.), (cx, cy + 3.)]
-                        } else {
-                            [(cx - 2., cy - 4.), (cx - 2., cy + 4.), (cx + 3., cy)]
-                        };
-                        ui.c.fill_polygon(&arrow, t.text);
-                        ui.c.text_clip(Font::new(13).bold(), header.x + 24., header.y + 5., header.w - 30., t.text, topic.category);
-                    }
-                    y += 33.;
-                }
-                if browse && !view.expanded.contains(&section) {
-                    continue;
-                }
-                let inset = if browse { 12. } else { 0. };
-                let card = Rect::new(body.x + inset, y, body.w - inset, 42.);
-                if card.bottom() > body.y && card.y < body.bottom() {
-                    let hover = ui.hit(card, hit(Hit::Topic(index)), topic.title);
-                    ui.c.fill_rrect(card, 5., if hover { t.button_hi } else { t.s(0x303438) });
-                    ui.c.text_clip(
-                        Font::new(14).bold(),
-                        card.x + 10.,
-                        card.y + 4.,
-                        card.w - 20.,
-                        t.text,
-                        topic.title,
-                    );
-                    ui.c.text_clip(
-                        Font::new(11),
-                        card.x + 10.,
-                        card.y + 23.,
-                        card.w - 20.,
-                        t.text_dim,
-                        if browse {
-                            topic.keywords
-                        } else {
-                            topic.category
-                        },
-                    );
-                }
-                y += 47.;
-            }
-            if matches.is_empty() {
-                ui.c.text_clip(
-                    Font::new(13),
-                    body.x,
-                    y + 5.,
-                    body.w,
-                    t.text,
-                    "No matching topics. Try fewer words or a feature name.",
-                );
-                y += 28.;
-            }
-        }
-        view.content_height.set(y - body.y + offset);
-    });
-    ui.c.pop_clip();
-
-    if change_log {
-        ui.c.text_clip(Font::new(12), body.x, r.y + 98., body.w, t.text_dim, "Newest changes first");
-    } else if let Some(topic) = view.topic.and_then(|i| topics().get(i)) {
-        button(
-            ui,
-            Rect::new(body.x, r.y + 94., 61., 21.),
-            "‹ Back",
-            Hit::Back,
-        );
-        ui.c.text_clip(
-            Font::new(12),
-            body.x + 70.,
-            r.y + 98.,
-            (body.w
-                - if topic.destination.is_some() && spotlight::enabled() {
-                    200.
-                } else {
-                    70.
-                })
-            .max(0.),
-            t.text_dim,
-            topic.category,
-        );
-        if topic.destination.is_some() && spotlight::enabled() {
-            let show = Rect::new(body.right() - 122., r.y + 93., 122., 22.);
-            button(ui, show, "Show me where", Hit::ShowWhere);
-        }
-    } else {
-        let count = matches.len();
-        ui.c.text_clip(
-            Font::new(12),
-            body.x,
-            r.y + 98.,
-            body.w,
-            t.text_dim,
-            &if browse {
-                format!("{count} topics  ·  Click a section to browse")
+pub(crate) fn wrap_lines(ui: &mut Ui, font: Font, value: &str, width: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in value.lines() {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_owned()
             } else {
-                format!("{count} topics  ·  Enter opens the first match")
-            },
-        );
+                format!("{line} {word}")
+            };
+            if ui.c.text_width(font, &candidate) <= width {
+                line = candidate;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for ch in word.chars() {
+                line.push(ch);
+                if line.len() > ch.len_utf8() && ui.c.text_width(font, &line) > width {
+                    line.pop();
+                    lines.push(std::mem::take(&mut line));
+                    line.push(ch);
+                }
+            }
+        }
+        lines.push(line);
     }
-    let total = view.content_height.get();
-    if total > body.h {
-        crate::views::scrollbar(
-            ui,
-            Rect::new(body.right() + 7., body.y, 8., body.h),
-            true,
-            offset.min(total - body.h),
-            body.h,
-            total,
-            Scroll::Settings,
-        );
-    }
+    lines
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::views::menus::{self, HELP_GUIDE, HELP_MENU};
-
-    #[test]
-    fn guide_menu_search_read_back_and_visibility() {
-        assert!(topics().len() >= 50);
-        assert!(topics().iter().all(|topic| !topic.category.is_empty()
-            && !topic.keywords.is_empty()
-            && topic.paragraphs.len() >= 2));
-        let warp = results("How do I warp audio?")[0];
-        assert_eq!(topics()[warp].title, "Edit audio timing with warp markers");
-        assert!(!results("ctrl wheel").is_empty());
-        assert!(results("zzzznoresult").is_empty());
-
-        let mut app = App::new(None);
-        let item = menus::item_at(HELP_MENU, HELP_GUIDE).unwrap();
-        assert!(menus::in_menu(&app.state, HELP_MENU, item));
-        for (w, h) in [(700, 460), (1280, 800)] {
-            app.state.screen = (w as f32, h as f32);
-            let mut canvas = os_ui::Canvas::new(w, h, 1.).unwrap();
-            app.menu_item(HELP_MENU, HELP_GUIDE);
-            assert!(is_open(&app.state));
-            app.paint(&mut canvas, None);
-            assert!(!app.hits.iter().any(|target| matches!(target.action, Action::Settings(SAct::Help(Hit::Topic(_))))));
-            let section = app.hits.iter().find(|target| target.action == hit(Hit::Section(0))).unwrap().rect;
-            for open in [true, false] {
-                app.mouse_move(section.cx(), section.cy());
-                app.mouse_down();
-                app.mouse_up();
-                app.paint(&mut canvas, None);
-                assert_eq!(app.hits.iter().any(|target| target.action == hit(Hit::Topic(0))), open);
-            }
-            act(&mut app, Hit::Search);
-            app.key(&Key::Character("warp audio".into()), false, false);
-            app.paint(&mut canvas, None);
-            let row = app
-                .hits
-                .iter()
-                .find(|target| target.action == hit(Hit::Topic(warp)))
-                .unwrap()
-                .rect;
-            app.mouse_move(row.cx(), row.cy());
-            app.mouse_down();
-            app.mouse_up();
-            assert_eq!(app.state.settings.help.topic, Some(warp));
-            app.paint(&mut canvas, None);
-            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-                canvas
-                    .pixmap
-                    .save_png(std::path::PathBuf::from(dir).join(format!("user-guide-{w}.png")))
-                    .unwrap();
-            }
-            app.key(&Key::Named(NamedKey::Escape), false, false);
-            assert!(app.state.settings.help.topic.is_none());
-            assert_eq!(app.state.settings.help.search.text, "warp audio");
-            app.key(&Key::Named(NamedKey::Enter), false, false);
-            assert_eq!(app.state.settings.help.topic, Some(warp));
-        }
-        act(&mut app, Hit::Close);
-        crate::workspace_visibility::toggle(VISIBILITY);
-        assert!(!menus::in_menu(&app.state, HELP_MENU, item));
-        app.menu_item(HELP_MENU, HELP_GUIDE);
-        assert!(!is_open(&app.state));
-    }
-
-    #[test]
-    fn spotlight_reveals_control_and_returns_to_article() {
-        let mut app = App::new(None);
-        app.state.project = crate::app::test_project();
-        app.state.z.clear();
-        let index = results("warp audio")[0];
-        let mut canvas = os_ui::Canvas::new(1280, 800, 1.).unwrap();
-        let before = app.state.project.clone();
-        let click = |app: &mut App, action: Hit| {
-            let rect = app
-                .hits
-                .iter()
-                .find(|target| target.action == hit(action))
-                .unwrap()
-                .rect;
-            app.mouse_move(rect.cx(), rect.cy());
-            app.mouse_down();
-            app.mouse_up();
-        };
-
-        for vintage in [false, true] {
-            app.state.vintage_2005 = vintage;
-            open(&mut app);
-            act(&mut app, Hit::Topic(index));
-            app.paint(&mut canvas, None);
-            click(&mut app, Hit::ShowWhere);
-            assert!(!is_open(&app.state));
-            assert!(active(&app.state));
-            assert_eq!(app.state.z.last(), Some(&crate::app::Win::Playlist));
-            app.paint(&mut canvas, None);
-            let anchor = app
-                .hits
-                .iter()
-                .find(|h| h.action == Action::Warp(crate::warp::Command::Toggle(0)))
-                .unwrap()
-                .rect;
-            let x = anchor.cx().round() as u32;
-            let y = (anchor.y - 3.).round() as u32;
-            assert!((y.saturating_sub(1)..=y + 1).any(|y| {
-                canvas.pixmap.pixel(x, y).is_some_and(|pixel|
-                    (pixel.red(), pixel.green(), pixel.blue()) == (32, 150, 243))
-            }));
-            assert!(matches!(
-                app.top_hit(anchor.cx(), anchor.cy()).map(|h| &h.action),
-                Some(Action::Warp(crate::warp::Command::Toggle(0)))
-            ));
-            if let Some(dir) = std::env::var_os("OS_SHOT_DIR") {
-                canvas
-                    .pixmap
-                    .save_png(
-                        std::path::PathBuf::from(dir)
-                            .join(format!("guide-spotlight-{vintage}.png")),
-                    )
-                    .unwrap();
-            }
-            click(&mut app, Hit::ReturnToGuide);
-            assert!(is_open(&app.state));
-            assert_eq!(app.state.settings.help.topic, Some(index));
-            assert!(!active(&app.state));
-            assert!(app.state.project == before);
-        }
-
-        let scan = results("find installed plugins")[0];
-        act(&mut app, Hit::Topic(scan));
-        app.paint(&mut canvas, None);
-        click(&mut app, Hit::ShowWhere);
-        assert_eq!(app.state.settings.tab, settings::PLUGINS);
-        assert!(active(&app.state));
-        app.paint(&mut canvas, None);
-        click(&mut app, Hit::ReturnToGuide);
-        assert_eq!(app.state.settings.help.topic, Some(scan));
-        crate::workspace_visibility::toggle(SPOTLIGHT_VISIBILITY);
-        app.paint(&mut canvas, None);
-        assert!(
-            !app.hits
-                .iter()
-                .any(|target| target.action == hit(Hit::ShowWhere))
-        );
-    }
-}
+mod tests;

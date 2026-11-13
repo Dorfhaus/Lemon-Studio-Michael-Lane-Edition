@@ -14,7 +14,7 @@ async function rate(e,r,scope,limit,period){
 }
 async function ticketKey(e){return crypto.subtle.importKey('raw',enc.encode(e.DEVICE),{name:'HMAC',hash:'SHA-256'},false,['sign','verify'])}
 async function desktopSession(r,e){
- if(r.method!=='POST'||r.headers.has('Origin')||r.headers.get('User-Agent')!==desktopAgent)return j('Open Community Samples in Lemon Studio',403);
+ if(r.method!=='POST'||r.headers.has('Origin')||r.headers.get('User-Agent')!==desktopAgent)return j('Open Community Samples in ML Studio',403);
  if(!await rate(e,r,'session',180,3600000))return j('Too many connections. Try again later.',429);
  const payload=crypto.randomUUID()+'.'+(Date.now()+86400000);
  const signature=hex(await crypto.subtle.sign('HMAC',await ticketKey(e),enc.encode('desktop:'+payload)));
@@ -30,7 +30,7 @@ export default {async fetch(r,e){
 let p=new URL(r.url).pathname,t=r.headers.get('X-Studio-Time'),sig=r.headers.get('X-Studio-Signature')||'';
 if(p==='/desktop/session')return desktopSession(r,e);
 const desktop=await validTicket(r,e);
-if(!desktop && (!t||Math.abs(Date.now()/1000-Number(t))>45||!Number.isFinite(Number(t))||!/^[a-f0-9]{64}$/.test(sig)))return j('Lemon Studio session required',403);
+if(!desktop && (!t||Math.abs(Date.now()/1000-Number(t))>45||!Number.isFinite(Number(t))||!/^[a-f0-9]{64}$/.test(sig)))return j('ML Studio session required',403);
 if(Number(r.headers.get('Content-Length')||0)>7200000)return j('File too large',413);
 let body=await r.arrayBuffer();if(body.byteLength>7200000)return j('File too large',413);
 let k=await crypto.subtle.importKey('raw',enc.encode(e.DEVICE),{name:'HMAC',hash:'SHA-256'},false,['verify']);

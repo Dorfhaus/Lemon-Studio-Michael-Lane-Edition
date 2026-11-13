@@ -1497,7 +1497,10 @@ fn renumber(s: &mut State, m: &dyn Fn(u16) -> u16, from: u16, to: u16, removed: 
     for c in s.project.channels.iter_mut() {
         c.mixer_track = m(c.mixer_track);
     }
-    for a in &mut s.project.arrangements {for t in &mut a.tracks {t.comp=t.comp.map(m);t.attached_mixer=t.attached_mixer.filter(|n|!removed.contains(n)).map(m);}}
+    for a in &mut s.project.arrangements {
+        for t in &mut a.tracks {t.comp=t.comp.map(m);t.attached_mixer=t.attached_mixer.filter(|n|!removed.contains(n)).map(m);}
+        a.attached_hidden.retain_mut(|n| if removed.contains(n) { false } else { *n=m(*n); true });
+    }
     s.selected_mixer = m(s.selected_mixer);
     s.mixer.sel = s.mixer.sel.iter().map(|&t| m(t)).collect();
     s.mixer.slot_names = std::mem::take(&mut s.mixer.slot_names).into_iter().map(|((t, k), v)| ((m(t), k), v)).collect();
@@ -1633,7 +1636,10 @@ fn delete_track(s: &mut State, n: u16) -> Option<String> {
     for c in s.project.channels.iter_mut() {
         c.mixer_track = m(c.mixer_track);
     }
-    for a in &mut s.project.arrangements{for t in &mut a.tracks{t.attached_mixer=t.attached_mixer.filter(|v|*v!=n).map(m);}}
+    for a in &mut s.project.arrangements {
+        for t in &mut a.tracks {t.attached_mixer=t.attached_mixer.filter(|v|*v!=n).map(m);}
+        a.attached_hidden.retain_mut(|v| if *v==n { false } else { *v=m(*v); true });
+    }
     let mut map = Vec::new();
     for t in n + 1..hidden {
         for k in 0..64u8 {

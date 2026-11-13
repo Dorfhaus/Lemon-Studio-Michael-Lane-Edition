@@ -396,6 +396,9 @@ fn catalog(s: &State, c: usize, all: &[Binding]) -> Vec<(String, String, Option<
             None,
         ),
     ];
+    if c == 0 {
+        out.extend(crate::workspace_layout::actions().into_iter().map(|(id,label,cmd)|(id,label,Some(cmd))));
+    }
     for &(id, label, scope) in BUILTINS {
         if c == scope || (scope == 1 && matches!(c, 6 | 7)) {
             out.push((id.into(), label.into(), None));
@@ -427,7 +430,7 @@ fn catalog(s: &State, c: usize, all: &[Binding]) -> Vec<(String, String, Option<
             let name = format!("{path}/{}", item.label);
             if !item.children.is_empty() {
                 walk(item.children, name, out);
-            } else if item.enabled && !matches!(item.cmd, Cmd::Nothing | Cmd::NotYet(_)) {
+            } else if item.enabled && !matches!(item.cmd, Cmd::Nothing | Cmd::NotYet(_) | Cmd::WorkspaceLayout(crate::workspace_layout::Command::Load(_))) {
                 out.push((name.clone(), name, Some(item.cmd)));
             }
         }
@@ -571,6 +574,15 @@ fn builtin(app: &mut App, id: &str, c: usize) -> bool {
     app.state.piano.dirty = true;
     true
 }
+pub fn layout_shortcut(app: &mut App, label: &str) {
+    app.open_settings(CONTROLS);
+    let e = &mut app.state.settings.input_editor;
+    e.context = 0; e.event = KEYBOARD; e.page = 0;
+    e.search.set(label); e.searching = false; e.browser.get_mut().take();
+    e.notice = "Capture a shortcut, review its current assignment, then choose Assign for this layout.".into();
+    app.invalidate();
+}
+
 fn command(s: &State, c: usize, id: &str) -> Option<Cmd> {
     let all = bindings();
     let find = |scope| {
@@ -1930,6 +1942,32 @@ mod tests {
     use super::*;
     use crate::piano;
     use os_ui::Canvas;
+    #[test]
+    fn custom_layout_hotkey_assign_reopen_conflict_remove_and_hidden_menu() {
+        let mut app=App::new(None);app.state.project=crate::app::test_project();
+        let mut canvas=Canvas::new(1600,1000,1.).unwrap();app.paint(&mut canvas,None);
+        app.state.rack_pos=(440.,310.);
+        let path=std::env::temp_dir().join(format!("ml-hotkey-layout-{}.lslayout",std::process::id()));
+        crate::workspace_layout::chosen(&mut app,&path,true);
+        let (id,label,_)=crate::workspace_layout::actions().into_iter().find(|(id,_,_)|id.ends_with(path.to_str().unwrap())).unwrap();
+        layout_shortcut(&mut app,&label);
+        assert_eq!(app.state.settings.tab,CONTROLS);
+        assert!(catalog(&app.state,0,&bindings()).iter().any(|(key,_,_)|key==&id));
+        // Assign through the same editor path as the button, replacing an existing custom assignment.
+        bind(0,"Key F8",&["ignore"]);
+        app.state.settings.input_editor.key="F8".into();
+        edit(&mut app,Edit::Assign(id.clone()));
+        assert_eq!(lookup(0,"Key F8",0),Some(vec![id.clone()]));
+        let mut reopened=App::new(None);reopened.state.project=crate::app::test_project();
+        reopened.state.rack_pos=(0.,0.);reopened.state.z=vec![Win::Playlist];
+        crate::workspace_visibility::toggle(crate::workspace_layout::VISIBILITY);
+        assert!(key(&mut reopened,&Key::Named(NamedKey::F8),false,false));
+        assert_eq!(reopened.state.rack_pos,(440.,310.));
+        // Removing the binding restores the normal key path and leaves the preset available.
+        edit(&mut app,Edit::Remove);assert!(lookup(0,"Key F8",0).is_none());assert!(path.is_file());
+        crate::workspace_layout::deleted(&mut app,&path);
+        assert!(command(&app.state,0,&id).is_none());
+    }
 
     fn bind(context: usize, name: &str, actions: &[&str]) {
         let mut all = bindings().as_ref().clone();

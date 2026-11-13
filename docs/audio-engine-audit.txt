@@ -1,4 +1,4 @@
-LEMON STUDIO - LOCAL AUDIO UPDATE
+ML STUDIO - LOCAL AUDIO UPDATE
 
 ASIO setup
 Select AudioBox ASIO in Settings > Audio, choose your sample rate, and use

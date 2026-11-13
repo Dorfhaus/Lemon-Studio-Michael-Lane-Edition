@@ -72,7 +72,7 @@ pub fn template_items(_: &State) -> Vec<PItem> {
         .into_iter()
         .map(|c| {
             let children = c.templates.iter().map(|t| PItem::new(t.clone(), Cmd::NewTemplate(format!("{}/{t}", c.name)))).collect();
-            PItem { children, ..PItem::new(c.name, Cmd::Nothing) }
+            PItem { children, ..PItem::new(c.label().to_owned(), Cmd::Nothing) }
         })
         .collect();
     items.push(PItem::new(crate::templates::EMPTY, Cmd::NewTemplate(crate::templates::EMPTY.into())));

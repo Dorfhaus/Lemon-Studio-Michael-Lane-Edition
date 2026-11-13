@@ -109,7 +109,7 @@ pub fn record_option(label: &str) -> Option<crate::record::Opt> {
     }
 }
 /// OPTIONS > Auto scrolling (spec: ui/auto-scrolling.md §1).
-pub const AUTOSCROLL_LABEL: &str = "Auto scrolling";
+pub const AUTOSCROLL_LABEL: &str = "Follow playhead";
 /// OPTIONS > Enable groups (spec: ui/enable-groups.md §1).
 pub const GROUPS_LABEL: &str = "Enable groups";
 /// OPTIONS > Step edit (spec: ui/step-edit.md).
@@ -526,6 +526,7 @@ pub fn label_now(s: &State, menu: usize, item: &Item) -> std::borrow::Cow<'stati
 /// Whether an entry is in its menu now: EDIT's Redo only with Alternate undo mode on and a history to act on (spec:
 /// ui/menus.md "EDIT": only Undo while the history is empty).
 pub fn in_menu(s: &State, menu: usize, item: &Item) -> bool {
+    if menu == VIEW && item.label == "Arrange windows" { return crate::workspace_visibility::shown(crate::workspace_layout::VISIBILITY); }
     if item.label==crate::collaboration::LABEL {return s.collaborating || crate::workspace_visibility::shown(crate::collaboration::VISIBLE);}
     if menu == HELP_MENU && item.label == crate::change_log::LABEL {
         return crate::workspace_visibility::shown(crate::change_log::VISIBILITY);
@@ -610,6 +611,7 @@ pub fn submenu(menu: usize, label: &str) -> Option<fn(&State) -> Vec<crate::play
         (TOOLS_MENU, CLIPS_SEL_LABEL) => Some(|_| crate::rack::stretch_items(false)),
         // spec: ui/toolbar-menu.md §8
         (VIEW, "Toolbars") => Some(toolbar_items),
+        (VIEW, "Arrange windows") => Some(crate::workspace_layout::items),
         _ => None,
     }
 }

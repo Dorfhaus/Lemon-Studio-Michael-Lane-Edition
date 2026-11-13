@@ -378,6 +378,11 @@ pub(crate) fn transient_times(sample: Arc<os_engine::Sample>, start: usize, end:
         .into_iter().map(|onset| onset.time).collect()
 }
 
+pub(crate) fn transient_candidates(sample: Arc<os_engine::Sample>, start: usize, end: usize) -> Vec<(f64, f32)> {
+    onsets::detect_with_threshold(&Audio { sample, path: String::new(), start, end }, 0.009)
+        .into_iter().map(|onset| (onset.time, onset.strength)).collect()
+}
+
 struct Audio {
     sample: Arc<os_engine::Sample>,
     path: String,

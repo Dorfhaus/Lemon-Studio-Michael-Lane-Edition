@@ -212,6 +212,7 @@ pub struct RackUi {
     pub colorful: bool,
     pub align_left: Option<bool>,
     pub auto_resize: AutoResize,
+    pub(crate) observed_channels: Option<usize>,
     pub graph_open: bool,
     pub graph_tab: Tab,
     pub loop_mode: bool,
@@ -252,7 +253,8 @@ impl Default for RackUi {
             show_mixer: true,
             colorful: false,
             align_left: None,
-            auto_resize: AutoResize::Min,
+            auto_resize: match crate::settings_file::get("rack_auto_resize").as_deref() {Some("off")=>AutoResize::Off,Some("max")=>AutoResize::Max,_=>AutoResize::Min},
+            observed_channels: None,
             graph_open: false,
             graph_tab: Tab::Vel,
             loop_mode: false,
@@ -859,9 +861,26 @@ pub fn set_graph_open(s: &mut State, open: bool) {
 /// Apply Auto resize after the shown rows changed.
 pub fn autosize(s: &mut State) {
     organize_clips(s);
+    if s.rack.auto_resize==AutoResize::Min && s.screen.1>0. {
+        let work=s.work_rect();
+        let fit=(crate::views::rack::height_overhead(s)+crate::views::rack::rows_h(s).max(crate::views::rack::row_pitch(s))).min((work.h-4.).max(crate::views::rack::min_h(s)));
+        s.rack_pos.1=s.rack_pos.1.min(work.bottom()-fit-4.).max(work.y);
+    }
     if let Some(h) = auto_height(s) {
         s.rack_size.1 = h.max(crate::views::rack::min_h(s));
+        s.rack_scroll=crate::views::rack::scroll(s);
     }
+}
+
+/// Catch additions from every import/recording/plugin path without overriding manual sizes on repaint/startup.
+pub fn size_after_channel_change(s: &mut State) -> bool {
+    if s.native_view.is_some() {return false;}
+    let count=s.project.channels.len();
+    let previous=s.rack.observed_channels.replace(count);
+    if previous.is_none_or(|n|n==count) {return false;}
+    let before=(s.rack_pos,s.rack_size);
+    autosize(s);
+    before!=(s.rack_pos,s.rack_size)
 }
 
 /// Keep the step count when a column left of the steps changes width (§17: the window width follows).
@@ -1535,6 +1554,7 @@ pub enum RCmd {
     CopyValue(KnobId),
     PasteValue(KnobId),
     MixerReset(usize),
+    RouteSelected(usize, bool),
     AssignFree(usize),
     // Display filter (§21).
     SetFilter(Filter),
@@ -1784,6 +1804,7 @@ pub(crate) fn default_channel_menu(s: &State, r: usize, x: f32, y: f32, catalog:
     } else {
         items.extend(stack);
     }
+    items.extend(crate::rack_controls::routing_items(s, r));
     let paste = it("Paste", RCmd::Paste(r));
     items.extend([
         PItem::sep(),
@@ -1868,6 +1889,7 @@ pub fn knob_menu(s: &State, k: KnobId, auto: Option<(u32, String, f64)>, x: f32,
 /// Right click on the mixer box (§12).
 pub fn mixer_menu(s: &State, r: usize, x: f32, y: f32) -> Popup {
     let mut items = vec![it("Reset", RCmd::MixerReset(r))];
+    items.extend(crate::rack_controls::routing_items(s, r));
     items.extend(value_groups(s, None, None));
     items.push(PItem::sep());
     items.push(it("Assign to free mixer track", RCmd::AssignFree(r)));
@@ -2015,6 +2037,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     let mouse = app.mouse;
     let sel: Vec<usize> = app.state.rack.sel.iter().copied().collect();
     match c {
+        RCmd::RouteSelected(row, spread) => { crate::route_picker::open_rack(app, row, spread); return None; }
         RCmd::BounceWet(r) => { app.bounce_channel(r,true); return None; }
         RCmd::Consolidate(r) => { app.consolidate_channel(r); return None; }
         RCmd::CloneComplete(r) => return clone_complete(app,r),
@@ -2044,7 +2067,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
     }
     let s = &mut app.state;
     let msg = match c {
-        RCmd::FitSample(..) | RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
+        RCmd::RouteSelected(..) | RCmd::FitSample(..) | RCmd::Consolidate(_) | RCmd::BounceWet(_) => None,
         RCmd::PitchFollow(r) => {crate::rack_controls::toggle_follow(app,r);None}
         RCmd::GraphTab(tab) => {
             s.rack.graph_tab = tab;
@@ -2147,11 +2170,8 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
             // The default target: the insert the channel was made with (its own number).
             if let Some(c) = s.project.channels.get(r) {
                 let dst = (c.index + 1).min(crate::mixer::max_insert_of(&s.project.mixer));
-                if crate::mixer::group_locked(s, c.mixer_track) || crate::mixer::group_locked(s, dst) {
-                    return Some(crate::mixer::LOCK_MESSAGE.into());
-                }
-                s.project.channels[r].mixer_track = dst;
-                s.piano.dirty = true;
+                let rows = crate::rack_controls::rows(s, r);
+                return crate::rack_controls::route(s, &rows, dst, false);
             }
             None
         }
@@ -2252,6 +2272,7 @@ pub fn run(app: &mut App, c: RCmd) -> Option<String> {
         }
         RCmd::AutoResize(a) => {
             s.rack.auto_resize = a;
+            crate::settings_file::write("rack_auto_resize",match a {AutoResize::Off=>"off",AutoResize::Min=>"min",AutoResize::Max=>"max"});
             autosize(s);
             None
         }

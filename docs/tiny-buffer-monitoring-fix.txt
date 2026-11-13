@@ -1,4 +1,4 @@
-Lemon Studio local audio update — 1 November 2026
+ML Studio local audio update — 1 November 2026
 
 Fixed the reproduced live-monitoring gaps at 16/32-frame driver buffers. Input backlog correction now allows an engine render tick plus the feeder's maximum 6 ms scheduling margin (or the input callback size, whichever is larger), with hysteresis before discarding stale input. This is a maximum backlog allowance, not an added mandatory delay. Session handover still clears stale input promptly; monitoring remains independent of the disk recorder.
 
